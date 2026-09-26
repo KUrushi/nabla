@@ -17,6 +17,26 @@
 ;;;; セッションと invocation は呼び出しごとに新しく作る（セッション自体は
 ;;;; スレッドセーフではないため、これが compile-stablehlo をスレッドセーフに
 ;;;; している）。
+;;;;
+;;;; 注意（issue #5 で踏んだフレーキーなクラッシュ）: このプロセスで一度でも
+;;;; compile-stablehlo（正確には ireeCompilerInvocationPipeline）を実行すると、
+;;;; IREE/LLVM/MLIR は最適化パス用の永続的なワーカースレッドプール
+;;;; （"llvm-worker-N"、SBCL の管理外のスレッド）を遅延生成し、以後プロセスが
+;;;; 終わるまで生かしたままにする。この状態で SB-EXT:GC を明示的に呼ぶと
+;;;; （:full の有無に関わらず）、SBCL 2.2.9（safepoint 無しビルド）の GC が
+;;;; "no SP known for thread" という致命的エラーで確実に落ちることを確認して
+;;;; いる。試した緩和策（--mlir-disable-threading 相当のセッションフラグ
+;;;; ―― このバージョンの embedding API には存在しない、呼び出しスレッドの
+;;;; シグナルを全部ブロックする、専用の SBCL スレッドに呼び出しを移す、
+;;;; dlmopen で別のリンクマップ名前空間に読み込む――はどれも効果がなかった。
+;;;; 一方、確保のしきい値で自動的に走る通常の GC（明示的に SB-EXT:GC を呼ば
+;;;; ない、nabla の実際のコード・テストが使う経路）は、malformed/valid を
+;;;; 混ぜて1000回以上コンパイルしながら確保し続けても再現しなかった
+;;;; （tests/iree/compiler-test.lisp の organic-gc-pressure テスト参照）。
+;;;; そのため、nabla.iree をロードしたプロセスでは SB-EXT:GC（および
+;;;; TRIVIAL-GARBAGE:GC）を明示的に呼ばないこと。これは SBCL の非 safepoint
+;;;; スレッド実装と IREE の永続ワーカースレッドプールの相互作用に起因する
+;;;; 既知の制約で、nabla 側のコードのバグではない。
 
 (in-package #:nabla.iree)
 
