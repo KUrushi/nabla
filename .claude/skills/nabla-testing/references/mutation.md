@@ -83,7 +83,13 @@ tools/mutate/run.sh
 tools/mutate/run.sh src/core/foo.lisp:10-40
 ```
 
-- 入力: 対象のファイルと行の範囲（既定は `git diff` で `main` から変わった行）
+- `run.sh` は既定で対象システム（`--system`、既定 `nabla`）の `<system>/tests`
+  （既定 `nabla/tests`）を読み込んでからテストを実行する。#4（テスト基盤）が
+  マージされる前や、対象システムの `/tests` が存在しない場合は
+  `--test-system` と `--test-form` で明示的に指定すること
+  （[`tools/mutate/README.md`](../../../../tools/mutate/README.md) 参照）
+- 入力: 対象のファイルと行の範囲（既定は `git diff` で `main` から変わった行のうち、
+  `src/` 以下の `.lisp`。`src/iree/` と `src/pjrt/` の CFFI バインディングは除く）
 - ソースを Lisp の reader で読み、変更した行を含むトップレベルの定義（`defun`、`defmethod`、`defmacro`、`defprimitive`）を探す
 - 各定義に変異演算子（算術演算子の入れ替え・比較の境界・定数の置き換え・`if` の分岐の入れ替え、この順）を1つずつ試し、最初に適用できたものを1つの変異体として、変異させた定義を image に `eval` してロードする
 - 対象のシステムのテストスイートを実行し、落ちれば「殺された」、通れば「生き残った」とする。無限ループに備えてタイムアウトを設け、タイムアウトは「殺された」とみなす

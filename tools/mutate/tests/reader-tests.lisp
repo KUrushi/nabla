@@ -50,6 +50,26 @@
   (is-false (nabla.mutate:arid-node-p '(+ 1 2)))
   (is-false (nabla.mutate:arid-node-p 42)))
 
+(test read-source-forms-line-numbers-skip-blank-lines-between-forms
+  "フォームの間に空行があっても、start-line はその定義の最初の非空白
+行を指す（直前のフォームの末尾で消費された改行1文字を、次のフォームの
+開始位置に含めない）。"
+  (let ((tmp (uiop:with-temporary-file (:pathname p :type "lisp" :keep t) p)))
+    (unwind-protect
+         (progn
+           (with-open-file (s tmp :direction :output :if-exists :supersede)
+             (write-string
+              (format nil "(defun clamp (x lo hi)~%  (max lo (min hi x)))~%~%~%(defun mean (xs)~%  (/ (reduce #'+ xs) (length xs)))~%")
+              s))
+           (let ((forms (nabla.mutate:read-source-forms tmp)))
+             (is (= 2 (length forms)))
+             (destructuring-bind (clamp-def mean-def) forms
+               (is (= 1 (nabla.mutate:source-form-start-line clamp-def)))
+               (is (= 2 (nabla.mutate:source-form-end-line clamp-def)))
+               (is (= 5 (nabla.mutate:source-form-start-line mean-def)))
+               (is (= 6 (nabla.mutate:source-form-end-line mean-def))))))
+      (ignore-errors (delete-file tmp)))))
+
 (test read-source-forms-tracks-in-package
   "in-package の後のフォームは、そのパッケージで読まれる（シンボルの
 パッケージで確認する）。"

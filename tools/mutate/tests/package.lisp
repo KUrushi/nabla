@@ -14,4 +14,4 @@
 1つでも落ちれば NIL を返す。"
   (let ((results (run :nabla-mutate)))
     (explain! results)
-    (every #'fiveam::test-passed-p results)))
+    (fiveam:results-status results)))

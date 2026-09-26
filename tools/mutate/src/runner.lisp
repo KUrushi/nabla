@@ -84,6 +84,11 @@ find-package / find-symbol で探して呼ぶ。#4（テスト基盤）が
   "MUTATED-FORM を PACKAGE の中で評価し、TEST-FUNCTION を走らせて
 :killed / :survived / :timeout を返す。呼び終わったら（成功しても
 失敗しても）ORIGINAL-FORM を評価し直して元に戻す。"
+  ;; ERROR だけでなく STORAGE-CONDITION（SB-KERNEL::CONTROL-STACK-EXHAUSTED
+  ;; など）も捕まえる。どちらも SERIOUS-CONDITION のサブタイプだが、
+  ;; STORAGE-CONDITION は ERROR のサブタイプではないため、`(error () ...)`
+  ;; だけでは暴走再帰を作る変異体（例: `(- n 1)` → `(+ n 1)`）で
+  ;; RUN 全体が中断してしまう。
   (let ((*package* package))
     (unwind-protect
          (handler-case
@@ -94,8 +99,8 @@ find-package / find-symbol で探して呼ぶ。#4（テスト基盤）が
                        :survived
                        :killed)
                  (sb-ext:timeout () :timeout)
-                 (error () :killed)))
-           (error () :killed))
+                 (serious-condition () :killed)))
+           (serious-condition () :killed))
       (ignore-errors (%eval-quietly original-form)))))
 
 (defun %check-it-trials-symbol ()

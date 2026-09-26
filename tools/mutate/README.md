@@ -26,7 +26,9 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
   変異体は既定の試行回数で自動的に再確認される）
 - `--timeout SEC`: 変異体1つあたりのテストのタイムアウト秒数（既定 300）
 - `--test-system SYSTEM`: `nabla.mutate:run` を呼ぶ前に、この ASDF システム
-  を読み込む（テストの対象になるコードや、テスト実行関数を含むシステム）
+  を読み込む（テストの対象になるコードや、テスト実行関数を含むシステム）。
+  省略すると既定で `<--system>/tests`（`--system` の既定は `nabla` なので
+  通常は `nabla/tests`）を読み込む
 - `--test-form FORM`: これを `eval` した結果をテスト実行関数として使う
   （渡さなければ `nabla.mutate:default-test-function` を使う。これは
   `NABLA.TESTS.SUPPORT:RUN-TESTS` を実行時に探すので、#4（テスト基盤）が

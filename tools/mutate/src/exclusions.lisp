@@ -28,16 +28,23 @@
         (or (read stream nil nil) nil))
       nil))
 
-(defun %mutation-string (original mutated)
-  "ORIGINAL と MUTATED を印字して \"<変異前> -> <変異後>\" にする。
-呼び出し元の *PRINT-PRETTY* などに関わらず結果が同じになるよう、
-印字変数を固定する。"
+(defun %prin1-fixed (object)
+  "OBJECT を PRIN1 で印字した文字列を返す。呼び出し元の *PRINT-PRETTY* や
+*PACKAGE* などに関わらず結果が同じになるよう、印字変数を固定する
+（*PACKAGE* を固定しないと、呼び出し元のパッケージによってシンボルの
+印字にパッケージ修飾子が付いたり付かなかったりし、同じ変異体でも
+除外リストの文字列と一致したりしなかったりする）。"
   (let ((*print-pretty* nil)
         (*print-case* :upcase)
         (*print-circle* nil)
         (*print-length* nil)
-        (*print-level* nil))
-    (format nil "~S -> ~S" original mutated)))
+        (*print-level* nil)
+        (*package* (find-package "COMMON-LISP-USER")))
+    (prin1-to-string object)))
+
+(defun %mutation-string (original mutated)
+  "ORIGINAL と MUTATED を印字して \"<変異前> -> <変異後>\" にする。"
+  (format nil "~A -> ~A" (%prin1-fixed original) (%prin1-fixed mutated)))
 
 (defun %file-matches-p (pathname pattern)
   "PATTERN が PATHNAME の namestring の末尾と、パスの区切りとして一致
@@ -62,5 +69,5 @@
                (and (%file-matches-p pathname (getf entry :file))
                     (string= mutation-string (getf entry :mutation))
                     (or (null (getf entry :form))
-                        (search (getf entry :form) (prin1-to-string original)))))
+                        (search (getf entry :form) (%prin1-fixed original)))))
              exclusions)))

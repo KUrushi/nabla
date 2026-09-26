@@ -18,6 +18,22 @@
   (load (%sample-path "sample/weak-tests/weak.lisp"))
   (load (%sample-path "sample/strong-tests/strong.lisp")))
 
+(test evaluate-mutant-treats-control-stack-exhaustion-as-killed
+  "暴走再帰で SB-KERNEL::CONTROL-STACK-EXHAUSTED（ERROR ではなく
+STORAGE-CONDITION）を投げる変異体は、RUN 全体を中断させず :killed として
+判定される。arith-swap が `(- n 1)` を `(+ n 1)` にしたときのような
+実例に対応する。"
+  (let* ((package (find-package "NABLA.MUTATE.TESTS"))
+         (name (intern "%RUNNER-TESTS-COUNTDOWN" package))
+         (original `(defun ,name (n) (if (<= n 0) 0 (1+ (,name (- n 1))))))
+         (mutated `(defun ,name (n) (if (<= n 0) 0 (1+ (,name (+ n 1))))))
+         (test-function (lambda () (= 0 (funcall name 5)))))
+    (unwind-protect
+         (is (eq :killed
+                 (nabla.mutate::%evaluate-mutant original mutated package test-function 10)))
+      (ignore-errors (fmakunbound name))
+      (ignore-errors (unintern name package)))))
+
 (test excluded-p-matches-by-file-suffix-and-mutation-string
   (let ((entry (list :file "src/sample.lisp" :form nil
                       :mutation "5 -> 0" :reason "テスト用")))

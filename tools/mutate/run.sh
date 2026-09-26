@@ -12,8 +12,9 @@
 #
 # --system は asdf:test-system を呼ぶときの対象システム名（既定 nabla）。
 # --test-system を渡すと、その ASDF システムを runner の前に読み込む。
+# 渡さなければ既定で "${SYSTEM}/tests"（例: nabla/tests）を読み込む。
 # --test-form を渡すと、それを eval した結果（関数）をテスト実行関数として使う。
-# どちらも渡さなければ、NABLA.TESTS.SUPPORT:RUN-TESTS を実行時に探す
+# 渡さなければ NABLA.TESTS.SUPPORT:RUN-TESTS を実行時に探す
 # （nabla-mutate.asd の DEFAULT-TEST-FUNCTION を見よ）。
 #
 # 終了コード: mutation score が 0.8 以上（変異させられる定義が1つもない
@@ -21,6 +22,10 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# git diff が出すパスや exclusions.lisp などの相対パスの解決を、呼び出し時の
+# カレントディレクトリに左右されないようにする（サブディレクトリから
+# 実行してもリポジトリ直下から実行したのと同じ結果にする）。
+cd "$REPO"
 NABLA_LISP_DEPS_DIR="${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}"
 # tools/mutate/sample//: を明示的に足しているのは、SBCL の ASDF が
 # 深い階層の .asd を再帰探索で見つけないことがあるため
@@ -50,6 +55,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 RANGE_ARGS+=("$@")
+
+if [ -z "$TEST_SYSTEM" ]; then
+  TEST_SYSTEM="${SYSTEM}/tests"
+fi
 
 # FILE[:START-END] を ("path" start end) の Lisp リストへ変換する。
 ranges_lisp="nil"

@@ -56,10 +56,23 @@ reader エラーに出会ったら、そこまでに読めたフォームを返�
       (let ((*package* (find-package "COMMON-LISP-USER"))
             (results nil))
         (loop
+          ;; フォームの前の空白（改行を含む）を読み飛ばしてから位置を記録する。
+          ;; そうしないと、フォームの間に空行があるとき、start-line が
+          ;; 実際より前の行（空行）になってしまう。
+          (peek-char t stream nil nil)
           (let ((start-pos (file-position stream)))
             (multiple-value-bind (form errorp)
-                (handler-case (values (read stream nil '%%eof%%) nil)
-                  (error () (values nil t)))
+                ;; 素の READ は、フォームを読み終えたあとその直後の空白
+                ;; 文字を1つ読み捨てる（CLHS: READ-PRESERVING-WHITESPACE
+                ;; との違い）。これを使うと、フォームの直後に改行がある
+                ;; ときに end-line が実際より1行あとにずれる。
+                ;; READ-PRESERVING-WHITESPACE を使い、その読み捨てを
+                ;; させないことで end-line を正しく保つ。
+                (handler-case (values (read-preserving-whitespace stream nil '%%eof%%) nil)
+                  (error (e)
+                    (warn "read-source-forms: ~A の位置 ~D でリーダーエラー、~
+それ以降は読まずに打ち切る: ~A" pathname start-pos e)
+                    (values nil t)))
               (when errorp (return))
               (when (eq form '%%eof%%) (return))
               (let* ((end-pos (min len (file-position stream)))
