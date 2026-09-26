@@ -17,8 +17,14 @@
 # 渡さなければ NABLA.TESTS.SUPPORT:RUN-TESTS を実行時に探す
 # （nabla-mutate.asd の DEFAULT-TEST-FUNCTION を見よ）。
 #
-# 終了コード: mutation score が 0.8 以上（変異させられる定義が1つもない
-# ときは 1 として扱われる）なら 0、そうでなければ 1。
+# 終了コード:
+#   0: mutation score が 0.8 以上
+#   1: mutation score が 0.8 未満
+#   2: FILE[:START-END] に存在しないファイルを指定した
+#   3: 変異させられる定義が1つも見つからなかった（total=0）。
+#      exclusions がすべて除外した場合を除き、多くは対象範囲の指定ミス。
+#      これを 0（合格）と区別しないと、CI が「何も変異していない」のを
+#      「変異はすべて殺した」と取り違えてしまう
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -71,6 +77,8 @@ if [ -z "$TEST_SYSTEM" ]; then
 fi
 
 # FILE[:START-END] を ("path" start end) の Lisp リストへ変換する。
+# 存在しないファイルは、sbcl を起動して FILE-ERROR のバックトレースを
+# 見せるよりも先に、ここではっきり教える。
 ranges_lisp="nil"
 if [ "${#RANGE_ARGS[@]}" -gt 0 ]; then
   entries=""
@@ -83,6 +91,10 @@ if [ "${#RANGE_ARGS[@]}" -gt 0 ]; then
       range="${arg#*:}"
       start="${range%%-*}"
       end="${range#*-}"
+    fi
+    if [ ! -f "$file" ]; then
+      echo "tools/mutate/run.sh: ファイルが見つからない: $file" >&2
+      exit 2
     fi
     entries="${entries} (list \"$(lisp_escape_string "$file")\" ${start} ${end})"
   done
@@ -100,14 +112,21 @@ else
   test_function_form="#'nabla.mutate:default-test-function"
 fi
 
-run_form="(let ((report (nabla.mutate:run
-                            :system \"$(lisp_escape_string "$SYSTEM")\"
-                            :test-function ${test_function_form}
-                            :ranges ${ranges_lisp}
-                            :base-ref \"$(lisp_escape_string "$BASE_REF")\"
-                            :timeout-seconds ${TIMEOUT}
-                            :trials ${TRIALS})))
-             (uiop:quit (if (>= (nabla.mutate:mutation-score report) 4/5) 0 1)))"
+run_form="(handler-case
+              (let ((report (nabla.mutate:run
+                              :system \"$(lisp_escape_string "$SYSTEM")\"
+                              :test-function ${test_function_form}
+                              :ranges ${ranges_lisp}
+                              :base-ref \"$(lisp_escape_string "$BASE_REF")\"
+                              :timeout-seconds ${TIMEOUT}
+                              :trials ${TRIALS})))
+                (cond
+                  ((zerop (length (nabla.mutate:report-mutants report))) (uiop:quit 3))
+                  ((>= (nabla.mutate:mutation-score report) 4/5) (uiop:quit 0))
+                  (t (uiop:quit 1))))
+            (file-error (e)
+              (format *error-output* \"~&tools/mutate/run.sh: ファイルが見つからない: ~A~%\" e)
+              (uiop:quit 2)))"
 
 exec sbcl --non-interactive \
   --eval "(require :asdf)" \

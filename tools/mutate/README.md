@@ -37,9 +37,22 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
 
 ## 終了コード
 
-mutation score†（`(殺した数 + タイムアウト数) / (全数 - 除外数)`）が
-0.8 以上なら 0、そうでなければ 1。殺せる変異体が1つもない
-（全数と除外数が同じ）ときは 1 として扱う。
+`tools/mutate/run.sh` の終了コード:
+
+| コード | 意味 |
+| --- | --- |
+| 0 | mutation score†（`(殺した数 + タイムアウト数) / (全数 - 除外数)`）が 0.8 以上 |
+| 1 | mutation score が 0.8 未満 |
+| 2 | `FILE[:START-END]` に存在しないファイルを指定した |
+| 3 | 変異させられる定義が1つも見つからなかった（`total=0`） |
+
+3 と 0 を区別しているのは、`total=0`（対象範囲が空、たいてい `--base` や
+`FILE[:START-END]` の指定ミス）のときも `nabla.mutate:mutation-score` 自体は
+（除外数と全数が一致するので）1 を返し、score だけを見ると「殺した」のと
+区別が付かないため。CI が「何も変異していない」のを「変異はすべて殺した」
+と取り違えないよう、`run.sh` はこの場合だけ別のコードで抜ける。
+`nabla.mutate:run` を直接 Lisp から呼ぶときは、`report-mutants` の長さで
+同じことを自分で確認すること。
 
 ## 変異演算子
 
@@ -50,6 +63,60 @@ mutation score†（`(殺した数 + タイムアウト数) / (全数 - 除外�
 この最小版では、1つの変異可能な定義（`defun` / `defmethod` / `defmacro` /
 `defprimitive`）につき、演算子を上の順で試して最初に適用できたものを
 1つだけ使う。将来、行ごとの粒度に細かくする余地がある。
+
+`defmethod` の specialized lambda list（`((x (eql 0)) ...)` のように
+specializer を含むもの）は、演算子を問わずまるごと arid† として扱い、
+中には決して降りない。specializer の中の値（`(eql 0)` の `0` など）を
+変異させると、再評価時に元のメソッドとは違う specializer の組を持つ
+別のメソッドが新しく増えてしまい、後始末（変異体の評価後に元の
+`defmethod` を評価し直すこと）でも消えずに残ってしまうため
+（`remove-method` していないので、元の specializer に戻す再定義は
+「新しいメソッドを足す」だけで、変異体のメソッドを置き換えない）。
+
+## 変異体どうしの隔離（regression 状態）
+
+nabla のテストは check-it の `:regression-id` / `:regression-file` で、
+見つかった失敗例を `tests/regressions/` の下のファイルとシンボルの
+plist（`check-it::regression-cases`）の両方に記録する
+（`tests/support/regression.lisp` の `regression-path` を見よ）。
+mutation testing 中はほぼ確実にどこかの変異体でテストを失敗させるので、
+何もしないと変異体ごとにこの記録が増え続け、次の2つの問題を起こす。
+
+1. **ディスクに副作用が残る**: 変異体が生成したデタラメな値
+  （境界値の変異でたまたま失敗した入力など）が `tests/regressions/*.lisp`
+  に書き込まれ、コミットされてしまう
+2. **偽の kill / false survive**: ある変異体（M1）が記録した regression-case
+  が、`check-it::regression-cases` の plist に残ったまま次の変異体（M2）の
+  実行に引き継がれる。check-it は `regression-id` ごとに、通常のランダム
+  生成の前に記録済みの regression-case をすべて再生するので、M2 が単体
+  では絶対に落ちない性質でも、M1 の記録したケースを再生して落ちてしまう
+  （逆に、M1 由来のケースのせいで本来生き残るはずの変異体が「殺された」
+  ことになる、という向きの誤りにもなる）
+
+これを防ぐため、runner は変異体1体（正確には baseline チェックと
+`%evaluate-mutant` の呼び出し）ごとに、`*regression-directories*`
+（既定 `("tests/regressions/")`、`nabla.mutate:run` の
+`:regression-directories` で上書きできる）以下のファイルの中身と、
+`check-it::regression-cases` を持つすべてのシンボルの plist を
+呼び出し前にまるごとスナップショットし、呼び出しが成功しても失敗しても
+（`unwind-protect`）呼び出し後に必ず元へ戻す
+（`nabla.mutate::%isolate-mutant-side-effects`）。
+
+- nabla-mutate は nabla のコアシステムに依存しない独立したツールという
+  設計（`nabla-mutate.asd` 参照）なので、この仕組みは check-it の
+  regression-case の記録先（ファイルとシンボルの plist）という一般的な
+  知識だけを使い、`tests/support/regression.lisp` のような nabla 側の
+  関数名やパッケージ名には一切依存しない
+- `*regression-directories*` に含めていないディレクトリへの書き込みは
+  隔離されない。nabla 以外のプロジェクトで runner を使うときは、
+  `:regression-directories` を実際の regression ファイルの置き場所に
+  合わせて渡すこと
+- ファイルはテキストとして丸ごと退避・復元する（regression ファイルは
+  Lisp のソースなので、この前提で問題ない）。新しく作られたファイルは
+  削除され、書き換えられた・消されたファイルは元の内容に戻る
+- plist の隔離は `do-all-symbols` で image 全体を舐めて
+  `check-it::regression-cases` を持つシンボルを探すので、check-it が
+  ロードされていなければ何もしない
 
 ## 除外リストの書き方
 
@@ -119,8 +186,10 @@ CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-de
 - reader マクロのコメント（`;` によるインラインコメント）は、`read` で
   読んだあと再度 `PRIN1` するときに失われる。除外リストの `:mutation` は
   この再印字後の文字列なので、ソースの見た目とは空白や改行が異なる
-- `#.`（read-eval）などファイルの残りを読み進められない reader マクロを
-  含むファイルは、そこで読み込みを打ち切る（そこより前の定義は対象になる）
+- `read-source-forms` は対象ファイルを読む間 `*read-eval*` を `NIL` に
+  束縛する（変異対象のソースを読み込むだけの目的で `#.` を実際に
+  評価したくないため）。そのため `#.`（read-eval）を含むファイルは、
+  そこで読み込みを打ち切る（そこより前の定義は対象になる）
 - 変異は1つの定義につき1つだけ。同じ定義の中に複数の変異可能な箇所が
   あっても、演算子ごとに最初の1箇所しか試さない
 - CFFI のバインディング（`nabla/iree`、`nabla/pjrt` の foreign 関数定義）
