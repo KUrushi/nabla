@@ -153,6 +153,45 @@ known for thread' で確実に落ちる、compiler.lisp 冒頭のコメント参
                      (fiveam:fail "malformed input unexpectedly compiled"))
             (iree-compile-error () nil))))))
 
+(define-iree-test compiler/compile-stablehlo/keeps-sbcl-signal-handlers
+    "compile-stablehlo（と ensure-compiler-loaded）を呼んでも、SBCL が GC の
+stop-the-world に使う SIGUSR2 と、エラートラップに使う SIGILL / SIGTRAP /
+SIGSEGV のハンドラは変わらない。LLVM は初回の Pipeline で自前のハンドラを
+sigaction で登録するが、nabla.iree はそれを元に戻す（signals.lisp 冒頭の
+コメント参照）。ハンドラのアドレスを比べる直接の回帰テスト。"
+  (skip-unless-iree :library :compiler)
+  (let ((signals '((12 . "SIGUSR2") (4 . "SIGILL") (5 . "SIGTRAP") (11 . "SIGSEGV")))
+        (before nil))
+    (dolist (s signals) (push (cons (car s) (nabla.iree::%signal-handler-address (car s))) before))
+    (compile-stablehlo (stablehlo-fixture "matmul"))
+    (handler-case (compile-stablehlo (%unknown-op-in-known-dialect "not_a_real_op"))
+      (iree-compile-error () nil))
+    (dolist (s signals)
+      (is (= (cdr (assoc (car s) before)) (nabla.iree::%signal-handler-address (car s)))
+          "~A のハンドラが compile-stablehlo で書き換えられた" (cdr s)))))
+
+(define-iree-test compiler/compile-stablehlo/explicit-full-gc-does-not-crash
+    "compile-stablehlo のあとに SB-EXT:GC :FULL T を明示的に呼んでも SBCL
+プロセスは落ちず、trivial-garbage の finalizer も走る。issue #5 の
+'garbage_collect: no SP known for thread' クラッシュ（LLVM が SIGUSR2 の
+ハンドラを乗っ取ることが原因。signals.lisp 参照）の回帰テスト。修正前は
+最初の明示的 GC でほぼ確実に落ちた。finalizer は finalizer スレッドで
+非同期に走るので、短い間だけ待つ。"
+  (skip-unless-iree :library :compiler)
+  (let ((valid (stablehlo-fixture "matmul"))
+        (malformed (%unknown-op-in-known-dialect "not_a_real_op"))
+        (finalized nil))
+    (dotimes (i 6)
+      (if (evenp i)
+          (is (plusp (length (compile-stablehlo valid))))
+          (handler-case (compile-stablehlo malformed)
+            (iree-compile-error () nil)))
+      (trivial-garbage:finalize (make-array 16) (lambda () (setf finalized t)))
+      (sb-ext:gc :full t)
+      (sb-ext:gc))
+    (loop repeat 100 until finalized do (sleep 0.01))
+    (is-true finalized "trivial-garbage の finalizer が明示的な full GC のあとに走らなかった")))
+
 (fiveam:test (compiler/compile-flags/targets-are-deterministic :suite :nabla.small)
   "compile-flags は同じ TARGET に対して毎回同じフラグのリストを返し、
 :local の先頭は StableHLO 入力を指定するフラグで、未知の TARGET はエラーになる。"

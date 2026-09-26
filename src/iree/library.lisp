@@ -70,16 +70,22 @@ search-path 引数を無視するため。CFFI 自体のこの版の挙動で、
 cffi:*foreign-library-directories* に push しておく必要がある。"
   (sb-thread:with-mutex (*compiler-load-lock*)
     (unless *compiler-loaded-p*
-      (let ((home (iree-home)))
-        (pushnew (merge-pathnames "lib/" home) cffi:*foreign-library-directories*
-                  :test #'equal)
-        (handler-case
-            (cffi:load-foreign-library 'nabla-iree-compiler)
-          (cffi:load-foreign-library-error ()
-            (error 'iree-library-not-found
-                   :path (%library-path home :compiler)
-                   :home home
-                   :library :compiler))))
-      (%compiler-global-initialize)
+      (with-lisp-signal-handlers-preserved
+        (let ((home (iree-home)))
+          (pushnew (merge-pathnames "lib/" home) cffi:*foreign-library-directories*
+                    :test #'equal)
+          (handler-case
+              (cffi:load-foreign-library 'nabla-iree-compiler)
+            (cffi:load-foreign-library-error ()
+              (error 'iree-library-not-found
+                     :path (%library-path home :compiler)
+                     :home home
+                     :library :compiler))))
+        (%compiler-global-initialize)
+        ;; LLVM の「プロセスにつき1回」のシグナルハンドラ登録
+        ;; （signals.lisp 冒頭のコメント参照）を、ロックを持ったこの時点で
+        ;; 済ませてしまう。こうしないと、最初の実際の compile-stablehlo
+        ;; 呼び出し中に別の Lisp スレッドが GC を始める競合の隙間が残る。
+        (%warm-up-compiler))
       (setf *compiler-loaded-p* t)))
   (values))

@@ -18,25 +18,18 @@
 ;;;; スレッドセーフではないため、これが compile-stablehlo をスレッドセーフに
 ;;;; している）。
 ;;;;
-;;;; 注意（issue #5 で踏んだフレーキーなクラッシュ）: このプロセスで一度でも
-;;;; compile-stablehlo（正確には ireeCompilerInvocationPipeline）を実行すると、
-;;;; IREE/LLVM/MLIR は最適化パス用の永続的なワーカースレッドプール
-;;;; （"llvm-worker-N"、SBCL の管理外のスレッド）を遅延生成し、以後プロセスが
-;;;; 終わるまで生かしたままにする。この状態で SB-EXT:GC を明示的に呼ぶと
-;;;; （:full の有無に関わらず）、SBCL 2.2.9（safepoint 無しビルド）の GC が
-;;;; "no SP known for thread" という致命的エラーで確実に落ちることを確認して
-;;;; いる。試した緩和策（--mlir-disable-threading 相当のセッションフラグ
-;;;; ―― このバージョンの embedding API には存在しない、呼び出しスレッドの
-;;;; シグナルを全部ブロックする、専用の SBCL スレッドに呼び出しを移す、
-;;;; dlmopen で別のリンクマップ名前空間に読み込む――はどれも効果がなかった。
-;;;; 一方、確保のしきい値で自動的に走る通常の GC（明示的に SB-EXT:GC を呼ば
-;;;; ない、nabla の実際のコード・テストが使う経路）は、malformed/valid を
-;;;; 混ぜて1000回以上コンパイルしながら確保し続けても再現しなかった
-;;;; （tests/iree/compiler-test.lisp の organic-gc-pressure テスト参照）。
-;;;; そのため、nabla.iree をロードしたプロセスでは SB-EXT:GC（および
-;;;; TRIVIAL-GARBAGE:GC）を明示的に呼ばないこと。これは SBCL の非 safepoint
-;;;; スレッド実装と IREE の永続ワーカースレッドプールの相互作用に起因する
-;;;; 既知の制約で、nabla 側のコードのバグではない。
+;;;; 注意（issue #5 で踏んだクラッシュの根本原因）: llvm-cpu ターゲットが
+;;;; 実行ファイルを直列化する際、ireeCompilerInvocationPipeline の初回実行
+;;;; 中に LLVM が自前のシグナルハンドラをプロセスに（1回だけ）登録し、SBCL
+;;;; が GC の stop-the-world に使う SIGUSR2 のハンドラを上書きしてしまう
+;;;; （sigaction を使った LD_PRELOAD トレースで確認済み。詳しい仕組みは
+;;;; signals.lisp 冒頭のコメント参照）。放っておくと、SBCL には常にいる
+;;;; finalizer スレッドなどを別スレッドが GC で止めようとした瞬間に
+;;;; "no SP known for thread" で確実に落ちる。そのため IREE を呼ぶ公開関数は
+;;;; すべて with-lisp-signal-handlers-preserved（signals.lisp）で包み、
+;;;; ensure-compiler-loaded はロード直後に最小のモジュールを1つコンパイルして
+;;;; （同じ保護の下で）LLVM の登録を済ませておく（%warm-up-compiler）。将来
+;;;; LLVM を呼びうる FFI エントリポイント（PJRT など）も同じマクロで包むこと。
 
 (in-package #:nabla.iree)
 
@@ -52,18 +45,56 @@
   (ensure-compiler-loaded)
   (or (%compiler-get-revision) ""))
 
+(defvar *warned-missing-embedded-linker-p* nil
+  "%embedded-linker-flags が iree-lld 不在の警告を出したかどうか。プロセスに
+つき1回だけ警告する。")
+
+(defun %embedded-linker-path ()
+  "NABLA_IREE_HOME/bin/iree-lld があればその pathname を、無ければ NIL を
+返す。llvm-cpu ターゲットは実行可能な小さな ELF を作るのに毎回リンカを
+呼ぶ（IREE の embedding API に、これを避けてプロセス内でリンクする手段は
+無い。§compile-flags のコメント参照）。scripts/build-iree.sh が PyPI
+ホイール（third_party/iree.lock）に同梱の iree-lld をここにインストール
+していれば、その固定コミット版を使う。"
+  (let ((path (merge-pathnames "bin/iree-lld" (iree-home))))
+    (and (probe-file path) path)))
+
+(defun %embedded-linker-flags ()
+  "llvm-cpu 向けの --iree-llvmcpu-embedded-linker-path フラグを、
+iree-lld があるときだけ1要素のリストにして返す。無いときは空リストを返し、
+プロセスにつき1回だけ、システムの /usr/bin/lld にフォールバックしている旨を
+警告する（iree-compile 自身が execve でそれを起動するので、nabla はここでは
+サブプロセスを起動しない。CLAUDE.md がサブプロセスでの起動を避けたいのは
+nabla 自身が明示的にそれをしないことで、iree-compile の内部実装までは制御
+できない）。"
+  (let ((path (%embedded-linker-path)))
+    (cond
+      (path (list (format nil "--iree-llvmcpu-embedded-linker-path=~A" (namestring path))))
+      (t (unless *warned-missing-embedded-linker-p*
+           (warn "NABLA_IREE_HOME/bin/iree-lld が見つからないので、llvm-cpu ~
+ターゲットのコンパイルはシステムの /usr/bin/lld にフォールバックする。~
+scripts/build-iree.sh が third_party/iree.lock のホイールに同梱の iree-lld を~
+NABLA_IREE_HOME/bin/ にインストールするようになれば、この警告は出なくなる。")
+           (setf *warned-missing-embedded-linker-p* t))
+         nil))))
+
 (defun compile-flags (target &key cuda-arch)
   "TARGET（:local または :cuda）向けの iree-compile 相当のフラグをリストで返す。
 :local は CLAUDE.md / verify-iree.sh と同じ CPU 向けのレシピ
 （llvm-cpu、target-cpu=host。生成される vmfb はこのため実行するマシンに
-依存する）。:cuda は CUDA-ARCH（例: \"sm_80\"）を渡すと
+依存する）。NABLA_IREE_HOME/bin/iree-lld があれば
+--iree-llvmcpu-embedded-linker-path でそれを指定し、無ければシステムの
+/usr/bin/lld にフォールバックする（%embedded-linker-flags 参照。llvm-cpu の
+実行ファイル直列化には常に何らかのリンカが要り、embedding API にはこれを
+プロセス内で行う手段が無い）。:cuda は CUDA-ARCH（例: \"sm_80\"）を渡すと
 --iree-cuda-target=CUDA-ARCH を追加する。TARGET がこれ以外なら型エラーを
 signal する。呼び出しごとに新しいリストを作るが、内容は決定的。"
   (ecase target
-    (:local (list "--iree-input-type=stablehlo"
-                   "--iree-hal-target-device=local"
-                   "--iree-hal-local-target-device-backends=llvm-cpu"
-                   "--iree-llvmcpu-target-cpu=host"))
+    (:local (append (list "--iree-input-type=stablehlo"
+                           "--iree-hal-target-device=local"
+                           "--iree-hal-local-target-device-backends=llvm-cpu"
+                           "--iree-llvmcpu-target-cpu=host")
+                     (%embedded-linker-flags)))
     (:cuda (append (list "--iree-input-type=stablehlo"
                           "--iree-hal-target-device=cuda")
                     (when cuda-arch
@@ -145,6 +176,26 @@ MLIR の診断（あれば）が DIAGNOSTICS に入る。共有ライブラリ�
 呼び出しごとに新しいセッションと invocation を作るので、複数スレッドから
 並行に呼んでよい。"
   (ensure-compiler-loaded)
+  (with-lisp-signal-handlers-preserved
+    (%compile-stablehlo text flags source-name)))
+
+(defparameter *warm-up-module* "func.func @main() { return }"
+  "ensure-compiler-loaded がロード直後にコンパイルする最小のモジュール。
+中身は空でも Pipeline は llvm-cpu の直列化パスまで走り、LLVM のシグナル
+ハンドラ登録（signals.lisp 冒頭のコメント参照）がここで起きる。")
+
+(defun %warm-up-compiler ()
+  "LLVM の「プロセスにつき1回」のシグナルハンドラ登録を、他の Lisp
+スレッドが GC を始める前の、制御された時点で済ませる。ensure-compiler-loaded
+から（ロードロックを持ったまま）呼ぶので、ensure-compiler-loaded を再度
+呼び出す compile-stablehlo は経由しない。"
+  (with-lisp-signal-handlers-preserved
+    (%compile-stablehlo *warm-up-module* (compile-flags :local) "nabla-warm-up.mlir")))
+
+(defun %compile-stablehlo (text flags source-name)
+  "compile-stablehlo の本体。ensure-compiler-loaded 済みで、かつ
+with-lisp-signal-handlers-preserved の中から呼ぶこと（LLVM がここで
+SIGUSR2 などのハンドラを上書きしうる。compiler.lisp 冒頭のコメント参照）。"
   (let (session invocation source output)
     (unwind-protect
          (progn
