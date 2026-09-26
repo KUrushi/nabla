@@ -6,6 +6,16 @@
 
 (in-package #:nabla.mutate)
 
+(define-condition missing-source-file (file-error)
+  ()
+  (:report (lambda (condition stream)
+             (format stream "read-source-forms: ファイルが見つからない: ~A"
+                     (file-error-pathname condition))))
+  (:documentation "READ-SOURCE-FORMS に存在しないファイルを渡したときに
+signal する。FILE-ERROR のサブタイプなので、run.sh のように
+`(handler-case ... (file-error (e) ...))` で受けている呼び出し元は、
+生の FILE-ERROR のバックトレースの代わりにこれを掴める。"))
+
 (defstruct source-form
   "1つのトップレベルフォームと、その位置情報。"
   (form nil)
@@ -93,11 +103,18 @@
 `in-package` を見つけたら、以降のフォームをそのパッケージで読む。
 reader エラーに出会ったら、そこまでに読めたフォームを返す（既知の制限:
 `#.` などファイルの残りを読み進められないリーダーマクロを含むファイルは
-末尾が欠ける）。"
+末尾が欠ける）。PATHNAME が存在しなければ、生の FILE-ERROR ではなく
+分かりやすいメッセージのエラーを signal する。"
+  (unless (probe-file pathname)
+    (error 'missing-source-file :pathname pathname))
   (let* ((text (alexandria:read-file-into-string pathname))
          (len (length text)))
     (with-input-from-string (stream text)
       (let ((*package* (find-package "COMMON-LISP-USER"))
+            ;; 変異対象のソースは信用できるコードとはいえ、read のここでの
+            ;; 目的はトップレベルフォームの位置を数えることだけなので、
+            ;; #. のような read time evaluation は動かさない。
+            (*read-eval* nil)
             (results nil))
         (loop
           ;; フォームの前の空白（改行を含む）・行コメント・ブロックコメント

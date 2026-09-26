@@ -124,7 +124,10 @@ if [[ "${WITH_CUDA}" -eq 1 ]]; then
     run_backend "cuda" "cuda" "cuda" "${WORK_DIR}/nabla-matmul-cuda.vmfb"
   fi
 else
-  log "skipping cuda check (pass --cuda to enable; requires an IREE build with IREE_TARGET_BACKEND_CUDA=ON)"
+  log "skipping cuda check (pass --cuda to enable; requires an IREE build with"
+  log "  IREE_TARGET_BACKEND_CUDA=ON, which in turn needs a CUDA toolkit"
+  log "  installed or network access to NVIDIA's redistributable package"
+  log "  index at build-configure time; see docs/iree-build.md)"
 fi
 
 log "all checks passed"

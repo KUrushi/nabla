@@ -18,7 +18,9 @@
    #:mutant-status
    #:default-exclusions-path
    #:default-test-function
+   #:*regression-directories*
    ;; reader
+   #:missing-source-file
    #:source-form
    #:make-source-form
    #:source-form-form

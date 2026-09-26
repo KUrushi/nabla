@@ -24,10 +24,32 @@
 #   scripts/build-iree.sh --cuda              # CUDA も有効化
 #   scripts/build-iree.sh --configure-only    # cmake configure までで止める
 #
+# 注意:
+# - wheel モード (既定) は third_party/iree.lock の manylinux cp311 ホイール
+#   しか使わないため x86_64 Linux 専用。他のプラットフォーム (macOS, aarch64
+#   など) では --compiler=source を使う (詳細は docs/iree-build.md)
+# - --cuda は CUDA toolkit がインストール済みか、cmake configure 時に
+#   NVIDIA の redistributable パッケージ索引にネットワークで到達できる必要が
+#   ある。どちらもない環境では configure が失敗する (詳細は docs/iree-build.md)
+#
+# 環境変数 (すべて未設定なら既定値を使う):
+#   NABLA_IREE_HOME     インストール先。既定 ~/.local/share/nabla/iree-3.11.0
+#   NABLA_IREE_SRC      IREE のソースチェックアウト先。既定は
+#                       ${XDG_CACHE_HOME:-~/.cache}/nabla/iree-src
+#   NABLA_IREE_BUILD    cmake のビルドディレクトリ。既定は
+#                       .../nabla/iree-build-runtime (wheel) または
+#                       .../nabla/iree-build (source)
+#   NABLA_IREE_WHEEL_DIR ダウンロードしたホイールの保存先。既定は
+#                       .../nabla/iree-wheel
+#   NABLA_IREE_COMPILER wheel|source。--compiler と同じ
+#   NABLA_IREE_CUDA     1 で CUDA を有効化。--cuda と同じ
+#   NABLA_IREE_JOBS     ninja の並列数。既定は nproc
+#
 # 冪等性: 既にロックしたコミットのチェックアウトがあれば再利用し、
 # 既存のビルドディレクトリがあれば cmake の再設定だけ行って増分ビルドする。
 # wheel はダウンロード先に既に正しい sha256 のファイルがあれば再ダウンロードせず、
-# 展開先に既に中身があれば再展開しない。
+# 展開先に既に中身があれば再展開しない。libIREECompiler.so は、インストール先に
+# 既に同じサイズ・mtime のファイルがあれば再コピーしない (copy_if_changed)。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -61,7 +83,8 @@ if [[ -z "${LOCK_REPO}" || -z "${LOCK_TAG}" || -z "${LOCK_COMMIT}" ]]; then
   exit 1
 fi
 
-NABLA_IREE_SRC="${NABLA_IREE_SRC:-/home/user/iree-src}"
+NABLA_CACHE_HOME="${XDG_CACHE_HOME:-${HOME}/.cache}/nabla"
+NABLA_IREE_SRC="${NABLA_IREE_SRC:-${NABLA_CACHE_HOME}/iree-src}"
 NABLA_IREE_HOME="${NABLA_IREE_HOME:-${HOME}/.local/share/nabla/iree-3.11.0}"
 NABLA_IREE_JOBS="${NABLA_IREE_JOBS:-$(nproc)}"
 NABLA_IREE_CUDA="${NABLA_IREE_CUDA:-0}"
@@ -90,14 +113,38 @@ if [[ "${NABLA_IREE_COMPILER}" == "wheel" ]]; then
     echo "error: --compiler=wheel requires wheel_name/wheel_version/wheel_sha256 in ${LOCK_FILE}" >&2
     exit 1
   fi
-  NABLA_IREE_BUILD="${NABLA_IREE_BUILD:-/home/user/iree-build-runtime}"
+  NABLA_IREE_BUILD="${NABLA_IREE_BUILD:-${NABLA_CACHE_HOME}/iree-build-runtime}"
 else
-  NABLA_IREE_BUILD="${NABLA_IREE_BUILD:-/home/user/iree-build}"
+  NABLA_IREE_BUILD="${NABLA_IREE_BUILD:-${NABLA_CACHE_HOME}/iree-build}"
 fi
-NABLA_IREE_WHEEL_DIR="${NABLA_IREE_WHEEL_DIR:-/home/user/iree-wheel}"
+NABLA_IREE_WHEEL_DIR="${NABLA_IREE_WHEEL_DIR:-${NABLA_CACHE_HOME}/iree-wheel}"
 
 log() {
   echo "[build-iree] $(date -u '+%Y-%m-%dT%H:%M:%SZ') $*"
+}
+
+# libIREECompiler.so is ~337 MB (wheel mode) or similarly large when built
+# from source, so re-copying it on every run (even when the source hasn't
+# changed) wastes real time and disk I/O. Skip the copy when the destination
+# already has the same size and mtime as the source (cp -a preserves both,
+# so this correctly detects "already installed from this exact source file"
+# across runs without reading the whole file).
+# GNU stat (Linux, this environment) and BSD stat (macOS) take different
+# flags for the same "size and mtime" query, so try GNU's first and fall
+# back to BSD's.
+stat_size_mtime() {
+  stat -c '%s %Y' "$1" 2>/dev/null || stat -f '%z %m' "$1"
+}
+
+copy_if_changed() {
+  local src="$1" dst="$2"
+  if [[ -f "${dst}" ]]; then
+    if [[ "$(stat_size_mtime "${src}")" == "$(stat_size_mtime "${dst}")" ]]; then
+      log "skipping copy, unchanged (size+mtime match): ${dst}"
+      return 0
+    fi
+  fi
+  cp -a "${src}" "${dst}"
 }
 
 SECONDS=0
@@ -171,6 +218,7 @@ if [[ "${musl_head}" != "${musl_pin}" ]]; then
   git -C "${musl_dir}" checkout "${musl_pin}" || \
     log "warning: could not pin musl to ${musl_pin}; continuing with ${musl_head}"
 fi
+
 
 # --- 2. cmake configure ------------------------------------------------------
 
@@ -250,7 +298,104 @@ if [[ "${CONFIGURE_ONLY}" -eq 1 ]]; then
   exit 0
 fi
 
-# --- 3. ビルド ---------------------------------------------------------------
+# --- 3. コンパイラ (wheel モード): 取得と検証 (fail fast) --------------------
+#
+# ninja によるランタイムのビルドに入る前に、wheel のダウンロードと sha256
+# 検証を済ませておく。悪いホイール (壊れたダウンロード、third_party/iree.lock
+# の更新忘れなど) はここで即座に失敗させ、ランタイムのビルドを始めてから
+# 半端な状態を残すことを避ける。
+if [[ "${NABLA_IREE_COMPILER}" == "wheel" ]]; then
+  mkdir -p "${NABLA_IREE_HOME}/lib" "${NABLA_IREE_HOME}/bin"
+
+  # third_party/iree.lock に記録した PyPI ホイールから libIREECompiler.so と
+  # iree-compile を取り出す。このホイールは同じコミット (LOCK_COMMIT) から
+  # ビルドされているはずで、それを iree-compile --version の出力で確認する。
+  WHEEL_GLOB="${LOCK_WHEEL_NAME//-/_}-${LOCK_WHEEL_VERSION}-*.whl"
+  mkdir -p "${NABLA_IREE_WHEEL_DIR}"
+
+  WHEEL_PATH="$(find "${NABLA_IREE_WHEEL_DIR}" -maxdepth 1 -name "${WHEEL_GLOB}" -print -quit)"
+  if [[ -n "${WHEEL_PATH}" ]]; then
+    log "found cached wheel: ${WHEEL_PATH}"
+  else
+    log "downloading ${LOCK_WHEEL_NAME}==${LOCK_WHEEL_VERSION} into ${NABLA_IREE_WHEEL_DIR}"
+    # Pin the exact wheel tag (matching the one recorded in
+    # third_party/iree.lock) rather than letting pip pick whatever matches
+    # the local interpreter. Without this, running the script on a
+    # different Python/platform would either find no compatible wheel or
+    # silently fetch a different one, and only fail much later with a
+    # confusing sha256 mismatch.
+    #
+    # This wheel is only published for manylinux x86_64 (see
+    # docs/iree-build.md); on other platforms (macOS, aarch64, ...) use
+    # --compiler=source instead.
+    pip download --no-deps --only-binary=:all: \
+      --python-version 311 --implementation cp --abi cp311 \
+      --platform manylinux_2_28_x86_64 \
+      "${LOCK_WHEEL_NAME}==${LOCK_WHEEL_VERSION}" -d "${NABLA_IREE_WHEEL_DIR}"
+    WHEEL_PATH="$(find "${NABLA_IREE_WHEEL_DIR}" -maxdepth 1 -name "${WHEEL_GLOB}" -print -quit)"
+    if [[ -z "${WHEEL_PATH}" ]]; then
+      echo "error: pip download did not produce a file matching ${WHEEL_GLOB} in ${NABLA_IREE_WHEEL_DIR}" >&2
+      exit 1
+    fi
+  fi
+
+  log "verifying sha256 of ${WHEEL_PATH}"
+  ACTUAL_SHA256="$(sha256sum "${WHEEL_PATH}" | cut -d' ' -f1)"
+  if [[ "${ACTUAL_SHA256}" != "${LOCK_WHEEL_SHA256}" ]]; then
+    # Remove the bad file instead of leaving it in the cache: otherwise the
+    # "found cached wheel" branch above would keep finding this same file
+    # (matched by filename glob alone) and failing the same way on every
+    # subsequent run, requiring a human to clear NABLA_IREE_WHEEL_DIR by hand.
+    rm -f "${WHEEL_PATH}"
+    echo "error: sha256 mismatch for ${WHEEL_PATH} (removed; re-run to re-download)" >&2
+    echo "       expected (third_party/iree.lock): ${LOCK_WHEEL_SHA256}" >&2
+    echo "       actual:                           ${ACTUAL_SHA256}" >&2
+    exit 1
+  fi
+
+  EXTRACT_DIR="${NABLA_IREE_WHEEL_DIR}/extracted-${LOCK_WHEEL_VERSION}"
+  WHEEL_COMPILER_SO="${EXTRACT_DIR}/iree/compiler/_mlir_libs/libIREECompiler.so"
+  WHEEL_IREE_COMPILE="${EXTRACT_DIR}/iree/compiler/_mlir_libs/iree-compile"
+  if [[ ! -f "${WHEEL_COMPILER_SO}" || ! -x "${WHEEL_IREE_COMPILE}" ]]; then
+    log "extracting ${WHEEL_PATH} into ${EXTRACT_DIR}"
+    rm -rf "${EXTRACT_DIR}"
+    python3 -m zipfile -e "${WHEEL_PATH}" "${EXTRACT_DIR}"
+    # python's zipfile module does not restore the Unix executable bit
+    # stored in the archive, so iree-compile comes out as plain -rw-r--r--.
+    if [[ -f "${WHEEL_IREE_COMPILE}" ]]; then
+      chmod +x "${WHEEL_IREE_COMPILE}"
+    fi
+  else
+    log "reusing existing extraction at ${EXTRACT_DIR}"
+  fi
+  if [[ ! -f "${WHEEL_COMPILER_SO}" ]]; then
+    echo "error: ${WHEEL_COMPILER_SO} not found after extracting ${WHEEL_PATH}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${WHEEL_IREE_COMPILE}" ]]; then
+    echo "error: ${WHEEL_IREE_COMPILE} not found (or not executable) after extracting ${WHEEL_PATH}" >&2
+    exit 1
+  fi
+
+  log "installing compiler from wheel into ${NABLA_IREE_HOME}"
+  copy_if_changed "${WHEEL_COMPILER_SO}" "${NABLA_IREE_HOME}/lib/libIREECompiler.so"
+  cp -a "${WHEEL_IREE_COMPILE}" "${NABLA_IREE_HOME}/bin/iree-compile"
+  # iree-compile の RUNPATH は $ORIGIN で、同じディレクトリの
+  # libIREECompiler.so を NEEDS しているので、bin/ にもシンボリックリンクを
+  # 置く (実体は lib/ に置いたものを指す)。
+  ln -sf ../lib/libIREECompiler.so "${NABLA_IREE_HOME}/bin/libIREECompiler.so"
+
+  log "verifying iree-compile --version reports the locked commit"
+  VERSION_OUTPUT="$("${NABLA_IREE_HOME}/bin/iree-compile" --version)"
+  if [[ "${VERSION_OUTPUT}" != *"${LOCK_COMMIT}"* ]]; then
+    echo "error: iree-compile --version does not mention the locked commit ${LOCK_COMMIT}:" >&2
+    echo "${VERSION_OUTPUT}" >&2
+    exit 1
+  fi
+  log "confirmed: iree-compile reports commit ${LOCK_COMMIT}"
+fi
+
+# --- 4. ビルド ---------------------------------------------------------------
 
 BUILD_TARGETS=(iree-run-module iree_runtime_unified)
 if [[ "${NABLA_IREE_COMPILER}" == "source" ]]; then
@@ -259,7 +404,7 @@ fi
 log "building targets: ${BUILD_TARGETS[*]} (-j ${NABLA_IREE_JOBS})"
 cmake --build "${NABLA_IREE_BUILD}" --target "${BUILD_TARGETS[@]}" -j "${NABLA_IREE_JOBS}"
 
-# --- 4. ランタイムの共有ライブラリを作る (静的アーカイブを --whole-archive で包む) ----
+# --- 5. ランタイムの共有ライブラリを作る (静的アーカイブを --whole-archive で包む) ----
 
 mkdir -p "${NABLA_IREE_HOME}/lib" "${NABLA_IREE_HOME}/bin" "${NABLA_IREE_HOME}/include"
 
@@ -329,101 +474,24 @@ for sym in iree_runtime_instance_create iree_hal_driver_registry_default; do
 done
 log "confirmed exports: iree_runtime_instance_create, iree_hal_driver_registry_default"
 
-# --- 5. コンパイラのインストール --------------------------------------------
+# --- 6. コンパイラのインストール (--compiler=source のときだけ) --------------
+#
+# wheel モードは手順 2 で既にインストール済み。
 
 mkdir -p "${NABLA_IREE_HOME}/lib" "${NABLA_IREE_HOME}/bin"
 
-if [[ "${NABLA_IREE_COMPILER}" == "wheel" ]]; then
-  # third_party/iree.lock に記録した PyPI ホイールから libIREECompiler.so と
-  # iree-compile を取り出す。このホイールは同じコミット (LOCK_COMMIT) から
-  # ビルドされているはずで、それを iree-compile --version の出力で確認する。
-  WHEEL_GLOB="${LOCK_WHEEL_NAME//-/_}-${LOCK_WHEEL_VERSION}-*.whl"
-  mkdir -p "${NABLA_IREE_WHEEL_DIR}"
-
-  WHEEL_PATH="$(find "${NABLA_IREE_WHEEL_DIR}" -maxdepth 1 -name "${WHEEL_GLOB}" -print -quit)"
-  if [[ -n "${WHEEL_PATH}" ]]; then
-    log "found cached wheel: ${WHEEL_PATH}"
-  else
-    log "downloading ${LOCK_WHEEL_NAME}==${LOCK_WHEEL_VERSION} into ${NABLA_IREE_WHEEL_DIR}"
-    # Pin the exact wheel tag (matching the one recorded in
-    # third_party/iree.lock) rather than letting pip pick whatever matches
-    # the local interpreter. Without this, running the script on a
-    # different Python/platform would either find no compatible wheel or
-    # silently fetch a different one, and only fail much later with a
-    # confusing sha256 mismatch.
-    pip download --no-deps --only-binary=:all: \
-      --python-version 311 --implementation cp --abi cp311 \
-      --platform manylinux_2_28_x86_64 \
-      "${LOCK_WHEEL_NAME}==${LOCK_WHEEL_VERSION}" -d "${NABLA_IREE_WHEEL_DIR}"
-    WHEEL_PATH="$(find "${NABLA_IREE_WHEEL_DIR}" -maxdepth 1 -name "${WHEEL_GLOB}" -print -quit)"
-    if [[ -z "${WHEEL_PATH}" ]]; then
-      echo "error: pip download did not produce a file matching ${WHEEL_GLOB} in ${NABLA_IREE_WHEEL_DIR}" >&2
-      exit 1
-    fi
-  fi
-
-  log "verifying sha256 of ${WHEEL_PATH}"
-  ACTUAL_SHA256="$(sha256sum "${WHEEL_PATH}" | cut -d' ' -f1)"
-  if [[ "${ACTUAL_SHA256}" != "${LOCK_WHEEL_SHA256}" ]]; then
-    # Remove the bad file instead of leaving it in the cache: otherwise the
-    # "found cached wheel" branch above would keep finding this same file
-    # (matched by filename glob alone) and failing the same way on every
-    # subsequent run, requiring a human to clear NABLA_IREE_WHEEL_DIR by hand.
-    rm -f "${WHEEL_PATH}"
-    echo "error: sha256 mismatch for ${WHEEL_PATH} (removed; re-run to re-download)" >&2
-    echo "       expected (third_party/iree.lock): ${LOCK_WHEEL_SHA256}" >&2
-    echo "       actual:                           ${ACTUAL_SHA256}" >&2
+if [[ "${NABLA_IREE_COMPILER}" == "source" ]]; then
+  # Search the build tree instead of assuming a fixed lib*/ subdirectory,
+  # since that location can move between cmake/ninja versions (see comment
+  # on find_static_lib above for the same reasoning).
+  compiler_so_found=0
+  while IFS= read -r -d '' src_so; do
+    copy_if_changed "${src_so}" "${NABLA_IREE_HOME}/lib/$(basename "${src_so}")"
+    compiler_so_found=1
+  done < <(find "${NABLA_IREE_BUILD}" -maxdepth 4 -name 'libIREECompiler.so*' -print0)
+  if [[ "${compiler_so_found}" -eq 0 ]]; then
+    echo "error: libIREECompiler.so not found under ${NABLA_IREE_BUILD}" >&2
     exit 1
-  fi
-
-  EXTRACT_DIR="${NABLA_IREE_WHEEL_DIR}/extracted-${LOCK_WHEEL_VERSION}"
-  WHEEL_COMPILER_SO="${EXTRACT_DIR}/iree/compiler/_mlir_libs/libIREECompiler.so"
-  WHEEL_IREE_COMPILE="${EXTRACT_DIR}/iree/compiler/_mlir_libs/iree-compile"
-  if [[ ! -f "${WHEEL_COMPILER_SO}" || ! -x "${WHEEL_IREE_COMPILE}" ]]; then
-    log "extracting ${WHEEL_PATH} into ${EXTRACT_DIR}"
-    rm -rf "${EXTRACT_DIR}"
-    python3 -m zipfile -e "${WHEEL_PATH}" "${EXTRACT_DIR}"
-    # python's zipfile module does not restore the Unix executable bit
-    # stored in the archive, so iree-compile comes out as plain -rw-r--r--.
-    if [[ -f "${WHEEL_IREE_COMPILE}" ]]; then
-      chmod +x "${WHEEL_IREE_COMPILE}"
-    fi
-  else
-    log "reusing existing extraction at ${EXTRACT_DIR}"
-  fi
-  if [[ ! -f "${WHEEL_COMPILER_SO}" ]]; then
-    echo "error: ${WHEEL_COMPILER_SO} not found after extracting ${WHEEL_PATH}" >&2
-    exit 1
-  fi
-  if [[ ! -x "${WHEEL_IREE_COMPILE}" ]]; then
-    echo "error: ${WHEEL_IREE_COMPILE} not found (or not executable) after extracting ${WHEEL_PATH}" >&2
-    exit 1
-  fi
-
-  log "installing compiler from wheel into ${NABLA_IREE_HOME}"
-  cp -a "${WHEEL_COMPILER_SO}" "${NABLA_IREE_HOME}/lib/libIREECompiler.so"
-  cp -a "${WHEEL_IREE_COMPILE}" "${NABLA_IREE_HOME}/bin/iree-compile"
-  # iree-compile の RUNPATH は $ORIGIN で、同じディレクトリの
-  # libIREECompiler.so を NEEDS しているので、bin/ にもシンボリックリンクを
-  # 置く (実体は lib/ に置いたものを指す)。
-  ln -sf ../lib/libIREECompiler.so "${NABLA_IREE_HOME}/bin/libIREECompiler.so"
-
-  log "verifying iree-compile --version reports the locked commit"
-  VERSION_OUTPUT="$("${NABLA_IREE_HOME}/bin/iree-compile" --version)"
-  if [[ "${VERSION_OUTPUT}" != *"${LOCK_COMMIT}"* ]]; then
-    echo "error: iree-compile --version does not mention the locked commit ${LOCK_COMMIT}:" >&2
-    echo "${VERSION_OUTPUT}" >&2
-    exit 1
-  fi
-  log "confirmed: iree-compile reports commit ${LOCK_COMMIT}"
-else
-  if ! cp -a "${NABLA_IREE_BUILD}"/lib*/libIREECompiler.so* "${NABLA_IREE_HOME}/lib/" 2>/dev/null; then
-    found_compiler_so="$(find "${NABLA_IREE_BUILD}" -maxdepth 4 -name 'libIREECompiler.so*' -print -quit)"
-    if [[ -z "${found_compiler_so}" ]]; then
-      echo "error: libIREECompiler.so not found under ${NABLA_IREE_BUILD}" >&2
-      exit 1
-    fi
-    find "${NABLA_IREE_BUILD}" -maxdepth 4 -name 'libIREECompiler.so*' -exec cp -a {} "${NABLA_IREE_HOME}/lib/" \;
   fi
   # IREE_ENABLE_THIN_ARCHIVES=ON なので libiree_runtime_unified.a はビルド
   # ディレクトリ内のオブジェクトファイルへの相対パス参照でしかなく、単独で
