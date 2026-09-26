@@ -1,79 +1,120 @@
 # CLAUDE.md
 
-nabla は Common Lisp で書く JAX 相当の深層学習ライブラリ。Lisp の関数をトレースして自前 IR に落とし、`jit` / `grad` / `vmap` で変換してから StableHLO を出力し、IREE で CPU / NVIDIA GPU 上で実行する。計画と設計の正本は Artifact「Common Lisp × IREE 深層学習ライブラリ 計画」（計画タブ・設計タブ）にある。設計判断に迷ったらまずそこを確認し、このファイルと食い違う場合は Artifact を優先して、このファイルを直す。
+nabla は Common Lisp で書く、JAX に相当する深層学習ライブラリ。Lisp の関数をトレース（実行を記録）して自前の中間表現（IR）に変換し、`jit` / `grad` / `vmap` で書き換えてから StableHLO を出力し、IREE で CPU や NVIDIA GPU 上で実行する。
 
-現在はフェーズ0（IREE 疎通）。ロードマップは フェーズ0 IREE 疎通 → 1 トレースと jit → 2 grad → 3 vmap と制御構造 → 4 Flax 相当 → 5 Grain 相当 の順。
+- 計画と設計の正本は Artifact「Common Lisp × IREE 深層学習ライブラリ 計画」（計画タブ・設計タブ）。設計に迷ったらまずそこを確認する。このファイルと食い違うときは Artifact を優先し、このファイルを直す
+- 現在はフェーズ0（IREE 疎通）。ロードマップは フェーズ0 IREE 疎通 → 1 トレースと jit → 2 grad → 3 vmap と制御構造 → 4 Flax 相当 → 5 Grain 相当
+- 専門用語の説明は [docs/glossary.md](docs/glossary.md) にある。本文で † が付いた語は用語集に解説がある。新しい専門用語を使い始めたら用語集にも追加する
 
 ## 構成
 
-- 処理系は SBCL のみ。FFI は CFFI、GC 連携は trivial-garbage、並列は lparallel
-- ASDF システム: `nabla`（コア、package nickname `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data`。テストは各システムに対応する `<system>/tests`
-- IREE は固定コミットからソースビルドする（`libIREECompiler.so` とランタイム共有ライブラリ）。コンパイラは埋め込み C API を dlopen して呼び、`iree-compile` のサブプロセスは使わない
-- Python はライブラリの実行時依存にしない。JAX は期待値フィクスチャの生成にだけ使う
+- 処理系は SBCL のみ。C ライブラリの呼び出しは CFFI、GC との連携は trivial-garbage、並列処理は lparallel を使う
+- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く
+- IREE は固定したコミットからソースビルドする（`libIREECompiler.so` とランタイムの共有ライブラリ）。コンパイラは埋め込み C API を dlopen して呼び、`iree-compile` をサブプロセスで起動しない
+- Python はライブラリの実行時依存にしない。JAX は、テストで比べる期待値（フィクスチャ）の生成にだけ使う
 
 ## コマンド
 
 ```sh
-# テスト（既定: CPU のみ、GPU 不要）
+# テスト（既定は small + medium。CPU だけで動き、GPU は不要）
 sbcl --non-interactive --eval '(ql:quickload "nabla/tests")' --eval '(asdf:test-system "nabla")'
 ```
 
-ビルドスクリプト、GPU テスト、mutation test のコマンドを追加したら、ここに追記する。
+ビルドスクリプト、large テスト、mutation test のコマンドを追加したら、ここに追記する。
 
-## 設計上の約束（コードから読み取りにくいもの）
+## 設計上の約束（コードを読んでも分かりにくいもの）
 
-- StableHLO は出力先であって内部表現ではない。grad / vmap は自前 IR（`aval` / `var` / `eqn` / `graph`）上の IR→IR 変換として書く
-- プリミティブは `defprimitive` で宣言し、形状推論・StableHLO 出力・eager 用 CPU 実装を同じ変更で書く。jvp / transpose ルールとバッチ化ルールは grad / vmap 対応時に必須
-- 自動微分は jvp + transpose の JAX 方式（`jax._src.interpreters.ad`、ルールは `jax._src.lax` を写す）
-- v1 は静的形状のみ。jit キャッシュのキーは 関数の同一性 + 引数の `aval` + 静的引数 + コンパイルターゲット（`sm_XX` などのアーキを含む）
-- トレースは `with-tracing` のコードウォーク方式。`setq` はトレース対象で禁止、対応外の形式はコンディションで報告する
-- PyTree の既定はリスト・ベクタ・`defmodule` 構造体のみ。plist / alist / ハッシュ表は明示登録
-- bf16 / f16 は `(unsigned-byte 16)` 配列と `aval` の dtype タグで表す
-- IREE の C API 名は版で変わる。関数名は記憶や設計書ではなく、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
-- デバイスバッファは `device-array` で包み、finalizer はポインタだけを捕捉する（オブジェクト本体を捕捉すると回収されない）
+- StableHLO† は出力先であって、内部表現ではない。`grad` / `vmap` は自前 IR（`aval`† / `var` / `eqn` / `graph`）を別の IR に書き換える変換として書く
+- 演算（プリミティブ）は `defprimitive` で宣言する。形状推論（出力の形と型を計算する関数）、StableHLO 出力、eager 用の CPU 実装の3つは同じ変更の中で書く。jvp† / transpose ルール†とバッチ化ルール†は、その演算を `grad` / `vmap` に対応させるときに必須になる
+- 自動微分は JAX と同じ「jvp + transpose」方式にする（`jax._src.interpreters.ad` を参考にし、演算ごとのルールは `jax._src.lax` から写す）
+- v1 は静的形状（配列の形がコンパイル時に決まっている）だけを扱う。jit キャッシュのキーは「関数の同一性 + 引数の `aval` + 静的引数 + コンパイルターゲット（`sm_XX` などの GPU 世代を含む）」
+- トレースは `with-tracing` によるコードウォーク†方式。トレースされるコードでは `setq` を禁止し、対応していない形式はコンディション（Lisp の例外）で報告する
+- PyTree† として既定で扱うのは、リスト・ベクタ・`defmodule` で定義した構造体だけ。plist / alist / ハッシュ表は明示的に登録する
+- bf16 / f16† は `(unsigned-byte 16)` の配列で持ち、`aval` の dtype タグで区別する
+- IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
+- デバイス上のバッファは `device-array` で包む。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）
+
+## 開発の原則
+
+Google の *Software Engineering at Google* と Engineering Practices の考え方をこのプロジェクトに当てはめたもの。
+
+- **ソフトウェアエンジニアリングは「時間をかけて積み重ねたプログラミング」**。今動くことより、数年後も安全に変更できることを優先する。迷ったら「半年後に別の人がこのコードを直せるか」で判断する
+- **ハイラムの法則†に備える**。利用者は、公開したものすべてにいずれ依存する。パッケージから `export` するシンボルは必要最小限にし、内部の関数は `export` しない。エラーメッセージの文言や出力の順序のような偶然の性質も、公開 API の一部とみなされうる
+- **ビヨンセ・ルール†**: 壊されて困る振る舞いには、必ず自動テストを書く。テストのない振る舞いは、他の変更で壊れても文句を言えない
+- **変更は小さく**。1つの PR は1つの目的だけを持ち、目安として差分 200 行程度に収める。リファクタリングと振る舞いの変更は別の PR に分ける。テストは、それが確かめるコードと同じ PR に入れる
+- **コードはレビューで読まれるために書く**。レビューでは (1) 正しいか、(2) 読んで理解できるか、(3) 設計がプロジェクトの方針に合っているか、を見る。「動くけれど読めない」コードは直す
+- **スタイルのルールは理由があるものだけ**。ツールで自動的にそろえられるものはツールに任せ、人が覚えるルールを増やさない
+- **ドキュメントはコードと一緒に更新する**。`export` するシンボルには docstring を書く。このファイルや用語集が古くなったら、気づいた変更の中で直す
+- **問題は早く見つけるほど安い（shift left）**。本番やユーザーの手元で見つかる前に、テスト・レビュー・型宣言で見つける
+- **非推奨化（deprecation）は段階的に**。公開 API を消すときは、まず非推奨の警告を出し、移行先を docstring に書き、利用箇所がなくなってから消す
 
 ## テスト戦略
 
-自動テストは property-based testing（PBT）と mutation testing の2本立てにする。例ベースのテストは JAX との数値一致フィクスチャと、PBT で見つかった回帰例に限る。
+自動テストは **property-based testing†（PBT）** と **mutation testing†** の2本柱で組み立てる。例ベースのテスト（具体的な入力と期待値を並べるテスト）は、JAX との数値一致フィクスチャと、PBT が見つけた失敗例の回帰テストに限る。
+
+### テストのサイズ
+
+Google のテストサイズ†の分類で、テストの置き場所と実行タイミングを決める。
+
+| サイズ | このプロジェクトでの範囲 | 実行タイミング | 目安の割合 |
+| --- | --- | --- | --- |
+| small | 1プロセス内で完結し、FFI・ファイル・スレッドを使わない。IR、変換、形状推論、eager 実装、PyTree など | 毎回（既定） | 約 80% |
+| medium | 1台のマシン内。IREE の `local`（CPU）での実行、ファイル I/O、lparallel のワーカー | 毎回（既定） | 約 15% |
+| large | GPU（`cuda`）での実行、JAX フィクスチャの再生成、学習の end-to-end | 手動または定期実行 | 約 5% |
+
+### よいテストの条件
+
+- **ハーメティック†である**: ネットワーク、現在時刻、実行順序、他のテストの結果に依存しない。乱数のシードは固定するか、失敗時に出力する
+- **フレーキー†なテストを放置しない**: たまに落ちるテストは、見つけた時点で原因を直す。再実行で通ったことにしない
+- **公開 API を通してテストする**: 内部関数（`nb::` で呼ぶもの）を直接テストしない。内部を変えただけで壊れるテストは、リファクタリングの邪魔になる
+- **振る舞いをテストする**: 「どのメソッドが何回呼ばれたか」ではなく「結果がどうなったか」を確かめる。モックより本物の実装を、本物が使えなければフェイク†を使う（例: GPU の代わりに IREE の `local` バックエンド）
+- **テストの中にロジックを書かない**: テスト本体に `loop` や `if` で期待値を計算するコードを書かない。期待値の計算が複雑なら、それは性質として表す
+- **DRY より DAMP†**: テストは多少重複しても、1つのテストを読むだけで何を確かめているか分かるように書く
+- **失敗メッセージだけで原因が分かるようにする**: 入力、期待値、実際の値、許容誤差を出力する
 
 ### Property-based testing
 
-- フレームワークは FiveAM、生成器は check-it（`(is (check-it gen #'prop))`）。回帰例は check-it の `regression-file` で `tests/regressions/` に保存してコミットする
-- 実装より先に性質を書き、失敗することを確認してから実装する
-- 数値比較はテキスト一致ではなく許容誤差つきの数値一致。既定の許容誤差は f32 で `rtol 1e-5` / `atol 1e-6`、bf16 / f16 で `rtol 1e-2`。これを緩めるときは理由をテストに書く
-- 生成器の方針: rank 0〜4、各次元 1〜8 の小さな形状、dtype も生成する。定義域のある演算（`log`, `sqrt`, 除算）は定義域内の値を生成する。シードは失敗時に出力して再現できるようにする
+- フレームワークは FiveAM、値の生成器は check-it を使う（`(is (check-it gen #'prop))`）。check-it が見つけた失敗例は `regression-file` で `tests/regressions/` に保存してコミットする
+- **テストファースト**: 実装より先に性質を書き、それが失敗することを確認してから実装する
+- 浮動小数点の比較は、テキストの一致ではなく許容誤差つきの数値の一致で行う。既定の許容誤差は f32 で相対誤差 `rtol 1e-5`・絶対誤差 `atol 1e-6`†、bf16 / f16 で `rtol 1e-2`。これを緩めるときは、理由をテストのコメントに書く
+- 生成器の方針: 配列は rank 0〜4、各次元 1〜8 の小さな形状にし、dtype も生成する。定義域がある演算（`log`, `sqrt`, 除算）には定義域内の値だけを渡す。失敗したらシードと縮小（shrinking†）後の入力を出力する
 
 主に守らせる性質:
 
 | 対象 | 性質 |
 | --- | --- |
-| プリミティブ | `abstract-eval` の `aval` = 実際の出力の形状と dtype。eager 実装 = jit（IREE `local`）の結果 |
-| grad | 中心差分（f64）と一致。`<vjp(u), v> = <u, jvp(v)>`（内積テスト） |
-| transpose ルール | 線形性と `<T(u), v> = <u, L(v)>` |
-| vmap | `vmap(f)(xs)` = 各要素に `f` を適用して積み上げた結果。`in-axes` を変えても一致 |
-| 変換の合成 | `jit(grad f)` = `grad f`、`jit(vmap f)` = `vmap f`（eager） |
-| StableHLO 出力 | 生成したテキストが IREE でコンパイルできる |
-| PyTree / safetensors | `unflatten(flatten(x))` = `x`、保存→読み込みの往復で一致 |
-| PRNG | 同じキーから同じ値、`split` した子キーの値は重ならない |
-| データ層 | 同じシードで同じ順序、ワーカー数に依存しない、`iterator-state` から再開しても続きが一致 |
-| jit キャッシュ | 同じキーでヒット、`aval` やターゲットが違えばミス |
-
-GPU（`cuda`）で実行するテストは別スイートに分け、既定のテストは CPU だけで通るようにする。
+| プリミティブ | 形状推論の `aval` = 実際の出力の形状と dtype。eager 実装の結果 = jit（IREE `local`）の結果 |
+| grad | 中心差分†（f64 で計算）と一致する。内積テスト† `<vjp(u), v> = <u, jvp(v)>` が成り立つ |
+| transpose ルール | 線形性と `<T(u), v> = <u, L(v)>` が成り立つ |
+| vmap | `vmap(f)(xs)` = 各要素に `f` を適用して積み上げた結果。`in-axes` を変えても一致する |
+| 変換の合成 | `jit(grad f)` = `grad f`、`jit(vmap f)` = `vmap f`（eager で計算した結果と比べる） |
+| StableHLO 出力 | 生成したテキストを IREE がコンパイルできる |
+| PyTree / safetensors | `unflatten(flatten(x))` = `x`。保存して読み込むと元に戻る |
+| PRNG† | 同じキーからは同じ値が出る。`split` した子キーどうしの値は重ならない |
+| データ層 | 同じシードなら同じ順序。ワーカー数によらず同じ出力。`iterator-state` から再開しても続きが一致する |
+| jit キャッシュ | 同じキーならキャッシュを使う。`aval` やターゲットが違えば再コンパイルする |
 
 ### Mutation testing
 
-- Common Lisp には実用的な既存ツールがないため、リポジトリ内に自前の mutation runner を持つ（`tools/mutate/`）。ソースを reader で読み、変異させた定義を image にロードしてテストスイートを走らせ、生き残った変異体を報告する
-- 変異演算子: 算術演算子の入れ替え（`+`↔`-`、`*`↔`/`）、比較の境界（`<`↔`<=`）、定数の置換（`0`, `1`, `-x`）、条件の反転、`if` の分岐入れ替え、`progn` 内の式の削除、ルール関数の返り値を `0` にする
+mutation testing は「テストがバグを見つけられるか」をテストする手法。コードに小さなバグ（変異体†）をわざと入れ、テストが落ちるかを確かめる。テストが落ちずに生き残った変異体は、テストの抜けを示している。
+
+- Common Lisp には実用的な既存ツールがないので、リポジトリ内に自前の mutation runner を持つ（`tools/mutate/`）。ソースを Lisp の reader で読み、変異させた定義を image にロードしてテストスイートを走らせ、生き残った変異体を報告する
+- 変異のさせ方（変異演算子）: 算術演算子の入れ替え（`+`↔`-`、`*`↔`/`）、比較の境界（`<`↔`<=`）、定数の置き換え（`0`, `1`, `-x`）、条件の反転、`if` の分岐の入れ替え、`progn` 内の式の削除、ルール関数の返り値を `0` にする
 - 対象はコア（IR、変換、プリミティブのルール、StableHLO 出力）と nn / data の純粋関数。CFFI バインディングは対象外
-- 変異体が生き残ったら、まず殺す性質を足す。等価変異体だと判断したら理由をつけて除外リストに記録する
-- PR では変更したファイルだけを対象にする。mutation score の目標は 80% 以上
+- Google の運用にならい、**PR で変更した行だけ**に変異をかける。ログ出力、エラーメッセージの文字列、`declare` などの「変異させても意味のない箇所」（arid node†）は除外する
+- 生き残った変異体は、1つずつ対処する。まずその変異体を検出できる性質を足す。等価変異体†だと判断したら、理由をつけて除外リストに記録する
+- mutation score† の目安は 80% 以上。ただし数字を上げることが目的ではなく、生き残った変異体から「どんなテストが足りないか」を学ぶことが目的
 
 ### 作業の終え方
 
-変更を終える前に、既定のテストスイートを実行して通ることを確認する。プリミティブや変換ルールを変えたときは、変更したファイルに mutation test もかける。
+変更を終える前に、既定のテストスイート（small + medium）を実行して通ることを確認する。プリミティブや変換のルールを変えたときは、変更したファイルに mutation test もかける。テストを実行できなかったときは、そのことを報告に書く。
 
-## Git commits and pull requests
+## Git の運用
 
-- Do not add any attribution lines to commit messages or pull request descriptions.
-  This includes `Co-Authored-By:` trailers, `Claude-Session:` session URLs,
-  and "Generated with Claude Code" footers.
+- **コミットメッセージと PR タイトルは [Conventional Commits](https://www.conventionalcommits.org/ja/v1.0.0/) に従う**。形式は `<type>(<scope>): <説明>`
+  - type: `feat`（機能追加）、`fix`（バグ修正）、`docs`、`test`、`refactor`（振る舞いを変えない変更）、`perf`、`build`、`ci`、`chore`
+  - scope: `core`、`iree`、`pjrt`、`nn`、`data`、`mutate` など、変更したシステムやツールの名前。複数にまたがるときは省略してよい
+  - 説明は英語の命令形で、先頭は小文字、末尾にピリオドを付けない。例: `feat(core): add broadcast primitive`
+  - 公開 API を壊す変更は、type の後ろに `!` を付け（例: `feat(nn)!: rename dense to linear`）、本文の末尾に `BREAKING CHANGE: <内容>` を書く
+- **PR は squash merge をデフォルトにする**。PR の全コミットが1つにまとめられ、PR タイトルがそのまま `main` のコミットメッセージになる。そのため PR タイトルは必ず Conventional Commits の形式にし、PR の中身が変わったらタイトルも直す。PR 内の途中のコミットは形式が崩れていてもよい
+- コミットメッセージと PR の説明には、署名の行を一切付けない（`Co-Authored-By:` トレーラー、`Claude-Session:` のセッション URL、「Generated with Claude Code」のフッターを含む）
