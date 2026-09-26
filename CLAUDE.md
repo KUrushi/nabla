@@ -72,6 +72,11 @@ GPU を使う large テストは CI では動かさない。
 実行結果は `gh api repos/KUrushi/nabla/actions/runs?branch=<branch>` で見る
 （`gh pr view` などの GraphQL 系コマンドはこのプロジェクトの認証では使えない）。
 
+実測（PR #22、ubuntu-24.04）: IREE キャッシュが無いとき（cold）はジョブ全体で
+約 4分43秒（うち `scripts/build-iree.sh` が約3分4秒）、キャッシュが当たったとき
+（warm）は約44秒（`scripts/build-iree.sh` はスキップされる）。この数字は環境
+によって変わるので、目安として扱う。
+
 ## 設計上の約束（コードを読んでも分かりにくいもの）
 
 - StableHLO† は出力先であって、内部表現ではない。`grad` / `vmap` は自前 IR（`aval`† / `var` / `eqn` / `graph`）を別の IR に書き換える変換として書く
