@@ -8,17 +8,19 @@
 ;;;; コメント（SBCL の finalizer スレッドの非同期性）を参照。
 ;;;;
 ;;;; nabla.asd がこのファイルを compiler-test / runtime-test / device-array-test /
-;;;; execute-test より先にロードしている理由: このファイルの
-;;;; (sb-ext:gc :full t) 呼び出しは、device / session を大量に作っては壊す
-;;;; 既存のテストが積み重なった後に呼ぶと、SBCL が
+;;;; execute-test より先にロードしている経緯: このファイルの
+;;;; (sb-ext:gc :full t) 呼び出しが、device / session を大量に作っては壊す
+;;;; 既存のテストが積み重なった後に呼ばれると、SBCL が
 ;;;; "garbage_collect: no SP known for thread" という fatal error でプロセス
-;;;; ごと落ちることを確率的に起こす（nabla.iree の finalizer 機構自体の
-;;;; バグではなく、SBCL のスレッド管理と IREE がドライバ内部に持つスレッド
-;;;; との間の、既知の相性問題だと考えられる。このファイルだけを単独で実行
-;;;; した場合や、tools/ のスタンドアロンな 50000 回ループのスクリプトでは
-;;;; 毎回問題なく通ることを確認済み。詳細と再現手順は PR 本文と
-;;;; docs/iree-build.md）。ロード順を変えるのは発生頻度を下げる緩和策で、
-;;;; 根本原因（SBCL 側か IREE 側か）は直していない。
+;;;; ごと落ちることを確率的に起こしていた（issue #5）。根本原因は LLVM
+;;;; （libIREECompiler.so 内）が初回呼び出し中にプロセス全体のシグナル
+;;;; ハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う
+;;;; SIGUSR2 を上書きすることだった。ロード順を変えるのは発生頻度を下げる
+;;;; 緩和策に過ぎなかったが、根本原因そのものは src/iree/signals.lisp の
+;;;; %register-llvm-signal-handlers / with-lisp-signal-handlers-preserved で
+;;;; 修正済み（詳細は signals.lisp 冒頭のコメント。残るリスクも同所に列挙
+;;;; してある）。この修正のあともロード順自体は変えていない（害はなく、
+;;;; 変える動機も無いため）。
 
 (in-package #:nabla.iree.tests)
 

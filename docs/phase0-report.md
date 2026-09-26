@@ -70,12 +70,12 @@ CLAUDE.md に記録済みの実測（PR #22、ubuntu-24.04）: IREE キャッシ
 | vmfb の形式 | 特に記述なし | vmfb は「polyglot zip」形式で出力される。先頭4バイトは ZIP の local-file-header シグネチャ `PK\3\4`（`#x50 #x4B #x03 #x04`）で、フラットバッファ自体の識別子ではない | `tests/iree/support.lisp` の `*vmfb-magic*`、`docs/glossary.md` の vmfb 項 |
 | 構造体の受け渡し | 特に記述なし | `iree_allocator_t` / `iree_string_view_t` / `iree_hal_buffer_params_t` / `iree_timeout_t` など、値渡し・値返しの構造体が多く、素の CFFI では扱えない | `nabla/iree` 全体が `cffi-libffi` に依存（`libffi-dev` が要る） |
 | `iree_allocator_system` | 特に記述なし | ヘッダ上は `static inline` 関数で、共有ライブラリからは呼べない。`{NULL, iree_allocator_libc_ctl}` の構造体を Lisp 側で組み立てて代用する | `src/iree/runtime-ffi.lisp` |
-| LLVM のシグナルハンドラ | 特に記述なし | LLVM は初回呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きする。放置すると、以後どこかのスレッドが GC を始めた瞬間に "no SP known for thread" で SBCL が確実に落ちる（issue #5） | `src/iree/signals.lisp`（`ensure-compiler-loaded` が `%call-with-world-stopped` で他の全 Lisp スレッドを止めた、制御された1点で登録を済ませる。`with-lisp-signal-handlers-preserved` で多重に防御する）。残るリスクは本報告書 §5 の新規リスク (ii) を参照 |
+| LLVM のシグナルハンドラ | 特に記述なし | LLVM は初回呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きする。放置すると、以後どこかのスレッドが GC を始めた瞬間に "no SP known for thread" で SBCL が確実に落ちる（issue #5） | `src/iree/signals.lisp`（`ensure-compiler-loaded` が `%call-with-world-stopped` で他の全 Lisp スレッドを止めた、制御された1点で登録を済ませる。`with-lisp-signal-handlers-preserved` で多重に防御する）。残るリスクは本報告書 §5 の新規リスク (i) を参照 |
 | コンパイラ呼び出しの方式 | 埋め込み C API を第一候補、`iree-compile` のサブプロセス起動を代替案とし、フェーズ0で両方試して決める | 埋め込み C API（`ireeCompilerSessionCreate` → `ireeCompilerSessionSetFlags` → 入力を渡して出力バッファに vmfb を受け取る）に決定。サブプロセス方式は採らない。ただし例外が1つある: `llvm-cpu` ターゲットは実行体のリンクに外部リンカ（`iree-lld`）をサブプロセス起動する（IREE 側にプロセス内リンクの手段が無いため）。「サブプロセスを起動しない」という方針の唯一の例外になる | `src/iree/compiler.lisp`、`scripts/build-iree.sh`（`--iree-llvmcpu-embedded-linker-path` で `iree-lld` を明示） |
 | `iree_string_view_t` のサイズ | 特に記述なし | `size` は NUL 終端を含まない（C 文字列としての長さそのもの） | `src/iree/runtime-ffi.lisp` |
 | 引数の形状・dtype 検証 | 特に記述なし | `hal.buffer_view.assert` により、宣言と違う形状・dtype の引数を渡すと `iree-status-error`（code `:invalid-argument`）が signal されるだけで、プロセスがクラッシュすることはない | `tests/iree/execute-test.lisp` |
 | `backend` プロトコルの関数名 | 設計タブでは `compile`, `load`, `invoke`, `to-device`, `to-host` | CL の `compile` / `load` と衝突するため、総称関数はすべて `backend-` 接頭辞にした（`backend-compile`, `backend-load`, `backend-unload`, `backend-invoke`）。issue #9 の文言とも異なる | `src/backend.lisp` |
-| SBCL の GC と IREE スレッドの相性 | 特に記述なし | full GC と IREE 側のスレッド（`local-task` の worker など）が重なると、確率的に fatal error が出ることがある。テストの実行順序（`nabla.asd` の `finalizer-test` を他の `nabla/iree/tests` より先に置く）で緩和しているが、根本原因は未調査 | `nabla.asd` のコメント、本報告書 §5 の新規リスク (ii)、§8 |
+| SBCL の GC と LLVM のシグナルハンドラの相性 | 特に記述なし | full GC 中に fatal error（`garbage_collect: no SP known for thread`）が確率的に出ることがあった。根本原因は LLVM（`libIREECompiler.so` 内）が初回呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きすることだと特定し、`src/iree/signals.lisp` で修正済み（issue #5） | `src/iree/signals.lisp`（`%register-llvm-signal-handlers` / `with-lisp-signal-handlers-preserved`）、`nabla.asd` のコメント、本報告書 §5 の新規リスク (i)、§8 |
 
 ## 5. リスク表の再評価
 
@@ -99,9 +99,8 @@ CLAUDE.md に記録済みの実測（PR #22、ubuntu-24.04）: IREE キャッシ
 
 | リスク | 影響 | 対策 |
 | --- | --- | --- |
-| （i）LLVM のシグナルハンドラ上書き | LLVM を含むコンパイラの初回呼び出し後、GC の stop-the-world（SIGUSR2）が壊れて SBCL が "no SP known for thread" で落ちる | `ensure-compiler-loaded` が全 Lisp スレッドを止めた1点でシグナルハンドラの登録を済ませ、`with-lisp-signal-handlers-preserved` で呼び出しごとに多重防御する（`src/iree/signals.lisp`） |
-| （ii）SBCL の full GC と IREE スレッドの相性（フレーキー） | まれに fatal error でプロセスが落ちることがある | テストの実行順序で緩和しているが根本原因は未調査（§8 の次のアクション） |
-| （iii）wheel 配布の x86_64 Linux 限定、`--compiler=source` 未検証 | 他プラットフォーム（macOS、aarch64 Linux 等）では既定のセットアップが使えない可能性がある | `scripts/build-iree.sh --compiler=source` を用意してあるが、実際に他プラットフォームで通したことはない（CI でも未検証） |
+| （i）LLVM のシグナルハンドラ上書き（解決済み） | LLVM を含むコンパイラの初回呼び出し後、GC の stop-the-world（SIGUSR2）が壊れて SBCL が "no SP known for thread" で落ちる。§4 の「SBCL の GC と LLVM のシグナルハンドラの相性」行、および §8 で「テストの実行順序による緩和のみで根本原因は未調査」としていたフレーキーな fatal error は、この同じ原因だったと判明した | `ensure-compiler-loaded` が全 Lisp スレッドを止めた1点でシグナルハンドラの登録を済ませ、`with-lisp-signal-handlers-preserved` で呼び出しごとに多重防御する（`src/iree/signals.lisp`）。`nabla.asd` の `finalizer-test` を先に置くテスト順序は、この修正より前の緩和策の名残で、修正後はもう必須ではない。残るリスク（世界を止めている間の他ロック待ち・シグナル配送・GC ロックの餓死）は `signals.lisp` 冒頭のコメントに列挙してある |
+| （ii）wheel 配布の x86_64 Linux 限定、`--compiler=source` 未検証 | 他プラットフォーム（macOS、aarch64 Linux 等）では既定のセットアップが使えない可能性がある | `scripts/build-iree.sh --compiler=source` を用意してあるが、実際に他プラットフォームで通したことはない（CI でも未検証） |
 
 ## 6. 計画 Artifact への提案編集
 
@@ -115,7 +114,7 @@ CLAUDE.md に記録済みの実測（PR #22、ubuntu-24.04）: IREE キャッシ
 | 計画 | リスクと対策（「非標準な GPU 環境」行の対策セル） | 「フェーズ0で手元の環境での可否を確認する。動かなければ自前ビルド。IREE の CUDA ターゲットは `--iree-cuda-target=sm_XX` で世代を指定するので、LLVM 側が対応する世代かも確認」 | 末尾に追記: 「フェーズ0の開発環境には GPU が無く未確認（#12 open）。x86_64 Linux では wheel + ソースランタイムで CPU 動作を確認した」 |
 | 計画 | リスクと対策（「デバイスメモリとLisp GCの不整合」行の対策セル） | 「バッファをCLOSオブジェクトで包み、trivial-garbage の finalizer で解放。明示的 `free` も提供」 | 末尾に追記: 「実装済み（#11）。device-array は device を retain し、buffer view → device の順で release する。SBCL の finalizer は別スレッドで走るため、テストでは run-pending-finalizers を使う」 |
 | 計画 | リスクと対策（「コンパイルが遅い」行の対策セル） | 「演算単位の vmfb キャッシュに加え、eager専用の自前CPU実装を持つ（決定済み）。全プリミティブの第二実装であり、工数はフェーズ1〜2級と見込む。フェーズ1以降、各プリミティブは StableHLO 出力と CPU 実装を同時に書く。本番は `jit` 前提とする」 | 末尾に追記: 「フェーズ0の実測（単一 op のコンパイル約350ms、vmfb キャッシュヒット時は1ms未満）」 |
-| 計画 | リスクと対策（表の末尾に新規3行を追加） | （無し） | §5 の新規リスク (i)(ii)(iii) の3行をそのまま追加 |
+| 計画 | リスクと対策（表の末尾に新規2行を追加） | （無し） | §5 の新規リスク (i)(ii) の2行をそのまま追加 |
 | 計画 | 最初の2週間でやること（チェックリスト） | 項目1〜9（本文参照） | 項目2〜6, 8, 9 にチェックを入れる。項目1（IREE を固定コミットでソースからビルドし... `cuda` ターゲットでコンパイル・実行できることを確認する）と項目7（同じ StableHLO を `local` と `cuda` 向けにコンパイルし、結果の数値一致を確認する）は「CPU は確認済み、CUDA は GPU 環境待ち（#12）」を付記して未完のままにする |
 | 設計 | StableHLO出力と実行系連携の設計（コンパイラ呼び出しの段落） | 「（libIREECompiler を ireeCompilerLoadLibrary でロードし、セッションにフラグを与えて入力を渡す方式）を第一候補とし、iree-compile のサブプロセス起動を代替案とする。埋め込み API は共有ライブラリを dlopen して使う設計なので CFFI と相性が良く、テキストをファイル経由で渡す必要もない。どちらを採るかはフェーズ0で両方試して決める」 | 「（libIREECompiler.so を CFFI で dlopen し、ireeCompilerGlobalInitialize → セッション → フラグ → メモリ上の入力 → 出力バッファ）に決定。ireeCompilerLoadLibrary はライブラリ側が export する関数ではないので使わない。例外として llvm-cpu は実行体のリンクに iree-lld をサブプロセス起動する（IREE 側にプロセス内リンクの手段が無い）」 |
 | 設計 | StableHLO出力と実行系連携の設計（テキスト出力の方針の箇条書き「IREE はソースからビルドして...」） | 「IREE はソースからビルドして libIREECompiler.so とランタイム共有ライブラリを得る（lean4-mlir と同じ方針）。Python は使わない。ビルド手順はリポジトリに同梱する」 | 上の「配布」行の新テキストと同じ内容に差し替える |
@@ -138,6 +137,6 @@ CLAUDE.md に記録済みの実測（PR #22、ubuntu-24.04）: IREE キャッシ
 ## 8. 未解決・次のアクション
 
 - **#12 の GPU 測定**: GPU が用意でき次第、`docs/iree-build.md` の GPU 実測表を埋め、`NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh` を実行して local/cuda 数値一致を確認する
-- **full GC × IREE スレッドの fatal error**: `nabla.asd` のコメントに記録されている、稀に起きる fatal error の根本原因調査（テストの実行順序による緩和は済んでいるが、原因そのものは未調査）
+- **full GC × IREE スレッドの fatal error（解決済み）**: `garbage_collect: no SP known for thread` で稀にプロセスが落ちる fatal error（issue #5）は、LLVM（`libIREECompiler.so` 内）が初回呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きすることが根本原因だと特定した。`src/iree/signals.lisp` の `%register-llvm-signal-handlers`（LLVM の登録を、他の全 Lisp スレッドを止めた制御された1点で `ireeCompilerOutputOpenMembuffer` / `ireeCompilerOutputDestroy` により済ませる）と `with-lisp-signal-handlers-preserved`（IREE を呼ぶ公開関数の本体を包み、ハンドラを元に戻す多重防御）で修正済み。`nabla.asd` の `finalizer-test` を先に置くテスト実行順序は、この修正より前に発生頻度を下げていた緩和策の名残で、もう必須ではない。残るリスク（世界を止めている間の他ロック待ち・GC 以外のシグナル配送・GC ロックの餓死）は解消しておらず、`src/iree/signals.lisp` 冒頭のコメントに列挙してある
 - **`.gitignore` の矛盾**: 「`tests/*.lisp` と `.claude/settings.json` が ignore 対象なのに追跡されている」という矛盾が過去に指摘されていたが、本ユニットの作業時点で `git check-ignore` で確認した限り再現しなかった（この2つのパスは現在の `.gitignore` の内容とは一致していない）。もし何らかの理由で再発したら、別の `chore:` PR で直す
 - **`--compiler=source` の CI での検証**: 現状 CI は `--compiler=wheel`（既定）のみを使っている。フルソースビルドは時間の制約で未検証（本報告書 §2）
