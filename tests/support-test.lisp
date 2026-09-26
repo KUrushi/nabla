@@ -189,6 +189,13 @@ decode-element に渡すことは想定していない）。"
   (is (= (float-sign (decode-element :f16 #x8000)) -1.0d0))
   (is (= (decode-element :f16 #x7BFF) 65504.0d0)))
 
+(test support/uniform-integer/rejects-lo-greater-than-hi
+  "MAKE-UNIFORM-INTEGER-GENERATOR / MAKE-UNIFORM-REAL-GENERATOR は、
+LO が HI より大きいときに、分かりにくいエラー（RANDOM への負の引数
+など）ではなく、その場で意味の分かるエラーを出す。"
+  (signals error (make-uniform-integer-generator 10 5))
+  (signals error (make-uniform-real-generator 10.0d0 5.0d0)))
+
 (test support/uniform-integer/reaches-both-ends-of-a-wide-range
   "MAKE-UNIFORM-INTEGER-GENERATOR は check-it::*size*（既定10）を無視して
 指定した範囲全体から一様に値を選ぶ。2000 回引いて、範囲の下のほう
@@ -212,6 +219,60 @@ check-it::*size* を無視して [LO, HI) 全体から一様に値を選ぶ。"
     (is (every (lambda (v) (<= 0.0d0 v 1000.0d0)) draws))
     (is (some (lambda (v) (< v 20.0d0)) draws))
     (is (some (lambda (v) (> v 900.0d0)) draws))))
+
+(test support/uniform-integer/shrinks-toward-zero-within-range
+  "MAKE-UNIFORM-INTEGER-GENERATOR で作った生成器は、check-it 組み込みの
+int-generator と同じく、失敗したとき [LO, HI] の範囲内で0に一番近い
+反例まで縮小する。
+
+以前は SHRINK が cached-value をそのまま返すだけで、縮小を一切しな
+かった（区間全体を一様に選ぶことと、0 に向けて縮小できないことを
+混同していた。check-it 組み込みの int-generator も一様に選ぶが、
+ちゃんと0に向けて縮小する。generators.lisp の int-generator-function、
+shrink.lisp の int-generator への SHRINK メソッド参照）。乱数のシード
+は固定して、たまに失敗するテストにしない。"
+  (let* ((*random-state* (sb-ext:seed-random-state 1))
+         (generator (make-uniform-integer-generator 0 1023)))
+    ;; CHECK-IT:SHRINK の TEST 引数は「性質が成り立つなら真」を返す関数。
+    ;; ここでは (< x 5) を性質とするので、x < 5 なら真（性質が成り立つ）、
+    ;; x >= 5 が反例（性質が破れる）になる。0 が範囲内なので、最小の
+    ;; 反例はちょうど 5 になる。
+    (loop until (>= (check-it:generate generator) 5))
+    (is (= (check-it:shrink generator (lambda (x) (< x 5))) 5))))
+
+(test support/uniform-integer/shrinks-toward-lo-when-zero-is-out-of-range
+  "0 が [LO, HI] の範囲外のとき（LO > 0）は、SHRINK は0にではなく LO に
+向けて縮小する（範囲外の値を候補にしないという制約を、SHRINK に渡す
+TEST 関数でエンコードしている）。常に性質が破れる（TEST が常に偽を
+返す）ケースで、縮小結果がちょうど LO になることを確かめる。"
+  (let* ((*random-state* (sb-ext:seed-random-state 1))
+         (generator (make-uniform-integer-generator 100 1000)))
+    (check-it:generate generator)
+    (is (= (check-it:shrink generator (constantly nil)) 100))))
+
+(test support/array-spec/shrinks-dimensions-toward-the-minimal-failing-value
+  "array-spec の生成器は、次元の選択に UNIFORM-INTEGER を使っているので、
+失敗したときに、その次元も0（実際には :max-dim の下限である1）に向けて
+縮小できる（UNIFORM-INTEGER の SHRINK 修正が、array-spec がそれを使う
+経路 [chained-generator → mapped-generator → tuple-generator のサブジェ
+ネレータ] でも効くことを確かめる）。
+
+rank は :max-rank 1 に固定して、rank 自体の縮小（check-it の
+chained-generator は事前に選んだ rank を再選択しないので、そもそも
+縮小できない）とは切り離し、1次元目の次元だけに注目する。乱数のシード
+は固定して、たまに失敗するテストにしない。"
+  (let* ((*random-state* (sb-ext:seed-random-state 2))
+         (spec-generator (generator (array-spec :max-rank 1 :max-dim 20))))
+    (loop for spec = (check-it:generate spec-generator)
+          until (and (= (array-spec-rank spec) 1)
+                     (>= (first (array-spec-shape spec)) 10)))
+    (let ((shrunk (check-it:shrink
+                   spec-generator
+                   (lambda (spec)
+                     (not (and (= (array-spec-rank spec) 1)
+                               (>= (first (array-spec-shape spec)) 10)))))))
+      (is (= (array-spec-rank shrunk) 1))
+      (is (= (first (array-spec-shape shrunk)) 10)))))
 
 (test support/array-spec/prints-readably
   "check-it は失敗例を (format nil \"~S\" value) で保存し、regression
