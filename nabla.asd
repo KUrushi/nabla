@@ -93,4 +93,5 @@
                (:file "tests/iree/runtime-test")
                (:file "tests/iree/runtime-cuda-test")
                (:file "tests/iree/device-array-test")
-               (:file "tests/iree/execute-test")))
+               (:file "tests/iree/execute-test")
+               (:file "tests/iree/example-test")))
