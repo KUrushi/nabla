@@ -13,6 +13,7 @@ MATMUL_MLIR="${REPO_ROOT}/tests/fixtures/stablehlo/matmul.mlir"
 
 IREE_COMPILE="${NABLA_IREE_HOME}/bin/iree-compile"
 IREE_RUN_MODULE="${NABLA_IREE_HOME}/bin/iree-run-module"
+IREE_LLD="${NABLA_IREE_HOME}/bin/iree-lld"
 
 WITH_CUDA=0
 for arg in "$@"; do
@@ -35,6 +36,10 @@ if [[ ! -x "${IREE_COMPILE}" ]]; then
 fi
 if [[ ! -x "${IREE_RUN_MODULE}" ]]; then
   echo "error: iree-run-module not found at ${IREE_RUN_MODULE}. Run scripts/build-iree.sh first." >&2
+  exit 1
+fi
+if [[ ! -x "${IREE_LLD}" ]]; then
+  echo "error: iree-lld not found (or not executable) at ${IREE_LLD}. Run scripts/build-iree.sh first." >&2
   exit 1
 fi
 if [[ ! -f "${MATMUL_MLIR}" ]]; then
@@ -90,10 +95,19 @@ run_backend() {
     # --iree-llvmcpu-target-cpu=host targets this machine's actual CPU
     # instead of the generic baseline, which silences iree-compile's
     # "using default configuration" warning.
+    #
+    # llvm-cpu always links the compiled CPU executable by running an
+    # external linker as a subprocess (this IREE build has no in-process
+    # linker option). Without --iree-llvmcpu-embedded-linker-path,
+    # iree-compile falls back to searching PATH and would pick up the
+    # system /usr/bin/lld instead of the lld built/shipped from the locked
+    # IREE commit, which can silently drift out of sync with it. Point it
+    # at the pinned iree-lld installed by scripts/build-iree.sh instead.
     "${IREE_COMPILE}" \
       --iree-hal-target-device=local \
       --iree-hal-local-target-device-backends=llvm-cpu \
       --iree-llvmcpu-target-cpu=host \
+      --iree-llvmcpu-embedded-linker-path="${IREE_LLD}" \
       "${MATMUL_MLIR}" -o "${vmfb}"
   else
     "${IREE_COMPILE}" \

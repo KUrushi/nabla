@@ -58,6 +58,7 @@
   :components ((:file "src/iree/package")
                (:file "src/iree/conditions")
                (:file "src/iree/compiler-ffi")
+               (:file "src/iree/signals")
                (:file "src/iree/library")
                (:file "src/iree/compiler")
                (:file "src/iree/runtime-ffi")
