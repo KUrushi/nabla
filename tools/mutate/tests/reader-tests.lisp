@@ -70,6 +70,24 @@
                (is (= 6 (nabla.mutate:source-form-end-line mean-def))))))
       (ignore-errors (delete-file tmp)))))
 
+(test read-source-forms-line-numbers-skip-comments-above-forms
+  "定義の直前にあるコメント行やブロックコメントは、その定義の start-line
+に含めない（コメントだけを触った変更が、下の定義を変異対象に選んでしまう
+のを防ぐ）。"
+  (let ((tmp (uiop:with-temporary-file (:pathname p :type "lisp" :keep t) p)))
+    (unwind-protect
+         (progn
+           (with-open-file (s tmp :direction :output :if-exists :supersede)
+             (write-string
+              (format nil ";;;; header~%~%;; helper~%(defun f (x) x) ; trailing~%~%#| block~%comment |#~%(defun g (x) x)~%")
+              s))
+           (let ((forms (nabla.mutate:read-source-forms tmp)))
+             (is (= 2 (length forms)))
+             (destructuring-bind (f-def g-def) forms
+               (is (= 4 (nabla.mutate:source-form-start-line f-def)))
+               (is (= 8 (nabla.mutate:source-form-start-line g-def))))))
+      (ignore-errors (delete-file tmp)))))
+
 (test read-source-forms-tracks-in-package
   "in-package の後のフォームは、そのパッケージで読まれる（シンボルの
 パッケージで確認する）。"

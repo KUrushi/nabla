@@ -39,6 +39,36 @@
                     (= 1 (%count-diffs form mutated))
                     (equal form (nabla.mutate:mutate-form mutated :boundary))))))))))
 
+(defun %build-nested-arith (branch)
+  "check-it が生成した BRANCH（整数、または (op-index a b) のリスト）を
+実際の Lisp フォームに組み立てる。整数はそのままリーフとして返す。"
+  (if (integerp branch)
+      branch
+      (destructuring-bind (op-index a b) branch
+        (list (nth op-index *arith-ops*) a b))))
+
+(test mutate-form-arith-swap-first-applicable-node-on-nested-tree
+  "入れ子になった算術式でも、mutate-form は前順で最初に見つかった
+ノード（外側の演算子）だけを書き換え、内側の枝には触らない。"
+  (is (check-it
+       (generator (tuple (integer 0 3)
+                          (or (integer -10 10)
+                              (tuple (integer 0 3) (integer -10 10) (integer -10 10)))
+                          (integer -10 10)))
+       (lambda (input)
+         (destructuring-bind (op-index left-branch right) input
+           (let* ((left (%build-nested-arith left-branch))
+                  (form (list (nth op-index *arith-ops*) left right)))
+             (multiple-value-bind (mutated applied) (nabla.mutate:mutate-form form :arith-swap)
+               (and applied
+                    (not (equal mutated form))
+                    ;; 前順なので、外側のノードだけが変わり、内側の枝
+                    ;; （LEFT が入れ子の算術式でも）はそのまま残る。
+                    (equal left (second mutated))
+                    (equal right (third mutated))
+                    (= 1 (%count-diffs form mutated))
+                    (equal form (nabla.mutate:mutate-form mutated :arith-swap))))))))))
+
 (test mutate-form-branch-swap-changes-exactly-one-node-and-is-involutive
   (is (check-it
        (generator (tuple (integer -10 10) (integer -10 10) (integer 0 20)))

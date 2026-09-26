@@ -89,6 +89,9 @@ find-package / find-symbol で探して呼ぶ。#4（テスト基盤）が
   ;; STORAGE-CONDITION は ERROR のサブタイプではないため、`(error () ...)`
   ;; だけでは暴走再帰を作る変異体（例: `(- n 1)` → `(+ n 1)`）で
   ;; RUN 全体が中断してしまう。
+  ;; SB-SYS:INTERACTIVE-INTERRUPT（Ctrl-C）は SERIOUS-CONDITION のサブタイプ
+  ;; だが、変異体のふるまいではなく利用者の中断なので :killed として
+  ;; 記録せず、そのまま外へ signal し直して RUN を止める。
   (let ((*package* package))
     (unwind-protect
          (handler-case
@@ -99,7 +102,9 @@ find-package / find-symbol で探して呼ぶ。#4（テスト基盤）が
                        :survived
                        :killed)
                  (sb-ext:timeout () :timeout)
+                 (sb-sys:interactive-interrupt (c) (error c))
                  (serious-condition () :killed)))
+           (sb-sys:interactive-interrupt (c) (error c))
            (serious-condition () :killed))
       (ignore-errors (%eval-quietly original-form)))))
 
@@ -151,6 +156,14 @@ DEFAULT-TEST-FUNCTION が探すパッケージが存在しないなど）であ�
          (survived (count :survived mutants :key #'mutant-status)))
     (format stream "~&total=~D killed=~D timeout=~D survived=~D excluded=~D~%"
             total killed timeout survived excluded)
+    (when (zerop total)
+      ;; total=0 は「対象範囲に変異させられる定義が1つもなかった」ことの
+      ;; 証拠であって、良いスコアの証拠ではない。git diff の範囲抽出が
+      ;; （設定やパスの不一致で）何も拾えなかった場合もこの形になるので、
+      ;; mutation score = 1 だけを見て安心しないよう、はっきり警告する。
+      (format stream "~&警告: 変異させられる定義が1つも見つからなかった。~
+対象範囲（--base / FILE[:START-END] や git diff の設定）を確認すること。~
+mutation score = 1 はこの場合「良い結果」ではない。~%"))
     (format stream "~&mutation score = ~A~%" (mutation-score report))))
 
 (defun run (&key (system "nabla")

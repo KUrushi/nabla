@@ -30,7 +30,7 @@ NABLA_LISP_DEPS_DIR="${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}"
 # tools/mutate/sample//: を明示的に足しているのは、SBCL の ASDF が
 # 深い階層の .asd を再帰探索で見つけないことがあるため
 # （tools/mutate/nabla-mutate.asd は見つかるが、その下の
-# tools/mutate/sample/sample.asd までは見つからない環境があった）。
+# tools/mutate/sample/nabla-mutate-sample.asd までは見つからない環境があった）。
 export CL_SOURCE_REGISTRY="${REPO}//:${REPO}/tools/mutate/sample//:${NABLA_LISP_DEPS_DIR}//:"
 
 SYSTEM="nabla"
@@ -56,6 +56,16 @@ while [ "$#" -gt 0 ]; do
 done
 RANGE_ARGS+=("$@")
 
+# FILE を Lisp の文字列リテラルの中身として安全に埋め込めるようにする
+# （\ と " をエスケープする）。パスにこの2文字を含む環境は稀だが、
+# 埋め込まずに壊れた eval フォームを作ってしまうよりはよい。
+lisp_escape_string() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
 if [ -z "$TEST_SYSTEM" ]; then
   TEST_SYSTEM="${SYSTEM}/tests"
 fi
@@ -74,14 +84,14 @@ if [ "${#RANGE_ARGS[@]}" -gt 0 ]; then
       start="${range%%-*}"
       end="${range#*-}"
     fi
-    entries="${entries} (list \"${file}\" ${start} ${end})"
+    entries="${entries} (list \"$(lisp_escape_string "$file")\" ${start} ${end})"
   done
   ranges_lisp="(list${entries})"
 fi
 
 load_forms="(asdf:load-system \"nabla-mutate\")"
 if [ -n "$TEST_SYSTEM" ]; then
-  load_forms="${load_forms} (asdf:load-system \"${TEST_SYSTEM}\")"
+  load_forms="${load_forms} (asdf:load-system \"$(lisp_escape_string "$TEST_SYSTEM")\")"
 fi
 
 if [ -n "$TEST_FORM" ]; then
@@ -91,10 +101,10 @@ else
 fi
 
 run_form="(let ((report (nabla.mutate:run
-                            :system \"${SYSTEM}\"
+                            :system \"$(lisp_escape_string "$SYSTEM")\"
                             :test-function ${test_function_form}
                             :ranges ${ranges_lisp}
-                            :base-ref \"${BASE_REF}\"
+                            :base-ref \"$(lisp_escape_string "$BASE_REF")\"
                             :timeout-seconds ${TIMEOUT}
                             :trials ${TRIALS})))
              (uiop:quit (if (>= (nabla.mutate:mutation-score report) 4/5) 0 1)))"

@@ -1,4 +1,4 @@
-;;;; sample.asd -- nabla-mutate の runner を確かめるための小さなサンプル
+;;;; nabla-mutate-sample.asd -- nabla-mutate の runner を確かめるための小さなサンプル
 ;;;;
 ;;;; nabla-mutate/tests から使う。それ自体は nabla にも nabla-mutate にも
 ;;;; 依存しない、完全に自己完結した Lisp コード。

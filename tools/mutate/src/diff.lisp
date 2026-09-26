@@ -25,8 +25,14 @@
           (values (parse-integer spec) 1)))))
 
 (defun %diff-lines (base-ref)
+  ;; `--no-color` / `--src-prefix` / `--dst-prefix` は、利用者の git 設定
+  ;; （`color.diff=always`、`diff.noprefix`、`diff.mnemonicPrefix` など）に
+  ;; 左右されず "+++ b/..." 形式のヘッダを確実に出させるために固定する。
+  ;; これが無いと ranges-from-git-diff が変更行を1つも拾えず、静かに
+  ;; mutant 0 件・score 1 という誤った成功になる。
   (multiple-value-bind (output error-output exit-code)
-      (uiop:run-program (list "git" "diff" "--unified=0"
+      (uiop:run-program (list "git" "diff" "--unified=0" "--no-color"
+                               "--src-prefix=a/" "--dst-prefix=b/"
                                (format nil "~A...HEAD" base-ref)
                                "--" "*.lisp")
                          :output '(:string :stripped nil)

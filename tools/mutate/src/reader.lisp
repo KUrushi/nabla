@@ -13,6 +13,9 @@
   (end-line 1 :type fixnum)
   (package (find-package "COMMON-LISP-USER")))
 
+(setf (documentation 'make-source-form 'function)
+      "SOURCE-FORM を作るコンストラクタ。:FORM :START-LINE :END-LINE :PACKAGE
+の各キーワード引数は SOURCE-FORM の同名のスロットに対応する。")
 (setf (documentation 'source-form-form 'function) "読み込んだトップレベルフォームそのもの。")
 (setf (documentation 'source-form-start-line 'function) "そのフォームが始まる行番号（1始まり）。")
 (setf (documentation 'source-form-end-line 'function) "そのフォームが終わる行番号（1始まり、その行を含む）。")
@@ -44,6 +47,39 @@
 見つからなければ現在の *PACKAGE* のままにする。"
   (or (find-package (string designator)) *package*))
 
+(defun %skip-block-comment (stream)
+  "STREAM から `#|` の直後（`|` の次）を読み進め、対応する `|#` の
+直後まで読み捨てる。`#| ... #| ... |# ... |#` のようなネストにも対応する。"
+  (let ((depth 1))
+    (loop while (> depth 0)
+          do (let ((c (read-char stream nil nil)))
+               (cond
+                 ((null c) (return))
+                 ((and (char= c #\#) (eql (peek-char nil stream nil nil) #\|))
+                  (read-char stream) (incf depth))
+                 ((and (char= c #\|) (eql (peek-char nil stream nil nil) #\#))
+                  (read-char stream) (decf depth)))))))
+
+(defun %skip-whitespace-and-comments (stream)
+  "STREAM の現在位置から、空白・`;` の行コメント・`#| ... |#` の
+ブロックコメントを読み飛ばす。フォームの直前に付いたコメントが
+そのフォームの一部として start-line に取り込まれるのを防ぐため
+（read-source-forms のトップレベルループから使う）。"
+  (loop
+    (peek-char t stream nil nil)
+    (let ((c (peek-char nil stream nil nil)))
+      (cond
+        ((null c) (return))
+        ((char= c #\;)
+         (read-line stream nil ""))
+        ((char= c #\#)
+         (let ((saved (file-position stream)))
+           (read-char stream)
+           (if (eql (peek-char nil stream nil nil) #\|)
+               (progn (read-char stream) (%skip-block-comment stream))
+               (progn (file-position stream saved) (return)))))
+        (t (return))))))
+
 (defun read-source-forms (pathname)
   "PATHNAME をトップレベルフォームの列として読み、SOURCE-FORM のリストを返す。
 `in-package` を見つけたら、以降のフォームをそのパッケージで読む。
@@ -56,10 +92,11 @@ reader エラーに出会ったら、そこまでに読めたフォームを返�
       (let ((*package* (find-package "COMMON-LISP-USER"))
             (results nil))
         (loop
-          ;; フォームの前の空白（改行を含む）を読み飛ばしてから位置を記録する。
-          ;; そうしないと、フォームの間に空行があるとき、start-line が
-          ;; 実際より前の行（空行）になってしまう。
-          (peek-char t stream nil nil)
+          ;; フォームの前の空白（改行を含む）・行コメント・ブロックコメント
+          ;; を読み飛ばしてから位置を記録する。空白だけ飛ばして止まると、
+          ;; 定義の直前に付いたコメント行がその定義の一部として
+          ;; start-line に取り込まれてしまう。
+          (%skip-whitespace-and-comments stream)
           (let ((start-pos (file-position stream)))
             (multiple-value-bind (form errorp)
                 ;; 素の READ は、フォームを読み終えたあとその直後の空白

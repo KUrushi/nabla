@@ -126,3 +126,11 @@ CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-de
 - CFFI のバインディング（`nabla/iree`、`nabla/pjrt` の foreign 関数定義）
   は対象外（`.claude/skills/nabla-testing/references/mutation.md` の
   「3. 対象と除外」を見よ）。ファイルを絞ることで対象から外すこと
+- `defmacro` の変異は既に展開・コンパイル済みの呼び出し元には効かない
+  （`%evaluate-mutant` は変異させたマクロ定義を再 `eval` するだけで、
+  それを使っているコードを再コンパイルはしない）。そのため `defmacro`
+  の変異体は、呼び出し元がその後で評価・コンパイルされない限りほぼ
+  必ず survived になる。マクロを変異対象から外したいときは
+  `*mutable-definition-heads*` から `DEFMACRO` を除く
+- `:constant` 演算子は `&optional` / `&key` のデフォルト値
+  （`(defun f (x &optional (y 0)) ...)` の `0` など）も置き換える対象にする
