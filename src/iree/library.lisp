@@ -88,11 +88,11 @@ cffi:*foreign-library-directories* に push しておく必要がある。"
         ;; 最初の Pipeline 実行中に別の Lisp スレッドが GC を始めた瞬間に
         ;; SIGUSR2 が LLVM のハンドラに渡り、プロセスが死ぬ。
         (unless (%register-llvm-signal-handlers)
-          ;; この IREE 版の ireeCompilerSetupGlobalCL は登録しなかった
-          ;; （固定コミットの 3.11.0 では起きない）。最後の手段として旧方式
-          ;; （保護付きの warm-up コンパイル）で登録を済ませる。これは他の
-          ;; スレッドの GC と競合する隙間が残るので警告する。
-          (warn "ireeCompilerSetupGlobalCL は LLVM のシグナルハンドラを登録しなかった。~
+          ;; この IREE 版の ireeCompilerOutputOpenMembuffer は開いて閉じる
+          ;; だけでは登録しなかった（固定コミットの 3.11.0 では起きない）。
+          ;; 最後の手段として旧方式（保護付きの warm-up コンパイル）で登録を
+          ;; 済ませる。これは他のスレッドの GC と競合する隙間が残るので警告する。
+          (warn "ireeCompilerOutputOpenMembuffer は LLVM のシグナルハンドラを登録しなかった。~
                  warm-up コンパイルで代替する（初回コンパイル中の他スレッドの GC と競合しうる）")
           (%warm-up-compiler)))
       (setf *compiler-loaded-p* t)))
