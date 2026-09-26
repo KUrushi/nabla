@@ -9,18 +9,36 @@ nabla は Common Lisp で書く、JAX に相当する深層学習ライブラリ
 ## 構成
 
 - 処理系は SBCL のみ。C ライブラリの呼び出しは CFFI、GC との連携は trivial-garbage、並列処理は lparallel を使う
-- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く
+- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く（テストの共通部品は `nabla/test-support` に置き、そこに依存する）
+- Quicklisp は使えない（ネットワーク方針）。Lisp の依存は apt パッケージと、固定コミットで git clone したもの（check-it など）を `scripts/setup-lisp-deps.sh` で揃える。システムのロードは ASDF の `CL_SOURCE_REGISTRY` で行い、`ql:quickload` は使わない
 - IREE は固定したコミットで使う（詳細は `docs/iree-build.md`）。ランタイムの共有ライブラリは常にそのコミットからソースビルドする。コンパイラ (`libIREECompiler.so`) は既定では同じコミットからビルドされた PyPI ホイール（`third_party/iree.lock` に記録）を使う。フルソースビルドは `scripts/build-iree.sh --compiler=source` で選べるが、このマシン相当のスペックでは実用的な時間で終わらないことを確認している。コンパイラは埋め込み C API を dlopen して呼び、`iree-compile` をサブプロセスで起動しない（ビルドスクリプト内の動作確認を除く）
 - Python はライブラリの実行時依存にしない。JAX は、テストで比べる期待値（フィクスチャ）の生成にだけ使う
 
 ## コマンド
 
 ```sh
+# 依存の準備（初回のみ。apt は root で実行、check-it / optima は git clone）
+scripts/setup-lisp-deps.sh
+
 # テスト（既定は small + medium。CPU だけで動き、GPU は不要）
-sbcl --non-interactive --eval '(ql:quickload "nabla/tests")' --eval '(asdf:test-system "nabla")'
+scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
+NABLA_TEST_SIZES=large scripts/run-tests.sh
+
+# IREE のビルド（third_party/iree.lock で固定したコミットから）。
+# コンパイラは既定で PyPI ホイールを使い、ランタイムは常にソースビルドする
+scripts/build-iree.sh                     # --compiler=wheel（既定）+ ソースランタイム（CPU）
+scripts/build-iree.sh --compiler=source   # コンパイラもフルソースビルド（CI 向け、手元では非現実的な時間がかかる）
+scripts/build-iree.sh --cuda              # CUDA も有効化
+scripts/build-iree.sh --configure-only    # cmake configure までで止める
+# 主な環境変数: NABLA_IREE_HOME（インストール先。既定 ~/.local/share/nabla/iree-3.11.0）、
+#   NABLA_IREE_COMPILER（wheel|source、--compiler と同じ）、NABLA_IREE_CUDA、NABLA_IREE_JOBS
+
+# ビルドした iree-compile / iree-run-module で matmul フィクスチャを実行して確かめる
+NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 scripts/verify-iree.sh
+scripts/verify-iree.sh --cuda             # llvm-cpu に加えて CUDA でも確かめる
 ```
 
-ビルドスクリプト、large テスト、mutation test のコマンドを追加したら、ここに追記する。
+mutation testing（`tools/mutate/`）のコマンドは、それを追加する PR（issue #14）で、ここに追記する。
 
 ## 設計上の約束（コードを読んでも分かりにくいもの）
 
