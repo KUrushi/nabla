@@ -1,0 +1,8 @@
+# IREE のソースビルドで固定するバージョン。
+#
+# scripts/build-iree.sh はこのファイルを読んでチェックアウトする。
+# 更新するときは、この3行と docs/iree-build.md の記録を一緒に直す。
+
+repo=https://github.com/iree-org/iree
+tag=v3.11.0
+commit=e4a3b0405d7d23554da26403658d0e8c3c5ecf25
