@@ -204,7 +204,7 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | --- | --- |
 | `array-spec` 生成器 | rank 0〜4、各次元 1〜8 の形状と dtype の組を作る。`:dtypes` で候補を絞れる |
 | `make-random-array` | spec と固定シードから配列を作る。`:domain` で定義域（正の数だけ、など）を指定できる |
-| `pytree-spec` 生成器 | リスト・ベクタ・`defmodule` 構造体を入れ子にした木を作る |
+| `pytree-spec` 生成器（未実装） | リスト・ベクタ・`defmodule` 構造体を入れ子にした木を作る予定（フェーズ1で PyTree を実装するときに追加する。それまでは `tests/support/` に存在しない） |
 | `uniform-integer` / `uniform-real` 生成器 | `check-it::*size*` にクランプされない、指定した範囲全体から一様に選ぶ整数・実数の生成器。下の「check-it の落とし穴」を読んでから `(integer lo hi)` / `(real lo hi)` の代わりに使う |
 | `allclose` / `approx=` | dtype ごとの既定の許容誤差で比べ、失敗時に最大誤差とその位置を出力する |
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |
@@ -242,3 +242,25 @@ check-it 組み込みの `(integer lo hi)` / `(real lo hi)` は、指定した `
 実際にその範囲まで rank や次元が届くことを
 `support/array-spec/respects-larger-than-ten-max-rank-and-max-dim`
 （`tests/support-test.lisp`）で確かめている。
+
+### check-it のもう1つの落とし穴: 同じ Lisp イメージ内での再実行
+
+check-it は失敗例を見つけると、`:regression-file` に書き出すのと同時に、
+`(get regression-id 'regression-cases)` という plist にも生の文字列
+（`(format nil "~S" value)`）をそのまま `push` する（`check-it.lisp` の
+`save-regression`）。一方、regression ファイルを `load` して過去の失敗例
+を再生するときは `regression-case` マクロ（`regression-case%`）経由で
+`datum` アクセサを持つ `REGRESSION-CASE` オブジェクトとして登録される。
+
+そのため、同じ SBCL プロセス（同じ Lisp イメージ）の中で、あるテストが
+新しい失敗例を見つけて保存した「あと」に、同じテストフォームをもう一度
+評価すると、2回目の実行は `(get regression-id 'regression-cases)` の中に
+`REGRESSION-CASE` オブジェクトと生の文字列が混在した状態で
+`(datum regression-case)` を呼ぶことになり、生の文字列に対しては
+`datum` の実装（メソッド）が無いため `NO-APPLICABLE-METHOD` で落ちる。
+これは check-it 側の実装の非対称性が原因で、nabla 側のコードの不具合
+ではない。`scripts/run-tests.sh` のように毎回新しい SBCL プロセスを
+起動する通常の実行では、プロセス起動時点でこの plist が空なので問題に
+ならない。SLIME / REPL などで同じイメージのまま同じテストを何度も
+`(fiveam:run! ...)` し直すときにだけ注意する（プロセスを再起動するか、
+`(remprop 'テスト名 'check-it::regression-cases)` で一旦クリアする）。

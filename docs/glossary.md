@@ -46,6 +46,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **CFFI**
 : Common Lisp から C のライブラリを呼び出すためのライブラリ。
 
+**libffi / cffi-libffi**
+: libffi は C の関数呼び出しを実行時に組み立てるライブラリで、構造体を値で渡したり値で返したりする関数（`iree_allocator_t` や `iree_string_view_t` など）を、素の CFFI では扱えない場合に使う。cffi-libffi はこれを CFFI から使うための拡張で、`nabla/iree` のランタイムバインディングが依存する（ビルドには apt の `libffi-dev` が要る）。
+
 **finalizer**
 : オブジェクトが GC（ガベージコレクタ）に回収されるときに呼ばれる関数。nabla では GPU 上のメモリを解放するのに使う。finalizer の中で対象オブジェクト自身を参照すると、参照が残るので永遠に回収されなくなる。
 
