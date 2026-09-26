@@ -19,6 +19,31 @@ nabla は IREE を固定したコミットで使う。このドキュメント�
 - `compiler/bindings/c/iree/compiler/embedding_api.h`
 - `runtime/src/iree/runtime/api.h`
 
+## 環境変数
+
+`scripts/build-iree.sh` が読む環境変数（すべて省略時は既定値を使う）。
+
+| 変数 | 既定値 | 意味 |
+| --- | --- | --- |
+| `NABLA_IREE_HOME` | `~/.local/share/nabla/iree-3.11.0` | インストール先。ビルド成果物 (`lib/`, `bin/`, `include/`) をここに置く |
+| `NABLA_IREE_SRC` | `${XDG_CACHE_HOME:-~/.cache}/nabla/iree-src` | IREE のソースチェックアウト先（wheel モードでも C API ヘッダとランタイムのソースに使う） |
+| `NABLA_IREE_BUILD` | wheel: `${XDG_CACHE_HOME:-~/.cache}/nabla/iree-build-runtime`<br>source: `${XDG_CACHE_HOME:-~/.cache}/nabla/iree-build` | cmake のビルドディレクトリ |
+| `NABLA_IREE_WHEEL_DIR` | `${XDG_CACHE_HOME:-~/.cache}/nabla/iree-wheel` | ダウンロードしたホイールと展開先のキャッシュ |
+| `NABLA_IREE_COMPILER` | `wheel` | `wheel` または `source`。`--compiler` と同じ |
+| `NABLA_IREE_CUDA` | `0` | `1` で CUDA を有効化。`--cuda` と同じ |
+| `NABLA_IREE_JOBS` | `$(nproc)` | `ninja` の並列数 |
+
+キャッシュ用のディレクトリ (`NABLA_IREE_SRC` / `NABLA_IREE_BUILD` / `NABLA_IREE_WHEEL_DIR`)
+は [XDG Base Directory](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html)
+の慣習に従い、既定では `$XDG_CACHE_HOME`（未設定なら `~/.cache`）の下の `nabla/` に置く。
+どの変数も明示的に指定すればそちらを使うので、固定のパスを既に使っている開発環境や
+CI があれば、その環境変数を設定するだけで既定値を変えずに済む（例えばこの既定値を
+導入する前から `NABLA_IREE_SRC=/home/user/iree-src` のようなパスを使っていた環境は、
+その変数を設定し続ける限りディレクトリを移動する必要はない）。
+
+`NABLA_IREE_SRC` が存在しない場合、`scripts/build-iree.sh` はロックしたタグ・コミットを
+`git clone --depth 1` してから必要なサブモジュールだけを浅く取得する（詳細は次の節）。
+
 ## コンパイラの入手方法: wheel（既定）と source
 
 `scripts/build-iree.sh` は `--compiler=wheel|source`（環境変数 `NABLA_IREE_COMPILER`）で
@@ -26,6 +51,10 @@ nabla は IREE を固定したコミットで使う。このドキュメント�
 `wheel`**。ランタイム (`libnabla_iree_runtime.so`) は、どちらのモードでも常にロックした
 コミットからソースビルドする（PyPI のホイールには C ランタイムのライブラリは含まれて
 いないため）。
+
+**wheel モードは x86_64 Linux 専用**（`third_party/iree.lock` に記録したホイールが
+`manylinux_2_28_x86_64` cp311 タグのみだから）。macOS や aarch64 など、それ以外の
+プラットフォームでは `--compiler=source`（フルソースビルド）を使う。
 
 ### なぜ既定が wheel なのか（このマシンでの実測）
 
@@ -80,6 +109,17 @@ iree/compiler/_mlir_libs/iree-compile         # → bin/iree-compile
   ため、展開直後の `iree-compile` は `-rw-r--r--` になる。`chmod +x` で復元してから使う
 - ダウンロードしたホイールは third_party/iree.lock の sha256 と照合してから使う
   （一致しなければエラーで止まる）
+- ホイールのダウンロードと sha256 検証は、cmake configure の**後**・ninja による
+  ランタイムのビルドより**前**に行う（`--configure-only` は cmake configure の
+  直後に止まるので、ホイールには一切触れない）。壊れたホイールや sha256 の
+  不一致は、ランタイムのビルドを始める前に即座に検出して止まるので、ビルド
+  ディレクトリやインストール先に半端な状態を残さない
+- `libIREECompiler.so`（wheel モードで約 337 MB）は、インストール先に既に同じ
+  サイズ・mtime のファイルがあれば再コピーしない（`copy_if_changed`、
+  `--compiler=source` でビルドツリーからコピーする場合も同様）。展開・ビルド
+  結果を毎回同じ手順で作る限り、`cp -a` はソースの mtime を保存するので、
+  2回目以降の実行はこの比較だけで済み、大きなファイルの無駄な再コピーを
+  避けられる
 
 ## ビルドオプション（cmake）と根拠
 
@@ -293,6 +333,13 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
 この開発環境には NVIDIA GPU がなく、CUDA toolkit もインストールされていない
 （`IREE_CUDA_AVAILABLE` が偽になる）。そのため CUDA 関連は**未検証**:
 
+`--cuda`（`--compiler=source` と組み合わせた場合）は、CUDA toolkit がローカルに
+インストール済みでなければ、cmake configure 時に NVIDIA の redistributable
+パッケージ索引にネットワークで到達してターゲットの依存関係を取得しようとする。
+この環境ではプロキシ経由のアクセスが `403 Forbidden` で拒否され、configure の
+段階で失敗した（GPU の有無以前に、ネットワークアクセスの問題）。CUDA toolkit を
+インストールするか、NVIDIA の索引に到達できるネットワークが必要。
+
 - `scripts/build-iree.sh --cuda` は `--compiler=source` と組み合わせたときのみ
   `IREE_TARGET_BACKEND_CUDA=ON` を追加するコードだが、この環境では実行できず未検証
   （CUDA toolkit が必要）。`--compiler=wheel`（既定）と `--cuda` を組み合わせた場合は
@@ -300,7 +347,9 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
   コンパイラ側の CUDA ターゲットバックエンドは PyPI ホイールの `iree-base-compiler`
   にどのターゲットが含まれるか未確認であり、これも未検証
 - `scripts/verify-iree.sh --cuda` は `nvidia-smi` の有無を見て、無ければ CPU 側の
-  検証だけ行いスキップする（この環境では常にスキップされた）
+  検証だけ行いスキップする（この環境では常にスキップされた）。スキップ時の
+  メッセージには、CUDA を有効にするには CUDA toolkit のインストールか NVIDIA の
+  redistributable 索引へのネットワーク到達性が必要である旨も表示する
 - `--iree-cuda-target=sm_XX` の指定や、LLVM がその世代に対応しているかの確認は、
   GPU を持つ環境が用意でき次第行う
 
