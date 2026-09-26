@@ -68,6 +68,18 @@ element-type-for-dtype の実装と1対1で対応させない（実装をなぞ�
                 :regression-id support/make-random-array/positive-domain-is-positive
                 :regression-file (regression-path "make-random-array-positive-domain"))))
 
+(test support/array-spec/prints-readably
+  "check-it は失敗例を (format nil \"~S\" value) で保存し、regression
+ファイルの LOAD 時に READ-FROM-STRING で読み戻す。array-spec% がこの
+往復に耐えないと、最初に失敗した瞬間に regression ファイルが壊れ、
+以後 nabla/tests のロードごと失敗するようになる（そのものずばりの
+不具合が過去に起きたので、再発を防ぐために固定する）。"
+  (is (check-it (generator (array-spec :dtypes '(:f32 :f64 :bf16 :f16)))
+                (lambda (spec)
+                  (equalp spec (read-from-string (prin1-to-string spec))))
+                :regression-id support/array-spec/prints-readably
+                :regression-file (regression-path "array-spec-prints-readably"))))
+
 (test support/allclose/reflexive
   "allclose は、同じ配列どうしなら常に真になる。"
   (is (check-it (generator (array-spec))
@@ -136,17 +148,19 @@ large は手動または定期実行のみで、既定のスイートには含�
   "small / medium / large 以外の名前はエラーにする（黙って無視しない）。"
   (signals error (sizes-from-env "huge")))
 
-(test support/size-suite/default-sizes-never-select-large
-  "sizes-from-env の既定値が選ぶサイズ（:small と :medium）は、
-どちらも :nabla.large 以外のスイートに対応する。run-tests はサイズを
-%size-suite でスイートに変換してから fiveam:run! するだけなので、
-ここが成り立てば run-tests (sizes-from-env) は :nabla.large を実行しない。
-（fiveam:run! を使った統合テストは、自分自身が属するスイートを再帰的に
-実行してしまうと無限再帰になるため、下の large 専用の検証テストで行う。）"
-  (dolist (size (sizes-from-env nil))
-    (is (not (eq (nabla.tests.support::%size-suite size) :nabla.large)))))
+(test support/sizes-from-env/blank-or-trailing-comma-does-not-signal
+  "NABLA_TEST_SIZES が空文字列のときは既定値にフォールバックし、末尾や
+連続するカンマが作る空の要素は無視する。どちらも未処理のコンディションで
+scripts/run-tests.sh を落としてはいけない。"
+  (is (equal (sizes-from-env "") '(:small :medium)))
+  (is (equal (sizes-from-env "small,") '(:small)))
+  (is (equal (sizes-from-env ",small,,medium,") '(:small :medium))))
 
 ;;; run-tests が :nabla.large を既定で触らないことを確かめる統合テスト。
+;;; sizes-from-env の既定値が :nabla.large を選ばないことは、内部関数
+;;; %size-suite を直接呼ぶのではなく、下の
+;;; support/run-tests/default-sizes-do-not-run-large が公開 API
+;;; (run-tests) 経由で確かめる。
 ;;; 検証本体は :nabla.large の下に置く: run-tests (:sizes '(:small :medium))
 ;;; を、実行中の :nabla.small / :nabla.medium 自身から呼ぶと、実行中のスイート
 ;;; を fiveam:run! で再度実行することになり無限再帰に陥るため、それらとは

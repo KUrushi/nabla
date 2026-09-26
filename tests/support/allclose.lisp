@@ -19,7 +19,12 @@ RTOL / ATOL が明示されていれば、そちらを優先する。"
   "スカラー A と B が許容誤差つきで一致するか。
 
 |A - B| <= ATOL + RTOL * |B| なら真。A・B のどちらかが NaN なら常に偽。
-比較は DOUBLE-FLOAT で行う。"
+比較は DOUBLE-FLOAT で行う。
+
+ALLCLOSE と違い、DTYPE が :bf16 / :f16 でもビット列のデコードはしない
+（A・B はすでに CL の数値として渡される前提）。bf16 / f16 の生の
+(unsigned-byte 16) 値をそのまま比較したいときは、先に DECODE-ELEMENT で
+数値に戻してから渡すこと。"
   (multiple-value-bind (rtol atol) (%default-tolerance dtype rtol atol)
     (let ((a (coerce a 'double-float))
           (b (coerce b 'double-float)))

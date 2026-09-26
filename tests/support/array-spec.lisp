@@ -5,9 +5,20 @@
 ;; check-it の def-generator は同じ名前で defclass するので、構造体の型名
 ;; そのものは array-spec% にし、アクセサだけ :conc-name で array-spec- に
 ;; そろえる。ARRAY-SPEC というシンボルは、下の def-generator が定義する
-;; ジェネレータのクラス名として使う。
+;; ジェネレータのクラス名として使う（型名は ARRAY-SPEC% のままなので、
+;; (typep x 'array-spec) は真にならない点に注意）。
+;;
+;; :constructor を2つ持たせているのは、check-it が失敗例を保存すると
+;; き `(format nil "~S" value)` で #S(ARRAY-SPEC% :SHAPE ... :DTYPE ...)
+;; という表記を使い、regression ファイルの LOAD 時に READ-FROM-STRING
+;; で読み戻すため。SBCL の #S リーダーはキーワード引数の（BOA でない）
+;; default constructor を要求するので、BOA constructor (MAKE-ARRAY-SPEC)
+;; だけでは `The ... structure does not have a default constructor.`
+;; エラーで読めない。2つ目の %MAKE-ARRAY-SPEC-KW はどこからも直接呼ばな
+;; いが、これがあることで #S の読み書きが可能になる。
 (defstruct (array-spec% (:conc-name array-spec-)
-                        (:constructor make-array-spec (shape dtype)))
+                        (:constructor make-array-spec (shape dtype))
+                        (:constructor %make-array-spec-kw))
   "配列の形状 (SHAPE, フィクスナムのリスト) と DTYPE (キーワード) の組。"
   (shape nil :type list :read-only t)
   (dtype nil :type keyword :read-only t))

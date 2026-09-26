@@ -17,8 +17,15 @@
 
 (defun sizes-from-env (&optional (env-value (sb-ext:posix-getenv "NABLA_TEST_SIZES")))
   "NABLA_TEST_SIZES（カンマ区切り。既定は \"small,medium\"）を
-(:small :medium :large) のリストにして返す。"
-  (mapcar #'%size-keyword (%split-comma (or env-value "small,medium"))))
+(:small :medium :large) のリストにして返す。空文字列や未設定は既定値に
+フォールバックし、区切りの前後の空要素（先頭・末尾・連続するカンマ）は
+無視する。"
+  (let* ((trimmed (and env-value (string-trim '(#\Space #\Tab) env-value)))
+         (value (if (or (null trimmed) (zerop (length trimmed)))
+                    "small,medium"
+                    env-value)))
+    (mapcar #'%size-keyword
+            (remove "" (%split-comma value) :test #'string=))))
 
 (defun %size-suite (size)
   (ecase size
