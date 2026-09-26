@@ -356,17 +356,26 @@ if [[ "${NABLA_IREE_COMPILER}" == "wheel" ]]; then
   EXTRACT_DIR="${NABLA_IREE_WHEEL_DIR}/extracted-${LOCK_WHEEL_VERSION}"
   WHEEL_COMPILER_SO="${EXTRACT_DIR}/iree/compiler/_mlir_libs/libIREECompiler.so"
   WHEEL_IREE_COMPILE="${EXTRACT_DIR}/iree/compiler/_mlir_libs/iree-compile"
+  WHEEL_IREE_LLD="${EXTRACT_DIR}/iree/compiler/_mlir_libs/iree-lld"
   if [[ ! -f "${WHEEL_COMPILER_SO}" || ! -x "${WHEEL_IREE_COMPILE}" ]]; then
     log "extracting ${WHEEL_PATH} into ${EXTRACT_DIR}"
     rm -rf "${EXTRACT_DIR}"
     python3 -m zipfile -e "${WHEEL_PATH}" "${EXTRACT_DIR}"
-    # python's zipfile module does not restore the Unix executable bit
-    # stored in the archive, so iree-compile comes out as plain -rw-r--r--.
-    if [[ -f "${WHEEL_IREE_COMPILE}" ]]; then
-      chmod +x "${WHEEL_IREE_COMPILE}"
-    fi
   else
     log "reusing existing extraction at ${EXTRACT_DIR}"
+  fi
+  # python's zipfile module does not restore the Unix executable bit stored
+  # in the archive, so iree-compile / iree-lld come out as plain -rw-r--r--.
+  # Do this unconditionally (not only in the freshly-extracted branch above):
+  # an extraction cached from a version of this script that did not yet know
+  # about iree-lld would otherwise be "reused" with iree-lld still
+  # non-executable, since the branch above only re-extracts based on
+  # iree-compile's executable bit.
+  if [[ -f "${WHEEL_IREE_COMPILE}" ]]; then
+    chmod +x "${WHEEL_IREE_COMPILE}"
+  fi
+  if [[ -f "${WHEEL_IREE_LLD}" ]]; then
+    chmod +x "${WHEEL_IREE_LLD}"
   fi
   if [[ ! -f "${WHEEL_COMPILER_SO}" ]]; then
     echo "error: ${WHEEL_COMPILER_SO} not found after extracting ${WHEEL_PATH}" >&2
@@ -376,14 +385,28 @@ if [[ "${NABLA_IREE_COMPILER}" == "wheel" ]]; then
     echo "error: ${WHEEL_IREE_COMPILE} not found (or not executable) after extracting ${WHEEL_PATH}" >&2
     exit 1
   fi
+  if [[ ! -x "${WHEEL_IREE_LLD}" ]]; then
+    echo "error: ${WHEEL_IREE_LLD} not found (or not executable) after extracting ${WHEEL_PATH}" >&2
+    exit 1
+  fi
 
   log "installing compiler from wheel into ${NABLA_IREE_HOME}"
   copy_if_changed "${WHEEL_COMPILER_SO}" "${NABLA_IREE_HOME}/lib/libIREECompiler.so"
   cp -a "${WHEEL_IREE_COMPILE}" "${NABLA_IREE_HOME}/bin/iree-compile"
-  # iree-compile の RUNPATH は $ORIGIN で、同じディレクトリの
+  cp -a "${WHEEL_IREE_LLD}" "${NABLA_IREE_HOME}/bin/iree-lld"
+  # iree-compile / iree-lld の RUNPATH は $ORIGIN で、同じディレクトリの
   # libIREECompiler.so を NEEDS しているので、bin/ にもシンボリックリンクを
-  # 置く (実体は lib/ に置いたものを指す)。
+  # 置く (実体は lib/ に置いたものを指す)。llvm-cpu バックエンドは常に外部の
+  # リンカをサブプロセスで起動してオブジェクトをリンクするため (このビルドに
+  # インプロセスのリンカは無い)、system の /usr/bin/lld ではなくロックした
+  # IREE コミットと同じビルドの lld を使わせる必要がある
+  # (--iree-llvmcpu-embedded-linker-path、呼び出し側は scripts/verify-iree.sh
+  # と #20 のビルド層を参照)。
   ln -sf ../lib/libIREECompiler.so "${NABLA_IREE_HOME}/bin/libIREECompiler.so"
+
+  log "verifying iree-lld runs and resolves libIREECompiler.so via its RUNPATH"
+  IREE_LLD_VERSION_OUTPUT="$("${NABLA_IREE_HOME}/bin/iree-lld" -flavor gnu --version)"
+  log "iree-lld: ${IREE_LLD_VERSION_OUTPUT}"
 
   log "verifying iree-compile --version reports the locked commit"
   VERSION_OUTPUT="$("${NABLA_IREE_HOME}/bin/iree-compile" --version)"
@@ -399,7 +422,12 @@ fi
 
 BUILD_TARGETS=(iree-run-module iree_runtime_unified)
 if [[ "${NABLA_IREE_COMPILER}" == "source" ]]; then
-  BUILD_TARGETS+=(iree-compile iree_compiler_API_SharedImpl)
+  # iree-lld: llvm-cpu バックエンドは CPU 実行ファイルをリンクするのに
+  # 常に外部のリンカをサブプロセスで起動する (このビルドにインプロセスの
+  # リンカは無い) ので、ロックしたコミットと同じビルドの lld
+  # (system の /usr/bin/lld ではなく) を --iree-llvmcpu-embedded-linker-path
+  # で渡せるようにインストールしておく。
+  BUILD_TARGETS+=(iree-compile iree_compiler_API_SharedImpl iree-lld)
 fi
 log "building targets: ${BUILD_TARGETS[*]} (-j ${NABLA_IREE_JOBS})"
 cmake --build "${NABLA_IREE_BUILD}" --target "${BUILD_TARGETS[@]}" -j "${NABLA_IREE_JOBS}"
@@ -498,6 +526,10 @@ if [[ "${NABLA_IREE_COMPILER}" == "source" ]]; then
   # コピーしても壊れたアーカイブにしかならない。デバッグ時はビルドツリーの
   # ものをそのまま参照すること。
   cp -a "${NABLA_IREE_BUILD}/tools/iree-compile" "${NABLA_IREE_HOME}/bin/"
+  cp -a "${NABLA_IREE_BUILD}/tools/iree-lld" "${NABLA_IREE_HOME}/bin/"
+  log "verifying iree-lld runs and resolves libIREECompiler.so via its RUNPATH"
+  IREE_LLD_VERSION_OUTPUT="$("${NABLA_IREE_HOME}/bin/iree-lld" -flavor gnu --version)"
+  log "iree-lld: ${IREE_LLD_VERSION_OUTPUT}"
 fi
 
 cp -a "${NABLA_IREE_BUILD}/tools/iree-run-module" "${NABLA_IREE_HOME}/bin/"
