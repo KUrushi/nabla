@@ -101,13 +101,16 @@ run_backend() {
   check_output "${backend}" "${output}"
 }
 
-run_backend "llvm-cpu" "local" "local-task" "/tmp/nabla-matmul-llvm-cpu.vmfb"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nabla-matmul.XXXXXX")"
+trap 'rm -rf "${WORK_DIR}"' EXIT
+
+run_backend "llvm-cpu" "local" "local-task" "${WORK_DIR}/nabla-matmul-llvm-cpu.vmfb"
 
 if [[ "${WITH_CUDA}" -eq 1 ]]; then
   if ! command -v nvidia-smi >/dev/null 2>&1; then
     log "skipping cuda check: nvidia-smi not found (no GPU in this environment)"
   else
-    run_backend "cuda" "cuda" "cuda" "/tmp/nabla-matmul-cuda.vmfb"
+    run_backend "cuda" "cuda" "cuda" "${WORK_DIR}/nabla-matmul-cuda.vmfb"
   fi
 else
   log "skipping cuda check (pass --cuda to enable; requires an IREE build with IREE_TARGET_BACKEND_CUDA=ON)"

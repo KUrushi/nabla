@@ -80,7 +80,13 @@ if [[ -d "${NABLA_IREE_SRC}/.git" || -f "${NABLA_IREE_SRC}/.git" ]]; then
     log "existing checkout at ${NABLA_IREE_SRC} is at ${current_commit}, not ${LOCK_COMMIT}; will re-checkout"
     need_clone=0
     git -C "${NABLA_IREE_SRC}" fetch --depth 1 origin "${LOCK_COMMIT}"
-    git -C "${NABLA_IREE_SRC}" checkout "${LOCK_COMMIT}"
+    if ! git -C "${NABLA_IREE_SRC}" checkout "${LOCK_COMMIT}"; then
+      echo "error: could not check out ${LOCK_COMMIT} in ${NABLA_IREE_SRC}." >&2
+      echo "       this usually means there are local modifications or untracked" >&2
+      echo "       files that would be overwritten. Inspect with:" >&2
+      echo "         git -C ${NABLA_IREE_SRC} status" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -131,6 +137,9 @@ CMAKE_ARGS=(
   -DIREE_ENABLE_THIN_ARCHIVES=ON
   -DIREE_ENABLE_WERROR_FLAG=OFF
   -DIREE_ENABLE_ASSERTIONS=OFF
+  # CFFI は dlopen したライブラリのシンボルテーブルを見て関数を探すので、
+  # デフォルトの -fvisibility=hidden のままではシムから何も見えなくなる。
+  -DIREE_VISIBILITY_HIDDEN=OFF
   # We deliberately init only the submodules this build needs (see
   # SUBMODULES below), not the ones for backends we don't build (ROCm,
   # Vulkan, WebGPU, Torch, tracing, ...). IREE's own submodule-init check
@@ -201,15 +210,39 @@ if [[ ! -f "${RUNTIME_STATIC_LIB}" ]]; then
   exit 1
 fi
 
+# iree_cc_unified_library (iree_runtime_unified の生成元) は third_party の
+# 依存 (flatcc, printf) をアーカイブに含めず INTERFACE_IREE_TRANSITIVE_OBJECT_LIBS
+# として記録するだけなので、シムをリンクするときは別途これらの静的ライブラリを
+# 明示的に渡す必要がある。ビルドツリー内を検索して見つける (パスはターゲット名
+# から生成されるが、サブディレクトリ構成はバージョン間で動きうるため固定しない)。
+find_static_lib() {
+  local name="$1"
+  local -a matches
+  mapfile -t matches < <(find "${NABLA_IREE_BUILD}" -name "${name}" | sort)
+  if [[ "${#matches[@]}" -eq 0 ]]; then
+    echo "error: required static library not found in build tree: ${name}" >&2
+    exit 1
+  fi
+  if [[ "${#matches[@]}" -gt 1 ]]; then
+    log "warning: multiple candidates for ${name} found in ${NABLA_IREE_BUILD}, using the first (sorted by path): ${matches[*]}"
+  fi
+  echo "${matches[0]}"
+}
+
+FLATCC_STATIC_LIB="$(find_static_lib 'libflatcc_parsing.a')"
+PRINTF_STATIC_LIB="$(find_static_lib 'libprintf_printf.a')"
+log "found flatcc runtime static lib: ${FLATCC_STATIC_LIB}"
+log "found printf static lib: ${PRINTF_STATIC_LIB}"
+
 SHIM_SO="${NABLA_IREE_HOME}/lib/libnabla_iree_runtime.so"
 log "linking shim shared library: ${SHIM_SO}"
 if ! clang -shared -fPIC -fuse-ld=lld \
   -o "${SHIM_SO}" \
-  -Wl,--whole-archive "${RUNTIME_STATIC_LIB}" -Wl,--no-whole-archive \
+  -Wl,--whole-archive "${RUNTIME_STATIC_LIB}" "${FLATCC_STATIC_LIB}" "${PRINTF_STATIC_LIB}" -Wl,--no-whole-archive \
   -Wl,--no-undefined \
   -lpthread -ldl -lm; then
   echo "error: linking ${SHIM_SO} failed with -Wl,--no-undefined." >&2
-  echo "       re-run with: clang -shared -fPIC -fuse-ld=lld -o ${SHIM_SO} -Wl,--whole-archive ${RUNTIME_STATIC_LIB} -Wl,--no-whole-archive -lpthread -ldl -lm" >&2
+  echo "       re-run with: clang -shared -fPIC -fuse-ld=lld -o ${SHIM_SO} -Wl,--whole-archive ${RUNTIME_STATIC_LIB} ${FLATCC_STATIC_LIB} ${PRINTF_STATIC_LIB} -Wl,--no-whole-archive -lpthread -ldl -lm" >&2
   echo "       then inspect undefined symbols with: nm -u ${RUNTIME_STATIC_LIB}" >&2
   exit 1
 fi
@@ -232,9 +265,18 @@ log "confirmed exports: iree_runtime_instance_create, iree_hal_driver_registry_d
 
 log "installing lib/, bin/, include/ into ${NABLA_IREE_HOME}"
 
-cp -a "${NABLA_IREE_BUILD}"/lib*/libIREECompiler.so* "${NABLA_IREE_HOME}/lib/" 2>/dev/null || \
+if ! cp -a "${NABLA_IREE_BUILD}"/lib*/libIREECompiler.so* "${NABLA_IREE_HOME}/lib/" 2>/dev/null; then
+  found_compiler_so="$(find "${NABLA_IREE_BUILD}" -maxdepth 4 -name 'libIREECompiler.so*' -print -quit)"
+  if [[ -z "${found_compiler_so}" ]]; then
+    echo "error: libIREECompiler.so not found under ${NABLA_IREE_BUILD}" >&2
+    exit 1
+  fi
   find "${NABLA_IREE_BUILD}" -maxdepth 4 -name 'libIREECompiler.so*' -exec cp -a {} "${NABLA_IREE_HOME}/lib/" \;
-cp -a "${RUNTIME_STATIC_LIB}" "${NABLA_IREE_HOME}/lib/"
+fi
+# IREE_ENABLE_THIN_ARCHIVES=ON なので libiree_runtime_unified.a はビルド
+# ディレクトリ内のオブジェクトファイルへの相対パス参照でしかなく、単独で
+# コピーしても壊れたアーカイブにしかならない。デバッグ時はビルドツリーの
+# ものをそのまま参照すること。
 
 cp -a "${NABLA_IREE_BUILD}/tools/iree-compile" "${NABLA_IREE_HOME}/bin/"
 cp -a "${NABLA_IREE_BUILD}/tools/iree-run-module" "${NABLA_IREE_HOME}/bin/"
@@ -248,10 +290,14 @@ cp -a "${NABLA_IREE_SRC}/compiler/bindings/c/iree/compiler/embedding_api.h" \
       "${NABLA_IREE_HOME}/include/iree/compiler/"
 
 # ランタイムのヘッダツリー全体 (ソース側 + ビルドで生成されたスキーマ)。
+# cpio はこの環境にインストールされていないため使わない。ディレクトリ構造を
+# 保ったまま .h だけをコピーするのに find -exec install -D を使う。
 mkdir -p "${NABLA_IREE_HOME}/include/iree"
-(cd "${NABLA_IREE_SRC}/runtime/src/iree" && find . -name '*.h' | cpio -pdm "${NABLA_IREE_HOME}/include/iree" 2>/dev/null)
+(cd "${NABLA_IREE_SRC}/runtime/src/iree" && \
+  find . -name '*.h' -exec install -D -m 0644 '{}' "${NABLA_IREE_HOME}/include/iree/{}" \;)
 if [[ -d "${NABLA_IREE_BUILD}/runtime/src/iree" ]]; then
-  (cd "${NABLA_IREE_BUILD}/runtime/src/iree" && find . -name '*.h' | cpio -pdm "${NABLA_IREE_HOME}/include/iree" 2>/dev/null)
+  (cd "${NABLA_IREE_BUILD}/runtime/src/iree" && \
+    find . -name '*.h' -exec install -D -m 0644 '{}' "${NABLA_IREE_HOME}/include/iree/{}" \;)
 fi
 
 log "install complete: ${NABLA_IREE_HOME}"

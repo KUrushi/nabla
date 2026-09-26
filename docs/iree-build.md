@@ -66,6 +66,11 @@ scripts/verify-iree.sh --cuda   # nvidia-smi があるときだけ cuda 側も�
 | `IREE_ENABLE_WERROR_FLAG` | `OFF` | L541（既定 `ON`）。システムの clang が upstream CI より新しく、`-Werror` で無関係な警告が
   エラーになる可能性があるため |
 | `IREE_ENABLE_ASSERTIONS` | `OFF` | L605。Release ビルドでは既定で OFF |
+| `IREE_VISIBILITY_HIDDEN` | `OFF` | L133（既定 `ON`）。既定では全ライブラリが `-fvisibility=hidden`
+  でビルドされ（`iree_copts.cmake`）、C の `IREE_API_EXPORT` も何も付与しない
+  (`runtime/src/iree/base/attributes.h`) ため、`libnabla_iree_runtime.so` から
+  `iree_*` 関数が一切 export されず CFFI の `dlopen`/`dlsym` が失敗する。可視性は
+  リンク時のフラグでは覆せないため、configure 時に明示的に `OFF` にする必要がある |
 | `IREE_BUILD_COMPILER` | `ON`（既定のまま） | L78。コンパイラ (`libIREECompiler.so`, `iree-compile`) が必要 |
 | `IREE_BUILD_TESTS` | `OFF` | L79（既定 `ON`）。IREE 自体のテストはビルドしない |
 | `IREE_BUILD_SAMPLES` | `OFF` | L81（既定 `ON`） |
@@ -100,14 +105,28 @@ scripts/verify-iree.sh --cuda   # nvidia-smi があるときだけ cuda 側も�
 IREE のランタイムは `iree_runtime_unified` として静的アーカイブでしか提供されないため、
 CFFI から `dlopen` できるよう、`--whole-archive` で包んで共有ライブラリに変換する。
 
+`iree_cc_unified_library`（`iree_runtime_unified` の定義に使われるマクロ、
+`build_tools/cmake/iree_cc_library.cmake`）は third_party の依存（flatcc, printf）を
+アーカイブの中に含めず `INTERFACE_IREE_TRANSITIVE_OBJECT_LIBS` として記録するだけなので、
+`libiree_runtime_unified.a` 単体をリンクすると `flatcc_verify_table_as_root` や
+`vsnprintf_` / `vfctprintf` が未定義シンボルになる。ビルドツリー内の
+`libflatcc_parsing.a` と `libprintf_printf.a` を探して一緒にリンクする必要がある。
+
 ```sh
 clang -shared -fPIC -fuse-ld=lld \
   -o "$NABLA_IREE_HOME/lib/libnabla_iree_runtime.so" \
-  -Wl,--whole-archive "$BUILD/runtime/src/iree/runtime/libiree_runtime_unified.a" \
+  -Wl,--whole-archive \
+    "$BUILD/runtime/src/iree/runtime/libiree_runtime_unified.a" \
+    "$BUILD/build_tools/third_party/flatcc/libflatcc_parsing.a" \
+    "$BUILD/build_tools/third_party/printf/libprintf_printf.a" \
   -Wl,--no-whole-archive \
   -Wl,--no-undefined \
   -lpthread -ldl -lm
 ```
+
+（`scripts/build-iree.sh` はこの2つのパスを固定せず、ビルドツリーを `find` して探す。
+CMake のバージョンやターゲット構成が変わってサブディレクトリが動いても壊れないように
+するため）
 
 リンク後、`nm -D` で `iree_runtime_instance_create` と
 `iree_hal_driver_registry_default` が export されていることを確認する（されていなければ
@@ -120,7 +139,6 @@ clang -shared -fPIC -fuse-ld=lld \
 lib/
   libIREECompiler.so, libIREECompiler.so.0   # コンパイラの C API 実装
   libnabla_iree_runtime.so                    # ランタイムのシム共有ライブラリ
-  libiree_runtime_unified.a                   # デバッグ用に元の静的アーカイブも残す
 bin/
   iree-compile, iree-run-module               # 動作確認用 CLI（本体からは呼ばない）
 include/
@@ -135,8 +153,9 @@ include/
 2x3 × 3x2 → 2x2 の行列積を手書きしてある。期待値はコメントに書いてあり、
 `scripts/verify-iree.sh` がその値を `iree-run-module` の出力から探して比較する。
 
-`iree-compile` のフラグは v3.x で次の名前を使う（`iree-compile --help` で確認済みの
-コード上のオプション名。実行結果自体は下の TODO 表に記録する）:
+`iree-compile` のフラグは v3.x で次の名前を使う（ビルド前のためバイナリの
+`--help` では確認できておらず、ソースコードのオプション定義から確認した名前。
+実行結果自体は下の TODO 表に記録する）:
 
 - `--iree-hal-target-device=local --iree-hal-local-target-device-backends=llvm-cpu`
   （`compiler/src/iree/compiler/Dialect/HAL/Target/Devices/LocalDevice.cpp` /
@@ -199,6 +218,13 @@ OFF になる。`CMakeLists.txt` L481-483）。そのため:
   今回意図的に初期化していないサブモジュール（`hip-build-deps` など ROCm/Vulkan/
   WebGPU/Torch/tracing 用）まで要求してくることが分かったため、
   `-DIREE_ERROR_ON_MISSING_SUBMODULES=OFF` を追加した（上の表に理由を記載）
+- `IREE_VISIBILITY_HIDDEN=OFF` の configure は成功し、`CMakeCache.txt` に反映される
+  ことを確認した（実測 34 秒）。この開発環境の `/home/user/iree-build` は以前
+  `IREE_VISIBILITY_HIDDEN=ON` のまま一度ビルドされているが、`cmake` の再 configure で
+  コンパイルコマンドラインが変わるオブジェクトは ninja が自動的に再ビルド対象と
+  検出するため、既存のビルドディレクトリを消さずに `scripts/build-iree.sh` を
+  再実行するだけで正しい可視性で再ビルドされるはずである（実際のフルビルド結果は
+  オーケストレーターが確認する）
 
 | 項目 | 結果 | 所要時間 | 備考 |
 | --- | --- | --- | --- |
@@ -207,3 +233,12 @@ OFF になる。`CMakeLists.txt` L481-483）。そのため:
 | `scripts/build-iree.sh --cuda` フルビルド | 未実施（環境に GPU/CUDA なし） | - | CUDA toolkit のある環境が必要 |
 | `scripts/verify-iree.sh --cuda` | 未実施（環境に GPU/CUDA なし） | - | 同上 |
 | リリース配布物 (release artifacts) の動作確認 | 未実施 | - | ユーザーの方針でフルソースビルドを選択したため試していない |
+
+シムのリンク手順（flatcc / printf を含める変更）は、`IREE_VISIBILITY_HIDDEN=ON` の
+まま以前ビルドされていた `/home/user/iree-build` の既存アーカイブ
+（`libiree_runtime_unified.a`, `libflatcc_parsing.a`, `libprintf_printf.a`）を使って
+実際に `clang -shared ... -Wl,--no-undefined` でリンクし、未解決シンボルなく成功する
+ことを確認済み（可視性が `ON` のままだと `nm -D` の export チェックでは失敗するはずだが、
+それは別途 `IREE_VISIBILITY_HIDDEN=OFF` での再ビルド後に確認する）。ヘッダコピーの
+`find -exec install -D` も同じソースツリーで実行し、`runtime/src/iree` 配下の
+584 個の `.h` すべてがディレクトリ構造を保ったままコピーされることを確認した。
