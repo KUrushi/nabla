@@ -88,6 +88,21 @@
                (is (= 8 (nabla.mutate:source-form-start-line g-def))))))
       (ignore-errors (delete-file tmp)))))
 
+(test read-source-forms-signals-on-unresolvable-in-package
+  "in-package の対象パッケージが見つからないときは、CL-USER に
+黙ってフォールバックせず、はっきりしたエラーを signal する（フォール
+バックすると、そのパッケージのテスト対象がすべて CL-USER で読まれて
+しまい、mutation の生存判定が意味をなさなくなる）。"
+  (let ((tmp (uiop:with-temporary-file (:pathname p :type "lisp" :keep t) p)))
+    (unwind-protect
+         (progn
+           (with-open-file (s tmp :direction :output :if-exists :supersede)
+             (write-string
+              (format nil "(in-package #:nabla-mutate-no-such-package)~%(defun f (x) x)~%")
+              s))
+           (signals error (nabla.mutate:read-source-forms tmp)))
+      (ignore-errors (delete-file tmp)))))
+
 (test read-source-forms-tracks-in-package
   "in-package の後のフォームは、そのパッケージで読まれる（シンボルの
 パッケージで確認する）。"

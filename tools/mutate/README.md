@@ -31,9 +31,9 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
   通常は `nabla/tests`）を読み込む
 - `--test-form FORM`: これを `eval` した結果をテスト実行関数として使う
   （渡さなければ `nabla.mutate:default-test-function` を使う。これは
-  `NABLA.TESTS.SUPPORT:RUN-TESTS` を実行時に探すので、#4（テスト基盤）が
-  マージされていないと動かない。それまでは `nabla` 以外を対象にするときも
-  含め、`--test-system` と `--test-form` を渡すこと）
+  `NABLA.TESTS.SUPPORT:RUN-TESTS` を実行時に探すので、`nabla/tests` が
+  ロードされている必要がある。`nabla` 以外のシステムを対象にするときは、
+  `--test-system` と `--test-form` を明示的に渡すこと）
 
 ## 終了コード
 
@@ -134,3 +134,17 @@ CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-de
   `*mutable-definition-heads*` から `DEFMACRO` を除く
 - `:constant` 演算子は `&optional` / `&key` のデフォルト値
   （`(defun f (x &optional (y 0)) ...)` の `0` など）も置き換える対象にする
+- `nabla-mutate/tests` の PBT は、check-it 組み込みの `(integer lo hi)` /
+  `(real lo hi)` generator をそのまま使っている。この generator は
+  `check-it::*size*`（既定 10）で値をクランプするため、たとえば
+  `(integer -50 50)` と書いても実際には -10..10 前後しか生成されない
+  （詳しくは
+  [`tests/support/uniform-generator.lisp`](../../tests/support/uniform-generator.lisp)
+  のコメントと
+  [`.claude/skills/nabla-testing/references/properties.md`](../../.claude/skills/nabla-testing/references/properties.md)
+  を見よ）。`nabla-mutate` は `nabla` のコアシステムに依存しない独立した
+  ツールという設計（`nabla-mutate.asd` 参照）なので、この PR では
+  `nabla.tests.support:uniform-integer` / `uniform-real` に依存させず、
+  この制限として文書化するだけにとどめる。境界の近くまで広く探索したい
+  テストを `nabla-mutate/tests` に足すときは、この制限を踏まえて
+  generator を選ぶこと

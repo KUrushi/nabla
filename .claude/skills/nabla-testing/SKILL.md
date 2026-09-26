@@ -93,6 +93,13 @@ scripts/setup-lisp-deps.sh
 # テスト（既定は small + medium。CPU だけで動き、GPU は不要）
 scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
 NABLA_TEST_SIZES=large scripts/run-tests.sh
+
+# mutation testing（既定は main から HEAD までの git diff で変わった行が対象）
+tools/mutate/run.sh
+tools/mutate/run.sh src/core/foo.lisp:10-40           # ファイル・行範囲を指定する
+tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
 ```
 
-mutation testing（`tools/mutate/`）と IREE のソースビルド（`scripts/build-iree.sh` / `scripts/verify-iree.sh`）のコマンドは、それらを追加する PR（issue #3 / #14）で、ここと CLAUDE.md の「コマンド」に追記する。
+IREE のソースビルド（`scripts/build-iree.sh` / `scripts/verify-iree.sh`）のコマンドは
+CLAUDE.md の「コマンド」を見る。mutation testing の詳しいオプションは
+[`tools/mutate/README.md`](../../../tools/mutate/README.md) を見る。

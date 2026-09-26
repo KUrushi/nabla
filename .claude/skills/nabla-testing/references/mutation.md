@@ -84,8 +84,8 @@ tools/mutate/run.sh src/core/foo.lisp:10-40
 ```
 
 - `run.sh` は既定で対象システム（`--system`、既定 `nabla`）の `<system>/tests`
-  （既定 `nabla/tests`）を読み込んでからテストを実行する。#4（テスト基盤）が
-  マージされる前や、対象システムの `/tests` が存在しない場合は
+  （既定 `nabla/tests`）を読み込んでからテストを実行する。`nabla` 以外を
+  対象にするときや、対象システムに `/tests` が存在しない場合は
   `--test-system` と `--test-form` で明示的に指定すること
   （[`tools/mutate/README.md`](../../../../tools/mutate/README.md) 参照）
 - 入力: 対象のファイルと行の範囲（既定は `git diff` で `main` から変わった行のうち、

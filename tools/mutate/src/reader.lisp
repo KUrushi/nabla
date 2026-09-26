@@ -44,8 +44,16 @@
 
 (defun %resolve-package (designator)
   "IN-PACKAGE フォームの第2引数から、パッケージオブジェクトを探す。
-見つからなければ現在の *PACKAGE* のままにする。"
-  (or (find-package (string designator)) *package*))
+見つからなければエラーを signal する。ここで CL-USER に黙って
+フォールバックすると、そのパッケージのはずの定義がすべて CL-USER で
+読まれてしまい、mutation の生存判定が意味をなさなくなる（元の
+パッケージのシンボルと衝突せず、テストが変異を検出できない）。
+対象システムを事前に `asdf:load-system` してからこの reader を
+呼ぶこと。"
+  (or (find-package (string designator))
+      (error "read-source-forms: in-package の対象パッケージ ~S が見つからない。~
+対象のシステムを先に asdf:load-system してから読み込むこと。"
+             designator)))
 
 (defun %skip-block-comment (stream)
   "STREAM から `#|` の直後（`|` の次）を読み進め、対応する `|#` の
