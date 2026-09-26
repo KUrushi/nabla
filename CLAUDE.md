@@ -30,8 +30,11 @@ scripts/build-iree.sh                     # --compiler=wheel（既定）+ ソー
 scripts/build-iree.sh --compiler=source   # コンパイラもフルソースビルド（CI 向け、手元では非現実的な時間がかかる）
 scripts/build-iree.sh --cuda              # CUDA も有効化
 scripts/build-iree.sh --configure-only    # cmake configure までで止める
-# 主な環境変数: NABLA_IREE_HOME（インストール先。既定 ~/.local/share/nabla/iree-3.11.0）、
+# 環境変数（詳細は docs/iree-build.md）: NABLA_IREE_HOME（インストール先。既定
+#   ~/.local/share/nabla/iree-3.11.0）、NABLA_IREE_SRC / NABLA_IREE_BUILD /
+#   NABLA_IREE_WHEEL_DIR（既定はいずれも ${XDG_CACHE_HOME:-~/.cache}/nabla/ 以下）、
 #   NABLA_IREE_COMPILER（wheel|source、--compiler と同じ）、NABLA_IREE_CUDA、NABLA_IREE_JOBS
+# wheel モード（既定）は x86_64 Linux 専用。他のプラットフォームでは --compiler=source を使う
 
 # ビルドした iree-compile / iree-run-module で matmul フィクスチャを実行して確かめる
 NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 scripts/verify-iree.sh
