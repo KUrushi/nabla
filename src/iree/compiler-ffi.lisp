@@ -100,6 +100,10 @@
 (cffi:defcfun ("ireeCompilerOutputDestroy" %compiler-output-destroy) :void
   (output :pointer))
 
+;; signals.lisp の %register-llvm-signal-handlers も、LLVM のシグナルハンドラ
+;; 登録を起こす（llvm::ToolOutputFile の CleanupInstaller 経由で
+;; llvm::sys::RemoveFileOnSignal を呼ばせる）だけの目的でこれを呼ぶ。
+;; memfd_create（Linux, glibc 2.27 以降）を使うのでディスクに一切触れない。
 (cffi:defcfun ("ireeCompilerOutputOpenMembuffer" %compiler-output-open-membuffer) :pointer
   (out-output :pointer))
 
