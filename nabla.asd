@@ -12,7 +12,7 @@
 (defsystem "nabla"
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
-  :license "MIT"
+  :license "Apache-2.0"
   :depends-on ("ironclad")
   :components ((:file "src/package")
                (:file "src/dtype")

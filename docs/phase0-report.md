@@ -55,7 +55,7 @@ CLAUDE.md に記録済みの実測（PR #22、ubuntu-24.04）: IREE キャッシ
 
 ### (d) `scripts/build-iree.sh`
 
-べき等な再実行（このマシンでは既にビルド済みの状態からの再実行）で 約1分40秒（`real 1m40.035s`）。CLAUDE.md には「数秒」という記載もあるが、これはキャッシュされたビルドディレクトリを ninja が no-op で確認する場合の値で、リンクや検証も含めて計測すると本報告書の数字（1〜2分程度）になる。
+べき等な再実行（このマシンでは既にビルド済みの状態からの再実行）は、実行のたびに 12秒（`[build-iree] elapsed: 12s`、`real 0m12.401s`）〜1分40秒（`real 1m40.035s`）とばらつきがあった。CLAUDE.md の「数秒」は、キャッシュされたビルドディレクトリを ninja が no-op で確認する場合の値で、リンクや検証まで含めて計測すると本報告書の実測レンジ（12秒〜1分40秒程度）になる。
 
 ### (e) `local` vs `cuda`
 
@@ -133,7 +133,7 @@ CLAUDE.md に記録済みの実測（PR #22、ubuntu-24.04）: IREE キャッシ
 - フェーズ1が前提にできる公開 API は README.md の「公開 API」節（dtype、aval、backend プロトコル、`*compile-cache-directory*`）と `nabla.iree` の `iree-backend` / `compile-stablehlo` / `compile-flags` / コンディション階層に固定してある。これ以上は増やしていない
 - `backend-invoke` は `"module.<name>"`（固定のモジュール名 `module` の後に関数名を付けたもの）を仮定している（`src/iree/backend.lisp`）。そのため、フェーズ1の emitter（#33）は名前付きモジュールではなく、無名の `builtin.module` の中に `func.func @main` を出すこと
 - `compile-flags` の docstring は「iree-lld の有無という隠れた入力」がある旨を警告している。フェーズ1の `jit`（#34）のキャッシュキーは `backend-fingerprint` を経由してこれを含むので、直接気にする必要はないが、`jit` 独自のキャッシュ層を作るときは同じ注意が要る
-- テストで使うヘルパー: `skip-unless-iree`（IREE の共有ライブラリが無ければスキップ）、`define-iree-test` / `define-iree-test/large`（`:nabla.medium` / `:nabla.large` に登録する fiveam:test の代わり）、`stablehlo-fixture`（`tests/fixtures/stablehlo/` の内容を読む）、`regression-path :package "..."`（`tests/regressions/` にファイルを置くときのパスの慣習）。いずれも `tests/iree/support.lisp` にある
+- テストで使うヘルパー: `skip-unless-iree`（IREE の共有ライブラリが無ければスキップ）、`define-iree-test` / `define-iree-test/large`（`:nabla.medium` / `:nabla.large` に登録する fiveam:test の代わり）、`stablehlo-fixture`（`tests/fixtures/stablehlo/` の内容を読む）。この3つは `tests/iree/support.lisp` にある。`regression-path :package "..."`（`tests/regressions/` にファイルを置くときのパスの慣習）は `nabla/test-support`（`tests/support/regression.lisp`）にある
 
 ## 8. 未解決・次のアクション
 

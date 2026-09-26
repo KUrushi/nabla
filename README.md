@@ -69,11 +69,14 @@ NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 tools/mutate/run.sh
 tools/mutate/run.sh src/compile-cache.lisp        # ファイルを指定してもよい
 
-# runner 自身のテスト（CI と同じ1行）
-sbcl --non-interactive \
-  --eval '(require :asdf)' \
-  --eval '(asdf:load-system "nabla-mutate/tests")' \
-  --eval '(uiop:quit (if (nabla.mutate.tests:run-tests) 0 1))'
+# runner 自身のテスト（CI と同じ1行。上の run-tests.sh と違い CL_SOURCE_REGISTRY は
+# 再帰的な "//" にする必要がある。tools/mutate/nabla-mutate.asd はリポジトリ直下の
+# 非再帰的な "$PWD/:..." では見つからないため）
+CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}//:" \
+  sbcl --non-interactive \
+    --eval '(require :asdf)' \
+    --eval '(asdf:load-system "nabla-mutate/tests")' \
+    --eval '(uiop:quit (if (nabla.mutate.tests:run-tests) 0 1))'
 ```
 
 テストサイズの分類（詳しくは `.claude/skills/nabla-testing`）:
@@ -121,6 +124,8 @@ sbcl --non-interactive --load examples/add.lisp
 
 2回目以降にこの例を動かすと、`backend-compile` が vmfb のディスクキャッシュ（既定 `~/.cache/nabla/vmfb/`）を引くので、コンパイルにかかる時間はほぼ0になる。device array（`result` や `a` / `b`）は明示的に解放しなくてよい（finalizer が GC 時に解放する）。明示的に解放したいときは `nabla.iree:release-device-array` を呼ぶ。
 
+上記2行の前に `WARNING: redefining IRONCLAD:BLOCK-LENGTH in DEFGENERIC` のような警告が出ることがあるが、これは ironclad が apt と Lisp システムの両方からロードされることによる既知の無害な警告で、この例のバグではない。
+
 `tests/iree/example-test.lisp` がこの例を毎回 `load` して出力を確認しているので、この例が壊れたら既定のテストスイートが落ちる（ビヨンセ・ルール）。
 
 ## 公開 API（フェーズ0時点）
@@ -137,7 +142,7 @@ sbcl --non-interactive --load examples/add.lisp
 
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
 
-- `iree-backend`（`(nb:make-backend :iree :target :local |:cuda :cuda-arch "sm_80")`）
+- `iree-backend`（`(nb:make-backend :iree :target :local | :cuda :cuda-arch "sm_80")`）
 - `compile-stablehlo` / `compile-flags`
 - コンディション階層: `iree-error`（`backend-error` のサブクラス）
 
@@ -167,4 +172,4 @@ ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`�
 - テストの書き方・実行の仕方は `.claude/skills/nabla-testing` を読む
 - コミットメッセージと PR タイトルは [Conventional Commits](https://www.conventionalcommits.org/ja/v1.0.0/) に従う
 - PR は stacked PR（下位ブランチに積む）で、squash merge をデフォルトにする
-- ライセンスは [MIT](LICENSE)
+- ライセンスは [Apache License 2.0](LICENSE)
