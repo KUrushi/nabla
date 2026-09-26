@@ -50,15 +50,27 @@ f32 は single-float、f64 は double-float、bf16 / f16 はビット列を
        (logior (ash sign 15) (ash exp16 10) (ash mant32 -13))))))
 
 (defun %f16-bits->f32 (f16-bits)
+  "F16-BITS (16bit の f16 ビット列) を single-float に戻す。
+
+指数部 (exp16) が全部0のときは非正規化数（仮数部が0なら ±0、非0なら
+value = mantissa * 2^-24。f16 は指数バイアス15、仮数10bit なので、
+正規化数の最小指数 2^-14 に対し、仮数の重みは 2^-14 / 2^10 = 2^-24）。
+正規化数と同じ「暗黙の先頭1ビットがある」式をそのまま使うと、非正規化数
+を桁違いに大きい値へデコードしてしまう。"
   (let* ((sign (ldb (byte 1 15) f16-bits))
          (exp16 (ldb (byte 5 10) f16-bits))
          (mant16 (ldb (byte 10 0) f16-bits)))
-    (if (and (zerop exp16) (zerop mant16))
-        (if (zerop sign) 0.0f0 -0.0f0)
-        (let* ((exp32 (+ (- exp16 15) 127))
-               (mant32 (ash mant16 13))
-               (bits32 (logior (ash sign 31) (ash exp32 23) mant32)))
-          (sb-kernel:make-single-float (%u32->s32 bits32))))))
+    (cond
+      ((and (zerop exp16) (zerop mant16))
+       (if (zerop sign) 0.0f0 -0.0f0))
+      ((zerop exp16)
+       (let ((magnitude (* mant16 (expt 2.0d0 -24))))
+         (coerce (if (zerop sign) magnitude (- magnitude)) 'single-float)))
+      (t
+       (let* ((exp32 (+ (- exp16 15) 127))
+              (mant32 (ash mant16 13))
+              (bits32 (logior (ash sign 31) (ash exp32 23) mant32)))
+         (sb-kernel:make-single-float (%u32->s32 bits32)))))))
 
 (defun dtype-value (dtype value)
   "DOUBLE-FLOAT の VALUE を、DTYPE の配列要素として格納する値に変換する。"

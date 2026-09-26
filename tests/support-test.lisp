@@ -104,6 +104,41 @@ bf16 / f16 は仮数部が狭いので、生成した DOUBLE-FLOAT をそのま�
                 :regression-id support/make-random-array/unit-domain-stays-in-closed-unit-interval
                 :regression-file (regression-path "make-random-array-unit-domain-closed-unit-interval"))))
 
+(test support/decode-element/f16-subnormal-round-trips
+  "decode-element の f16 は非正規化数（指数部のビットが全部0で仮数部が
+非0）を、value = mantissa * 2^-24 として正しく戻す。
+
+以前は非正規化数も正規化数と同じ式（暗黙の先頭1ビットがある前提）で
+計算していたため、最小の非正規化数（ビット列 1）が本来の 2^-24
+（≈5.96e-8）ではなく、桁違いに大きい 2^-15（≈3.05e-5）相当の値に
+デコードされていた。make-random-array の :positive ドメインが 0 を
+避けるためにこのビット列 1 へクランプするので、この不具合は
+(0, 1] の契約そのものには影響しないが、DECODE-ELEMENT が返す値自体が
+不正確だった。"
+  (is (= (decode-element :f16 1) (expt 2.0d0 -24)))
+  (is (= (decode-element :f16 2) (* 2.0d0 (expt 2.0d0 -24))))
+  (is (= (decode-element :f16 #x03FF) (* 1023.0d0 (expt 2.0d0 -24)))))
+
+(test support/decode-element/f16-subnormal-matches-formula
+  "decode-element の f16 は、指数部のビットが全部0のとき（非正規化数）、
+仮数のビット列を広く振っても value = mantissa * 2^-24 で戻ることを
+check-it で確かめる。SUPPORT/DECODE-ELEMENT/F16-SUBNORMAL-ROUND-TRIPS は
+2, 3個の固定値だけを見る例ベースのテストなので、ここでは仮数の
+10bit 全域 (0..1023) を対象にする。"
+  (is (check-it (generator (integer 0 1023))
+                (lambda (mantissa)
+                  (= (decode-element :f16 mantissa)
+                     (* mantissa (expt 2.0d0 -24))))
+                :regression-id support/decode-element/f16-subnormal-matches-formula
+                :regression-file (regression-path "decode-element-f16-subnormal-matches-formula"))))
+
+(test support/decode-element/f16-zero-and-max-normal
+  "decode-element の f16 は +0 / -0、および最大の正規化数（65504.0）も
+正しく戻す（非正規化数の修正が、他の場合を壊していないことを確かめる）。"
+  (is (= (decode-element :f16 #x0000) 0.0d0))
+  (is (= (decode-element :f16 #x8000) -0.0d0))
+  (is (= (decode-element :f16 #x7BFF) 65504.0d0)))
+
 (test support/array-spec/prints-readably
   "check-it は失敗例を (format nil \"~S\" value) で保存し、regression
 ファイルの LOAD 時に READ-FROM-STRING で読み戻す。array-spec% がこの
