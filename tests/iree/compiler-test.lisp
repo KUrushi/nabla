@@ -114,6 +114,37 @@ OR で混ぜる。方言プレフィックスは常に登録済み（stablehlo /
       (is (some (lambda (diagnostic) (search "doesn't match function result type" (cdr diagnostic)))
                 (iree-compile-error-diagnostics condition))))))
 
+(define-iree-test compiler/compile-stablehlo/opt-level-flag-changes-output
+    "--iree-opt-level=O3 を渡すと、既定（フラグなし）や --iree-opt-level=O0 と
+比べて、コンパイル結果の vmfb のバイト列が変わる。session ごとに
+ireeCompilerSessionSetFlags で渡した --iree-opt-level が実際に効いている
+ことの回帰テスト。
+
+背景（PR #20 で見つかった回帰）: LLVM のシグナルハンドラ登録を
+ireeCompilerSetupGlobalCL(installSignalHandlers=true) 経由で行っていた版は、
+CompilerDriver.cpp の GlobalInit::usesCommandLine を真にする副作用により、
+Session::Session がセッション作成時に一度だけ
+OptionsBinder::global().applyOptimizationDefaults() を適用し、
+Invocation::runPipeline は !usesCommandLine のときしか
+session.binder.applyOptimizationDefaults() を呼ばなくなる。結果として
+--iree-opt-level が黙って無視され、default / O3 / O0 が全部同じバイト列を
+生成していた（scratchpad/adv/ev5f/ で計測: いずれも 9893 バイトで一致。
+iree-compile CLI 直叩きの O3 は 9917 バイトで異なる）。
+signals.lisp の %register-llvm-signal-handlers が
+ireeCompilerSetupGlobalCL を呼ばなくなった今、このテストが再び通ることを
+確かめる。"
+  (skip-unless-iree :library :compiler)
+  (let* ((text (stablehlo-fixture "matmul"))
+         (default (compile-stablehlo text))
+         (o3 (compile-stablehlo text
+                                 :flags (append (compile-flags :local) (list "--iree-opt-level=O3"))))
+         (o0 (compile-stablehlo text
+                                 :flags (append (compile-flags :local) (list "--iree-opt-level=O0")))))
+    (is (not (equalp default o3))
+        "--iree-opt-level=O3 produced byte-identical output to the default: opt-level flags are being ignored")
+    (is (not (equalp o3 o0))
+        "--iree-opt-level=O3 and --iree-opt-level=O0 produced byte-identical output: opt-level flags are being ignored")))
+
 (define-iree-test compiler/compile-stablehlo/repeated-compiles-are-stable
     "同じ StableHLO を繰り返しコンパイルしても、結果のバイト列は毎回同じで、
 メモリ使用量（RSS）が際限なく増え続けない。"
@@ -173,13 +204,76 @@ sigaction で登録するが、nabla.iree はそれを元に戻す（signals.lis
 (define-iree-test signals/ensure-compiler-loaded/registers-llvm-signal-handlers
     "ensure-compiler-loaded を呼んだあとは
 nabla.iree::*llvm-signal-handlers-registered-p* が真になっている
-（%register-llvm-signal-handlers が ireeCompilerSetupGlobalCL を呼んだ印。
-library.lisp / signals.lisp 参照）。third_party/iree.lock で固定した
-IREE 3.11.0 では SetupGlobalCL が実際に登録するので、warm-up コンパイルへの
-フォールバック（%warm-up-compiler）を経由せずにここが真になる。"
+（%register-llvm-signal-handlers が %call-with-world-stopped の窓の中で
+SIGUSR2 の処分の変化を実際に観測した印。library.lisp / signals.lisp
+参照）。third_party/iree.lock で固定した IREE 3.11.0 では
+ireeCompilerOutputOpenFile を呼ぶだけで実際に登録するので、warm-up
+コンパイルへのフォールバック（%warm-up-compiler）を経由せずにここが真に
+なる。"
   (skip-unless-iree :library :compiler)
   (nabla.iree::ensure-compiler-loaded)
   (is-true nabla.iree::*llvm-signal-handlers-registered-p*))
+
+(defun %run-signal-registration-check-child ()
+  "真っさらな子 SBCL プロセスで、ensure-compiler-loaded の呼び出しの前後で
+SIGUSR2 のハンドラのアドレスを比べ、
+\"BEFORE=<addr> AFTER=<addr> REGISTERED=<T/NIL>\" の1行を標準出力に印字して
+終了する。REGISTERED は *llvm-signal-handlers-registered-p*
+（%register-llvm-signal-handlers が窓の中で検出した、実際に登録が起きた
+という印）。BEFORE と AFTER が一致することは、LLVM に一時的に奪われた
+SIGUSR2 のハンドラが ensure-compiler-loaded から戻る頃には SBCL のものに
+戻っていることを示す。他のテストが既に ensure-compiler-loaded 済みの
+このプロセス自身では BEFORE が pristine な SBCL のハンドラだと確認できない
+ため、%run-with-missing-iree-home と同じ理由で別プロセスを使う。"
+  (let* ((forms
+           (list "(require :asdf)"
+                 "(asdf:load-system \"nabla/iree\")"
+                 "(in-package :nabla.iree)"
+                 "(let ((before (%signal-handler-address sb-unix:sigusr2)))
+                    (ensure-compiler-loaded)
+                    (format t \"BEFORE=~A AFTER=~A REGISTERED=~A~%\"
+                            before (%signal-handler-address sb-unix:sigusr2)
+                            *llvm-signal-handlers-registered-p*)
+                    (sb-ext:exit :code 0))"))
+         (args (list* "--non-interactive" "--disable-debugger"
+                      (loop for form in forms append (list "--eval" form))))
+         (env (remove nil
+                      (append
+                       (mapcar (lambda (name)
+                                 (let ((v (sb-ext:posix-getenv name)))
+                                   (and v (format nil "~A=~A" name v))))
+                               '("PATH" "HOME" "LD_LIBRARY_PATH" "LANG" "LC_ALL"
+                                 "TMPDIR" "XDG_CACHE_HOME" "NABLA_LISP_DEPS"
+                                 "SBCL_HOME" "NABLA_IREE_HOME"))
+                       (list (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry))))))
+         (output (make-string-output-stream))
+         (process (sb-ext:run-program "sbcl" args
+                                       :search t :environment env
+                                       :output output :error output)))
+    (values (sb-ext:process-exit-code process) (get-output-stream-string output))))
+
+(define-iree-test signals/ensure-compiler-loaded/registration-detected-and-reverted-in-fresh-process
+    "真っさらな子プロセスで ensure-compiler-loaded を呼ぶと、
+(1) *llvm-signal-handlers-registered-p* が真になり（%register-llvm-signal-handlers
+が窓の中で SIGUSR2 の処分の変化を実際に観測した）、かつ
+(2) ensure-compiler-loaded の前後で外から見える SIGUSR2 のハンドラの
+アドレスが変わらない（LLVM に奪われたハンドラが SBCL のものへ戻っている）
+ことを確かめる。IREE-SetupGlobalCL 経由だった旧版でも通っていた性質だが、
+新しい ireeCompilerOutputOpenFile 経由の登録がこれを壊していないことの
+回帰テスト。"
+  (skip-unless-iree :library :compiler)
+  (multiple-value-bind (exit-code output) (%run-signal-registration-check-child)
+    (is (= 0 exit-code) "child process exited ~D, output:~%~A" exit-code output)
+    (is (search "REGISTERED=T" output)
+        "child did not report REGISTERED=T, output:~%~A" output)
+    (let ((before (parse-integer output :start (+ 7 (search "BEFORE=" output)) :junk-allowed t))
+          (after (parse-integer output :start (+ 6 (search "AFTER=" output)) :junk-allowed t)))
+      (is (integerp before) "could not parse BEFORE from output:~%~A" output)
+      (is (integerp after) "could not parse AFTER from output:~%~A" output)
+      (is (= before after)
+          "SIGUSR2 handler address before (~A) and after (~A) ensure-compiler-loaded ~
+differ: not restored to SBCL's own handler. output:~%~A"
+          before after output))))
 
 (fiveam:test (signals/call-with-world-stopped/returns-thunk-value-and-rejects-nesting :suite :nabla.medium)
   "%call-with-world-stopped は THUNK の戻り値をそのまま返し、既に
