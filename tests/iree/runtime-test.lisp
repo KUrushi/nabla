@@ -30,14 +30,13 @@
     (is (check-it (generator (map (lambda (suffix)
                                      (concatenate 'string "nabla-unknown-driver-" suffix))
                                    (string)))
-                  (lambda (suffix)
-                    (let ((name (concatenate 'string "nabla-unknown-driver-" suffix)))
-                      (or (member name known :test #'string=)
-                          (handler-case
-                              (progn (release-device (make-device name))
-                                     nil)
-                            (iree-status-error (condition)
-                              (eq :not-found (iree-status-error-code condition)))))))
+                  (lambda (name)
+                    (or (member name known :test #'string=)
+                        (handler-case
+                            (progn (release-device (make-device name))
+                                   nil)
+                          (iree-status-error (condition)
+                              (eq :not-found (iree-status-error-code condition))))))
                   :regression-id runtime/make-device/unknown-driver-signals-not-found
                   :regression-file (regression-path "iree-runtime-unknown-driver" :package "NABLA.IREE.TESTS")))))
 
@@ -47,6 +46,16 @@
   (let ((names (driver-names)))
     (is (member "local-task" names :test #'string=))
     (is (member "local-sync" names :test #'string=))))
+
+(define-iree-test runtime/make-session/released-device-signals-error
+    "release-device 済みの device を make-session に渡すと、解放済みの NULL
+ポインタを C 側に渡してクラッシュするのではなく、IREE-OBJECT-RELEASED
+（IREE-ERROR のサブタイプ）が signal される。"
+  (skip-unless-iree :library :runtime)
+  (let ((device (make-device :local)))
+    (release-device device)
+    (signals iree-object-released
+      (make-session device))))
 
 (define-iree-test runtime/session/loads-vmfb-and-lists-main
     "compile-stablehlo（#5）でコンパイルした matmul フィクスチャの vmfb を
@@ -77,6 +86,24 @@ IREE-STATUS-ERROR が signal される。"
       (signals iree-status-error
         (session-append-module
          session (make-array 64 :element-type '(unsigned-byte 8) :initial-element #xFF))))))
+
+(define-iree-test runtime/session/released-session-operations-signal-error
+    "release-session 済みの session に対する操作
+（session-lookup-function / session-append-module / with-call）は、解放済みの
+NULL ポインタを C 側に渡してクラッシュするのではなく、IREE-OBJECT-RELEASED
+（IREE-ERROR のサブタイプ）を signal する。"
+  (skip-unless-iree :library :runtime)
+  (with-device (device :local)
+    (let ((session (make-session device)))
+      (release-session session)
+      (signals iree-object-released
+        (session-lookup-function session "module.main"))
+      (signals iree-object-released
+        (session-append-module
+         session (make-array 4 :element-type '(unsigned-byte 8) :initial-element 0)))
+      (signals iree-object-released
+        (with-call (call session "module.main")
+          (declare (ignore call)))))))
 
 (define-iree-test runtime/session/append-module-from-file-matches-in-memory
     "iree-compile（CLI、#5 とは別経路）が書いた vmfb ファイルを

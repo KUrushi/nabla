@@ -162,6 +162,15 @@ signal される。"
   "DEVICE が release-device 済みなら真を返す。"
   (cffi:null-pointer-p (%device-pointer device)))
 
+(defun %live-device-pointer (device context)
+  "DEVICE の foreign pointer（iree_hal_device_t*）を返す。DEVICE が
+release-device 済みなら、解放済みの NULL ポインタを C へ渡してクラッシュ
+させる前に IREE-OBJECT-RELEASED を signal する。CONTEXT は呼び出し元の
+nabla.iree 側の関数名（文字列）。"
+  (when (device-released-p device)
+    (error 'iree-object-released :kind :device :context context))
+  (%device-pointer device))
+
 (defun release-device (device)
   "DEVICE を解放する。二重解放しても何もしない（idempotent）。"
   (unless (device-released-p device)
@@ -196,13 +205,23 @@ release-device する。"
       (cffi:with-foreign-object (out-session :pointer)
         (check-status
          (%runtime-session-create-with-device
-          (instance-pointer instance) options (%device-pointer device)
+          (instance-pointer instance) options (%live-device-pointer device "make-session")
           (system-allocator) out-session)
          "make-session")
         (make-instance 'session :pointer (cffi:mem-ref out-session :pointer) :device device)))))
 
 (defun session-released-p (session)
+  "SESSION が release-session 済みなら真を返す。"
   (cffi:null-pointer-p (%session-pointer session)))
+
+(defun %live-session-pointer (session context)
+  "SESSION の foreign pointer（iree_runtime_session_t*）を返す。SESSION が
+release-session 済みなら、解放済みの NULL ポインタを C へ渡してクラッシュ
+させる前に IREE-OBJECT-RELEASED を signal する。CONTEXT は呼び出し元の
+nabla.iree 側の関数名（文字列）。"
+  (when (session-released-p session)
+    (error 'iree-object-released :kind :session :context context))
+  (%session-pointer session))
 
 (defun release-session (session)
   "SESSION を解放し、session-append-module が確保したモジュールのメモリ
@@ -215,12 +234,14 @@ release-device する。"
     (setf (%session-module-blocks session) nil)))
 
 (defmacro with-session ((var device) &body body)
+  "(make-session DEVICE) を VAR に束縛して BODY を評価し、終わったら
+release-session する。"
   `(let ((,var (make-session ,device)))
      (unwind-protect (progn ,@body)
        (release-session ,var))))
 
 (defun session-append-module (session bytes)
-  "BYTES（(unsigned-byte 8) のベクタ、vmfb の内容）のコピーを
+  "BYTES（(unsigned-byte 8) の simple-array、vmfb の内容）のコピーを
 foreign-alloc したメモリに作り、
 iree_runtime_session_append_bytecode_module_from_memory でモジュールとして
 追加する。コピーした先のメモリは SESSION が解放されるまで（あるいは
@@ -229,6 +250,7 @@ flatbuffer_allocator には iree_allocator_null を渡す（データの所有�
 このメモリブロックを追跡している nabla.iree 側にあるため。
 session.h:150-164 の doc コメントのとおり、失敗時も含めてこの引数が呼ばれる
 だけで、null アロケータなので何も起きない）。"
+  (check-type bytes (simple-array (unsigned-byte 8) (*)))
   (let* ((length (length bytes))
          (block (cffi:foreign-alloc :uint8 :count (max length 1))))
     (when (plusp length)
@@ -242,7 +264,7 @@ session.h:150-164 の doc コメントのとおり、失敗時も含めてこの
         (progn
           (check-status
            (%runtime-session-append-bytecode-module-from-memory
-            (%session-pointer session)
+            (%live-session-pointer session "session-append-module")
             (list 'data block 'data-length length)
             (null-allocator))
            "session-append-module")
@@ -257,7 +279,7 @@ session.h:150-164 の doc コメントのとおり、失敗時も含めてこの
 モジュールとして追加する（iree_runtime_session_append_bytecode_module_from_file）。"
   (check-status
    (%runtime-session-append-bytecode-module-from-file
-    (%session-pointer session) (namestring path))
+    (%live-session-pointer session "session-append-module-from-file") (namestring path))
    "session-append-module-from-file"))
 
 ;;; ------------------------------------------------------------------------
@@ -278,7 +300,8 @@ signal される（session.h:186-198）。"
   (with-string-view (view full-name)
     (cffi:with-foreign-object (out-function '(:struct %vm-function-t))
       (check-status
-       (%runtime-session-lookup-function (%session-pointer session) view out-function)
+       (%runtime-session-lookup-function
+        (%live-session-pointer session "session-lookup-function") view out-function)
        "session-lookup-function")
       (%make-vm-function
        (cffi:foreign-slot-value out-function '(:struct %vm-function-t) 'module)
@@ -291,8 +314,11 @@ signal される（session.h:186-198）。"
 （context は既定で組み込みの hal モジュールを最初に持つため、それは除く。
 vm/context.h の module_count / module_at と vm/module.h の
 module_name / module_signature / lookup_function_by_ordinal /
-function_name を使う）。"
-  (let ((context (%runtime-session-context (%session-pointer session)))
+function_name を使う）。コンパイルしたモジュールに `__init` のような
+IREE が自動生成する初期化関数があれば、それもここに含まれる（利用者定義の
+関数とは限らない）。"
+  (let ((context (%runtime-session-context
+                  (%live-session-pointer session "session-function-names")))
         (names nil))
     (dotimes (i (%vm-context-module-count context))
       (let ((module (%vm-context-module-at context i)))
@@ -322,7 +348,8 @@ iree_runtime_call_deinitialize する。呼び出しごとに新しく作り、�
     `(cffi:with-foreign-object (,call-pointer '(:struct %runtime-call-t))
        (with-string-view (view ,full-name)
          (check-status
-          (%runtime-call-initialize-by-name (%session-pointer ,session) view ,call-pointer)
+          (%runtime-call-initialize-by-name
+           (%live-session-pointer ,session "with-call") view ,call-pointer)
           "with-call"))
        (unwind-protect
             (let ((,var ,call-pointer))
@@ -374,21 +401,36 @@ buffer-view-release で解放すること（call.h:115-117）。"
 (defun %element-type-keyword (code)
   (or (car (rassoc code *element-types*)) code))
 
+(defun %element-type-bit-width (element-type)
+  "ELEMENT-TYPE（*element-types* のキー）1要素あたりのビット数を返す
+（IREE_HAL_ELEMENT_TYPE_VALUE の下位24ビットがビット数そのものになる）。"
+  (logand (%element-type-code element-type) #xFFFFFF))
+
 (defun buffer-view-allocate-copy (device shape element-type bytes-pointer byte-length)
   "DEVICE のアロケータに、SHAPE（次元のリスト）・ELEMENT-TYPE（:f32 など、
 *element-types* のキー）の buffer view を作り、BYTES-POINTER が指す
 BYTE-LENGTH バイトを初期値としてコピーする
 （iree_hal_buffer_view_allocate_buffer_copy、buffer_view_util.h:63-69）。
+BYTE-LENGTH が SHAPE と ELEMENT-TYPE から計算される長さ（要素数 ×
+要素あたりのバイト数）と一致しないと、コピー元の一部が未初期化のまま
+buffer view に残ってしまうため error を signal する。
 返り値は呼び出し側が buffer-view-release で解放する foreign pointer。"
+  (let ((expected-byte-length (* (reduce #'* shape :initial-value 1)
+                                  (/ (%element-type-bit-width element-type) 8))))
+    (unless (= byte-length expected-byte-length)
+      (error "buffer-view-allocate-copy: BYTE-LENGTH ~S は SHAPE ~S と ~
+ELEMENT-TYPE ~S から期待される長さ ~S と一致しない"
+             byte-length shape element-type expected-byte-length)))
   (let* ((rank (length shape))
-         (allocator (%hal-device-allocator (%device-pointer device))))
+         (device-pointer (%live-device-pointer device "buffer-view-allocate-copy"))
+         (allocator (%hal-device-allocator device-pointer)))
     (cffi:with-foreign-object (dims :size rank)
       (loop for i from 0 for dim in shape
             do (setf (cffi:mem-aref dims :size i) dim))
       (cffi:with-foreign-object (out-buffer-view :pointer)
         (check-status
          (%hal-buffer-view-allocate-buffer-copy
-          (%device-pointer device) allocator rank dims
+          device-pointer allocator rank dims
           (%element-type-code element-type) +hal-encoding-type-dense-row-major+
           (list 'usage +hal-buffer-usage-default+
                 'access +hal-memory-access-all+
@@ -421,15 +463,17 @@ BYTE-LENGTH バイトを初期値としてコピーする
 
 (defun buffer-view-read-into (device buffer-view octets)
   "BUFFER-VIEW の内容を DEVICE から同期的に読み出し、OCTETS
-（(unsigned-byte 8) のベクタ）へ書き込む
+（(unsigned-byte 8) の simple-array）へ書き込む
 （iree_hal_device_transfer_d2h、buffer_transfer.h:88-92）。OCTETS の長さが
 読み出す量になる。"
+  (check-type octets (simple-array (unsigned-byte 8) (*)))
   (let ((buffer (%hal-buffer-view-buffer buffer-view))
         (length (length octets)))
     (sb-sys:with-pinned-objects (octets)
       (check-status
        (%hal-device-transfer-d2h
-        (%device-pointer device) buffer 0 (sb-sys:vector-sap octets) length
+        (%live-device-pointer device "buffer-view-read-into")
+        buffer 0 (sb-sys:vector-sap octets) length
         +hal-transfer-buffer-flag-default+
         (list 'type +timeout-absolute+ 'nanos +time-infinite-future+))
        "buffer-view-read-into"))

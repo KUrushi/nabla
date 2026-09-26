@@ -87,13 +87,13 @@ export している iree_allocator_libc_ctl を ctl 関数として直接使う�
 そのまま NIL を返す。非NULLなら status-code / %status-message でメッセージを
 組み立て、iree_status_free で解放してから IREE-STATUS-ERROR を signal する。
 CONTEXT は失敗した nabla.iree 側の呼び出しの名前（文字列）。"
-  (let ((status (gensym "STATUS")))
+  (let ((status (gensym "STATUS")) (code (gensym "CODE")) (message (gensym "MESSAGE")))
     `(let ((,status ,form))
        (unless (cffi:null-pointer-p ,status)
-         (let ((code (status-code ,status))
-               (message (%status-message ,status)))
+         (let ((,code (status-code ,status))
+               (,message (%status-message ,status)))
            (%status-free ,status)
-           (error 'iree-status-error :code code :message message :context ,context))))))
+           (error 'iree-status-error :code ,code :message ,message :context ,context))))))
 
 (defmacro with-string-view ((var string) &body body)
   "STRING（Lisp 文字列）の UTF-8 バイト列を動的エクステントで確保し、

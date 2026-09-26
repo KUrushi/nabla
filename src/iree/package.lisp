@@ -28,6 +28,9 @@
    #:iree-compile-error-phase
    #:iree-compile-error-diagnostics
    #:iree-compile-error-message
+   #:iree-object-released
+   #:iree-object-released-kind
+   #:iree-object-released-context
    #:iree-status-error
    #:iree-status-error-code
    #:iree-status-error-message

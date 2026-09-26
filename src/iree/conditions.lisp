@@ -47,6 +47,21 @@ LIBRARY は :compiler または :runtime、HOME は探索に使った NABLA_IREE
 どれかで、MLIR が出した順）。MESSAGE は iree_compiler_error_t から得た
 テキスト（無ければ NIL）。"))
 
+(define-condition iree-object-released (iree-error)
+  ((kind :initarg :kind :reader iree-object-released-kind)
+   (context :initarg :context :reader iree-object-released-context))
+  (:report
+   (lambda (condition stream)
+     (format stream "~A に解放済みの ~A を渡した。"
+             (iree-object-released-context condition)
+             (iree-object-released-kind condition))))
+  (:documentation
+   "release-device / release-session で解放済みのオブジェクトを、それを
+必要とするラッパー関数に渡したときに signal する。KIND は :device または
+:session、CONTEXT は呼び出した nabla.iree 側の関数の名前（文字列）。C 側に
+解放済みポインタを渡すとメモリ不正アクセスになるため、渡す前にここで
+検出する。"))
+
 (define-condition iree-status-error (iree-error)
   ((code :initarg :code :reader iree-status-error-code)
    (message :initarg :message :reader iree-status-error-message)
