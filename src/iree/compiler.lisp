@@ -32,13 +32,17 @@
 ;;;; 制御された1点で、他の全 Lisp スレッドを止めた状態で済ませる
 ;;;; （signals.lisp の %register-llvm-signal-handlers と
 ;;;; %call-with-world-stopped、library.lisp の ensure-compiler-loaded から
-;;;; 呼ぶ）。コンパイルは1つも走らせず
-;;;; ireeCompilerSetupGlobalCL を直接呼ぶだけなので、初回コンパイルを待たずに
-;;;; 済み、コンパイル中に別スレッドが GC を始める競合の隙間が無くなる。
-;;;; この版の IREE で SetupGlobalCL が登録しなかった場合だけ、最後の手段
-;;;; として最小のモジュールを1つコンパイルする旧方式（%warm-up-compiler）に
-;;;; 落ちる（この経路には、その最初のコンパイル中に他スレッドが GC を
-;;;; 始める競合の隙間がまだ残るので、ensure-compiler-loaded が警告を出す）。
+;;;; 呼ぶ）。コンパイルもセッションも1つも作らず
+;;;; ireeCompilerOutputOpenMembuffer/Destroy を呼ぶだけなので、初回コンパイル
+;;;; を待たずに済み、コンパイル中に別スレッドが GC を始める競合の隙間が
+;;;; 無くなる（ireeCompilerSetupGlobalCL は使わない。usesCommandLine を真に
+;;;; してしまい、セッションごとの --iree-opt-level を無視させる回帰を生む
+;;;; ため。詳しくは signals.lisp 冒頭）。
+;;;; この版の IREE で ireeCompilerOutputOpenMembuffer だけでは登録しなかった
+;;;; 場合だけ、最後の手段として最小のモジュールを1つコンパイルする旧方式
+;;;; （%warm-up-compiler）に落ちる（この経路には、その最初のコンパイル中に
+;;;; 他スレッドが GC を始める競合の隙間がまだ残るので、
+;;;; ensure-compiler-loaded が警告を出す）。
 ;;;; 将来 LLVM を呼びうる FFI エントリポイント（PJRT など）も
 ;;;; with-lisp-signal-handlers-preserved で包むこと。
 
@@ -213,8 +217,9 @@ MLIR の診断（あれば）が DIAGNOSTICS に入る。共有ライブラリ�
   "LLVM の「プロセスにつき1回」のシグナルハンドラ登録を済ませる、
 最後の手段のフォールバック。ensure-compiler-loaded は通常
 %register-llvm-signal-handlers（signals.lisp。世界を止めてコンパイル無しで
-登録する）でこれを済ませ、その版の IREE で SetupGlobalCL が登録しなかった
-ときだけこちらを呼ぶ。ここは実際に最小モジュールをコンパイルするので、
+登録する）でこれを済ませ、その版の IREE で ireeCompilerOutputOpenMembuffer
+だけでは登録しなかったときだけこちらを呼ぶ。ここは実際に最小モジュールを
+コンパイルするので、
 その間に別の Lisp スレッドが GC を始めると登録前の LLVM のハンドラと
 競合する隙間が残る（呼び出し元の ensure-compiler-loaded が警告する）。
 ensure-compiler-loaded から（ロードロックを持ったまま）呼ぶので、
