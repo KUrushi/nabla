@@ -29,6 +29,7 @@
                (:file "tests/support/array-spec")
                (:file "tests/support/random-array")
                (:file "tests/support/allclose")
+               (:file "tests/support/reference")
                (:file "tests/support/regression")
                (:file "tests/support/run-tests")))
 
@@ -56,7 +57,8 @@
                (:file "src/iree/runtime-ffi")
                (:file "src/iree/status")
                (:file "src/iree/runtime")
-               (:file "src/iree/device-array")))
+               (:file "src/iree/device-array")
+               (:file "src/iree/execute")))
 
 ;; nabla/iree/tests は nabla/tests から独立したシステム（システム構成は
 ;; 契約 §2 のとおり）。そのため (asdf:test-system "nabla") はこのシステムを
@@ -70,4 +72,5 @@
                (:file "tests/iree/compiler-test")
                (:file "tests/iree/runtime-test")
                (:file "tests/iree/runtime-cuda-test")
-               (:file "tests/iree/device-array-test")))
+               (:file "tests/iree/device-array-test")
+               (:file "tests/iree/execute-test")))

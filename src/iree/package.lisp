@@ -72,7 +72,9 @@
    #:release-device-array
    #:device-array-released-p
    #:device-array-aval
-   #:device-array-device)
+   #:device-array-device
+   ;; execute
+   #:invoke)
   (:documentation
    "IREE 連携用のパッケージ。埋め込み C API を CFFI で呼び、StableHLO の
 テキストから vmfb のバイト列を得るコンパイラのバインディングと、

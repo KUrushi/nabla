@@ -122,6 +122,15 @@ CFFI の生バインディング自体は性質を書きにくいので mutation
 - `release-device-array` は idempotent。解放後の `device-array` を `to-host` に渡すと `iree-object-released`（kind `:device-array`）が signal される
 - `device-array` は生成時に自分のデバイスを retain しているので、`release-device` で device オブジェクト自身を解放した後でも、生きている `device-array` の `to-host` は正しい値を返し、`release-device-array` もクラッシュしない
 
+### 実行（`invoke`、`nabla/iree`）
+
+`invoke` も CFFI の生バインディングではなく公開 API なので、値まで確かめる（`invoke` 自体は FFI オーケストレーションなので mutation testing の対象外）。期待値は `tests/support/reference.lisp` の `reference-add` / `reference-matmul` / `reference-reduce-sum` で計算する。
+
+- 手書きの StableHLO フィクスチャ（要素ごとの加算、`dot_general` による行列積、`reduce` による総和）を `compile-stablehlo` → `session-append-module` → `invoke` の順に実行した結果は、対応する `reference-*` の期待値と `allclose :dtype :f32` で一致し、結果の `device-array-aval` も期待した shape・dtype と一致する
+- StableHLO の宣言と違う形状・dtype・個数の引数を `invoke` に渡すと、必ず `iree-status-error`（`code` が `:invalid-argument`）が signal される（IREE の `hal.buffer_view.assert` と vm の呼び出しチェックがクラッシュの前に検出する）
+- 解放済みの `device-array` を `invoke` に渡すと `iree-object-released`（kind `:device-array`）が signal される
+- `invoke` を呼んだ `session` の device とは別の device で作った `device-array` を渡すと、plain `error` が signal される
+
 ## 3. 書き方のひな形
 
 以下はひな形で、関数名は実装に合わせて読み替える。
@@ -221,6 +230,7 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `skip-unless-iree`（`tests/iree/support.lisp`） | IREE の共有ライブラリが無ければテストをスキップし（`NABLA_REQUIRE_IREE=1` なら失敗させる）、あれば何もしない |
 | `stablehlo-fixture`（`tests/iree/support.lisp`） | `tests/fixtures/stablehlo/<名前>.mlir` の内容を文字列で返す |
 | `with-device-arrays`（`tests/iree/support.lisp`） | 複数の `device-array` を束縛して本体を評価し、終わったら逆順に `release-device-array` する（finalizer が無い #11 より前の期間、テストごとのリークを防ぐ） |
+| `reference-add` / `reference-matmul` / `reference-reduce-sum`（`tests/support/reference.lisp`） | 素朴なループで計算する参照実装。DOUBLE-FLOAT で計算し `(simple-array double-float shape)` を返す。`nabla/iree` の `invoke` の期待値として使う |
 
 部品を追加・変更したら、この表も直す。
 

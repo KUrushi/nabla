@@ -35,5 +35,9 @@
    ;; 許容誤差つきの比較
    #:allclose
    #:approx=
+   ;; 参照実装（テストの中でループを書かずに済むオラクル）
+   #:reference-add
+   #:reference-matmul
+   #:reference-reduce-sum
    ;; 回帰テスト
    #:regression-path))

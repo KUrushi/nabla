@@ -225,6 +225,17 @@
   (call :pointer)
   (out-buffer-view :pointer))
 
+;; CALL の出力の iree_vm_list_t* を返す（call.h:86-87）。#8 の invoke が
+;; 出力の個数を数えるのに使う（invoke は毎回 call-pop-buffer-view で先頭
+;; から取り出すので、あらかじめ個数が要る）。
+(cffi:defcfun ("iree_runtime_call_outputs" %runtime-call-outputs) :pointer
+  (call :pointer))
+
+;; LIST（iree_vm_list_t*）の現在の要素数を返す（vm/list.h:97。
+;; iree_host_size_t は config.h:79 で size_t）。
+(cffi:defcfun ("iree_vm_list_size" %vm-list-size) :size
+  (list :pointer))
+
 ;; iree_runtime_call_flag_bits_t（call.h:28-31）に定義済みのフラグは無い。
 (defconstant +runtime-call-flags-none+ 0)
 
