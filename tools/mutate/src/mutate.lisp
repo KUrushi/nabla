@@ -28,6 +28,24 @@
        (member (symbol-name (car form)) *arid-heads* :test #'string=)
        t))
 
+(defun %defmethod-form-p (form)
+  "FORM がトップレベルの defmethod 定義なら T。"
+  (and (consp form)
+       (symbolp (car form))
+       (string= (symbol-name (car form)) "DEFMETHOD")))
+
+(defun %defmethod-lambda-list-index (form)
+  "FORM が defmethod のとき、specialized lambda list が並ぶ位置
+（0始まり、defmethod 自身が0）を返す。method qualifier（:before など）は
+リストでない atom として名前の直後に並ぶ約束なので、名前（インデックス1）
+より後で最初に listp（NIL を含む）になった要素が lambda list になる。
+そのような要素が見つからなければ NIL を返す。"
+  (loop for index from 2
+        for tail on (cddr form)
+        for elt = (car tail)
+        when (listp elt)
+          return index))
+
 (defparameter *arith-swap-table*
   '((+ . -) (- . +) (* . /) (/ . *)))
 
@@ -83,23 +101,36 @@
   "FORM の中で OPERATOR を適用できる最初のノード（前順・深さ優先、
 arid node の内側は探さない）を1つだけ書き換える。
 戻り値は (values mutated-form applied-p)。適用できるノードが
-なければ (values form nil) を返す。"
+なければ (values form nil) を返す。
+
+defmethod の specialized lambda list（`((x (eql 0)) ...)` のような
+specializer を含むもの）は、この中の値を変異させても再評価時に
+元のメソッドと違うメソッド（別の specializer の組）を新しく作って
+しまうだけで、後始末（%evaluate-mutant が元の defmethod を評価し
+直す）でも消えずに残ってしまう。そのため specialized lambda list は
+まるごと arid として扱い、中には決して降りない
+（qualifier はリストでない atom なのでもともと変異の対象にならない）。"
   (if (arid-node-p form)
       (values form nil)
       (multiple-value-bind (mutated applied) (%try-node form operator)
         (if applied
             (values mutated t)
             (if (consp form)
-                (let ((applied-anywhere nil))
-                  (labels ((walk (tail)
-                             (if (or applied-anywhere (not (consp tail)))
-                                 tail
-                                 (multiple-value-bind (new-elt elt-applied)
-                                     (mutate-form (car tail) operator)
-                                   (if elt-applied
-                                       (progn (setf applied-anywhere t)
-                                              (cons new-elt (cdr tail)))
-                                       (cons (car tail) (walk (cdr tail))))))))
-                    (let ((new-form (walk form)))
+                (let ((applied-anywhere nil)
+                      (skip-index (and (%defmethod-form-p form)
+                                        (%defmethod-lambda-list-index form))))
+                  (labels ((walk (tail index)
+                             (cond
+                               ((or applied-anywhere (not (consp tail))) tail)
+                               ((eql index skip-index)
+                                (cons (car tail) (walk (cdr tail) (1+ index))))
+                               (t
+                                (multiple-value-bind (new-elt elt-applied)
+                                    (mutate-form (car tail) operator)
+                                  (if elt-applied
+                                      (progn (setf applied-anywhere t)
+                                             (cons new-elt (cdr tail)))
+                                      (cons (car tail) (walk (cdr tail) (1+ index)))))))))
+                    (let ((new-form (walk form 0)))
                       (values new-form applied-anywhere))))
                 (values form nil))))))

@@ -34,6 +34,108 @@ STORAGE-CONDITION）を投げる変異体は、RUN 全体を中断させず :kil
       (ignore-errors (fmakunbound name))
       (ignore-errors (unintern name package)))))
 
+(test evaluate-mutant-does-not-leave-extra-method-after-eql-specializer-mutation
+  "(defmethod g ((x (eql 0))) ...) を変異させて評価しても、%evaluate-mutant
+から戻ったあとには元の1メソッドしか残らない。specializer を持つ
+lambda list は arid として変異させないので、mutate-form 自体が
+適用できず（applied=NIL）、original-form をそのまま評価しても
+新しいメソッドは増えない。"
+  (let* ((package (find-package "NABLA.MUTATE.TESTS"))
+         (name (intern "%RUNNER-TESTS-EQL-SPECIALIZER-TARGET" package))
+         (original `(defmethod ,name ((x (eql 0))) :zero)))
+    (eval `(defgeneric ,name (x)))
+    (eval original)
+    (unwind-protect
+         (multiple-value-bind (mutated applied) (nabla.mutate:mutate-form original :constant)
+           (is-false applied
+                      "specializer の中の 0 は arid なので変異が適用できないはず")
+           (is (equal original mutated))
+           ;; それでも %evaluate-mutant を経由した1サイクル（元の定義を
+           ;; 再評価するだけ）でメソッドが増えないことを確かめる。
+           (nabla.mutate::%evaluate-mutant original mutated package (lambda () t) 5)
+           (is (= 1 (length (sb-mop:generic-function-methods (fdefinition name)))))
+           (is (eq :zero (funcall name 0))))
+      (ignore-errors (fmakunbound name))
+      (ignore-errors (unintern name package)))))
+
+(test isolate-mutant-side-effects-leaves-no-file-and-no-plist-residue
+  "check-it の :regression-file / :regression-id を使うテストが1つの
+変異体の評価中に落ちても、ファイルにも check-it::regression-cases
+plist にも痕跡が残らない（%evaluate-mutant から戻ったあとに元へ
+戻される）。"
+  (let* ((dir (merge-pathnames "tmp-regression-isolation-test/"
+                                (asdf:system-source-directory "nabla-mutate")))
+         (file (merge-pathnames "case.lisp" dir))
+         (rid (intern "%RUNNER-TESTS-ISOLATION-REGRESSION-PROP" "NABLA.MUTATE.TESTS"))
+         (package (find-package "NABLA.MUTATE.TESTS"))
+         (original '(defun %runner-tests-isolation-noop-target () 1))
+         (mutated '(defun %runner-tests-isolation-noop-target () 2))
+         (failing-test (lambda ()
+                          (check-it (generator (integer 0 0))
+                                    (lambda (n) (declare (ignore n)) nil)
+                                    :regression-id %runner-tests-isolation-regression-prop
+                                    :regression-file file))))
+    (ignore-errors (uiop:delete-directory-tree dir :validate t))
+    (ensure-directories-exist dir)
+    (with-open-file (s file :direction :output :if-does-not-exist :create)
+      (format s "~&(in-package #:nabla.mutate.tests)~%"))
+    (unwind-protect
+         (let ((file-before (alexandria:read-file-into-string file))
+               (plist-before (get rid 'check-it::regression-cases))
+               (nabla.mutate:*regression-directories* (list dir)))
+           (is (eq :killed
+                   (nabla.mutate::%evaluate-mutant original mutated package failing-test 5)))
+           (is (equal file-before (alexandria:read-file-into-string file))
+               "regression ファイルに何も書き込まれずに残っているはず")
+           (is (equal plist-before (get rid 'check-it::regression-cases))
+               "check-it::regression-cases plist が元の状態に戻っているはず"))
+      (ignore-errors (remprop rid 'check-it::regression-cases))
+      (ignore-errors (uiop:delete-directory-tree dir :validate t)))))
+
+(test isolate-mutant-side-effects-makes-result-order-independent
+  "ある変異体（M1）の評価で check-it が regression-case を記録しても、
+その後に評価する無関係な別の変異体（M2）の判定はそれに左右されない
+（M2 を単体で走らせたときと同じ結果になる）。M1 が積んだ regression-case
+が M2 の check-it::regression-cases に漏れて再生され、M2 だけを走らせれば
+決して失敗しない性質を偽って falsely kill するのが直したバグ。"
+  (let* ((dir (merge-pathnames "tmp-regression-order-test/"
+                                (asdf:system-source-directory "nabla-mutate")))
+         (file1 (merge-pathnames "m1.lisp" dir))
+         (file2 (merge-pathnames "m2.lisp" dir))
+         (rid (intern "%RUNNER-TESTS-ORDER-REGRESSION-PROP" "NABLA.MUTATE.TESTS"))
+         (package (find-package "NABLA.MUTATE.TESTS"))
+         (original '(defun %runner-tests-order-noop-target () 1))
+         (mutated '(defun %runner-tests-order-noop-target () 2))
+         (m1-test (lambda ()
+                     ;; 0 を生成域に持ち、必ず失敗して datum "0" を
+                     ;; regression として記録する。
+                     (check-it (generator (integer 0 0))
+                               (lambda (n) (declare (ignore n)) nil)
+                               :regression-id %runner-tests-order-regression-prop
+                               :regression-file file1)))
+         (m2-test (lambda ()
+                     ;; 0 を生成しない限り必ず通るが、M1 が漏らした
+                     ;; datum 0 が再生されると失敗する。
+                     (check-it (generator (integer 1 5))
+                               (lambda (n) (/= n 0))
+                               :regression-id %runner-tests-order-regression-prop
+                               :regression-file file2))))
+    (ignore-errors (uiop:delete-directory-tree dir :validate t))
+    (ensure-directories-exist dir)
+    (dolist (file (list file1 file2))
+      (with-open-file (s file :direction :output :if-does-not-exist :create)
+        (format s "~&(in-package #:nabla.mutate.tests)~%")))
+    (unwind-protect
+         (let ((nabla.mutate:*regression-directories* (list dir)))
+           (is (eq :killed
+                   (nabla.mutate::%evaluate-mutant original mutated package m1-test 5))
+               "M1 は毎回失敗する性質なので killed のはず")
+           (is (eq :survived
+                   (nabla.mutate::%evaluate-mutant original mutated package m2-test 5))
+               "M1 の結果に関係なく、M2 は単体で走らせたのと同じ survived になるはず"))
+      (ignore-errors (remprop rid 'check-it::regression-cases))
+      (ignore-errors (uiop:delete-directory-tree dir :validate t)))))
+
 (test excluded-p-matches-by-file-suffix-and-mutation-string
   (let ((entry (list :file "src/sample.lisp" :form nil
                       :mutation "5 -> 0" :reason "テスト用")))

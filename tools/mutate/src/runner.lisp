@@ -94,23 +94,141 @@ find-package / find-symbol で探して呼ぶ。#4（テスト基盤）が
   ;; 記録せず、そのまま外へ signal し直して RUN を止める。
   (let ((*package* package))
     (unwind-protect
-         (handler-case
-             (progn
-               (%eval-quietly mutated-form)
-               (handler-case
-                   (if (sb-ext:with-timeout timeout-seconds (funcall test-function))
-                       :survived
-                       :killed)
-                 (sb-ext:timeout () :timeout)
-                 (sb-sys:interactive-interrupt (c) (error c))
-                 (serious-condition () :killed)))
-           (sb-sys:interactive-interrupt (c) (error c))
-           (serious-condition () :killed))
+         (%isolate-mutant-side-effects
+          (lambda ()
+            (handler-case
+                (progn
+                  (%eval-quietly mutated-form)
+                  (handler-case
+                      (if (sb-ext:with-timeout timeout-seconds (funcall test-function))
+                          :survived
+                          :killed)
+                    (sb-ext:timeout () :timeout)
+                    (sb-sys:interactive-interrupt (c) (error c))
+                    (serious-condition () :killed)))
+              (sb-sys:interactive-interrupt (c) (error c))
+              (serious-condition () :killed))))
       (ignore-errors (%eval-quietly original-form)))))
 
 (defun %check-it-trials-symbol ()
   (let ((package (find-package "CHECK-IT")))
     (and package (find-symbol "*NUM-TRIALS*" package))))
+
+(defparameter *regression-directories* (list "tests/regressions/")
+  "check-it の :regression-file がファイルを書き込みうる、カレント
+ディレクトリ相対のディレクトリのリスト。%ISOLATE-MUTANT-SIDE-EFFECTS が
+各変異体の評価の前後でここの中身をまるごと退避・復元し、mutation
+testing がリポジトリに副作用を残さないようにする。nabla では
+tests/regressions/ がそれにあたる（tests/support/regression.lisp の
+REGRESSION-PATH を見よ）。nabla-mutate は nabla のコアシステムに
+依存しない独立したツールという設計なので、このパス自体は単なる既定値
+であり、nabla 以外のプロジェクトで runner を使うときは RUN の
+:REGRESSION-DIRECTORIES で上書きすること。")
+
+(defun %directory-pathname (designator)
+  "DESIGNATOR（文字列またはパス）を、末尾がディレクトリ区切りの
+絶対パスにして返す。相対パスはカレントディレクトリからの相対とみなす
+（run.sh がリポジトリ直下から実行する前提と合わせている）。"
+  (let ((path (uiop:ensure-directory-pathname designator)))
+    (if (uiop:absolute-pathname-p path)
+        path
+        (merge-pathnames path (uiop:getcwd)))))
+
+(defun %walk-regular-files (dir)
+  "DIR（ディレクトリの絶対パス）以下の通常ファイルを再帰的にすべて
+集めて返す。DIR が存在しなければ NIL。"
+  (when (uiop:directory-exists-p dir)
+    (append (uiop:directory-files dir)
+            (mapcan #'%walk-regular-files (uiop:subdirectories dir)))))
+
+(defun %snapshot-directory (dir)
+  "DIR 以下の全ファイルの内容を、DIR からの相対パスをキーにした
+alist として返す。ファイルはテキストとして読む（regression ファイルは
+Lisp のソースなので、この前提で問題ない）。"
+  (let ((base (%directory-pathname dir)))
+    (mapcar (lambda (file)
+               (cons (enough-namestring file base)
+                     (alexandria:read-file-into-string file)))
+             (%walk-regular-files base))))
+
+(defun %restore-directory (dir snapshot)
+  "DIR の中身を SNAPSHOT（%SNAPSHOT-DIRECTORY が返した alist）の状態へ
+戻す。SNAPSHOT になかった今あるファイル（変異体が新しく作ったもの）は
+消し、SNAPSHOT にあった内容は（変更されていても消されていても）
+書き戻す。"
+  (let* ((base (%directory-pathname dir))
+         (kept (make-hash-table :test #'equal)))
+    (dolist (entry snapshot)
+      (setf (gethash (car entry) kept) t))
+    (dolist (file (%walk-regular-files base))
+      (let ((relative (enough-namestring file base)))
+        (unless (gethash relative kept)
+          (ignore-errors (delete-file file)))))
+    (dolist (entry snapshot)
+      (let ((path (merge-pathnames (car entry) base)))
+        (ensure-directories-exist path)
+        (with-open-file (stream path :direction :output
+                                      :if-exists :supersede
+                                      :if-does-not-exist :create)
+          (write-string (cdr entry) stream))))))
+
+(defun %snapshot-directories (dirs)
+  (mapcar (lambda (dir) (cons dir (%snapshot-directory dir))) dirs))
+
+(defun %restore-directories (snapshots)
+  (dolist (entry snapshots)
+    (%restore-directory (car entry) (cdr entry))))
+
+(defun %check-it-regression-indicator ()
+  "check-it が regression-case を積む plist の indicator シンボル
+（CHECK-IT::REGRESSION-CASES）を返す。check-it がロードされていなければ
+NIL。"
+  (let ((package (find-package "CHECK-IT")))
+    (and package (find-symbol "REGRESSION-CASES" package))))
+
+(defun %snapshot-regression-plists (indicator)
+  "INDICATOR（check-it::regression-cases）を今持っているすべての
+シンボルについて、(シンボル . 値) の alist を返す。DO-ALL-SYMBOLS で
+image 全体を1回舐める。INDICATOR が NIL（check-it 未ロード）なら NIL。"
+  (let ((snapshot nil))
+    (when indicator
+      (do-all-symbols (sym)
+        (let ((value (get sym indicator '%not-present)))
+          (unless (eq value '%not-present)
+            (push (cons sym value) snapshot)))))
+    snapshot))
+
+(defun %restore-regression-plists (indicator snapshot)
+  "今 INDICATOR を持っているすべてのシンボルを、SNAPSHOT の状態へ戻す。
+SNAPSHOT になければ REMPROP し、あれば元の値に戻す（SNAPSHOT にあって
+今は消えている、まず起きないはずのケースも念のため戻す）。"
+  (when indicator
+    (let ((restored (make-hash-table :test #'eq)))
+      (do-all-symbols (sym)
+        (let ((value (get sym indicator '%not-present)))
+          (unless (eq value '%not-present)
+            (let ((entry (assoc sym snapshot)))
+              (if entry
+                  (setf (get sym indicator) (cdr entry))
+                  (remprop sym indicator)))
+            (setf (gethash sym restored) t))))
+      (dolist (entry snapshot)
+        (unless (gethash (car entry) restored)
+          (setf (get (car entry) indicator) (cdr entry)))))))
+
+(defun %isolate-mutant-side-effects (thunk)
+  "THUNK を呼ぶ間に *REGRESSION-DIRECTORIES* に書き込まれたファイルと、
+check-it の regression-cases（シンボルの plist）への変更を、呼び終わった
+あと必ず元に戻す。1つの変異体（または baseline チェック）の評価が、
+ディスクにも image にも副作用を残して次の評価に混ざらないようにする
+汎用の仕組み（tools/mutate/README.md の「regression 状態の隔離」を
+見よ）。THUNK の戻り値をそのまま返す。"
+  (let ((dir-snapshot (%snapshot-directories *regression-directories*))
+        (indicator (%check-it-regression-indicator)))
+    (let ((plist-snapshot (%snapshot-regression-plists indicator)))
+      (unwind-protect (funcall thunk)
+        (%restore-directories dir-snapshot)
+        (%restore-regression-plists indicator plist-snapshot)))))
 
 (defun %status-for (original mutated package test-function timeout-seconds trials)
   "変異体1体の最終状態を決める。まず TRIALS 回に減らして走らせ、
@@ -134,10 +252,12 @@ DEFAULT-TEST-FUNCTION が探すパッケージが存在しないなど）であ�
 すべての変異体が黙って :killed になり、mutation score が見かけ上
 1 になってしまう（.claude/skills/nabla-testing/references/mutation.md
 の「1. 手順」）。"
-  (let ((result (handler-case (funcall test-function)
-                  (error (e)
-                    (error "mutation testing を始める前に、既定のテストスイートが~
-エラーで終わった。:test-function か :test-system の設定を見直すこと: ~A" e)))))
+  (let ((result (%isolate-mutant-side-effects
+                 (lambda ()
+                   (handler-case (funcall test-function)
+                     (error (e)
+                       (error "mutation testing を始める前に、既定のテストスイートが~
+エラーで終わった。:test-function か :test-system の設定を見直すこと: ~A" e)))))))
     (unless result
       (error "mutation testing を始める前に、既定のテストスイートが落ちている。~
 まずテストを通してから mutation testing をかけること。"))))
@@ -175,13 +295,23 @@ mutation score = 1 はこの場合「良い結果」ではない。~%"))
                  (exclusions (default-exclusions-path))
                  (timeout-seconds 300)
                  (trials 20)
+                 (regression-directories *regression-directories*)
                  (stream *standard-output*))
   "対象のファイル・行範囲（既定は BASE-REF から HEAD への git diff）に
 含まれる定義に、演算子（*MUTATION-OPERATORS* の順）を1つずつ試し、
 最初に適用できたものを1つの変異体として TEST-FUNCTION で判定する。
 戻り値は REPORT。SYSTEM / TEST-SYSTEM は現時点では記録用で、
-既定の TEST-FUNCTION の選択には使わない（DEFAULT-TEST-FUNCTION を見よ）。"
+既定の TEST-FUNCTION の選択には使わない（DEFAULT-TEST-FUNCTION を見よ）。
+REGRESSION-DIRECTORIES は check-it の :regression-file が書き込みうる
+ディレクトリのリスト（既定 *REGRESSION-DIRECTORIES*）。各変異体（と
+baseline チェック）の評価の前後で、この中身と check-it の
+regression-cases plist をまるごと退避・復元し、評価どうしで副作用が
+混ざらないようにする。"
   (declare (ignore system test-system))
+  (let ((*regression-directories* regression-directories))
+    (%run-mutation-loop test-function files ranges base-ref exclusions timeout-seconds trials stream)))
+
+(defun %run-mutation-loop (test-function files ranges base-ref exclusions timeout-seconds trials stream)
   (%check-baseline test-function)
   (let ((exclusion-list (%normalize-exclusions exclusions))
         (candidates (%collect-candidates (%ranges-for-run files ranges base-ref)))
