@@ -98,7 +98,20 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
 
 ## 3. 書き方のひな形
 
-以下はひな形で、関数名は実装に合わせて読み替える。check-it のキーワード引数の正確な名前は、使っている版のソースで確かめる。
+以下はひな形で、関数名は実装に合わせて読み替える。
+
+check-it（b79c9103665be3976915b56b570038f03486e62f）の `check-it` マクロは
+`(check-it generator test &key examples shrink-failures random-state
+regression-id regression-file)`。次の2点に注意する。
+
+- `:regression-file` は `:regression-id` も一緒に渡さないと何もしない。
+  失敗例を保存したいテストには、必ずどちらも書く
+- `:regression-id` はマクロが渡された式をそのまま `quote` するので、
+  **クォートせずにシンボルを書く**（`:regression-id foo/bar`。
+  `:regression-id 'foo/bar` と書くと、渡る値が `foo/bar` というシンボル
+  ではなく `(quote foo/bar)` というリストになり、型エラーになる）
+- `regression-path` が渡したファイルを無ければ作るので、`:regression-file`
+  には毎回 `(regression-path "名前")` を渡してよい
 
 ### 別の実装と比べる性質
 
@@ -111,6 +124,7 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
                     (allclose (nb:exp x)
                               (funcall (nb:jit #'nb:exp) x)
                               :dtype (array-spec-dtype spec))))
+                :regression-id primitive/exp/eager-matches-jit
                 :regression-file (regression-path "primitive-exp"))))
 ```
 
@@ -123,6 +137,7 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
                 (lambda (tree)
                   (multiple-value-bind (leaves treedef) (nb:tree-flatten tree)
                     (tree-equal* tree (nb:tree-unflatten treedef leaves))))
+                :regression-id pytree/flatten-roundtrip
                 :regression-file (regression-path "pytree-roundtrip"))))
 ```
 
@@ -139,10 +154,27 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
                     (approx= (inner (nb:vjp #'nb:tanh x u) v)
                              (inner u (nb:jvp #'nb:tanh x v))
                              :dtype :f64)))
+                :regression-id grad/tanh/dot-product
                 :regression-file (regression-path "grad-tanh-dot"))))
 ```
 
 テスト名は `<対象>/<演算や関数>/<性質>` の形にする。docstring には性質を1文で書く。失敗したとき、テスト名と docstring だけで何が壊れたか分かるようにするため。
+
+check-it の generator DSL（`(generator ...)` の中で使える形式）は主に次のとおり:
+`(integer lo hi)`、`(real lo hi)`、`(list g)`、`(tuple g...)`、`(or g...)`、
+`(guard pred g)`、`(map fn g...)`、`(chain ((v g)...) body)`、
+`(struct type :slot g ...)`。名前付きの生成器は `def-generator` で作る
+（`tests/support/array-spec.lisp` の `array-spec` を参照）。
+
+`check-it:*num-trials*`（既定100）が試行回数のノブで、mutation testing の
+runner はこれを下げて実行する。fiveam も同名の `*num-trials*` を export
+しているので、check-it と fiveam を両方 `:use` するパッケージは
+`(:shadowing-import-from #:check-it #:*num-trials*)` で check-it 側を選ぶ。
+
+`(real lo hi)` には既知のバグがある（0 <= lo < hi のように lo と hi が
+同符号だと、常に幅0の範囲になり `(random 0.0)` で落ちる）。0 未満から
+0 以上をまたぐ範囲か、`(real 0 hi)` の形にして、境界が消えないよう
+生成した値に小さな定数を足すなどして避ける。
 
 ## 4. 共通の生成器と比較関数
 

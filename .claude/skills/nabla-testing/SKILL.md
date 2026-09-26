@@ -87,8 +87,18 @@ Google の *Software Engineering at Google* のテストの章の考え方にな
 ## コマンド
 
 ```sh
-# 既定のスイート（small + medium、CPU のみ）
-sbcl --non-interactive --eval '(ql:quickload "nabla/tests")' --eval '(asdf:test-system "nabla")'
-```
+# 依存の準備（初回のみ。apt は root で実行、check-it / optima は git clone）
+scripts/setup-lisp-deps.sh
 
-large テストと mutation testing のコマンドができたら、ここと CLAUDE.md の「コマンド」に追記する。
+# テスト（既定は small + medium。CPU だけで動き、GPU は不要）
+scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
+NABLA_TEST_SIZES=large scripts/run-tests.sh
+
+# mutation testing（main から変わった行が対象。詳細は tools/mutate/README.md）
+tools/mutate/run.sh
+tools/mutate/run.sh src/core/foo.lisp:10-40
+
+# IREE のソースビルド（固定コミット、CPU のみ。--cuda で CUDA 有効）
+scripts/build-iree.sh
+scripts/verify-iree.sh
+```

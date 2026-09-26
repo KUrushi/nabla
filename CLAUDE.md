@@ -9,18 +9,29 @@ nabla は Common Lisp で書く、JAX に相当する深層学習ライブラリ
 ## 構成
 
 - 処理系は SBCL のみ。C ライブラリの呼び出しは CFFI、GC との連携は trivial-garbage、並列処理は lparallel を使う
-- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く
+- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く（テストの共通部品は `nabla/test-support` に置き、そこに依存する）
+- Quicklisp は使えない（ネットワーク方針）。Lisp の依存は apt パッケージと、固定コミットで git clone したもの（check-it など）を `scripts/setup-lisp-deps.sh` で揃える。システムのロードは ASDF の `CL_SOURCE_REGISTRY` で行い、`ql:quickload` は使わない
 - IREE は固定したコミットからソースビルドする（`libIREECompiler.so` とランタイムの共有ライブラリ）。コンパイラは埋め込み C API を dlopen して呼び、`iree-compile` をサブプロセスで起動しない
 - Python はライブラリの実行時依存にしない。JAX は、テストで比べる期待値（フィクスチャ）の生成にだけ使う
 
 ## コマンド
 
 ```sh
-# テスト（既定は small + medium。CPU だけで動き、GPU は不要）
-sbcl --non-interactive --eval '(ql:quickload "nabla/tests")' --eval '(asdf:test-system "nabla")'
-```
+# 依存の準備（初回のみ。apt は root で実行、check-it / optima は git clone）
+scripts/setup-lisp-deps.sh
 
-ビルドスクリプト、large テスト、mutation test のコマンドを追加したら、ここに追記する。
+# テスト（既定は small + medium。CPU だけで動き、GPU は不要）
+scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
+NABLA_TEST_SIZES=large scripts/run-tests.sh
+
+# mutation testing（main から変わった行が対象。詳細は tools/mutate/README.md）
+tools/mutate/run.sh
+tools/mutate/run.sh src/core/foo.lisp:10-40
+
+# IREE のソースビルド（固定コミット、CPU のみ。--cuda で CUDA 有効）
+scripts/build-iree.sh
+scripts/verify-iree.sh
+```
 
 ## 設計上の約束（コードを読んでも分かりにくいもの）
 
