@@ -1,8 +1,18 @@
 # IREE のソースビルドで固定するバージョン。
 #
 # scripts/build-iree.sh はこのファイルを読んでチェックアウトする。
-# 更新するときは、この3行と docs/iree-build.md の記録を一緒に直す。
+# 更新するときは、この行と docs/iree-build.md の記録を一緒に直す。
+#
+# コンパイラ (libIREECompiler.so, iree-compile) は既定でこの commit と同じ
+# ビルドから作られた PyPI ホイールを使う (scripts/build-iree.sh --compiler=wheel、
+# 既定)。ランタイムは常にこの commit からソースビルドする。
+# wheel_version / wheel_sha256 は
+# https://pypi.org/project/iree-base-compiler/<wheel_version>/#files の
+# manylinux cp311 ホイールのもの。
 
 repo=https://github.com/iree-org/iree
 tag=v3.11.0
 commit=e4a3b0405d7d23554da26403658d0e8c3c5ecf25
+wheel_name=iree-base-compiler
+wheel_version=3.11.0
+wheel_sha256=ac3505591b6b134784eae7bcdf806fc66a2d120a82134b98bd4fbe488fdf84c5

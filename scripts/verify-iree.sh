@@ -51,22 +51,29 @@ EXPECTED_VALUES=(58 64 139 154)
 check_output() {
   local backend="$1"
   local output="$2"
-  # Require the four expected values to appear, IN ORDER, each bounded by
-  # non-digit characters, so this can't be satisfied by a substring match
-  # (e.g. "158") or by the right numbers appearing in the wrong positions
-  # (e.g. a transposed result). We flatten newlines first since the values
-  # may be split across lines by iree-run-module's pretty-printer.
-  local flattened
+  # iree-run-module prints "result[0]: hal.buffer_view\n2x2xf32=[58 64][139
+  # 154]" (its pretty-printer may split the tensor data across lines, hence
+  # the newline flattening). We only look at the data after the buffer
+  # view's final "=" (the shape prefix, e.g. "2x2xf32", is before it), then
+  # require the parsed numbers to be EXACTLY [58 64 139 154] in order.
+  #
+  # A plain \b58\b-style regex on the whole output is not enough: word
+  # boundaries sit around the full token "58.5" too, so \b58\b still matches
+  # its "58" prefix and a fractional wrong result (e.g. "58.5 64 139 154")
+  # would wrongly pass. Parsing the exact number list rules that out.
+  local flattened data_part numbers expected
   flattened="$(tr '\n' ' ' <<<"${output}")"
-  # \b (zero-width word boundary) avoids the classic bug of consuming the
-  # delimiter between two required numbers, which would otherwise make the
-  # match fail for legitimate output or, worse, silently succeed on the
-  # wrong subset of characters.
-  local order_regex='\b58\b.*\b64\b.*\b139\b.*\b154\b'
-  if grep -qP "${order_regex}" <<<"${flattened}"; then
-    log "${backend}: OK, output matches expected [[58 64][139 154]] in order"
+  # Taking everything after the LAST "=" assumes exactly one result buffer
+  # in the output, which holds for main's single tensor return in
+  # matmul.mlir. If a future fixture ever returns more than one result,
+  # this would need to isolate result[0]'s own line instead.
+  data_part="${flattened##*=}"
+  numbers="$(grep -oP -- '-?[0-9]+(\.[0-9]+)?' <<<"${data_part}")"
+  expected="$(printf '%s\n' "${EXPECTED_VALUES[@]}")"
+  if [[ "${numbers}" == "${expected}" ]]; then
+    log "${backend}: OK, output matches expected [[58 64][139 154]] exactly"
   else
-    echo "error: ${backend}: output did not contain expected values [58 64 139 154] in order" >&2
+    echo "error: ${backend}: output did not contain exactly the expected values [58 64 139 154] in order" >&2
     echo "  got: ${output}" >&2
     exit 1
   fi
@@ -80,9 +87,13 @@ run_backend() {
 
   log "compiling for ${backend} -> ${vmfb}"
   if [[ "${backend}" == "llvm-cpu" ]]; then
+    # --iree-llvmcpu-target-cpu=host targets this machine's actual CPU
+    # instead of the generic baseline, which silences iree-compile's
+    # "using default configuration" warning.
     "${IREE_COMPILE}" \
       --iree-hal-target-device=local \
       --iree-hal-local-target-device-backends=llvm-cpu \
+      --iree-llvmcpu-target-cpu=host \
       "${MATMUL_MLIR}" -o "${vmfb}"
   else
     "${IREE_COMPILE}" \
