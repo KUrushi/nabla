@@ -10,8 +10,14 @@
 ;;;; を使わない」なので、issue #10 の完了条件が書く「small」より1段階
 ;;;; 重いサイズにする。PR 本文にも理由を書く）。
 ;;;;
-;;;; すべてのテストが NB:*COMPILE-CACHE-DIRECTORY* を一時ディレクトリに
-;;;; 束縛し、~/.cache には一切触らない。
+;;;; ほとんどのテストは NB:*COMPILE-CACHE-DIRECTORY* を一時ディレクトリに
+;;;; 束縛し、~/.cache には一切触らない。例外は :DEFAULT 解決（環境変数
+;;;; NABLA_CACHE_DIR の有無での分岐）を確かめる2つのテストで、そのうち
+;;;; NABLA_CACHE_DIR 未設定側は実際に ${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/
+;;;; に1ファイルだけ書き、UNWIND-PROTECT でそのファイルだけ削除する。
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (require :sb-posix))
 
 (in-package #:nabla.tests)
 
@@ -145,6 +151,68 @@ compile-count がスレッド数を超えない）の判定には関係しない
             (nb:*compile-cache-directory* dir))
         (nb:backend-compile backend +add-text+)
         (is (= count-before (fake-backend-compile-count backend)))))))
+
+(test compile-cache/backend-compile/default-directory-honors-nabla-cache-dir-env
+  "NB:*COMPILE-CACHE-DIRECTORY* が :DEFAULT のとき、環境変数
+NABLA_CACHE_DIR が指すディレクトリの vmfb/ 以下にキャッシュファイルが
+できる（issue #10 が求める『環境変数などで変えられるようにする』の
+:DEFAULT 分岐そのもの。src/compile-cache.lisp の %COMPILE-CACHE-ROOT が
+NABLA_CACHE_DIR の有無で分岐する2つの枝を、実際に環境変数を設定・解除
+して両方確かめる）。
+
+このテストだけは公開 API（NB:BACKEND-COMPILE と NB:*COMPILE-CACHE-DIRECTORY*）
+を通して振る舞いを確かめるため、%COMPILE-CACHE-ROOT のような内部関数は
+一切呼ばない。SB-POSIX:SETENV / SB-POSIX:UNSETENV でプロセスの環境変数を
+書き換えるので、UNWIND-PROTECT で元の値に戻す。"
+  (with-temporary-directory (dir)
+    (let ((original (sb-ext:posix-getenv "NABLA_CACHE_DIR")))
+      (unwind-protect
+           (progn
+             (sb-posix:setenv "NABLA_CACHE_DIR" (namestring dir) 1)
+             (let ((nb:*compile-cache-directory* :default)
+                   (backend (nb:make-backend :fake)))
+               (nb:backend-compile backend +add-text+)
+               (is (= 1 (%module-file-count (merge-pathnames "vmfb/" dir)))
+                   "NABLA_CACHE_DIR/vmfb/ の下に .module ファイルができるはず")))
+        (if original
+            (sb-posix:setenv "NABLA_CACHE_DIR" original 1)
+            (sb-posix:unsetenv "NABLA_CACHE_DIR"))))))
+
+(test compile-cache/backend-compile/default-directory-falls-back-to-xdg-cache-home
+  "環境変数 NABLA_CACHE_DIR が設定されていなければ、
+NB:*COMPILE-CACHE-DIRECTORY* が :DEFAULT のとき
+(UIOP:XDG-CACHE-HOME \"nabla/vmfb/\") の下にキャッシュファイルができる
+（%COMPILE-CACHE-ROOT の :DEFAULT 分岐の、もう一方の枝）。
+
+実際にホームディレクトリ配下の共有キャッシュに書き込むので、この
+テストが作ったファイルを UNWIND-PROTECT で確実に削除する（書き込み前後の
+*.module 一覧の差分から新しくできたファイルを特定し、1つに限らず残らず
+消す）。text には毎回変わる乱数を混ぜて専用のキャッシュキーにし、途中で
+プロセスが落ちて前回の削除が行われなかった場合でも、キャッシュに
+ヒットして誤ってスキップされることなく毎回新しいファイルを作る（自己
+修復する）。"
+  (let* ((original (sb-ext:posix-getenv "NABLA_CACHE_DIR"))
+         (unique-text (format nil "func.func @main() { stablehlo.add } ; compile-cache-test-default-xdg-probe-~D"
+                               (random most-positive-fixnum (make-random-state t))))
+         (directory (uiop:xdg-cache-home "nabla/vmfb/"))
+         (created-files nil))
+    (unwind-protect
+         (progn
+           (sb-posix:unsetenv "NABLA_CACHE_DIR")
+           (let ((before (directory (make-pathname :name :wild :type "module" :defaults directory))))
+             (let ((nb:*compile-cache-directory* :default)
+                   (backend (nb:make-backend :fake)))
+               (nb:backend-compile backend unique-text))
+             (let* ((after (directory (make-pathname :name :wild :type "module" :defaults directory)))
+                    (new-files (set-difference after before :test #'equal)))
+               (is (= 1 (length new-files))
+                   "NABLA_CACHE_DIR 未設定なら XDG_CACHE_HOME 側に .module ファイルが1つできるはず")
+               (setf created-files new-files))))
+      (dolist (file created-files)
+        (ignore-errors (delete-file file)))
+      (if original
+          (sb-posix:setenv "NABLA_CACHE_DIR" original 1)
+          (sb-posix:unsetenv "NABLA_CACHE_DIR")))))
 
 (test compile-cache/backend-compile/nil-directory-disables-cache
   "NB:*COMPILE-CACHE-DIRECTORY* が NIL なら、毎回コンパイラを呼び、
