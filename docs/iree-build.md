@@ -95,7 +95,28 @@ C API 実装と CLI が入っている。
 ```
 iree/compiler/_mlir_libs/libIREECompiler.so   # → lib/libIREECompiler.so
 iree/compiler/_mlir_libs/iree-compile         # → bin/iree-compile
+iree/compiler/_mlir_libs/iree-lld             # → bin/iree-lld
 ```
+
+`iree-lld` はロックしたコミットにバンドルされている LLD（IREE 自前ビルドの busybox
+版）。**llvm-cpu バックエンドは、コンパイル済みの CPU 実行ファイルを常に外部のリンカを
+サブプロセスとして起動してリンクする**（このビルドにインプロセスのリンカは無い）ため、
+`iree-compile` はリンカを何らかの方法で見つける必要がある。デフォルトでは
+`--iree-llvmcpu-embedded-linker-path` を指定しない限り `PATH` 上のリンカ（この環境では
+システムの `/usr/bin/lld`）を拾ってしまい、ロックした IREE コミットのビルドに使われた
+LLD のバージョンとずれる可能性がある（LLD はリンクするオブジェクトの ABI に敏感な
+ツールで、IREE 側は特定バージョンとの組み合わせでテストされている）。そのため
+`scripts/verify-iree.sh`（および `#20` のより上位のビルド層）は、`$NABLA_IREE_HOME/bin/iree-lld`
+が存在すればそれを `--iree-llvmcpu-embedded-linker-path` に明示的に渡し、システムの
+リンカではなくロックしたコミットと同じビルドの LLD を必ず使わせる。
+
+`iree-compile` と同様、`iree-lld` の RUNPATH も `$ORIGIN` で同じディレクトリの
+`libIREECompiler.so` を必要とするため、`bin/libIREECompiler.so` へのシンボリックリンク
+（既存）がそのまま効く。Python の `zipfile` が実行ビットを復元しない点も `iree-compile`
+と同じで、`chmod +x` で復元する。`scripts/build-iree.sh` はインストール直後に
+`iree-lld -flavor gnu --version` を実行し、起動して `libIREECompiler.so` を解決できる
+ことを確認する（`iree-lld` は引数なしだと使い方を表示するだけで終了コード非ゼロになる
+ため、`-flavor gnu --version` で実際にサブコマンドとして動かす）。
 
 コンパイラの C API ヘッダ（`embedding_api.h` 等）はホイールには含まれていないため、
 どちらのモードでも `NABLA_IREE_SRC` のソースチェックアウトからコピーする。
@@ -182,10 +203,13 @@ iree/compiler/_mlir_libs/iree-compile         # → bin/iree-compile
   `runtime/src/iree/runtime/CMakeLists.txt` の `iree_cc_unified_library(NAME unified
   ROOT ::impl)` で定義され、ビルドすると
   `runtime/src/iree/runtime/libiree_runtime_unified.a`（静的ライブラリ）ができる
-- `iree-compile`, `iree_compiler_API_SharedImpl` — `--compiler=source` のときだけ追加で
-  ビルドする。後者は `compiler/src/iree/compiler/API/CMakeLists.txt` で
-  `OUTPUT_NAME "IREECompiler"`, `SOVERSION 0` として定義され、`lib/libIREECompiler.so(.0)`
-  を生成する
+- `iree-compile`, `iree_compiler_API_SharedImpl`, `iree-lld` — `--compiler=source` のとき
+  だけ追加でビルドする。`iree_compiler_API_SharedImpl` は
+  `compiler/src/iree/compiler/API/CMakeLists.txt` で `OUTPUT_NAME "IREECompiler"`,
+  `SOVERSION 0` として定義され、`lib/libIREECompiler.so(.0)` を生成する。`iree-lld` は
+  `tools/CMakeLists.txt` で `IREE_ENABLE_LLD=ON`（既定で設定済み）のときだけ定義される
+  ターゲットで、`iree-compile` が `--iree-llvmcpu-embedded-linker-path` に渡す
+  リンカ本体を提供する（`ninja -t targets all | grep -i lld` で確認）
 
 ## ランタイムの共有ライブラリ (`libnabla_iree_runtime.so`)
 
@@ -236,8 +260,11 @@ lib/
   libnabla_iree_runtime.so                    # ランタイムのシム共有ライブラリ
 bin/
   iree-compile, iree-run-module               # 動作確認用 CLI（本体からは呼ばない）
-  libIREECompiler.so -> ../lib/libIREECompiler.so  # wheel モードのみ。iree-compile の
-                                               # RUNPATH=$ORIGIN が要求する
+  iree-lld                                    # llvm-cpu が --iree-llvmcpu-embedded-
+                                               # linker-path で使う、ロックしたコミットと
+                                               # 同じビルドの LLD
+  libIREECompiler.so -> ../lib/libIREECompiler.so  # wheel モードのみ。iree-compile /
+                                               # iree-lld の RUNPATH=$ORIGIN が要求する
 include/
   iree/compiler/{embedding_api.h, api_support.h, loader.h, mlir_interop.h}
   iree/runtime/, iree/hal/, iree/vm/, ...      # ランタイムのヘッダ一式（ビルドで生成される
@@ -378,7 +405,10 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
   [[58 64][139 154]] と完全一致することを確認 |
 | `scripts/build-iree.sh --compiler=source` フルビルド | 未完了 | 59分経過時点で
   ninja 7085 ステップ中 5674 まで（打ち切り） | このマシンのスペック
-  (4 コア / 15 GB RAM) では実用的な時間で終わらない。CI やより強力なマシンで再挑戦 |
+  (4 コア / 15 GB RAM) では実用的な時間で終わらない。CI やより強力なマシンで再挑戦。
+  `iree-lld` ターゲット自体は cmake configure まで進めて `ninja -t targets all` で
+  存在を確認済みだが、ビルドして `bin/iree-lld` の動作確認をするところまでは
+  実行できていない（同上の理由） |
 | `scripts/build-iree.sh --cuda` | 未実施（環境に GPU/CUDA なし） | - | CUDA toolkit の
   あるマシンが必要 |
 | `scripts/verify-iree.sh --cuda` | 未実施（環境に GPU/CUDA なし） | - | 同上 |
