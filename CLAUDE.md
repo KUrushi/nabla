@@ -29,6 +29,11 @@ NABLA_TEST_SIZES=large scripts/run-tests.sh
 # スキップを失敗にする
 NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 
+# vmfb ディスクキャッシュ（既定 ${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/。
+# NABLA_CACHE_DIR で場所を変える。消してよい。テストで検査した挙動を
+# 変えたときは、変更した行に mutation testing もかける）
+tools/mutate/run.sh src/compile-cache.lisp
+
 # IREE のビルド（third_party/iree.lock で固定したコミットから）。
 # コンパイラは既定で PyPI ホイールを使い、ランタイムは常にソースビルドする
 scripts/build-iree.sh                     # --compiler=wheel（既定）+ ソースランタイム（CPU）
@@ -92,6 +97,7 @@ GPU を使う large テストは CI では動かさない。
 - IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
 - デバイス上のバッファは `device-array` で包む。`device-array` は生成時に自分のデバイス（`iree_hal_device_t`）を retain し、解放時に buffer view → device の順で release する（IREE の heap buffer が確保元 allocator の統計ブロックへの生ポインタを持ち、その allocator を device が所有しているため。device を先に解放すると use-after-free になる）。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）。この解放は `trivial-garbage:finalize` で自動化されており（`device-array` 生成時に登録）、明示的な `release-device-array` は `tg:cancel-finalization` で finalizer を先に取り消してから自分で解放するので、二重解放にはならない。SBCL は finalizer を別スレッド（finalizer thread）で非同期に実行するため、テストで確認するときは `gc-and-run-finalizers`（`tests/iree/support.lisp`）のように GC の後で明示的に保留中の finalizer を実行させる
 - 実行系は `backend` プロトコル（`src/backend.lisp`）の裏に置く。core は IREE の名前を知らない（medium テストで検査）。総称関数は `backend-` 接頭辞（CL の `compile` / `load` と衝突させない）
+- vmfb のディスクキャッシュ（`src/compile-cache.lisp`、issue #10）は `BACKEND-COMPILE` に `:AROUND` メソッドを足す形で実装し、`BACKEND` そのものは変えない。キーは `BACKEND-FINGERPRINT`（ターゲット・GPU 世代・解決済みのコンパイルフラグ・IREE のリビジョンを含む文字列のリスト）と `TEXT` を、それぞれ「UTF-8 バイト長:」の ASCII 接頭辞つきで連結した SHA-256（ironclad）の16進文字列。ファイルは `<hex>.module` = マジック `"NBLMOD01"`（8バイト）+ payload の SHA-256（32バイト、生）+ payload（vmfb）で、一時ファイルへの書き込み + `uiop:rename-file-overwriting-target` でアトミックに作る。場所は `nabla:*compile-cache-directory*`（既定 `${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/`、`NABLA_CACHE_DIR` で変更、`NIL` で無効化）
 
 ## 開発の原則
 

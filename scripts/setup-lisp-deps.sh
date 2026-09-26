@@ -23,6 +23,9 @@ APT_PACKAGES=(
   # 同梱）のビルドに必要。libffi-dev がないと cffi-libffi のロード時に
   # groveller が C コンパイルに失敗する。
   libffi-dev
+  # src/compile-cache.lisp（vmfb ディスクキャッシュ、issue #10）がキャッシュ
+  # キーの SHA-256 に使う。
+  cl-ironclad
 )
 
 # name url pin の3つ組。

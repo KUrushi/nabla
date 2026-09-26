@@ -40,7 +40,9 @@
    #:device-array-aval
    #:backend-error
    #:backend-not-available
-   #:backend-not-available-kind)
+   #:backend-not-available-kind
+   ;; vmfb ディスクキャッシュ（issue #10）
+   #:*compile-cache-directory*)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
 ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend

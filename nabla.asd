@@ -13,11 +13,12 @@
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
   :license "MIT"
-  :depends-on ()
+  :depends-on ("ironclad")
   :components ((:file "src/package")
                (:file "src/dtype")
                (:file "src/aval")
-               (:file "src/backend"))
+               (:file "src/backend")
+               (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
 
 (defsystem "nabla/test-support"
@@ -32,6 +33,7 @@
                (:file "tests/support/allclose")
                (:file "tests/support/reference")
                (:file "tests/support/fake-backend")
+               (:file "tests/support/temporary-directory")
                (:file "tests/support/regression")
                (:file "tests/support/run-tests")))
 
@@ -43,6 +45,7 @@
                (:file "tests/dtype-test")
                (:file "tests/aval-test")
                (:file "tests/backend-test")
+               (:file "tests/compile-cache-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -82,6 +85,7 @@
                ;; SBCL の GC と IREE のスレッドとの既知の相性問題に対する緩和策）。
                (:file "tests/iree/finalizer-test")
                (:file "tests/iree/backend-test")
+               (:file "tests/iree/compile-cache-test")
                (:file "tests/iree/compiler-test")
                (:file "tests/iree/runtime-test")
                (:file "tests/iree/runtime-cuda-test")
