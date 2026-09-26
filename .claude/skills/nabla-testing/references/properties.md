@@ -86,9 +86,11 @@ I/O とスレッドを使うので medium）。
 - `NB:*COMPILE-CACHE-DIRECTORY*` が `:DEFAULT`（既定値）のとき、環境変数
   `NABLA_CACHE_DIR` が設定されていれば `<それ>/vmfb/` に、設定されて
   いなければ `${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/` に書き込む
-  （`SB-POSIX:SETENV` / `SB-POSIX:UNSETENV` で環境変数を退避・復元しながら
-  確かめる。未設定側は実際に `~/.cache` の下に1ファイルだけ作って存在を
-  確かめ、`UNWIND-PROTECT` でそのファイルだけ削除する）
+  （`SB-POSIX:SETENV` / `SB-POSIX:UNSETENV` で `NABLA_CACHE_DIR` と
+  `XDG_CACHE_HOME` の両方を退避・復元しながら確かめる。`UIOP:XDG-CACHE-HOME`
+  は呼び出しのたびに `XDG_CACHE_HOME` を読み直すため、未設定側も
+  `XDG_CACHE_HOME` を一時ディレクトリへ向け直すだけで確かめられ、
+  実プロセスが共有する `~/.cache` には一切触れない）
 
 ### 変換の合成
 

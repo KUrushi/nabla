@@ -10,11 +10,11 @@
 ;;;; を使わない」なので、issue #10 の完了条件が書く「small」より1段階
 ;;;; 重いサイズにする。PR 本文にも理由を書く）。
 ;;;;
-;;;; ほとんどのテストは NB:*COMPILE-CACHE-DIRECTORY* を一時ディレクトリに
-;;;; 束縛し、~/.cache には一切触らない。例外は :DEFAULT 解決（環境変数
-;;;; NABLA_CACHE_DIR の有無での分岐）を確かめる2つのテストで、そのうち
-;;;; NABLA_CACHE_DIR 未設定側は実際に ${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/
-;;;; に1ファイルだけ書き、UNWIND-PROTECT でそのファイルだけ削除する。
+;;;; すべてのテストは NB:*COMPILE-CACHE-DIRECTORY* を一時ディレクトリに
+;;;; 束縛するか、:DEFAULT 解決を確かめる2つのテストのように環境変数
+;;;; （NABLA_CACHE_DIR / XDG_CACHE_HOME）を一時ディレクトリへ向けてから
+;;;; 確かめる。実プロセスが共有する ~/.cache/nabla/vmfb/ には一切触らない
+;;;; （他のテスト・他のプロセスと並行に走っても安全であるため）。
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :sb-posix))
@@ -163,7 +163,13 @@ NABLA_CACHE_DIR の有無で分岐する2つの枝を、実際に環境変数を
 このテストだけは公開 API（NB:BACKEND-COMPILE と NB:*COMPILE-CACHE-DIRECTORY*）
 を通して振る舞いを確かめるため、%COMPILE-CACHE-ROOT のような内部関数は
 一切呼ばない。SB-POSIX:SETENV / SB-POSIX:UNSETENV でプロセスの環境変数を
-書き換えるので、UNWIND-PROTECT で元の値に戻す。"
+書き換えるので、UNWIND-PROTECT で元の値に戻す。
+
+このテストは NABLA_CACHE_DIR というプロセス大域の環境変数を書き換える
+ため、このプロセス内で他のテストと並行に実行されると安全ではない
+（本来ハーメティックであるべきだが、環境変数分岐そのものを公開 API
+経由で確かめるための例外として許容する）。FiveAM のこのスイートは
+逐次実行なので現状は問題ない。"
   (with-temporary-directory (dir)
     (let ((original (sb-ext:posix-getenv "NABLA_CACHE_DIR")))
       (unwind-protect
@@ -184,35 +190,29 @@ NB:*COMPILE-CACHE-DIRECTORY* が :DEFAULT のとき
 (UIOP:XDG-CACHE-HOME \"nabla/vmfb/\") の下にキャッシュファイルができる
 （%COMPILE-CACHE-ROOT の :DEFAULT 分岐の、もう一方の枝）。
 
-実際にホームディレクトリ配下の共有キャッシュに書き込むので、この
-テストが作ったファイルを UNWIND-PROTECT で確実に削除する（書き込み前後の
-*.module 一覧の差分から新しくできたファイルを特定し、1つに限らず残らず
-消す）。text には毎回変わる乱数を混ぜて専用のキャッシュキーにし、途中で
-プロセスが落ちて前回の削除が行われなかった場合でも、キャッシュに
-ヒットして誤ってスキップされることなく毎回新しいファイルを作る（自己
-修復する）。"
-  (let* ((original (sb-ext:posix-getenv "NABLA_CACHE_DIR"))
-         (unique-text (format nil "func.func @main() { stablehlo.add } ; compile-cache-test-default-xdg-probe-~D"
-                               (random most-positive-fixnum (make-random-state t))))
-         (directory (uiop:xdg-cache-home "nabla/vmfb/"))
-         (created-files nil))
-    (unwind-protect
-         (progn
-           (sb-posix:unsetenv "NABLA_CACHE_DIR")
-           (let ((before (directory (make-pathname :name :wild :type "module" :defaults directory))))
+UIOP:XDG-CACHE-HOME は呼び出しのたびに環境変数 XDG_CACHE_HOME を読み直す
+（メモ化しない）ので、XDG_CACHE_HOME をこのテスト専用の一時ディレクトリに
+向け直せば、実プロセスが共有する ~/.cache には一切触れずに同じ分岐を
+確かめられる。NABLA_CACHE_DIR と XDG_CACHE_HOME の両方を
+UNWIND-PROTECT で退避・復元する。"
+  (with-temporary-directory (xdg-home)
+    (let ((original-cache-dir (sb-ext:posix-getenv "NABLA_CACHE_DIR"))
+          (original-xdg-home (sb-ext:posix-getenv "XDG_CACHE_HOME")))
+      (unwind-protect
+           (progn
+             (sb-posix:unsetenv "NABLA_CACHE_DIR")
+             (sb-posix:setenv "XDG_CACHE_HOME" (namestring xdg-home) 1)
              (let ((nb:*compile-cache-directory* :default)
                    (backend (nb:make-backend :fake)))
-               (nb:backend-compile backend unique-text))
-             (let* ((after (directory (make-pathname :name :wild :type "module" :defaults directory)))
-                    (new-files (set-difference after before :test #'equal)))
-               (is (= 1 (length new-files))
-                   "NABLA_CACHE_DIR 未設定なら XDG_CACHE_HOME 側に .module ファイルが1つできるはず")
-               (setf created-files new-files))))
-      (dolist (file created-files)
-        (ignore-errors (delete-file file)))
-      (if original
-          (sb-posix:setenv "NABLA_CACHE_DIR" original 1)
-          (sb-posix:unsetenv "NABLA_CACHE_DIR")))))
+               (nb:backend-compile backend +add-text+)
+               (is (= 1 (%module-file-count (merge-pathnames "nabla/vmfb/" xdg-home)))
+                   "NABLA_CACHE_DIR 未設定なら XDG_CACHE_HOME/nabla/vmfb/ に .module ファイルが1つできるはず")))
+        (if original-cache-dir
+            (sb-posix:setenv "NABLA_CACHE_DIR" original-cache-dir 1)
+            (sb-posix:unsetenv "NABLA_CACHE_DIR"))
+        (if original-xdg-home
+            (sb-posix:setenv "XDG_CACHE_HOME" original-xdg-home 1)
+            (sb-posix:unsetenv "XDG_CACHE_HOME"))))))
 
 (test compile-cache/backend-compile/nil-directory-disables-cache
   "NB:*COMPILE-CACHE-DIRECTORY* が NIL なら、毎回コンパイラを呼び、
