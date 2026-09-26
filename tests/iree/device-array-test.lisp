@@ -5,17 +5,21 @@
 (define-iree-test device-array/to-host/round-trips-values-for-f32-and-bf16
     "to-device してから to-host すると、f32 / bf16 のどの形状（rank 0..4、
 各次元 1..8）でも元の値が変わらない（allclose、bf16 はビット列そのものが
-equalp で一致することも確かめる）。"
+equalp で一致することも確かめる）。SEED も生成する（固定 :seed 0 だと
+形状ごとに値のビットパターンが1通りに固定され、bf16 の inf / NaN /
+subnormal / -0 のようなビット列がほとんど生成されないため）。"
   (skip-unless-iree :library :runtime)
   (with-device (device :local-task)
-    (is (check-it (generator (array-spec :dtypes '(:f32 :bf16)))
-                  (lambda (spec)
-                    (let ((x (make-random-array spec)))
-                      (with-device-arrays ((y (to-device x device :dtype (array-spec-dtype spec))))
-                        (let ((roundtripped (to-host y)))
-                          (and (allclose roundtripped x :dtype (array-spec-dtype spec))
-                               (or (not (eq (array-spec-dtype spec) :bf16))
-                                   (equalp roundtripped x)))))))
+    (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :bf16))
+                                     (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                  (lambda (spec-and-seed)
+                    (destructuring-bind (spec seed) spec-and-seed
+                      (let ((x (make-random-array spec :seed seed)))
+                        (with-device-arrays ((y (to-device x device :dtype (array-spec-dtype spec))))
+                          (let ((roundtripped (to-host y)))
+                            (and (allclose roundtripped x :dtype (array-spec-dtype spec))
+                                 (or (not (eq (array-spec-dtype spec) :bf16))
+                                     (equalp roundtripped x))))))))
                   :regression-id device-array/to-host/round-trips-values-for-f32-and-bf16
                   :regression-file (regression-path "iree-device-array-roundtrip" :package "NABLA.IREE.TESTS")))))
 
@@ -81,7 +85,12 @@ to-host はまだ正しい値を返し、release-device-array もクラッシュ
   (let* ((device (make-device :local-task))
          (x (make-random-array (make-array-spec '(2 3) :f32)))
          (y (to-device x device)))
-    (release-device device)
-    (is (allclose (to-host y) x :dtype :f32))
-    (release-device-array y)
+    (unwind-protect
+         (progn
+           (release-device device)
+           (is (allclose (to-host y) x :dtype :f32)))
+      ;; to-host が失敗しても y と、y が retain している device を必ず
+      ;; 解放する（#11 で finalizer が入るまでは、ここで解放し忘れると
+      ;; このテストランの間ずっとリークする）。
+      (release-device-array y))
     (is (device-array-released-p y))))

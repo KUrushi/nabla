@@ -49,6 +49,18 @@ DTYPE-MISMATCH が signal される。"
 DTYPE-MISMATCH になる。"
   (signals nb:dtype-mismatch (nb:array-dtype (make-array 3 :element-type 'fixnum))))
 
+(test dtype/array-dtype/strict-subtypes-of-supported-types-signal-mismatch
+  "SINGLE-FLOAT / (UNSIGNED-BYTE 16) の真の部分型（SUBTYPEP ではなく要素型が
+一致するかどうかで判定しなければならない）は DTYPE-MISMATCH になる。
+(UNSIGNED-BYTE 8) や BIT は (UNSIGNED-BYTE 16) の部分型だが 16 ビットではない
+ため bf16 / f16 として受理してはならず、要素型 NIL の配列（空型。SUBTYPEP NIL
+SINGLE-FLOAT は真）を f32 として受理してもならない。これらを SUBTYPEP で
+分類すると、要素数と無関係にホストの読み取り幅を決める to-device が
+ヒープを読み越えてしまう（メモリ安全性のバグ）。"
+  (signals nb:dtype-mismatch (nb:array-dtype (make-array 6 :element-type '(unsigned-byte 8)) :bf16))
+  (signals nb:dtype-mismatch (nb:array-dtype (make-array 6 :element-type 'bit) :f16))
+  (signals nb:dtype-mismatch (nb:array-dtype (make-array 6 :element-type nil))))
+
 (test dtype/dtype-element-type/matches-make-random-array
   "dtype-element-type が返す型は、make-random-array がその dtype で作る
 配列の実際の要素型を含む（subtypep で比較し、upgraded-array-element-type
