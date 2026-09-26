@@ -60,12 +60,18 @@ signal する。サポートしない要素型（上の3通り以外）も DTYPE
 なる。"
   (let ((element-type (array-element-type array)))
     (flet ((signal-mismatch ()
-             (error 'dtype-mismatch :element-type element-type :dtype dtype)))
+             (error 'dtype-mismatch :element-type element-type :dtype dtype))
+           (type= (a b)
+             ;; SUBTYPEP は片方向にしか調べないため、(unsigned-byte 8) や
+             ;; BIT のような (unsigned-byte 16) の真の部分型、あるいは
+             ;; 空型 NIL（SUBTYPEP NIL SINGLE-FLOAT は T）まで一致した
+             ;; ことにしてしまう。両方向の SUBTYPEP で厳密な型の一致を見る。
+             (and (subtypep a b) (subtypep b a))))
       (cond
-        ((subtypep element-type 'single-float)
+        ((type= element-type 'single-float)
          (if (and dtype (not (eq dtype :f32))) (signal-mismatch) :f32))
-        ((subtypep element-type 'double-float)
+        ((type= element-type 'double-float)
          (if (and dtype (not (eq dtype :f64))) (signal-mismatch) :f64))
-        ((subtypep element-type '(unsigned-byte 16))
+        ((type= element-type '(unsigned-byte 16))
          (if (member dtype '(:bf16 :f16)) dtype (signal-mismatch)))
         (t (signal-mismatch))))))
