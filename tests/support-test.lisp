@@ -113,8 +113,73 @@ element-type-for-dtype の実装と1対1で対応させない（実装をなぞ�
 
 (in-suite :nabla.large)
 
-(test support/large-smoke/detects-that-large-ran
-  "large スイートが実際に実行されたことを検知するためだけのテスト。
-small / medium の既定実行では、このテストは走らないはず
-（走ったらここで必ず失敗する）。"
-  (fail "large スイートが実行された（NABLA_TEST_SIZES=large で意図的に実行した場合のみ、この失敗は正しい）。"))
+(test support/large-smoke/large-suite-runs
+  "large スイートが実行できることだけを確かめるマーカーテスト。
+NABLA_TEST_SIZES=large scripts/run-tests.sh が常に失敗する（常に fail する
+テストがコミットされていた）不具合の再発を防ぐため、必ず通るようにする。"
+  (pass))
+
+(in-suite :nabla.small)
+
+(test support/sizes-from-env/defaults-to-small-and-medium
+  "NABLA_TEST_SIZES が未設定（NIL）のときは small と medium だけを既定にする。
+large は手動または定期実行のみで、既定のスイートには含めない。"
+  (is (equal (sizes-from-env nil) '(:small :medium))))
+
+(test support/sizes-from-env/parses-comma-separated-list
+  "NABLA_TEST_SIZES はカンマ区切りの文字列を対応するキーワードのリストにする。
+空白を含んでいても、大文字小文字が違っても解釈できる。"
+  (is (equal (sizes-from-env "small") '(:small)))
+  (is (equal (sizes-from-env "small, MEDIUM ,large") '(:small :medium :large))))
+
+(test support/sizes-from-env/rejects-unknown-size
+  "small / medium / large 以外の名前はエラーにする（黙って無視しない）。"
+  (signals error (sizes-from-env "huge")))
+
+(test support/size-suite/default-sizes-never-select-large
+  "sizes-from-env の既定値が選ぶサイズ（:small と :medium）は、
+どちらも :nabla.large 以外のスイートに対応する。run-tests はサイズを
+%size-suite でスイートに変換してから fiveam:run! するだけなので、
+ここが成り立てば run-tests (sizes-from-env) は :nabla.large を実行しない。
+（fiveam:run! を使った統合テストは、自分自身が属するスイートを再帰的に
+実行してしまうと無限再帰になるため、下の large 専用の検証テストで行う。）"
+  (dolist (size (sizes-from-env nil))
+    (is (not (eq (nabla.tests.support::%size-suite size) :nabla.large)))))
+
+;;; run-tests が :nabla.large を既定で触らないことを確かめる統合テスト。
+;;; 検証本体は :nabla.large の下に置く: run-tests (:sizes '(:small :medium))
+;;; を、実行中の :nabla.small / :nabla.medium 自身から呼ぶと、実行中のスイート
+;;; を fiveam:run! で再度実行することになり無限再帰に陥るため、それらとは
+;;; 独立な :nabla.large から検証する。
+
+(defparameter *large-selection-guard-ran-p* nil)
+
+(def-suite %large-selection-guard :in :nabla.large)
+(in-suite %large-selection-guard)
+
+(def-test %large-selection-guard/marks-ran ()
+  (setf *large-selection-guard-ran-p* t)
+  (pass))
+
+(in-suite :nabla.large)
+
+(test support/run-tests/default-sizes-do-not-run-large
+  "run-tests に既定値 '(:small :medium) を渡すと、:nabla.large 配下の
+テスト（%large-selection-guard）は実行されない。"
+  (setf *large-selection-guard-ran-p* nil)
+  (run-tests :sizes '(:small :medium))
+  (is (null *large-selection-guard-ran-p*)
+      "run-tests に :sizes '(:small :medium) を渡したのに :nabla.large 配下のテストが実行された"))
+
+(test support/run-tests/guard-test-itself-can-run
+  "対照実験: %large-selection-guard/marks-ran を直接実行すれば
+*large-selection-guard-ran-p* は t になる（上のテストが「たまたま
+ガードのテストが動かないだけ」で通っているのではないことを確かめる）。
+run-tests :sizes '(:large) 経由で呼ぶと :nabla.large（このテスト自身が
+属するスイート）を再度実行することになり無限再帰になるため、
+fiveam:run で当該テストだけを名指しで呼ぶ。"
+  (setf *large-selection-guard-ran-p* nil)
+  (fiveam:run '%large-selection-guard/marks-ran)
+  (is (eq *large-selection-guard-ran-p* t)))
+
+(in-suite :nabla.small)
