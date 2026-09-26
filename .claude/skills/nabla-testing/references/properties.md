@@ -149,6 +149,34 @@ I/O とスレッドを使うので medium）。
 - `iree-backend` は `backend-target` / `backend-fingerprint` を持ち、
   `backend-unload` は idempotent。`iree-error` は `nabla:backend-error`
   の subtype
+- target :cuda の `iree-backend` は device を遅延生成するので、GPU の
+  無いマシンでも `make-backend` / `backend-compile` は成功する（実行
+  だけが GPU を要る）。`backend-fingerprint` はターゲットが違えば別の
+  値になり、vmfb ディスクキャッシュ（issue #10）は `local` と `cuda` を
+  別エントリとして保存する
+
+### local と cuda の数値一致（`nabla/iree`、issue #12）
+
+`nabla:backend` プロトコル経由で、同じ StableHLO を `local`（CPU）と
+`cuda`（NVIDIA GPU）でコンパイル・実行し、結果を比べる。GPU が要るのは
+実行だけなので、コンパイルだけの性質は medium（GPU 不要）、実際に実行して
+比べる性質は large（`skip-unless-cuda` で GPU が無ければスキップ）に分ける。
+
+- （medium・GPU 不要）target :cuda の backend は、add / matmul /
+  reduce_sum の f32・bf16 の6フィクスチャすべてを非空の vmfb にコンパイル
+  できる。`backend-fingerprint` は target :local と異なり、同じテキストを
+  local と cuda でそれぞれ `backend-compile` すると別々の `.module`
+  ファイルができる
+- （medium・GPU 不要）bf16 のフィクスチャ（add_bf16 / matmul_bf16 /
+  reduce_sum_bf16）を local backend で実行した結果は、`decode-array` で
+  double-float に戻した `reference-*` の期待値と bf16 の既定の許容誤差
+  （rtol 1e-2 / atol 1e-3）で一致する
+- （large・GPU が要る）ランダムな入力について、`local` と `cuda` の実行
+  結果が dtype ごとの既定の許容誤差で一致する（f32・bf16 の両方、add /
+  matmul / reduce_sum）。CPU と GPU で総和の順序が違いうるので、既定の
+  許容誤差で不安定に失敗するなら理由をテストに書いて緩める
+- （large・GPU が要る）同じ StableHLO テキストに対する vmfb ディスク
+  キャッシュのファイルが `local` と `cuda` で別々に（2つ）できる
 
 ### IREE バインディング（`nabla/iree`）
 
@@ -291,12 +319,15 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `allclose` / `approx=` | dtype ごとの既定の許容誤差で比べ、失敗時に最大誤差とその位置を出力する |
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |
 | `skip-unless-iree`（`tests/iree/support.lisp`） | IREE の共有ライブラリが無ければテストをスキップし（`NABLA_REQUIRE_IREE=1` なら失敗させる）、あれば何もしない |
+| `skip-unless-cuda`（`tests/iree/support.lisp`） | `"cuda"` ドライバが無い、または `make-device :cuda` が失敗すればテストをスキップし（`NABLA_REQUIRE_CUDA=1` なら失敗させる）、実際に GPU が使えれば何もしない。呼び出し前に `skip-unless-iree` が要る |
+| `define-iree-test/large`（`tests/iree/support.lisp`） | `define-iree-test` と同じ形だが `:nabla.large` スイートに登録する。GPU を実際に使うテスト（`skip-unless-cuda` と組み合わせる）に使う |
 | `stablehlo-fixture`（`tests/iree/support.lisp`） | `tests/fixtures/stablehlo/<名前>.mlir` の内容を文字列で返す |
 | `with-device-arrays`（`tests/iree/support.lisp`） | 複数の `device-array` を束縛して本体を評価し、終わったら逆順に `release-device-array` する。finalizer（#11）はあるが非同期なので、テストの中で確実にすぐ解放したいときはこちらを使う |
 | `gc-and-run-finalizers`（`tests/iree/support.lisp`） | `(sb-ext:gc :full t)` の後に `(sb-kernel:run-pending-finalizers)` を呼ぶ（#11）。SBCL は finalizer を別スレッドで非同期に実行するので、GC だけでは確認できない。finalizer 系のテストは必ずこれを使う |
 | `reference-add` / `reference-matmul` / `reference-reduce-sum`（`tests/support/reference.lisp`） | 素朴なループで計算する参照実装。DOUBLE-FLOAT で計算し `(simple-array double-float shape)` を返す。`nabla/iree` の `invoke` の期待値として使う |
 | `fake-backend` / `fake-backend-compile-count`（`tests/support/fake-backend.lisp`） | `nabla:backend` プロトコルのフェイク実装（issue #9）。IREE を経由せず add / matmul / reduce-sum の3演算だけを f32 で計算する。`fake-backend-compile-count` は `backend-compile` を呼んだ回数（#10 のキャッシュのヒット・ミスを数えるのに使う） |
 | `with-temporary-directory`（`tests/support/temporary-directory.lisp`） | `(uiop:temporary-directory)` の下に使い捨てのディレクトリを作って本体を評価し、`unwind-protect` で丸ごと削除する。vmfb ディスクキャッシュ（issue #10）のテストなど、ファイルを実際に読み書きするテストで `~/.cache` に触らないために使う |
+| `decode-array`（`tests/support/random-array.lisp`） | 配列全体を `decode-element` で double-float の配列に戻す。bf16 / f16 のフィクスチャの実行結果を、常に double-float を返す `reference-*` の期待値と比べる前に使う（issue #12） |
 
 部品を追加・変更したら、この表も直す。
 

@@ -32,6 +32,7 @@
    #:array-spec-rank
    #:make-random-array
    #:decode-element
+   #:decode-array
    ;; 許容誤差つきの比較
    #:allclose
    #:approx=

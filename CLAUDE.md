@@ -24,6 +24,10 @@ scripts/setup-lisp-deps.sh
 # テスト（既定は small + medium。CPU だけで動き、GPU は不要）
 scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
 NABLA_TEST_SIZES=large scripts/run-tests.sh
+# GPU で local/cuda の一致を確かめる（issue #12）。GPU が無ければ
+# skip-unless-cuda がスキップする。NABLA_REQUIRE_CUDA=1 を立てると
+# （GPU が要る環境で）スキップの代わりに失敗させる
+NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh
 # nabla/iree の medium テストは IREE の共有ライブラリ（NABLA_IREE_HOME 配下）が
 # 無いと自動でスキップされる。CI では NABLA_REQUIRE_IREE=1 を立てて、その
 # スキップを失敗にする

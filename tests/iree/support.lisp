@@ -27,6 +27,14 @@ in-suite を経由せずに）変わることがあり、周囲の *suite* に�
      (block iree-test
        ,@body)))
 
+(defmacro define-iree-test/large (name docstring &body body)
+  "DEFINE-IREE-TEST と同じ形（本体を (block iree-test ...) でくるむ）だが、
+:nabla.medium ではなく :nabla.large スイートに登録する。GPU (cuda) を
+実際に使うテスト（issue #12 の local/cuda 数値一致など）はこちらを使う。"
+  `(fiveam:test (,name :suite :nabla.large) ,docstring
+     (block iree-test
+       ,@body)))
+
 (defmacro skip-unless-iree (&key (library :both))
   "(iree-available-p :library LIBRARY) が偽なら、NABLA_REQUIRE_IREE 環境変数が
 設定されていれば fiveam:fail で失敗させ、無ければ fiveam:skip でこのテストを
@@ -39,6 +47,28 @@ in-suite を経由せずに）変わることがあり、周囲の *suite* に�
          (progn
            (fiveam:skip "IREE libraries not found under ~A (set NABLA_IREE_HOME or run scripts/build-iree.sh)"
                         (nabla.iree::iree-home))
+           (return-from iree-test)))))
+
+(defmacro skip-unless-cuda ()
+  "\"cuda\" ドライバが (driver-names) にあり、かつ (make-device :cuda) が
+実際に成功する（成功すればその場で release-device する）環境でだけ何もしない。
+どちらか一方でも満たさなければ、NABLA_REQUIRE_CUDA 環境変数が設定されて
+いれば fiveam:fail、無ければ fiveam:skip してこのテストの残り
+（DEFINE-IREE-TEST / DEFINE-IREE-TEST/LARGE の BLOCK IREE-TEST）から抜ける。
+
+呼び出し側は、この前に (SKIP-UNLESS-IREE :LIBRARY :BOTH) を呼んでおくこと
+（IREE の共有ライブラリ自体が無いと DRIVER-NAMES の呼び出し自体が失敗する）。"
+  `(unless (and (member "cuda" (driver-names) :test #'string=)
+                (handler-case
+                    (let ((device (make-device :cuda)))
+                      (release-device device)
+                      t)
+                  (iree-status-error () nil)))
+     (if (let ((value (sb-ext:posix-getenv "NABLA_REQUIRE_CUDA")))
+           (and value (plusp (length value))))
+         (fiveam:fail "CUDA device required (NABLA_REQUIRE_CUDA is set) but not available")
+         (progn
+           (fiveam:skip "\"cuda\" driver or device not available (set NABLA_REQUIRE_CUDA to fail instead of skip)")
            (return-from iree-test)))))
 
 (defun gc-and-run-finalizers ()

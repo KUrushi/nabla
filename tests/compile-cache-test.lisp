@@ -53,17 +53,24 @@ compile-count はそれぞれ1ずつ増える（合計2）。"
       (is (= 2 (%module-file-count dir))))))
 
 (test compile-cache/backend-compile/different-fingerprint-makes-separate-entry
-  "text が同じでも backend-fingerprint が違えば（ターゲットが違う想定）、
-別のキャッシュエントリになる。"
+  "text が同じでも backend-fingerprint がターゲットの部分だけ違えば、
+別々のキャッシュエントリになり、それぞれ1回ずつコンパイルする。さらに
+2回目の backend-compile はそれぞれ自分のエントリにヒットし、compile-count
+は増えない（issue #12: jit / vmfb キャッシュのキーにコンパイルターゲットが
+入っている、という性質を fingerprint 経由で確かめる）。"
   (with-temporary-directory (dir)
     (let ((nb:*compile-cache-directory* dir)
-          (backend-a (nb:make-backend :fake :fingerprint '("fake" "target=a")))
-          (backend-b (nb:make-backend :fake :fingerprint '("fake" "target=b"))))
-      (nb:backend-compile backend-a +add-text+)
-      (nb:backend-compile backend-b +add-text+)
-      (is (= 1 (fake-backend-compile-count backend-a)))
-      (is (= 1 (fake-backend-compile-count backend-b)))
-      (is (= 2 (%module-file-count dir))))))
+          (backend-local (nb:make-backend :fake :fingerprint '("fake" "target=local")))
+          (backend-cuda (nb:make-backend :fake :fingerprint '("fake" "target=cuda"))))
+      (nb:backend-compile backend-local +add-text+)
+      (nb:backend-compile backend-cuda +add-text+)
+      (is (= 1 (fake-backend-compile-count backend-local)))
+      (is (= 1 (fake-backend-compile-count backend-cuda)))
+      (is (= 2 (%module-file-count dir)))
+      (nb:backend-compile backend-local +add-text+)
+      (nb:backend-compile backend-cuda +add-text+)
+      (is (= 1 (fake-backend-compile-count backend-local)))
+      (is (= 1 (fake-backend-compile-count backend-cuda))))))
 
 (test compile-cache/backend-compile/corrupted-file-is-recompiled-then-cached-again
   "キャッシュファイルを切り詰めて壊すと、次の backend-compile は

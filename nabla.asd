@@ -86,6 +86,7 @@
                (:file "tests/iree/finalizer-test")
                (:file "tests/iree/backend-test")
                (:file "tests/iree/compile-cache-test")
+               (:file "tests/iree/cross-device-test")
                (:file "tests/iree/compiler-test")
                (:file "tests/iree/runtime-test")
                (:file "tests/iree/runtime-cuda-test")
