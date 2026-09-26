@@ -51,6 +51,27 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
 mutation testing の詳しいオプションは [`tools/mutate/README.md`](tools/mutate/README.md)、
 考え方は `.claude/skills/nabla-testing` スキルの `references/mutation.md` を見る。
 
+## CI
+
+`.github/workflows/ci.yml` が PR（stacked PR のため base ブランチは問わない）と
+`main` への push で動く。実行順: apt で SBCL と IREE のビルド道具（clang / lld /
+cmake / ninja / python3-pip）を入れる → `scripts/setup-lisp-deps.sh`（apt の
+Lisp パッケージ + check-it / optima の git clone。`$NABLA_LISP_DEPS` を
+`hashFiles('scripts/setup-lisp-deps.sh')` でキャッシュ）→ IREE
+（`third_party/iree.lock` と `scripts/build-iree.sh` のハッシュをキーに
+`$NABLA_IREE_HOME` をキャッシュし、当たればビルドをスキップ、外れれば
+`scripts/build-iree.sh --compiler=wheel` を実行）→ `scripts/verify-iree.sh`
+→ `NABLA_REQUIRE_IREE=1 scripts/run-tests.sh`（IREE 未検出によるスキップを
+失敗にする）→ `nabla-mutate` 自身のテスト（`tools/mutate/README.md` のコマンド）。
+GPU を使う large テストは CI では動かさない。
+
+`.github/workflows/pr-title.yml` が PR タイトルを Conventional Commits の
+形式かどうか確かめる（squash merge で PR タイトルがそのまま `main` の
+コミットメッセージになるため）。
+
+実行結果は `gh api repos/KUrushi/nabla/actions/runs?branch=<branch>` で見る
+（`gh pr view` などの GraphQL 系コマンドはこのプロジェクトの認証では使えない）。
+
 ## 設計上の約束（コードを読んでも分かりにくいもの）
 
 - StableHLO† は出力先であって、内部表現ではない。`grad` / `vmap` は自前 IR（`aval`† / `var` / `eqn` / `graph`）を別の IR に書き換える変換として書く

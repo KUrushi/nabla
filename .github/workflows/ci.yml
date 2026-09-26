@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NABLA_LISP_DEPS: ${{ github.workspace }}/.nabla-lisp-deps
+      NABLA_IREE_HOME: ${{ github.workspace }}/.nabla-iree-home
+      NABLA_IREE_SRC: ${{ github.workspace }}/../iree-src
+      NABLA_IREE_BUILD: ${{ github.workspace }}/../iree-build-runtime
+      NABLA_IREE_WHEEL_DIR: ${{ github.workspace }}/../iree-wheel
+      NABLA_REQUIRE_IREE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install system packages (SBCL, IREE build toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sbcl clang lld cmake ninja-build python3-pip
+
+      - name: Cache Lisp dependencies (check-it / optima git clones)
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.NABLA_LISP_DEPS }}
+          key: lisp-deps-${{ runner.os }}-${{ hashFiles('scripts/setup-lisp-deps.sh') }}
+
+      - name: Install SBCL and Lisp dependencies
+        run: |
+          sudo -E NABLA_LISP_DEPS="${NABLA_LISP_DEPS}" scripts/setup-lisp-deps.sh
+          sudo chown -R "$USER" "${NABLA_LISP_DEPS}"
+
+      - name: Cache IREE (compiler wheel + source runtime build output)
+        id: cache-iree
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.NABLA_IREE_HOME }}
+          key: iree-${{ runner.os }}-${{ hashFiles('third_party/iree.lock', 'scripts/build-iree.sh') }}
+
+      - name: Build IREE (compiler wheel + runtime from source)
+        if: steps.cache-iree.outputs.cache-hit != 'true'
+        run: |
+          echo "IREE cache miss; building. started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          SECONDS=0
+          scripts/build-iree.sh --compiler=wheel
+          echo "IREE build took ${SECONDS}s (cold, no cache). finished at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+      - name: Report IREE cache status
+        run: |
+          if [ "${{ steps.cache-iree.outputs.cache-hit }}" = "true" ]; then
+            echo "IREE cache hit; skipped scripts/build-iree.sh."
+          else
+            echo "IREE cache miss; built from scratch this run (see previous step for timing)."
+          fi
+
+      - name: Verify IREE (CPU only)
+        run: scripts/verify-iree.sh
+
+      - name: Run default test suite (small + medium)
+        run: |
+          echo "started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          SECONDS=0
+          scripts/run-tests.sh
+          echo "run-tests.sh took ${SECONDS}s. finished at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+      - name: Run nabla-mutate's own test suite
+        run: |
+          CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS}//:" \
+            sbcl --non-interactive \
+              --eval '(require :asdf)' \
+              --eval '(asdf:load-system "nabla-mutate/tests")' \
+              --eval '(uiop:quit (if (nabla.mutate.tests:run-tests) 0 1))'
