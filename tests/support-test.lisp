@@ -68,6 +68,42 @@ element-type-for-dtype の実装と1対1で対応させない（実装をなぞ�
                 :regression-id support/make-random-array/positive-domain-is-positive
                 :regression-file (regression-path "make-random-array-positive-domain"))))
 
+(test support/make-random-array/positive-domain-stays-in-open-unit-interval
+  "domain が :positive のときは、どの dtype でも要素が (0, 1] に入る
+（DECODE-ELEMENT で DOUBLE-FLOAT に戻して確かめる）。
+
+bf16 / f16 は仮数部が狭いので、生成した DOUBLE-FLOAT をそのまま
+ビット列に切り詰めると、0 に近い値がちょうど 0 に丸まってしまうことが
+ある（アンダーフロー）。SEED をいろいろな値にして試すことで、その
+アンダーフローが起きる乱数列を広く探す。"
+  (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64 :bf16 :f16))
+                                   (integer 0 1000000)))
+                (lambda (args)
+                  (destructuring-bind (spec seed) args
+                    (let* ((dtype (array-spec-dtype spec))
+                           (array (make-random-array spec :seed seed :domain :positive)))
+                      (loop for i below (array-total-size array)
+                            for value = (decode-element dtype (row-major-aref array i))
+                            always (and (> value 0.0d0) (<= value 1.0d0))))))
+                :regression-id support/make-random-array/positive-domain-stays-in-open-unit-interval
+                :regression-file (regression-path "make-random-array-positive-domain-open-unit-interval"))))
+
+(test support/make-random-array/unit-domain-stays-in-closed-unit-interval
+  "domain が :unit のときは、どの dtype でも要素が [0, 1] に入る
+（DECODE-ELEMENT で DOUBLE-FLOAT に戻して確かめる）。SEED をいろいろな
+値にして試す。"
+  (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64 :bf16 :f16))
+                                   (integer 0 1000000)))
+                (lambda (args)
+                  (destructuring-bind (spec seed) args
+                    (let* ((dtype (array-spec-dtype spec))
+                           (array (make-random-array spec :seed seed :domain :unit)))
+                      (loop for i below (array-total-size array)
+                            for value = (decode-element dtype (row-major-aref array i))
+                            always (and (>= value 0.0d0) (<= value 1.0d0))))))
+                :regression-id support/make-random-array/unit-domain-stays-in-closed-unit-interval
+                :regression-file (regression-path "make-random-array-unit-domain-closed-unit-interval"))))
+
 (test support/array-spec/prints-readably
   "check-it は失敗例を (format nil \"~S\" value) で保存し、regression
 ファイルの LOAD 時に READ-FROM-STRING で読み戻す。array-spec% がこの
@@ -110,6 +146,45 @@ element-type-for-dtype の実装と1対1で対応させない（実装をなぞ�
                            (not (approx= failing e :rtol rtol :atol atol))))))
                 :regression-id support/allclose/boundary
                 :regression-file (regression-path "allclose-boundary"))))
+
+(defun %delete-if-exists (path)
+  (when (probe-file path)
+    (delete-file path)))
+
+(test support/regression-path/defaults-to-nabla-tests-header-regardless-of-caller-package
+  "REGRESSION-PATH は、呼び出し時の *PACKAGE* によらず、新規作成する
+ファイルの1行目を既定で (in-package #:nabla.tests) にする。
+
+scripts/run-tests.sh は sbcl --eval で複数のシステムを load-system した
+あとに fiveam:run! を呼ぶので、テスト実行時の *PACKAGE* は必ずしも
+NABLA.TESTS ではない（過去に COMMON-LISP-USER のまま呼ばれ、check-it が
+読み込めないヘッダを書いてしまったことがある）。ここでは意図的に
+*PACKAGE* を COMMON-LISP-USER にして呼び、それでもヘッダが変わらない
+ことを固定する。"
+  (let ((path (asdf:system-relative-pathname
+               "nabla" "tests/regressions/support-regression-path-default-package-test.lisp")))
+    (unwind-protect
+        (progn
+          (%delete-if-exists path)
+          (let ((*package* (find-package "COMMON-LISP-USER")))
+            (regression-path "support-regression-path-default-package-test"))
+          (is (string= "(in-package #:nabla.tests)"
+                       (with-open-file (stream path) (read-line stream)))))
+      (%delete-if-exists path))))
+
+(test support/regression-path/package-keyword-overrides-default
+  "REGRESSION-PATH の :PACKAGE キーワードで、既定の NABLA.TESTS 以外の
+in-package 先を明示的に指定できる。"
+  (let ((path (asdf:system-relative-pathname
+               "nabla" "tests/regressions/support-regression-path-package-keyword-test.lisp")))
+    (unwind-protect
+        (progn
+          (%delete-if-exists path)
+          (regression-path "support-regression-path-package-keyword-test"
+                            :package "NABLA.TESTS.SUPPORT")
+          (is (string= "(in-package #:nabla.tests.support)"
+                       (with-open-file (stream path) (read-line stream)))))
+      (%delete-if-exists path))))
 
 (defun %quiet-nan-double ()
   "ビット列から直接 double-float の NaN を作る。

@@ -24,6 +24,7 @@
    #:array-spec-dtype
    #:array-spec-rank
    #:make-random-array
+   #:decode-element
    ;; 許容誤差つきの比較
    #:allclose
    #:approx=

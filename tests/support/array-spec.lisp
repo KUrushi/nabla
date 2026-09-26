@@ -27,15 +27,20 @@
   "SPEC の形状の次元数（rank）を返す。"
   (length (array-spec-shape spec)))
 
+;; check-it の named generator。rank 0..MAX-RANK、各次元 1..MAX-DIM、
+;; DTYPES の中から選んだ dtype を持つ ARRAY-SPEC を作る。
+;;
+;; check-it の generator DSL (integer / tuple / map / chain など) は固定の
+;; 個数のサブジェネレータしか書けないので、rank ごとに違う個数の次元を
+;; 作る部分だけは、check-it が公開しているジェネレータクラス
+;; (int-generator / tuple-generator / mapped-generator / chained-generator)
+;; を直接組み立てて書く。
+;;
+;; def-generator の &body はそのまま generate メソッドの本体に展開され、
+;; defun のような docstring の特別扱いはしない（先頭に文字列を置いても
+;; 無害な式として評価されるだけで捨てられる）。そのため説明はここに
+;; コメントとして書く。
 (check-it:def-generator array-spec (&key (dtypes *dtypes*) (max-rank 4) (max-dim 8))
-  "check-it の named generator。rank 0..MAX-RANK、各次元 1..MAX-DIM、
-DTYPES の中から選んだ dtype を持つ ARRAY-SPEC を作る。
-
-check-it の generator DSL (integer / tuple / map / chain など) は固定の
-個数のサブジェネレータしか書けないので、rank ごとに違う個数の次元を
-作る部分だけは、check-it が公開しているジェネレータクラス
-(int-generator / tuple-generator / mapped-generator / chained-generator)
-を直接組み立てて書く。"
   (make-instance 'check-it:chained-generator
                  :pre-generators
                  (list (make-instance 'check-it:int-generator

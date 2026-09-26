@@ -84,15 +84,39 @@ f32 は single-float、f64 は double-float、bf16 / f16 はビット列を
     (:positive (- 1.0d0 (random 1.0d0 state)))
     (:unit (random 1.0d0 state))))
 
+(defun %smallest-positive-dtype-value (dtype)
+  "DTYPE の格納表現で表せる、最小の正の値を返す。
+
+:positive ドメイン用に 0 をクランプする値として使う。bf16 / f16 は
+ビット列そのものが値なので、最小の正の非正規化数のビット列 (1) を返す。"
+  (ecase dtype
+    (:f64 least-positive-double-float)
+    (:f32 least-positive-single-float)
+    ((:bf16 :f16) 1)))
+
+(defun %zero-dtype-value-p (dtype value)
+  "DTYPE の格納表現の VALUE が +0 または -0 かどうかを返す。"
+  (ecase dtype
+    ((:f32 :f64) (zerop value))
+    ((:bf16 :f16) (zerop (logand value #x7FFF)))))
+
 (defun make-random-array (spec &key (seed 0) (domain :any))
   "SPEC (array-spec) と SEED から決定的な配列を作る。
 
 SPEC の shape がそのまま array-dimensions になり、dtype に応じた
-element-type を持つ。DOMAIN は :any (既定) / :positive / :unit。"
+element-type を持つ。DOMAIN は :any (既定) / :positive / :unit。
+
+DOMAIN が :positive のとき、生成した DOUBLE-FLOAT が 0 に十分近いと、
+bf16 / f16 のように仮数部が狭い dtype では格納表現へ変換する際に
+アンダーフローしてちょうど 0 になり得る。これは (0, 1] という契約に
+反するので、0 になった要素はその dtype で表現できる最小の正の値に
+クランプする。"
   (let* ((shape (array-spec-shape spec))
          (dtype (array-spec-dtype spec))
          (state (sb-ext:seed-random-state seed))
          (array (make-array shape :element-type (element-type-for-dtype dtype))))
     (dotimes (i (array-total-size array) array)
-      (setf (row-major-aref array i)
-            (dtype-value dtype (%random-domain-value state domain))))))
+      (let ((value (dtype-value dtype (%random-domain-value state domain))))
+        (when (and (eq domain :positive) (%zero-dtype-value-p dtype value))
+          (setf value (%smallest-positive-dtype-value dtype)))
+        (setf (row-major-aref array i) value)))))
