@@ -1,0 +1,72 @@
+# CLAUDE.md
+
+nabla は Common Lisp で書く、JAX に相当する深層学習ライブラリ。Lisp の関数をトレース（実行を記録）して自前の中間表現（IR）に変換し、`jit` / `grad` / `vmap` で書き換えてから StableHLO を出力し、IREE で CPU や NVIDIA GPU 上で実行する。
+
+- 計画と設計の正本は Artifact「Common Lisp × IREE 深層学習ライブラリ 計画」（計画タブ・設計タブ）。設計に迷ったらまずそこを確認する。このファイルと食い違うときは Artifact を優先し、このファイルを直す
+- 現在はフェーズ0（IREE 疎通）。ロードマップは フェーズ0 IREE 疎通 → 1 トレースと jit → 2 grad → 3 vmap と制御構造 → 4 Flax 相当 → 5 Grain 相当
+- 専門用語の説明は [docs/glossary.md](docs/glossary.md) にある。本文で † が付いた語は用語集に解説がある。新しい専門用語を使い始めたら用語集にも追加する
+
+## 構成
+
+- 処理系は SBCL のみ。C ライブラリの呼び出しは CFFI、GC との連携は trivial-garbage、並列処理は lparallel を使う
+- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く
+- IREE は固定したコミットからソースビルドする（`libIREECompiler.so` とランタイムの共有ライブラリ）。コンパイラは埋め込み C API を dlopen して呼び、`iree-compile` をサブプロセスで起動しない
+- Python はライブラリの実行時依存にしない。JAX は、テストで比べる期待値（フィクスチャ）の生成にだけ使う
+
+## コマンド
+
+```sh
+# テスト（既定は small + medium。CPU だけで動き、GPU は不要）
+sbcl --non-interactive --eval '(ql:quickload "nabla/tests")' --eval '(asdf:test-system "nabla")'
+```
+
+ビルドスクリプト、large テスト、mutation test のコマンドを追加したら、ここに追記する。
+
+## 設計上の約束（コードを読んでも分かりにくいもの）
+
+- StableHLO† は出力先であって、内部表現ではない。`grad` / `vmap` は自前 IR（`aval`† / `var` / `eqn` / `graph`）を別の IR に書き換える変換として書く
+- 演算（プリミティブ）は `defprimitive` で宣言する。形状推論（出力の形と型を計算する関数）、StableHLO 出力、eager 用の CPU 実装の3つは同じ変更の中で書く。jvp† / transpose ルール†とバッチ化ルール†は、その演算を `grad` / `vmap` に対応させるときに必須になる
+- 自動微分は JAX と同じ「jvp + transpose」方式にする（`jax._src.interpreters.ad` を参考にし、演算ごとのルールは `jax._src.lax` から写す）
+- v1 は静的形状（配列の形がコンパイル時に決まっている）だけを扱う。jit キャッシュのキーは「関数の同一性 + 引数の `aval` + 静的引数 + コンパイルターゲット（`sm_XX` などの GPU 世代を含む）」
+- トレースは `with-tracing` によるコードウォーク†方式。トレースされるコードでは `setq` を禁止し、対応していない形式はコンディション（Lisp の例外）で報告する
+- PyTree† として既定で扱うのは、リスト・ベクタ・`defmodule` で定義した構造体だけ。plist / alist / ハッシュ表は明示的に登録する
+- bf16 / f16† は `(unsigned-byte 16)` の配列で持ち、`aval` の dtype タグで区別する
+- IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
+- デバイス上のバッファは `device-array` で包む。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）
+
+## 開発の原則
+
+Google の *Software Engineering at Google* と Engineering Practices の考え方をこのプロジェクトに当てはめたもの。
+
+- **ソフトウェアエンジニアリングは「時間をかけて積み重ねたプログラミング」**。今動くことより、数年後も安全に変更できることを優先する。迷ったら「半年後に別の人がこのコードを直せるか」で判断する
+- **ハイラムの法則†に備える**。利用者は、公開したものすべてにいずれ依存する。パッケージから `export` するシンボルは必要最小限にし、内部の関数は `export` しない。エラーメッセージの文言や出力の順序のような偶然の性質も、公開 API の一部とみなされうる
+- **ビヨンセ・ルール†**: 壊されて困る振る舞いには、必ず自動テストを書く。テストのない振る舞いは、他の変更で壊れても文句を言えない
+- **変更は小さく**。1つの PR は1つの目的だけを持ち、目安として差分 200 行程度に収める。リファクタリングと振る舞いの変更は別の PR に分ける。テストは、それが確かめるコードと同じ PR に入れる
+- **コードはレビューで読まれるために書く**。レビューでは (1) 正しいか、(2) 読んで理解できるか、(3) 設計がプロジェクトの方針に合っているか、を見る。「動くけれど読めない」コードは直す
+- **スタイルのルールは理由があるものだけ**。ツールで自動的にそろえられるものはツールに任せ、人が覚えるルールを増やさない
+- **ドキュメントはコードと一緒に更新する**。`export` するシンボルには docstring を書く。このファイルや用語集が古くなったら、気づいた変更の中で直す
+- **問題は早く見つけるほど安い（shift left）**。本番やユーザーの手元で見つかる前に、テスト・レビュー・型宣言で見つける
+- **非推奨化（deprecation）は段階的に**。公開 API を消すときは、まず非推奨の警告を出し、移行先を docstring に書き、利用箇所がなくなってから消す
+
+## テスト戦略
+
+詳しい手順は `nabla-testing` スキル（`.claude/skills/nabla-testing/`）にある。テストを書く・直す・実行するとき、および nabla のコードを変更するときは、このスキルを使う。
+
+- 自動テストは property-based testing†（FiveAM + check-it）と mutation testing†（自前の runner `tools/mutate/`）の2本柱。例ベースのテストは、JAX との数値一致フィクスチャと、PBT が見つけた失敗例の回帰テストに限る
+- テストは実装より先に書き、失敗することを確認してから実装する
+- テストは small / medium / large のテストサイズ†に分ける。既定のスイートは small + medium で、GPU なしで通るようにする
+- 浮動小数点の比較は、テキストの一致ではなく許容誤差つきの数値の一致で行う
+
+### 作業の終え方
+
+変更を終える前に、既定のテストスイート（small + medium）を実行して通ることを確認する。プリミティブや変換のルールを変えたときは、変更した行に mutation testing もかける。テストを実行できなかったときは、そのことを報告に書く。
+
+## Git の運用
+
+- **コミットメッセージと PR タイトルは [Conventional Commits](https://www.conventionalcommits.org/ja/v1.0.0/) に従う**。形式は `<type>(<scope>): <説明>`
+  - type: `feat`（機能追加）、`fix`（バグ修正）、`docs`、`test`、`refactor`（振る舞いを変えない変更）、`perf`、`build`、`ci`、`chore`
+  - scope: `core`、`iree`、`pjrt`、`nn`、`data`、`mutate` など、変更したシステムやツールの名前。複数にまたがるときは省略してよい
+  - 説明は英語の命令形で、先頭は小文字、末尾にピリオドを付けない。例: `feat(core): add broadcast primitive`
+  - 公開 API を壊す変更は、type の後ろに `!` を付け（例: `feat(nn)!: rename dense to linear`）、本文の末尾に `BREAKING CHANGE: <内容>` を書く
+- **PR は squash merge をデフォルトにする**。PR の全コミットが1つにまとめられ、PR タイトルがそのまま `main` のコミットメッセージになる。そのため PR タイトルは必ず Conventional Commits の形式にし、PR の中身が変わったらタイトルも直す。PR 内の途中のコミットは形式が崩れていてもよい
+- コミットメッセージと PR の説明には、署名の行を一切付けない（`Co-Authored-By:` トレーラー、`Claude-Session:` のセッション URL、「Generated with Claude Code」のフッターを含む）
