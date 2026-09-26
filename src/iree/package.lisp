@@ -64,7 +64,15 @@
    #:buffer-view-shape
    #:buffer-view-element-type
    #:buffer-view-byte-length
-   #:buffer-view-read-into)
+   #:buffer-view-read-into
+   ;; device-array
+   #:device-array
+   #:to-device
+   #:to-host
+   #:release-device-array
+   #:device-array-released-p
+   #:device-array-aval
+   #:device-array-device)
   (:documentation
    "IREE 連携用のパッケージ。埋め込み C API を CFFI で呼び、StableHLO の
 テキストから vmfb のバイト列を得るコンパイラのバインディングと、

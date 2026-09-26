@@ -41,6 +41,22 @@ in-suite を経由せずに）変わることがあり、周囲の *suite* に�
                         (nabla.iree::iree-home))
            (return-from iree-test)))))
 
+(defmacro with-device-arrays ((&rest bindings) &body body)
+  "BINDINGS の各 (VAR FORM) を、書いた順に評価して VAR に束縛し、BODY を
+評価してから、束縛した順とは逆順に release-device-array する（テスト専用の
+ヘルパー。finalizer は #11 まで無いので、ここで明示的に解放しないと
+テストごとに IREE のバッファがリークする）。BODY やどれかの FORM が
+非局所脱出しても、それまでに束縛が済んだ VAR はすべて解放する。"
+  (let ((vars (mapcar #'first bindings)))
+    `(let ,(mapcar (lambda (var) (list var nil)) vars)
+       (unwind-protect
+            (progn
+              ,@(mapcar (lambda (binding) `(setf ,(first binding) ,(second binding)))
+                        bindings)
+              ,@body)
+         ,@(mapcar (lambda (var) `(when ,var (release-device-array ,var)))
+                   (reverse vars))))))
+
 (defun stablehlo-fixture (name)
   "tests/fixtures/stablehlo/NAME.mlir の内容を文字列として返す。"
   (let ((path (asdf:system-relative-pathname

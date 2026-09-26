@@ -461,20 +461,29 @@ ELEMENT-TYPE ~S から期待される長さ ~S と一致しない"
   "BUFFER-VIEW の内容の合計バイト数を返す（iree_hal_buffer_view_byte_length）。"
   (%hal-buffer-view-byte-length buffer-view))
 
+(defun %buffer-view-read-into-sap (device-pointer buffer-view sap byte-length)
+  "BUFFER-VIEW（DEVICE-POINTER が指す device 上にある）の先頭 BYTE-LENGTH
+バイトを SAP（foreign pointer、あらかじめ BYTE-LENGTH バイト以上をピン留め
+済みであること）へ同期的に読み出す（iree_hal_device_transfer_d2h、
+buffer_transfer.h:88-92）。DEVICE-POINTER が解放済みでないかは呼び出し側の
+責任（released チェックはしない）。buffer-view-read-into（#6）と
+device-array の to-host（#7）が共有する内部実装。"
+  (let ((buffer (%hal-buffer-view-buffer buffer-view)))
+    (check-status
+     (%hal-device-transfer-d2h
+      device-pointer buffer 0 sap byte-length
+      +hal-transfer-buffer-flag-default+
+      (list 'type +timeout-absolute+ 'nanos +time-infinite-future+))
+     "buffer-view-read-into")))
+
 (defun buffer-view-read-into (device buffer-view octets)
   "BUFFER-VIEW の内容を DEVICE から同期的に読み出し、OCTETS
 （(unsigned-byte 8) の simple-array）へ書き込む
 （iree_hal_device_transfer_d2h、buffer_transfer.h:88-92）。OCTETS の長さが
 読み出す量になる。"
   (check-type octets (simple-array (unsigned-byte 8) (*)))
-  (let ((buffer (%hal-buffer-view-buffer buffer-view))
-        (length (length octets)))
-    (sb-sys:with-pinned-objects (octets)
-      (check-status
-       (%hal-device-transfer-d2h
-        (%live-device-pointer device "buffer-view-read-into")
-        buffer 0 (sb-sys:vector-sap octets) length
-        +hal-transfer-buffer-flag-default+
-        (list 'type +timeout-absolute+ 'nanos +time-infinite-future+))
-       "buffer-view-read-into"))
-    octets))
+  (sb-sys:with-pinned-objects (octets)
+    (%buffer-view-read-into-sap
+     (%live-device-pointer device "buffer-view-read-into")
+     buffer-view (sb-sys:vector-sap octets) (length octets)))
+  octets)

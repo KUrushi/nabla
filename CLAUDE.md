@@ -9,7 +9,7 @@ nabla は Common Lisp で書く、JAX に相当する深層学習ライブラリ
 ## 構成
 
 - 処理系は SBCL のみ。C ライブラリの呼び出しは CFFI、GC との連携は trivial-garbage、並列処理は lparallel を使う
-- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く（テストの共通部品は `nabla/test-support` に置き、そこに依存する）
+- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く（テストの共通部品は `nabla/test-support` に置き、そこに依存する）。`nabla` コアの公開 API は `src/dtype.lisp`（dtype タグと Lisp 要素型の対応表）と `src/aval.lisp`（`aval`: 形状と dtype の組）から始まる（issue #7）
 - Quicklisp は使えない（ネットワーク方針）。Lisp の依存は apt パッケージと、固定コミットで git clone したもの（check-it など）を `scripts/setup-lisp-deps.sh` で揃える。システムのロードは ASDF の `CL_SOURCE_REGISTRY` で行い、`ql:quickload` は使わない
 - IREE は固定したコミットで使う（詳細は `docs/iree-build.md`）。ランタイムの共有ライブラリは常にそのコミットからソースビルドする。コンパイラ (`libIREECompiler.so`) は既定では同じコミットからビルドされた PyPI ホイール（`third_party/iree.lock` に記録）を使う。フルソースビルドは `scripts/build-iree.sh --compiler=source` で選べるが、このマシン相当のスペックでは実用的な時間で終わらないことを確認している。コンパイラは埋め込み C API を dlopen して呼び、`iree-compile` をサブプロセスで起動しない（ビルドスクリプト内の動作確認を除く）
 - IREE ランタイムの C API（`iree_allocator_t` / `iree_string_view_t` / `iree_hal_buffer_params_t` / `iree_timeout_t` など）は構造体を値で渡し、値で返す関数もある。素の CFFI はこれに対応しないため `nabla/iree` は `cffi-libffi`（apt の `cl-cffi` に同梱）を使う。`cffi-libffi` は libffi-dev をビルド時に必要とするので `scripts/setup-lisp-deps.sh` の APT_PACKAGES に `libffi-dev` を含めてある。C 側のヘルパーは書かない（`cffi:defcfun` / `cffi:defcstruct` をそのまま使える）
@@ -90,7 +90,7 @@ GPU を使う large テストは CI では動かさない。
 - PyTree† として既定で扱うのは、リスト・ベクタ・`defmodule` で定義した構造体だけ。plist / alist / ハッシュ表は明示的に登録する
 - bf16 / f16† は `(unsigned-byte 16)` の配列で持ち、`aval` の dtype タグで区別する
 - IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
-- デバイス上のバッファは `device-array` で包む。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）
+- デバイス上のバッファは `device-array` で包む。`device-array` は生成時に自分のデバイス（`iree_hal_device_t`）を retain し、解放時に buffer view → device の順で release する（IREE の heap buffer が確保元 allocator の統計ブロックへの生ポインタを持ち、その allocator を device が所有しているため。device を先に解放すると use-after-free になる）。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）
 
 ## 開発の原則
 
