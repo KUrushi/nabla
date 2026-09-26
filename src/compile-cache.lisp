@@ -30,7 +30,10 @@ fasl を作り直す）すると SBCL が
 \"defconstant ... uneql to the previous value\" を signal するため。")
 
 (defconstant +compile-cache-header-length+ 40
-  "マジック（8バイト）+ payload の SHA-256（32バイト）の長さ。")
+  "マジック（8バイト）+ payload の SHA-256（32バイト）の長さ。
+
+生の vmfb（payload）はヘッダーの直後、41バイト目から始まる。
+`tail -c +41 <hex>.module > out.vmfb` で取り出せる。")
 
 (defun %compile-cache-root ()
   "*COMPILE-CACHE-DIRECTORY* を実際のキャッシュディレクトリの pathname に

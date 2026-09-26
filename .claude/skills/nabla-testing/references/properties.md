@@ -83,6 +83,14 @@ I/O とスレッドを使うので medium）。
 - ファイルがちょうどヘッダー長（マジック + digest の40バイト）で
   payload が空でも、マジックと digest さえ正しければヒットとして扱う
   （「40バイト未満なら壊れている」という境界の、未満ではない側）
+- `NB:*COMPILE-CACHE-DIRECTORY*` が `:DEFAULT`（既定値）のとき、環境変数
+  `NABLA_CACHE_DIR` が設定されていれば `<それ>/vmfb/` に、設定されて
+  いなければ `${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/` に書き込む
+  （`SB-POSIX:SETENV` / `SB-POSIX:UNSETENV` で `NABLA_CACHE_DIR` と
+  `XDG_CACHE_HOME` の両方を退避・復元しながら確かめる。`UIOP:XDG-CACHE-HOME`
+  は呼び出しのたびに `XDG_CACHE_HOME` を読み直すため、未設定側も
+  `XDG_CACHE_HOME` を一時ディレクトリへ向け直すだけで確かめられ、
+  実プロセスが共有する `~/.cache` には一切触れない）
 
 ### 変換の合成
 
