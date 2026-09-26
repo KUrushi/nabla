@@ -28,4 +28,5 @@ exec sbcl --non-interactive \
               (error \"scripts/run-tests.sh: nabla.asd が想定と違う場所から見つかった。期待: ~A 実際: ~A\" expected actual)))" \
   --eval '(asdf:load-system "nabla/tests")' \
   --eval '(asdf:load-system "nabla/iree/tests")' \
+  --eval '(setf fiveam:*on-error* :backtrace)' \
   --eval '(uiop:quit (if (nabla.tests.support:run-tests) 0 1))'
