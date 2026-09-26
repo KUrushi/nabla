@@ -83,9 +83,17 @@ cffi:*foreign-library-directories* に push しておく必要がある。"
                      :library :compiler))))
         (%compiler-global-initialize)
         ;; LLVM の「プロセスにつき1回」のシグナルハンドラ登録
-        ;; （signals.lisp 冒頭のコメント参照）を、ロックを持ったこの時点で
-        ;; 済ませてしまう。こうしないと、最初の実際の compile-stablehlo
-        ;; 呼び出し中に別の Lisp スレッドが GC を始める競合の隙間が残る。
-        (%warm-up-compiler))
+        ;; （signals.lisp 冒頭のコメント参照）を、他の Lisp スレッドをすべて
+        ;; 止めた状態で、ロックを持ったこの時点で済ませてしまう。こうしないと、
+        ;; 最初の Pipeline 実行中に別の Lisp スレッドが GC を始めた瞬間に
+        ;; SIGUSR2 が LLVM のハンドラに渡り、プロセスが死ぬ。
+        (unless (%register-llvm-signal-handlers)
+          ;; この IREE 版の ireeCompilerSetupGlobalCL は登録しなかった
+          ;; （固定コミットの 3.11.0 では起きない）。最後の手段として旧方式
+          ;; （保護付きの warm-up コンパイル）で登録を済ませる。これは他の
+          ;; スレッドの GC と競合する隙間が残るので警告する。
+          (warn "ireeCompilerSetupGlobalCL は LLVM のシグナルハンドラを登録しなかった。~
+                 warm-up コンパイルで代替する（初回コンパイル中の他スレッドの GC と競合しうる）")
+          (%warm-up-compiler)))
       (setf *compiler-loaded-p* t)))
   (values))

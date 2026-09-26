@@ -26,10 +26,21 @@
 ;;;; signals.lisp 冒頭のコメント参照）。放っておくと、SBCL には常にいる
 ;;;; finalizer スレッドなどを別スレッドが GC で止めようとした瞬間に
 ;;;; "no SP known for thread" で確実に落ちる。そのため IREE を呼ぶ公開関数は
-;;;; すべて with-lisp-signal-handlers-preserved（signals.lisp）で包み、
-;;;; ensure-compiler-loaded はロード直後に最小のモジュールを1つコンパイルして
-;;;; （同じ保護の下で）LLVM の登録を済ませておく（%warm-up-compiler）。将来
-;;;; LLVM を呼びうる FFI エントリポイント（PJRT など）も同じマクロで包むこと。
+;;;; すべて with-lisp-signal-handlers-preserved（signals.lisp）で包む。
+;;;;
+;;;; LLVM の登録そのものは、ensure-compiler-loaded がロードロックを持った
+;;;; 制御された1点で、他の全 Lisp スレッドを止めた状態で済ませる
+;;;; （signals.lisp の %register-llvm-signal-handlers と
+;;;; %call-with-world-stopped、library.lisp の ensure-compiler-loaded から
+;;;; 呼ぶ）。コンパイルは1つも走らせず
+;;;; ireeCompilerSetupGlobalCL を直接呼ぶだけなので、初回コンパイルを待たずに
+;;;; 済み、コンパイル中に別スレッドが GC を始める競合の隙間が無くなる。
+;;;; この版の IREE で SetupGlobalCL が登録しなかった場合だけ、最後の手段
+;;;; として最小のモジュールを1つコンパイルする旧方式（%warm-up-compiler）に
+;;;; 落ちる（この経路には、その最初のコンパイル中に他スレッドが GC を
+;;;; 始める競合の隙間がまだ残るので、ensure-compiler-loaded が警告を出す）。
+;;;; 将来 LLVM を呼びうる FFI エントリポイント（PJRT など）も
+;;;; with-lisp-signal-handlers-preserved で包むこと。
 
 (in-package #:nabla.iree)
 
@@ -62,19 +73,25 @@
 (defun %embedded-linker-flags ()
   "llvm-cpu 向けの --iree-llvmcpu-embedded-linker-path フラグを、
 iree-lld があるときだけ1要素のリストにして返す。無いときは空リストを返し、
-プロセスにつき1回だけ、システムの /usr/bin/lld にフォールバックしている旨を
-警告する（iree-compile 自身が execve でそれを起動するので、nabla はここでは
+プロセスにつき1回だけ、IREE 自身のリンカ探索に任せる旨を警告する
+（iree-compile 自身が execve でそれを起動するので、nabla はここでは
 サブプロセスを起動しない。CLAUDE.md がサブプロセスでの起動を避けたいのは
 nabla 自身が明示的にそれをしないことで、iree-compile の内部実装までは制御
-できない）。"
+できない）。IREE は --iree-llvmcpu-embedded-linker-path が無いとき、
+libIREECompiler.so と同じディレクトリの iree-lld → 実行ファイルと同じ
+ディレクトリの iree-lld → PATH 上の iree-lld / lld / ld.lld の順に探す
+（IREE の EmbeddedLinkerTool、findTool 相当）。ここで探すのは
+NABLA_IREE_HOME/bin/iree-lld だけなので、それが無いとき実際にどれが選ばれる
+かは環境依存（システムに何も無ければコンパイルは失敗する）。"
   (let ((path (%embedded-linker-path)))
     (cond
       (path (list (format nil "--iree-llvmcpu-embedded-linker-path=~A" (namestring path))))
       (t (unless *warned-missing-embedded-linker-p*
-           (warn "NABLA_IREE_HOME/bin/iree-lld が見つからないので、llvm-cpu ~
-ターゲットのコンパイルはシステムの /usr/bin/lld にフォールバックする。~
-scripts/build-iree.sh が third_party/iree.lock のホイールに同梱の iree-lld を~
-NABLA_IREE_HOME/bin/ にインストールするようになれば、この警告は出なくなる。")
+           (warn "NABLA_IREE_HOME/bin/iree-lld が見つからないので、リンカの選択を ~
+IREE 自身の探索（libIREECompiler.so の隣 → 実行ファイルの隣 → PATH 上の ~
+iree-lld / lld / ld.lld の順）に任せる。scripts/build-iree.sh が ~
+third_party/iree.lock のホイールに同梱の iree-lld を NABLA_IREE_HOME/bin/ に ~
+インストールするようになれば、この警告は出なくなる。")
            (setf *warned-missing-embedded-linker-p* t))
          nil))))
 
@@ -83,12 +100,19 @@ NABLA_IREE_HOME/bin/ にインストールするようになれば、この警�
 :local は CLAUDE.md / verify-iree.sh と同じ CPU 向けのレシピ
 （llvm-cpu、target-cpu=host。生成される vmfb はこのため実行するマシンに
 依存する）。NABLA_IREE_HOME/bin/iree-lld があれば
---iree-llvmcpu-embedded-linker-path でそれを指定し、無ければシステムの
-/usr/bin/lld にフォールバックする（%embedded-linker-flags 参照。llvm-cpu の
+--iree-llvmcpu-embedded-linker-path でそれを明示し、無ければ何も指定せず
+IREE 自身のリンカ探索に任せる（%embedded-linker-flags 参照。llvm-cpu の
 実行ファイル直列化には常に何らかのリンカが要り、embedding API にはこれを
 プロセス内で行う手段が無い）。:cuda は CUDA-ARCH（例: \"sm_80\"）を渡すと
 --iree-cuda-target=CUDA-ARCH を追加する。TARGET がこれ以外なら型エラーを
-signal する。呼び出しごとに新しいリストを作るが、内容は決定的。"
+signal する。呼び出しごとに新しいリストを作るが、内容は決定的。
+
+注意（将来 jit キャッシュを作るとき向け）: :local のフラグは
+NABLA_IREE_HOME/bin/iree-lld の有無というファイルシステムの状態に依存する。
+CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引数 +
+コンパイルターゲット）はこれを含まないので、そのままだとキャッシュキーに
+現れない「隠れた入力」になる。iree-lld を後から追加・削除する運用がある間は、
+jit の実装側でこれをキーに含めるか、プロセス起動時に固定するかを決めること。"
   (ecase target
     (:local (append (list "--iree-input-type=stablehlo"
                            "--iree-hal-target-device=local"
@@ -180,15 +204,21 @@ MLIR の診断（あれば）が DIAGNOSTICS に入る。共有ライブラリ�
     (%compile-stablehlo text flags source-name)))
 
 (defparameter *warm-up-module* "func.func @main() { return }"
-  "ensure-compiler-loaded がロード直後にコンパイルする最小のモジュール。
-中身は空でも Pipeline は llvm-cpu の直列化パスまで走り、LLVM のシグナル
-ハンドラ登録（signals.lisp 冒頭のコメント参照）がここで起きる。")
+  "ensure-compiler-loaded が %register-llvm-signal-handlers のフォールバック
+としてコンパイルする最小のモジュール。中身は空でも Pipeline は llvm-cpu の
+直列化パスまで走り、LLVM のシグナルハンドラ登録（signals.lisp 冒頭の
+コメント参照）がここで起きる。")
 
 (defun %warm-up-compiler ()
-  "LLVM の「プロセスにつき1回」のシグナルハンドラ登録を、他の Lisp
-スレッドが GC を始める前の、制御された時点で済ませる。ensure-compiler-loaded
-から（ロードロックを持ったまま）呼ぶので、ensure-compiler-loaded を再度
-呼び出す compile-stablehlo は経由しない。"
+  "LLVM の「プロセスにつき1回」のシグナルハンドラ登録を済ませる、
+最後の手段のフォールバック。ensure-compiler-loaded は通常
+%register-llvm-signal-handlers（signals.lisp。世界を止めてコンパイル無しで
+登録する）でこれを済ませ、その版の IREE で SetupGlobalCL が登録しなかった
+ときだけこちらを呼ぶ。ここは実際に最小モジュールをコンパイルするので、
+その間に別の Lisp スレッドが GC を始めると登録前の LLVM のハンドラと
+競合する隙間が残る（呼び出し元の ensure-compiler-loaded が警告する）。
+ensure-compiler-loaded から（ロードロックを持ったまま）呼ぶので、
+ensure-compiler-loaded を再度呼び出す compile-stablehlo は経由しない。"
   (with-lisp-signal-handlers-preserved
     (%compile-stablehlo *warm-up-module* (compile-flags :local) "nabla-warm-up.mlir")))
 

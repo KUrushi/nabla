@@ -170,6 +170,27 @@ sigaction で登録するが、nabla.iree はそれを元に戻す（signals.lis
       (is (= (cdr (assoc (car s) before)) (nabla.iree::%signal-handler-address (car s)))
           "~A のハンドラが compile-stablehlo で書き換えられた" (cdr s)))))
 
+(define-iree-test signals/ensure-compiler-loaded/registers-llvm-signal-handlers
+    "ensure-compiler-loaded を呼んだあとは
+nabla.iree::*llvm-signal-handlers-registered-p* が真になっている
+（%register-llvm-signal-handlers が ireeCompilerSetupGlobalCL を呼んだ印。
+library.lisp / signals.lisp 参照）。third_party/iree.lock で固定した
+IREE 3.11.0 では SetupGlobalCL が実際に登録するので、warm-up コンパイルへの
+フォールバック（%warm-up-compiler）を経由せずにここが真になる。"
+  (skip-unless-iree :library :compiler)
+  (nabla.iree::ensure-compiler-loaded)
+  (is-true nabla.iree::*llvm-signal-handlers-registered-p*))
+
+(fiveam:test (signals/call-with-world-stopped/returns-thunk-value-and-rejects-nesting :suite :nabla.medium)
+  "%call-with-world-stopped は THUNK の戻り値をそのまま返し、既に
+sb-sys:without-gcing の中（*gc-inhibit* が真）から呼ぶとエラーになる
+（signals.lisp の %call-with-world-stopped docstring 参照。二重にロックを
+取り合うと進めなくなるための安全策）。IREE の共有ライブラリは要らない。"
+  (is (eql :ok (nabla.iree::%call-with-world-stopped (lambda () :ok))))
+  (signals error
+    (sb-sys:without-gcing
+      (nabla.iree::%call-with-world-stopped (lambda () :unreachable)))))
+
 (define-iree-test compiler/compile-stablehlo/explicit-full-gc-does-not-crash
     "compile-stablehlo のあとに SB-EXT:GC :FULL T を明示的に呼んでも SBCL
 プロセスは落ちず、trivial-garbage の finalizer も走る。issue #5 の
@@ -262,3 +283,71 @@ ensure-compiler-loaded の実際のロードは検証できないため、別プ
     (is (not (probe-file missing-home)))
     (is (= 0 (%run-with-missing-iree-home missing-home))
         "child process should have signalled IREE-LIBRARY-NOT-FOUND (exit 0)")))
+
+(defun %run-cold-start-race-child ()
+  "真っさらな子 SBCL プロセスで、issue #5 のクラッシュを最も踏みやすい
+シナリオ（初回の compile-stablehlo ―― ロード・グローバル初期化・LLVM の
+シグナルハンドラ登録がすべてまだの状態 ―― と同時に、別スレッドが
+明示的な SB-EXT:GC を回し続ける）を再現し、子プロセスの終了コードを返す。
+
+修正前（%register-llvm-signal-handlers が無く、%warm-up-compiler の
+保護付きコンパイルだけに頼っていた版）はこのシナリオでほぼ確実に落ちるか
+ハングした（advisor の計測: 30 トライアル中 crash 25 / hang 5。
+scratchpad/adv/ 参照）。修正後は、LLVM の登録がコンパイルを1つも走らせずに
+世界を止めた状態で先に済むので、この競合の隙間が無くなる。
+
+子プロセスは `timeout` でくるみ、修正が壊れて再びハングするようになっても
+このテスト自身が止まらないようにする（-k 5 180: 180秒で TERM、応じなければ
+5秒後に KILL）。真っさらなプロセスが要る理由は %run-with-missing-iree-home
+と同じ（このプロセス自身では、他のテストが既に ensure-compiler-loaded を
+済ませていると検証にならない）。"
+  (let* ((forms
+           (list "(require :asdf)"
+                 "(asdf:load-system \"nabla/iree\")"
+                 "(in-package :nabla.iree)"
+                 "(defvar *stop* nil)"
+                 "(defvar *sink* nil)"
+                 ;; advisor の cold-race-child.lisp と同じ形: 20分の1の確率で
+                 ;; 明示的 GC を挟みながら、止まるまで確保し続ける。
+                 "(defvar *conser* (sb-thread:make-thread (lambda () (loop until *stop* do (setf *sink* (make-array 20000)) (when (zerop (random 20)) (sb-ext:gc)))) :name \"cold-start-race-conser\"))"
+                 "(sleep 0.2)"
+                 "(compile-stablehlo \"func.func @main() { return }\")"
+                 "(dotimes (i 5) (compile-stablehlo \"func.func @main() { return }\"))"
+                 "(setf *stop* t)"
+                 "(sb-thread:join-thread *conser*)"
+                 "(sb-ext:exit :code 0)"))
+         (sbcl-args (list* "--non-interactive" "--disable-debugger"
+                            (loop for form in forms append (list "--eval" form))))
+         (args (list* "-k" "5" "180" "sbcl" sbcl-args))
+         ;; sb-ext:run-program に :environment を渡さなければ現在のプロセスの
+         ;; 環境をそのまま複製してくれるが、SBCL には環境全体を読み出す標準の
+         ;; 手段が無いので、%run-with-missing-iree-home と同じ組み立て方で
+         ;; 明示的に転送する（今回は NABLA_IREE_HOME も現在の値のまま渡す）。
+         (env (remove nil
+                      (append
+                       (mapcar (lambda (name)
+                                 (let ((v (sb-ext:posix-getenv name)))
+                                   (and v (format nil "~A=~A" name v))))
+                               '("PATH" "HOME" "LD_LIBRARY_PATH" "LANG" "LC_ALL"
+                                 "TMPDIR" "XDG_CACHE_HOME" "NABLA_LISP_DEPS"
+                                 "SBCL_HOME" "NABLA_IREE_HOME"))
+                       (list (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry))))))
+         (process (sb-ext:run-program "timeout" args
+                                       :search t :environment env
+                                       :output *standard-output* :error *standard-output*)))
+    (sb-ext:process-exit-code process)))
+
+(fiveam:test (signals/cold-start/concurrent-gc-during-first-compile-does-not-crash :suite :nabla.large)
+  "issue #5 の回帰テスト（large。子 SBCL プロセスを3回起動するので数十秒
+かかる）。初回の compile-stablehlo と同時に別スレッドが明示的な GC を
+回し続けても、子プロセスが落ちず・ハングもせず終了コード0で終わることを、
+複数トライアル確かめる。修正前はこのシナリオでほぼ確実に再現した
+（%run-cold-start-race-child のコメントと scratchpad/adv/ 参照）。"
+  (block iree-test
+    (skip-unless-iree :library :compiler)
+    (dotimes (trial 3)
+      (is (eql 0 (%run-cold-start-race-child))
+          "trial ~D/3: 子 SBCL が、別スレッドが GC を回している間の初回 ~
+compile-stablehlo で落ちたかハングした（issue #5 の回帰。signals.lisp / ~
+library.lisp 参照）"
+          (1+ trial)))))

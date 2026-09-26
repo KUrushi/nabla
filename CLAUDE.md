@@ -65,6 +65,7 @@ mutation testing の詳しいオプションは [`tools/mutate/README.md`](tools
 - IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
 - デバイス上のバッファは `device-array` で包む。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）
 - LLVM を呼びうる FFI エントリポイント（IREE コンパイラ、将来の PJRT）は、必ず `with-lisp-signal-handlers-preserved`（`src/iree/signals.lisp`）で本体を包む。LLVM は初回の呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きする。放置すると、以後どこかのスレッドが GC を始めた瞬間に "no SP known for thread" で SBCL が確実に落ちる（issue #5）
+- 上記の LLVM のシグナルハンドラ登録そのものは、`ensure-compiler-loaded` が他の全 Lisp スレッドを SBCL の GC と同じ仕組み（`%call-with-world-stopped`、`src/iree/signals.lisp`）で止めた、制御された1点で済ませる。世界が止まっている間はどのスレッドもシグナルを受け取れないので、登録の瞬間に別スレッドが GC を始める競合の隙間が無くなる（詳しい根拠と残る課題は signals.lisp 冒頭のコメント）
 
 ## 開発の原則
 
