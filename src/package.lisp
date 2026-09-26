@@ -1,6 +1,6 @@
 ;;;; nabla コアパッケージ。
 ;;;;
-;;;; フェーズ0（IREE 疎通）の時点での公開 API は、dtype と aval（issue #7）
+;;;; フェーズ0（実行系との疎通）の時点での公開 API は、dtype と aval（issue #7）
 ;;;; だけ。トレース・IR・プリミティブは後続のフェーズで追加する。
 
 (defpackage #:nabla
@@ -24,7 +24,24 @@
    #:aval-rank
    #:aval-size
    #:aval-byte-length
-   #:array-aval)
+   #:array-aval
+   ;; backend プロトコル（issue #9）
+   #:backend
+   #:make-backend
+   #:find-backend
+   #:backend-target
+   #:backend-fingerprint
+   #:backend-compile
+   #:backend-load
+   #:backend-unload
+   #:backend-invoke
+   #:to-device
+   #:to-host
+   #:device-array-aval
+   #:backend-error
+   #:backend-not-available
+   #:backend-not-available-kind)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
-ニックネームは NB。フェーズ0時点の公開シンボルは dtype と aval のみ。"))
+ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend
+プロトコルのみ。"))

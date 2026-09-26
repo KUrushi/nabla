@@ -96,6 +96,36 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
 - `iterator-state` を保存して `restore-iterator` で再開すると、続きが中断しなかった場合と一致する
 - 1エポックで各インデックスがちょうど1回ずつ出る（`shuffle` しても要素の集合は同じ）
 
+### backend プロトコル（`nabla` / `nabla/iree`、issue #9）
+
+`nabla:backend` は core の抽象プロトコル（`to-device` / `backend-compile` /
+`backend-load` / `backend-invoke` / `to-host` など）で、実装は `nabla/iree`
+の `iree-backend`（本物、CPU の `local` ターゲット）と
+`tests/support/fake-backend.lisp` の `fake-backend`（参照実装、IREE を
+経由しない）の2つ。フェイクは「振る舞いを持つが本物ではない」ので、
+フェイクどうしで確かめてよい性質はプロトコルの配管（多値、aval、引数の
+順序）と #10 のディスクキャッシュだけに限る。IREE 経由の数値一致は
+`iree-backend` を使う（`tests/iree/backend-test.lisp`）。
+
+- `to-device` → `backend-compile` → `backend-load` → `backend-invoke` →
+  `to-host` の一連の呼び出しは、フェイク backend でも `iree-backend` でも
+  同じ形で書ける（`fake-backend` は add / dot_general（matmul）/ reduce
+  （総和）の3つの演算だけ、f32 だけをサポートする）
+- 結果の `device-array-aval` は入力から推論した shape・dtype と一致する
+- 登録されていない `kind` を `make-backend` に渡すと `backend-not-available`
+  が signal され、その `kind` が `backend-not-available-kind` で読み出せる
+- `find-backend` は同じ `kind` に対して毎回同じ（`eq` な）インスタンスを
+  返す（プロセス寿命で共有する設計）
+- add / dot_general / reduce のどれも含まない StableHLO テキストを
+  `backend-compile` に渡すと、`backend-error` の subtype が signal される
+- `nabla`（core）システムは `nabla/iree` に depends-on していない、かつ
+  `src/*.lisp`（`src/iree/` 以外、非再帰）と `nabla.asd` の `"nabla"`
+  defsystem フォームには大文字小文字を問わず `"iree"` という文字列が
+  一度も現れない（core は実行系の実装を知らない、という設計の約束）
+- `iree-backend` は `backend-target` / `backend-fingerprint` を持ち、
+  `backend-unload` は idempotent。`iree-error` は `nabla:backend-error`
+  の subtype
+
 ### IREE バインディング（`nabla/iree`）
 
 CFFI の生バインディング自体は性質を書きにくいので mutation testing の対象外（CLAUDE.md）。ここでの性質は主に「壊れた入力でプロセスが落ちない」「結果が決定的」の2つ。
@@ -241,6 +271,7 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `with-device-arrays`（`tests/iree/support.lisp`） | 複数の `device-array` を束縛して本体を評価し、終わったら逆順に `release-device-array` する。finalizer（#11）はあるが非同期なので、テストの中で確実にすぐ解放したいときはこちらを使う |
 | `gc-and-run-finalizers`（`tests/iree/support.lisp`） | `(sb-ext:gc :full t)` の後に `(sb-kernel:run-pending-finalizers)` を呼ぶ（#11）。SBCL は finalizer を別スレッドで非同期に実行するので、GC だけでは確認できない。finalizer 系のテストは必ずこれを使う |
 | `reference-add` / `reference-matmul` / `reference-reduce-sum`（`tests/support/reference.lisp`） | 素朴なループで計算する参照実装。DOUBLE-FLOAT で計算し `(simple-array double-float shape)` を返す。`nabla/iree` の `invoke` の期待値として使う |
+| `fake-backend` / `fake-backend-compile-count`（`tests/support/fake-backend.lisp`） | `nabla:backend` プロトコルのフェイク実装（issue #9）。IREE を経由せず add / matmul / reduce-sum の3演算だけを f32 で計算する。`fake-backend-compile-count` は `backend-compile` を呼んだ回数（#10 のキャッシュのヒット・ミスを数えるのに使う） |
 
 部品を追加・変更したら、この表も直す。
 

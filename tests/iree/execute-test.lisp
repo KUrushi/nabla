@@ -5,66 +5,13 @@
 ;;;; 順に並べているだけ）なので、mutation testing の対象外（このスキルの
 ;;;; 「CFFI の生バインディングの疎通確認は例ベースでよい」の考え方を、
 ;;;; ここでは公開 API 経由の値の一致という形の性質にしている）。
+;;;;
+;;;; add / matmul / reduce_sum の数値一致の3テストは、issue #9 で
+;;;; tests/iree/backend-test.lisp（nabla:backend プロトコル経由）に
+;;;; 書き直して、ここからは削除した。invoke 自体の壊れた入力に対する
+;;;; エラー経路（下の4テスト）はここに残す。
 
 (in-package #:nabla.iree.tests)
-
-(define-iree-test execute/invoke/add-matches-reference
-    "add.mlir（要素ごとの加算、shape 4x8）を実行した結果は、
-reference-add の期待値と allclose :dtype :f32 で一致する。"
-  (skip-unless-iree :library :both)
-  (with-device (device :local-task)
-    (with-session (session device)
-      (session-append-module session (compile-stablehlo (stablehlo-fixture "add")))
-      (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
-                    (lambda (seed)
-                      (let* ((spec (make-array-spec '(4 8) :f32))
-                             (a (make-random-array spec :seed seed))
-                             (b (make-random-array spec :seed (1+ seed))))
-                        (with-device-arrays ((da (to-device a device))
-                                             (db (to-device b device)))
-                          (with-device-arrays ((result (invoke session "module.main" da db)))
-                            (and (equalp (device-array-aval result) (nabla:array-aval a :f32))
-                                 (allclose (to-host result) (reference-add a b) :dtype :f32))))))
-                    :regression-id execute/invoke/add-matches-reference
-                    :regression-file (regression-path "iree-execute-add" :package "NABLA.IREE.TESTS"))))))
-
-(define-iree-test execute/invoke/matmul-matches-reference
-    "matmul.mlir（dot_general、2x3 · 3x2）を実行した結果は、
-reference-matmul の期待値と allclose :dtype :f32 で一致する。"
-  (skip-unless-iree :library :both)
-  (with-device (device :local-task)
-    (with-session (session device)
-      (session-append-module session (compile-stablehlo (stablehlo-fixture "matmul")))
-      (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
-                    (lambda (seed)
-                      (let* ((a (make-random-array (make-array-spec '(2 3) :f32) :seed seed))
-                             (b (make-random-array (make-array-spec '(3 2) :f32) :seed (1+ seed))))
-                        (with-device-arrays ((da (to-device a device))
-                                             (db (to-device b device)))
-                          (with-device-arrays ((result (invoke session "module.main" da db)))
-                            (and (equalp (device-array-aval result)
-                                         (nabla:make-aval '(2 2) :f32))
-                                 (allclose (to-host result) (reference-matmul a b) :dtype :f32))))))
-                    :regression-id execute/invoke/matmul-matches-reference
-                    :regression-file (regression-path "iree-execute-matmul" :package "NABLA.IREE.TESTS"))))))
-
-(define-iree-test execute/invoke/reduce-sum-matches-reference
-    "reduce_sum.mlir（shape 4x8 を dimension 1 で総和、結果 shape 4）を
-実行した結果は、reference-reduce-sum の期待値と allclose :dtype :f32 で
-一致する。"
-  (skip-unless-iree :library :both)
-  (with-device (device :local-task)
-    (with-session (session device)
-      (session-append-module session (compile-stablehlo (stablehlo-fixture "reduce_sum")))
-      (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
-                    (lambda (seed)
-                      (let ((a (make-random-array (make-array-spec '(4 8) :f32) :seed seed)))
-                        (with-device-arrays ((da (to-device a device)))
-                          (with-device-arrays ((result (invoke session "module.main" da)))
-                            (and (equalp (device-array-aval result) (nabla:make-aval '(4) :f32))
-                                 (allclose (to-host result) (reference-reduce-sum a 1) :dtype :f32))))))
-                    :regression-id execute/invoke/reduce-sum-matches-reference
-                    :regression-file (regression-path "iree-execute-reduce-sum" :package "NABLA.IREE.TESTS"))))))
 
 (define-iree-test execute/invoke/wrong-shape-signals-invalid-argument
     "add.mlir は 4x8 の入力を宣言している。3x2 の device-array を渡すと、

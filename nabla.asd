@@ -10,13 +10,14 @@
 ;;;; 後続のフェーズでファイルを足すときは、この形を崩さない。
 
 (defsystem "nabla"
-  :description "Common Lisp から IREE を叩く JAX 相当の深層学習ライブラリ（コア）"
+  :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
   :license "MIT"
   :depends-on ()
   :components ((:file "src/package")
                (:file "src/dtype")
-               (:file "src/aval"))
+               (:file "src/aval")
+               (:file "src/backend"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
 
 (defsystem "nabla/test-support"
@@ -30,6 +31,7 @@
                (:file "tests/support/random-array")
                (:file "tests/support/allclose")
                (:file "tests/support/reference")
+               (:file "tests/support/fake-backend")
                (:file "tests/support/regression")
                (:file "tests/support/run-tests")))
 
@@ -40,6 +42,7 @@
                (:file "tests/support-test")
                (:file "tests/dtype-test")
                (:file "tests/aval-test")
+               (:file "tests/backend-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -58,7 +61,8 @@
                (:file "src/iree/status")
                (:file "src/iree/runtime")
                (:file "src/iree/device-array")
-               (:file "src/iree/execute")))
+               (:file "src/iree/execute")
+               (:file "src/iree/backend")))
 
 ;; nabla/iree/tests は nabla/tests から独立したシステム（システム構成は
 ;; 契約 §2 のとおり）。そのため (asdf:test-system "nabla") はこのシステムを
@@ -77,6 +81,7 @@
                ;; コメントと PR 本文を参照（nabla.iree の finalizer 機構とは無関係の、
                ;; SBCL の GC と IREE のスレッドとの既知の相性問題に対する緩和策）。
                (:file "tests/iree/finalizer-test")
+               (:file "tests/iree/backend-test")
                (:file "tests/iree/compiler-test")
                (:file "tests/iree/runtime-test")
                (:file "tests/iree/runtime-cuda-test")

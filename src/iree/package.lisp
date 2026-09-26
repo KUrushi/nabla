@@ -11,6 +11,13 @@
 
 (defpackage #:nabla.iree
   (:use #:cl)
+  ;; TO-DEVICE / TO-HOST / DEVICE-ARRAY-AVAL は core (nabla) の backend
+  ;; プロトコル（issue #9、src/backend.lisp）の総称関数。device-array.lisp
+  ;; のクラス定義・メソッドがこれらのメソッドになるように import-from し、
+  ;; nabla.iree からも同じシンボルのまま export し続ける（#7/#11 の既存の
+  ;; 呼び出し側や過去のテストが無変更で動くように）。nabla.iree は
+  ;; 引き続き #:nabla を :use しない（コアの名前空間を汚さないため）。
+  (:import-from #:nabla #:to-device #:to-host #:device-array-aval)
   (:export
    ;; コンパイラ
    #:compile-stablehlo
@@ -82,7 +89,9 @@
    #:device-array-aval
    #:device-array-device
    ;; execute
-   #:invoke)
+   #:invoke
+   ;; backend プロトコル (issue #9)
+   #:iree-backend)
   (:documentation
    "IREE 連携用のパッケージ。埋め込み C API を CFFI で呼び、StableHLO の
 テキストから vmfb のバイト列を得るコンパイラのバインディングと、

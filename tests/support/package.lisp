@@ -39,5 +39,9 @@
    #:reference-add
    #:reference-matmul
    #:reference-reduce-sum
+   ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）
+   #:fake-backend
+   #:fake-backend-compile-count
+   #:fake-array
    ;; 回帰テスト
    #:regression-path))
