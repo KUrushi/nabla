@@ -44,6 +44,14 @@
    #:device-driver
    #:device-name
    #:with-device
+   #:allocator-statistics
+   #:allocator-statistics-host-bytes-peak
+   #:allocator-statistics-host-bytes-allocated
+   #:allocator-statistics-host-bytes-freed
+   #:allocator-statistics-device-bytes-peak
+   #:allocator-statistics-device-bytes-allocated
+   #:allocator-statistics-device-bytes-freed
+   #:device-allocator-statistics
    #:make-session
    #:release-session
    #:with-session

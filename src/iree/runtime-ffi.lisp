@@ -142,6 +142,33 @@
   (device :pointer))
 
 ;;; ------------------------------------------------------------------------
+;;; hal/allocator.h
+;;; ------------------------------------------------------------------------
+
+;; iree_hal_allocator_statistics_t（hal/allocator.h:314-327）。
+;; IREE_STATISTICS_ENABLE は base/config.h でこのビルドでは既定の1のまま
+;; （scripts/build-iree.sh はこれを切り替えない）なので、フィールドは常に
+;; 存在する。iree_device_size_t は base/config.h:91 で IREE_DEVICE_SIZE_T
+;; （既定 size_t、base/config.h 冒頭のコメント参照）。フィールド順は
+;; ヘッダそのまま: host の peak/allocated/freed、続けて device の
+;; peak/allocated/freed。
+(cffi:defcstruct %hal-allocator-statistics-t
+  (host-bytes-peak :size)
+  (host-bytes-allocated :size)
+  (host-bytes-freed :size)
+  (device-bytes-peak :size)
+  (device-bytes-allocated :size)
+  (device-bytes-freed :size))
+
+;; iree_hal_allocator_query_statistics（hal/allocator.h:361-363）。
+;; ALLOCATOR は iree_hal_allocator_t*、OUT-STATISTICS は
+;; iree_hal_allocator_statistics_t* IREE_RESTRICT。statistics が無効化され
+;; たビルドでは何もしない（no-op、hal/allocator.h:366 のコメント）。
+(cffi:defcfun ("iree_hal_allocator_query_statistics" %hal-allocator-query-statistics) :void
+  (allocator :pointer)
+  (out-statistics :pointer))
+
+;;; ------------------------------------------------------------------------
 ;;; runtime/session.h
 ;;; ------------------------------------------------------------------------
 

@@ -16,8 +16,15 @@
 ;;;; release-device した後でも、生きている device-array の to-host は
 ;;;; 正しく動き続ける。
 ;;;;
-;;;; 解放そのもの（finalizer による自動化）は #11 の担当で、ここでは明示的な
-;;;; release-device-array だけを提供する。
+;;;; 解放の自動化（finalizer、#11）: %wrap-buffer-view は、上の retain の
+;;;; 直後に trivial-garbage:finalize で buffer view と device の解放を
+;;;; 登録する。finalizer のクロージャは device-array 本体ではなく、
+;;;; cffi:pointer-address で整数に変えた2つのポインタの値だけを捕まえる
+;;;; （device-array を捕まえると、finalizer 自身がそのオブジェクトへの
+;;;; 参照になり、GC が永遠に回収できなくなる。CLAUDE.md の約束）。
+;;;; release-device-array は tg:cancel-finalization を先に呼んでから
+;;;; 自分で解放するので、明示的に解放した後に GC が走っても二重解放には
+;;;; ならない。
 
 (in-package #:nabla.iree)
 
@@ -44,14 +51,28 @@ MAKE-INSTANCE することは想定していない。"))
 引き取って DEVICE-ARRAY に包む唯一のコンストラクタ。DEVICE の
 iree_hal_device_t を iree_hal_device_retain で retain し、その pointer も
 一緒に保持する（ファイル先頭のコメントの理由）。TO-DEVICE と、#8 の
-INVOKE の出力の組み立てがここを通る。"
+INVOKE の出力の組み立てがここを通る。
+
+生成した DEVICE-ARRAY には trivial-garbage:finalize で自動解放を登録する
+（#11）。finalizer のクロージャは BUFFER-VIEW と DEVICE-POINTER の
+cffi:pointer-address（整数）だけを捕まえ、DEVICE-ARRAY 本体・AVAL・
+DEVICE オブジェクトのどれも参照しない。release-device-array で明示的に
+解放した場合は tg:cancel-finalization でこの finalizer を先に取り消すので、
+二重解放にはならない。"
   (let ((device-pointer (%live-device-pointer device "%wrap-buffer-view")))
     (%hal-device-retain device-pointer)
-    (make-instance 'device-array
-                    :pointer buffer-view
-                    :device-pointer device-pointer
-                    :aval aval
-                    :device device)))
+    (let ((array (make-instance 'device-array
+                                 :pointer buffer-view
+                                 :device-pointer device-pointer
+                                 :aval aval
+                                 :device device))
+          (buffer-view-address (cffi:pointer-address buffer-view))
+          (device-pointer-address (cffi:pointer-address device-pointer)))
+      (tg:finalize array
+                    (lambda ()
+                      (%hal-buffer-view-release (cffi:make-pointer buffer-view-address))
+                      (%hal-device-release (cffi:make-pointer device-pointer-address))))
+      array)))
 
 (defun device-array-released-p (device-array)
   "DEVICE-ARRAY が release-device-array 済みなら真を返す。"
@@ -119,10 +140,14 @@ device-array がまだ生きている限り to-host は動き続ける（ファ�
     array))
 
 (defun release-device-array (device-array)
-  "DEVICE-ARRAY を解放する。buffer view を解放してから、生成時に retain
-した device を解放する（この順でなければならない理由はファイル先頭の
-コメント参照）。二重解放は idempotent（何もしない）。"
+  "DEVICE-ARRAY を解放する。まず tg:cancel-finalization で %wrap-buffer-view
+が登録した finalizer を取り消し（後から GC が走っても、この解放と finalizer
+の両方が同じポインタを解放する二重解放にならないようにする）、それから
+buffer view を解放してから、生成時に retain した device を解放する
+（この順でなければならない理由はファイル先頭のコメント参照）。二重解放は
+idempotent（何もしない）。"
   (unless (device-array-released-p device-array)
+    (tg:cancel-finalization device-array)
     (%hal-buffer-view-release (%device-array-pointer device-array))
     (%hal-device-release (%device-array-device-pointer device-array))
     (setf (%device-array-pointer device-array) (cffi:null-pointer))

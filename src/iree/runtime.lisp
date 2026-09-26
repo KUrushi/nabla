@@ -177,6 +177,41 @@ nabla.iree 側の関数名（文字列）。"
     (%hal-device-release (%device-pointer device))
     (setf (%device-pointer device) (cffi:null-pointer))))
 
+(defstruct (allocator-statistics
+            (:constructor %make-allocator-statistics
+                (host-bytes-peak host-bytes-allocated host-bytes-freed
+                 device-bytes-peak device-bytes-allocated device-bytes-freed))
+            (:copier nil))
+  "iree_hal_allocator_statistics_t を Lisp 側にコピーしたスナップショット
+（device-allocator-statistics が返す）。すべて確保・解放された総バイト数
+（ピークを除く）で、単調に増える。IREE_STATISTICS_ENABLE が無効な
+ビルドでは全フィールドが0になる（統計自体が no-op になるため）。"
+  (host-bytes-peak 0 :type (unsigned-byte 64) :read-only t)
+  (host-bytes-allocated 0 :type (unsigned-byte 64) :read-only t)
+  (host-bytes-freed 0 :type (unsigned-byte 64) :read-only t)
+  (device-bytes-peak 0 :type (unsigned-byte 64) :read-only t)
+  (device-bytes-allocated 0 :type (unsigned-byte 64) :read-only t)
+  (device-bytes-freed 0 :type (unsigned-byte 64) :read-only t))
+
+(defun device-allocator-statistics (device)
+  "DEVICE の allocator（iree_hal_device_allocator）から
+iree_hal_allocator_query_statistics で統計を読み、ALLOCATOR-STATISTICS
+として返す。leak テスト（#11）が、device-array を作っては捨てるループの
+前後で device-bytes-allocated / device-bytes-freed の差を見るのに使う。
+DEVICE が release-device 済みなら IREE-OBJECT-RELEASED（kind :device）が
+signal される。"
+  (let ((allocator (%hal-device-allocator
+                     (%live-device-pointer device "device-allocator-statistics"))))
+    (cffi:with-foreign-object (out-statistics '(:struct %hal-allocator-statistics-t))
+      (%hal-allocator-query-statistics allocator out-statistics)
+      (%make-allocator-statistics
+       (cffi:foreign-slot-value out-statistics '(:struct %hal-allocator-statistics-t) 'host-bytes-peak)
+       (cffi:foreign-slot-value out-statistics '(:struct %hal-allocator-statistics-t) 'host-bytes-allocated)
+       (cffi:foreign-slot-value out-statistics '(:struct %hal-allocator-statistics-t) 'host-bytes-freed)
+       (cffi:foreign-slot-value out-statistics '(:struct %hal-allocator-statistics-t) 'device-bytes-peak)
+       (cffi:foreign-slot-value out-statistics '(:struct %hal-allocator-statistics-t) 'device-bytes-allocated)
+       (cffi:foreign-slot-value out-statistics '(:struct %hal-allocator-statistics-t) 'device-bytes-freed)))))
+
 (defmacro with-device ((var driver) &body body)
   "(make-device DRIVER) を VAR に束縛して BODY を評価し、終わったら
 release-device する。"
