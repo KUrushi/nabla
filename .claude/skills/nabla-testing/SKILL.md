@@ -14,6 +14,8 @@ nabla の自動テストは **property-based testing†（PBT）** と **mutatio
 - JAX で生成した期待値との数値一致フィクスチャ
 - PBT が見つけた失敗例の回帰テスト
 
+例外として、CFFI の生バインディング（`nabla/iree` の `iree_*` 埋め込み C API 呼び出しなど）の疎通確認は、性質を書きにくいので例ベースでよい（手書きのフィクスチャがコンパイルできる、既知の誤った入力が決まったコンディションを出す、など）。IREE の共有ライブラリが要る medium テストは `skip-unless-iree`（`tests/iree/support.lisp`）でスキップする。
+
 † の付いた用語は `docs/glossary.md` に説明がある。
 
 ## 作業の流れ

@@ -42,15 +42,21 @@
                (error "nabla/tests: 既定のテストスイートが失敗した"))))
 
 (defsystem "nabla/iree"
-  :description "IREE 連携（フェーズ0時点ではパッケージの骨格のみ）"
+  :description "IREE 連携（コンパイラの埋め込み C API のバインディング）"
   :depends-on ("nabla" "cffi" "trivial-garbage")
-  :components ((:file "src/iree/package")))
+  :components ((:file "src/iree/package")
+               (:file "src/iree/conditions")
+               (:file "src/iree/compiler-ffi")
+               (:file "src/iree/library")
+               (:file "src/iree/compiler")))
 
 ;; nabla/iree/tests は nabla/tests から独立したシステム（システム構成は
 ;; 契約 §2 のとおり）。そのため (asdf:test-system "nabla") はこのシステムを
 ;; ロードしない。scripts/run-tests.sh は両方を明示的に load-system してから
 ;; run-tests を呼んでいるので、コマンドとして使う分には問題ない。
 (defsystem "nabla/iree/tests"
-  :description "nabla/iree のテスト（フェーズ0時点では骨格のみ）"
+  :description "nabla/iree のテスト"
   :depends-on ("nabla/iree" "nabla/test-support")
-  :components ((:file "tests/iree/package")))
+  :components ((:file "tests/iree/package")
+               (:file "tests/iree/support")
+               (:file "tests/iree/compiler-test")))

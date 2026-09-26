@@ -23,6 +23,10 @@ scripts/setup-lisp-deps.sh
 # テスト（既定は small + medium。CPU だけで動き、GPU は不要）
 scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
 NABLA_TEST_SIZES=large scripts/run-tests.sh
+# nabla/iree の medium テストは IREE の共有ライブラリ（NABLA_IREE_HOME 配下）が
+# 無いと自動でスキップされる。CI では NABLA_REQUIRE_IREE=1 を立てて、その
+# スキップを失敗にする
+NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 
 # IREE のビルド（third_party/iree.lock で固定したコミットから）。
 # コンパイラは既定で PyPI ホイールを使い、ランタイムは常にソースビルドする
