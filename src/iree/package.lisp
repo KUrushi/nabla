@@ -27,8 +27,43 @@
    #:iree-compile-error
    #:iree-compile-error-phase
    #:iree-compile-error-diagnostics
-   #:iree-compile-error-message)
+   #:iree-compile-error-message
+   #:iree-status-error
+   #:iree-status-error-code
+   #:iree-status-error-message
+   #:iree-status-error-context
+   ;; ランタイム
+   #:iree-instance
+   #:driver-names
+   #:make-device
+   #:release-device
+   #:device-released-p
+   #:device-driver
+   #:device-name
+   #:with-device
+   #:make-session
+   #:release-session
+   #:with-session
+   #:session-append-module
+   #:session-append-module-from-file
+   #:session-lookup-function
+   #:session-function-names
+   #:vm-function
+   #:vm-function-module
+   #:vm-function-linkage
+   #:vm-function-ordinal
+   #:with-call
+   #:call-push-buffer-view
+   #:call-invoke
+   #:call-pop-buffer-view
+   #:buffer-view-allocate-copy
+   #:buffer-view-release
+   #:buffer-view-shape
+   #:buffer-view-element-type
+   #:buffer-view-byte-length
+   #:buffer-view-read-into)
   (:documentation
    "IREE 連携用のパッケージ。埋め込み C API を CFFI で呼び、StableHLO の
-テキストから vmfb のバイト列を得るコンパイラのバインディング（このフェーズ）
-と、IREE ランタイムでの実行のバインディング（後続のフェーズ）を持つ。"))
+テキストから vmfb のバイト列を得るコンパイラのバインディングと、
+IREE ランタイム（instance / device / session / call / buffer_view）で
+その vmfb を実行するバインディングを持つ。"))

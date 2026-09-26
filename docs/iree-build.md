@@ -333,3 +333,31 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
 | `scripts/build-iree.sh --cuda` | 未実施（環境に GPU/CUDA なし） | - | CUDA toolkit の
   あるマシンが必要 |
 | `scripts/verify-iree.sh --cuda` | 未実施（環境に GPU/CUDA なし） | - | 同上 |
+
+## Lisp からの呼び出し（issue #6）
+
+`nabla/iree` の実行時バインディング（`src/iree/runtime*.lisp`）は
+`iree/runtime/*.h` の高水準 API を CFFI で直接呼ぶ。ビルドしたライブラリ固有の
+注意点:
+
+- **アロケータ**: `iree_allocator_system()` は `base/allocator.h` の
+  `static inline` で、共有ライブラリからは export されていない。このビルドは
+  `IREE_ALLOCATOR_SYSTEM=libc` で構成されているため、system allocator は
+  `{self = NULL, ctl = iree_allocator_libc_ctl}` として組み立てる
+  （`iree_allocator_libc_ctl` は `libnabla_iree_runtime.so` が export している）
+- **構造体の値渡し・値返し**: `iree_allocator_t` / `iree_string_view_t` /
+  `iree_const_byte_span_t` / `iree_hal_buffer_params_t` / `iree_timeout_t` は
+  値で渡し、`iree_vm_module_signature` や `iree_vm_function_name` は構造体を
+  値で返す。素の CFFI（SBCL の FFI）はどちらにも対応しないため、
+  `cffi-libffi`（apt の `cl-cffi` に同梱。要 libffi-dev）をロードしてから
+  `defcfun` / `defcstruct` を書くだけでよい。`cffi-libffi` が
+  `cffi:*foreign-structures-by-value*` を差し替えるので、C 側のヘルパーを
+  自分で書く必要はない
+- **文字列ビュー**: `cffi:with-foreign-string` が返す長さは終端 NUL を含む。
+  `iree_string_view_t` の `size` に渡すときは 1 引く（引かないとドライバ名の
+  末尾に余計な 1 バイトが付き、`try_create_default_device` が本来存在する
+  ドライバでも NOT_FOUND になる）
+- **vmfb の識別子**: `ireeCompilerInvocationOutputVMBytecode` が出す vmfb は
+  既定で「polyglot zip」形式（`--iree-vm-emit-polyglot-zip`）なので、先頭4バイトは
+  ZIP local-file-header シグネチャ `50 4B 03 04`（"PK\3\4"）で、フラットバッファ
+  自体の識別子ではない

@@ -46,3 +46,19 @@ LIBRARY は :compiler または :runtime、HOME は探索に使った NABLA_IREE
 (severity . text) のリスト（severity は :note :warning :error :remark の
 どれかで、MLIR が出した順）。MESSAGE は iree_compiler_error_t から得た
 テキスト（無ければ NIL）。"))
+
+(define-condition iree-status-error (iree-error)
+  ((code :initarg :code :reader iree-status-error-code)
+   (message :initarg :message :reader iree-status-error-message)
+   (context :initarg :context :reader iree-status-error-context))
+  (:report
+   (lambda (condition stream)
+     (format stream "IREE ランタイムの呼び出し ~A が ~A で失敗した: ~A"
+             (iree-status-error-context condition)
+             (iree-status-error-code condition)
+             (iree-status-error-message condition))))
+  (:documentation
+   "IREE ランタイムの iree_status_t が非OKだったときに signal する。CODE は
+iree_status_code_e から得たキーワード（例: :not-found）。MESSAGE は
+iree_status_to_string のテキスト（\"file.c:line: CODE; msg\" の形式を含む）。
+CONTEXT は失敗した nabla.iree 側のラッパー関数の名前。"))
