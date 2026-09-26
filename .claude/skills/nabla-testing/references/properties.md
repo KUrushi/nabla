@@ -189,7 +189,38 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `array-spec` 生成器 | rank 0〜4、各次元 1〜8 の形状と dtype の組を作る。`:dtypes` で候補を絞れる |
 | `make-random-array` | spec と固定シードから配列を作る。`:domain` で定義域（正の数だけ、など）を指定できる |
 | `pytree-spec` 生成器 | リスト・ベクタ・`defmodule` 構造体を入れ子にした木を作る |
+| `uniform-integer` / `uniform-real` 生成器 | `check-it::*size*` にクランプされない、指定した範囲全体から一様に選ぶ整数・実数の生成器。下の「check-it の落とし穴」を読んでから `(integer lo hi)` / `(real lo hi)` の代わりに使う |
 | `allclose` / `approx=` | dtype ごとの既定の許容誤差で比べ、失敗時に最大誤差とその位置を出力する |
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |
 
 部品を追加・変更したら、この表も直す。
+
+### check-it の (integer lo hi) / (real lo hi) の落とし穴
+
+check-it 組み込みの `(integer lo hi)` / `(real lo hi)` は、指定した `lo` /
+`hi` を無視して `check-it::*size*`（既定 10）に値をクランプする
+（`check-it` の `int-generator-function` / `real-generator-function` の
+実装が、内部で `(min (abs limit) *size*) を取っているため）。たとえば
+`(generator (integer 0 1023))` は、見た目には 0..1023 の一様分布に見え
+るが、実際には 0..10 の値しか生成しない。
+
+この落とし穴は check-it のドキュメントには書かれておらず、生成された
+値の分布を実際に確認しない限り気づけない。テストは「落ちないから正し
+い」と誤解しやすく、実際に nabla のこの PBT（f16 の非正規化数の仮数、
+`make-random-array` の乱数シード）がこれに引っかかり、意図した範囲の
+1% 未満しか検査していないのに全部パスしていた。
+
+対策として `lo` / `hi` が `check-it::*size*`（既定 10）を超えうる範囲を
+使いたいときは、必ず `tests/support/uniform-generator.lisp` の
+`uniform-integer` / `uniform-real`（または `make-uniform-integer-generator`
+/ `make-uniform-real-generator`）を使う。これらは check-it の generator
+プロトコル（`generate` / `shrink`）だけを自前で実装し、`*size*` による
+クランプを経由しない。新しい PBT で `(integer ...)` / `(real ...)` を
+書くときは、範囲の上限が 10 を大きく超えないか、超えるならこちらを
+使っているかを必ず確認する。
+
+`array-spec` 生成器も、rank と各次元の範囲を選ぶのにこの `uniform-integer`
+を使っている。`:max-rank` / `:max-dim` に 10 より大きい値を渡しても、
+実際にその範囲まで rank や次元が届くことを
+`support/array-spec/respects-larger-than-ten-max-rank-and-max-dim`
+（`tests/support-test.lisp`）で確かめている。

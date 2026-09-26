@@ -17,6 +17,13 @@
    ;; dtype と許容誤差
    #:*dtypes*
    #:dtype-tolerance
+   ;; check-it::*size* にクランプされない一様な整数・実数の生成器
+   ;; （.claude/skills/nabla-testing/references/properties.md の
+   ;; 「check-it の (integer lo hi) / (real lo hi) の落とし穴」参照）
+   #:uniform-integer
+   #:uniform-real
+   #:make-uniform-integer-generator
+   #:make-uniform-real-generator
    ;; array-spec 生成器
    #:array-spec
    #:make-array-spec

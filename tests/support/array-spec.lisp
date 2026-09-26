@@ -33,8 +33,14 @@
 ;; check-it の generator DSL (integer / tuple / map / chain など) は固定の
 ;; 個数のサブジェネレータしか書けないので、rank ごとに違う個数の次元を
 ;; 作る部分だけは、check-it が公開しているジェネレータクラス
-;; (int-generator / tuple-generator / mapped-generator / chained-generator)
-;; を直接組み立てて書く。
+;; (tuple-generator / mapped-generator / chained-generator) を直接組み立
+;; てて書く。整数の範囲を選ぶ部分には check-it 組み込みの int-generator
+;; ではなく UNIFORM-INTEGER-GENERATOR (uniform-generator.lisp) を使う。
+;; int-generator は check-it::*size*（既定10）で lo/hi をクランプしてし
+;; まうため、MAX-RANK や MAX-DIM に既定の 4 / 8 より大きい値を渡すと、
+;; 呼び出し側に何のエラーも出さずに実際の rank / 次元の上限が10で頭打ち
+;; になってしまう（.claude/skills/nabla-testing/references/properties.md
+;; 参照）。
 ;;
 ;; def-generator の &body はそのまま generate メソッドの本体に展開され、
 ;; defun のような docstring の特別扱いはしない（先頭に文字列を置いても
@@ -43,9 +49,7 @@
 (check-it:def-generator array-spec (&key (dtypes *dtypes*) (max-rank 4) (max-dim 8))
   (make-instance 'check-it:chained-generator
                  :pre-generators
-                 (list (make-instance 'check-it:int-generator
-                                      :lower-limit 0
-                                      :upper-limit max-rank))
+                 (list (make-uniform-integer-generator 0 max-rank))
                  :generator-function
                  (lambda (rank)
                    (make-instance
@@ -55,12 +59,8 @@
                            'check-it:tuple-generator
                            :sub-generators
                            (loop repeat rank
-                                 collect (make-instance 'check-it:int-generator
-                                                        :lower-limit 1
-                                                        :upper-limit max-dim)))
-                          (make-instance 'check-it:int-generator
-                                        :lower-limit 0
-                                        :upper-limit (1- (length dtypes))))
+                                 collect (make-uniform-integer-generator 1 max-dim)))
+                          (make-uniform-integer-generator 0 (1- (length dtypes))))
                     :mapping
                     (lambda (shape dtype-index)
                       (make-array-spec shape (nth dtype-index dtypes)))))))

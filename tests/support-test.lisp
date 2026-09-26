@@ -38,6 +38,25 @@ element-type-for-dtype の実装と1対1で対応させない（実装をなぞ�
                 :regression-id support/array-spec/respects-dtypes-argument
                 :regression-file (regression-path "array-spec-respects-dtypes"))))
 
+(test support/array-spec/respects-larger-than-ten-max-rank-and-max-dim
+  "array-spec の生成器は :max-rank / :max-dim に check-it::*size*
+（既定10）より大きい値を渡しても、実際にその範囲まで rank や次元が届く。
+
+以前は rank・次元・dtype の選択に check-it 組み込みの int-generator を
+そのまま使っていたため、:max-rank や :max-dim に10より大きい値を渡して
+も、呼び出し側に何のエラーも出さないまま実際の上限が10で頭打ちになって
+いた（.claude/skills/nabla-testing/references/properties.md 参照）。
+既定値の :max-rank 4 / :max-dim 8 はどちらも10未満なので、この不具合は
+既定値だけを使う他のテストには現れない。乱数のシードは固定して、
+たまに失敗するテストにしない。"
+  (let* ((*random-state* (sb-ext:seed-random-state 42))
+         (spec-generator (generator (array-spec :max-rank 20 :max-dim 50)))
+         (specs (loop repeat 500 collect (check-it:generate spec-generator))))
+    (is (some (lambda (spec) (>= (array-spec-rank spec) 15)) specs)
+        "rank が :max-rank 20 の近くまで届いていない")
+    (is (some (lambda (spec) (some (lambda (d) (> d 40)) (array-spec-shape spec))) specs)
+        "次元が :max-dim 50 の近くまで届いていない")))
+
 (test support/make-random-array/matches-spec
   "make-random-array は spec の shape と、dtype に対応する element-type の配列を返す。"
   (is (check-it (generator (array-spec))
@@ -75,9 +94,13 @@ element-type-for-dtype の実装と1対1で対応させない（実装をなぞ�
 bf16 / f16 は仮数部が狭いので、生成した DOUBLE-FLOAT をそのまま
 ビット列に切り詰めると、0 に近い値がちょうど 0 に丸まってしまうことが
 ある（アンダーフロー）。SEED をいろいろな値にして試すことで、その
-アンダーフローが起きる乱数列を広く探す。"
+アンダーフローが起きる乱数列を広く探す。SEED には check-it 組み込みの
+(integer lo hi) ではなく UNIFORM-INTEGER を使う。(integer lo hi) は
+check-it::*size*（既定10）で値をクランプしてしまい、実際には 0..10 の
+SEED しか試さない（.claude/skills/nabla-testing/references/properties.md
+の「check-it の (integer lo hi) / (real lo hi) の落とし穴」参照）。"
   (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64 :bf16 :f16))
-                                   (integer 0 1000000)))
+                                   (uniform-integer :lo 0 :hi 1000000)))
                 (lambda (args)
                   (destructuring-bind (spec seed) args
                     (let* ((dtype (array-spec-dtype spec))
@@ -91,9 +114,11 @@ bf16 / f16 は仮数部が狭いので、生成した DOUBLE-FLOAT をそのま�
 (test support/make-random-array/unit-domain-stays-in-closed-unit-interval
   "domain が :unit のときは、どの dtype でも要素が [0, 1] に入る
 （DECODE-ELEMENT で DOUBLE-FLOAT に戻して確かめる）。SEED をいろいろな
-値にして試す。"
+値にして試す（UNIFORM-INTEGER を使う理由は
+SUPPORT/MAKE-RANDOM-ARRAY/POSITIVE-DOMAIN-STAYS-IN-OPEN-UNIT-INTERVAL と
+同じ）。"
   (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64 :bf16 :f16))
-                                   (integer 0 1000000)))
+                                   (uniform-integer :lo 0 :hi 1000000)))
                 (lambda (args)
                   (destructuring-bind (spec seed) args
                     (let* ((dtype (array-spec-dtype spec))
@@ -124,20 +149,69 @@ bf16 / f16 は仮数部が狭いので、生成した DOUBLE-FLOAT をそのま�
 仮数のビット列を広く振っても value = mantissa * 2^-24 で戻ることを
 check-it で確かめる。SUPPORT/DECODE-ELEMENT/F16-SUBNORMAL-ROUND-TRIPS は
 2, 3個の固定値だけを見る例ベースのテストなので、ここでは仮数の
-10bit 全域 (0..1023) を対象にする。"
-  (is (check-it (generator (integer 0 1023))
+10bit 全域 (0..1023) を対象にする。
+
+check-it 組み込みの (integer 0 1023) ではなく UNIFORM-INTEGER を使う。
+(integer lo hi) は check-it::*size*（既定10）で値をクランプしてしまい、
+実際には 0..10 の仮数しか試さない（過去にこのテストがそれに気づかず
+仮数の 99% を見ないまま通っていた。詳しくは
+.claude/skills/nabla-testing/references/properties.md 参照）。仮数の
+定義域はちょうど 1024 個しかないので、
+SUPPORT/DECODE-ELEMENT/F16-SUBNORMAL-EXHAUSTIVE で全数も確かめる。"
+  (is (check-it (generator (uniform-integer :lo 0 :hi 1023))
                 (lambda (mantissa)
                   (= (decode-element :f16 mantissa)
                      (* mantissa (expt 2.0d0 -24))))
                 :regression-id support/decode-element/f16-subnormal-matches-formula
                 :regression-file (regression-path "decode-element-f16-subnormal-matches-formula"))))
 
+(test support/decode-element/f16-subnormal-exhaustive
+  "非正規化数の仮数は 0..1023 の 1024 通りしかないので、check-it で
+サンプリングするのではなく全数を確かめる（PBT がサンプリングで見逃す
+範囲がないことを、例ベースのテストで保証する）。"
+  (loop for mantissa from 0 to 1023
+        do (is (= (decode-element :f16 mantissa)
+                  (* mantissa (expt 2.0d0 -24)))
+               "decode-element :f16 のビット列 ~A（非正規化数）が想定と違う" mantissa)))
+
 (test support/decode-element/f16-zero-and-max-normal
   "decode-element の f16 は +0 / -0、および最大の正規化数（65504.0）も
-正しく戻す（非正規化数の修正が、他の場合を壊していないことを確かめる）。"
+正しく戻す（非正規化数の修正が、他の場合を壊していないことを確かめる）。
+
++0 と -0 は DOUBLE-FLOAT の = では区別できない（(= 0.0d0 -0.0d0) は真）
+ので、符号を区別するために FLOAT-SIGN を使う。指数部のビットが全部1
+（f16 の Inf / NaN）は decode-element では特別扱いしていない点に注意
+（nabla のテストで使う値の絶対値はおおむね 1 以下で、Inf / NaN を
+decode-element に渡すことは想定していない）。"
   (is (= (decode-element :f16 #x0000) 0.0d0))
+  (is (= (float-sign (decode-element :f16 #x0000)) 1.0d0))
   (is (= (decode-element :f16 #x8000) -0.0d0))
+  (is (= (float-sign (decode-element :f16 #x8000)) -1.0d0))
   (is (= (decode-element :f16 #x7BFF) 65504.0d0)))
+
+(test support/uniform-integer/reaches-both-ends-of-a-wide-range
+  "MAKE-UNIFORM-INTEGER-GENERATOR は check-it::*size*（既定10）を無視して
+指定した範囲全体から一様に値を選ぶ。2000 回引いて、範囲の下のほう
+（20 未満）と上のほう（1000 より大きい）の両方が出ることを確かめる
+（check-it 組み込みの (integer 0 1023) はこの範囲を 0..10 にクランプ
+してしまうため、その回帰を防ぐ）。乱数のシードは固定して、たまに
+失敗するテストにしない。"
+  (let* ((*random-state* (sb-ext:seed-random-state 42))
+         (generator (make-uniform-integer-generator 0 1023))
+         (draws (loop repeat 2000 collect (check-it:generate generator))))
+    (is (every (lambda (v) (<= 0 v 1023)) draws))
+    (is (some (lambda (v) (< v 20)) draws))
+    (is (some (lambda (v) (> v 1000)) draws))))
+
+(test support/uniform-real/reaches-both-ends-of-a-wide-range
+  "MAKE-UNIFORM-REAL-GENERATOR も UNIFORM-INTEGER と同じく、
+check-it::*size* を無視して [LO, HI) 全体から一様に値を選ぶ。"
+  (let* ((*random-state* (sb-ext:seed-random-state 42))
+         (generator (make-uniform-real-generator 0.0d0 1000.0d0))
+         (draws (loop repeat 2000 collect (check-it:generate generator))))
+    (is (every (lambda (v) (<= 0.0d0 v 1000.0d0)) draws))
+    (is (some (lambda (v) (< v 20.0d0)) draws))
+    (is (some (lambda (v) (> v 900.0d0)) draws))))
 
 (test support/array-spec/prints-readably
   "check-it は失敗例を (format nil \"~S\" value) で保存し、regression

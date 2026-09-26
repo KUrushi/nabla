@@ -22,6 +22,7 @@
   :depends-on ("nabla" "fiveam" "check-it")
   :components ((:file "tests/support/package")
                (:file "tests/support/suites")
+               (:file "tests/support/uniform-generator")
                (:file "tests/support/dtypes")
                (:file "tests/support/array-spec")
                (:file "tests/support/random-array")
