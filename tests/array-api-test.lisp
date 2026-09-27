@@ -89,6 +89,13 @@
         (b (make-array '() :element-type 'single-float :initial-element 2.0)))
     (signals nb:tracing-error (nb:dot a b))))
 
+(test array-api/dot-rank0-second-operand-signals-tracing-error
+  "A が rank 1 以上でも、B が rank 0 なら TRACING-ERROR になる（A だけを
+チェックして B を見落とす変異対策）。"
+  (let ((a (make-array 3 :element-type 'single-float :initial-contents '(1.0 2.0 3.0)))
+        (b (make-array '() :element-type 'single-float :initial-element 2.0)))
+    (signals nb:tracing-error (nb:dot a b))))
+
 (test array-api/where-eager-matches-select
   (let* ((pred (make-array 2 :element-type 'bit :initial-contents '(1 0)))
          (a (make-array 2 :element-type 'single-float :initial-contents '(1.0 2.0)))

@@ -25,6 +25,12 @@
            :format-control "DOT は rank 0 の値を受け付けない（縮約する軸が無い）"
            :format-arguments nil)))
 
+(defun %dot-check-ranks (rank-a rank-b)
+  "A・B 両方の rank を %DOT-CHECK-RANK で確かめる（A だけでなく B が
+rank 0 の場合も TRACING-ERROR にする）。"
+  (%dot-check-rank rank-a)
+  (%dot-check-rank rank-b))
+
 (defun %dot-params (rank-a)
   "A の RANK-A から dot-general のパラメタ（最後の軸 vs 最初の軸、バッチ
 無し）を計算する。"
@@ -39,12 +45,12 @@ TRACING-ERROR）。A が rank 1（ベクタ）なら結果は B の残りの軸�
 （1次元どうしなら rank 0 のスカラー）。"))
 
 (defmethod dot ((a array) (b array))
-  (%dot-check-rank (array-rank a))
+  (%dot-check-ranks (array-rank a) (array-rank b))
   (apply (primitive-eager (find-primitive :dot-general)) (list a b)
          (list (array-aval a) (array-aval b)) (%dot-params (array-rank a))))
 
 (defmethod dot ((a tracer) (b tracer))
-  (%dot-check-rank (aval-rank (tracer-aval a)))
+  (%dot-check-ranks (aval-rank (tracer-aval a)) (aval-rank (tracer-aval b)))
   (apply #'%trace-eqn :dot-general (list a b) (%dot-params (aval-rank (tracer-aval a)))))
 
 ;;; --- reshape ---
