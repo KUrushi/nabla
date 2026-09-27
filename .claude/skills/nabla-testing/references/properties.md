@@ -60,6 +60,38 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
 - `aval`、静的引数、ターゲットのどれかが違えば、別のエントリとしてコンパイルする
 - 関数を再定義したら、古いキャッシュを使わない
 
+vmfb のディスクキャッシュ（`src/compile-cache.lisp`、`BACKEND-COMPILE` の
+`:AROUND`、issue #10）は、上のメモリ上の jit キャッシュとは別の層で、
+プロセスをまたいで効く。フェイク backend の `FAKE-BACKEND-COMPILE-COUNT`
+で「実際にコンパイラを呼んだ回数」を数え、次の性質を確かめる（ファイル
+I/O とスレッドを使うので medium）。
+
+- 同じ backend・同じ `TEXT` で2回 `BACKEND-COMPILE` すると、2回目は
+  `FAKE-BACKEND-COMPILE-COUNT` が増えない（ディスクキャッシュがヒットする）
+- `TEXT` または `BACKEND-FINGERPRINT`（ターゲットなど）のどちらかが
+  違えば、別のキャッシュエントリになり、それぞれ1回ずつコンパイルする
+- キャッシュファイルを切り詰めて壊すと、次の呼び出しは（マジック・
+  digest の検査に失敗して）ミス扱いになり再コンパイルして直り、その次は
+  またヒットする
+- 2〜4スレッドが同時に同じキーで呼んでも、コンパイラを呼んだ回数は
+  スレッド数を超えず、キャッシュディレクトリには壊れていないファイルが
+  1つだけ残る（`SB-THREAD:MAKE-THREAD` は親スレッドの `LET` による特殊
+  変数の束縛を引き継がないので、`NB:*COMPILE-CACHE-DIRECTORY*` は各
+  スレッドの中で束縛し直す）
+- `NB:*COMPILE-CACHE-DIRECTORY*` が `NIL` なら、キャッシュは無効になり
+  毎回コンパイルする（ファイルも作らない）
+- ファイルがちょうどヘッダー長（マジック + digest の40バイト）で
+  payload が空でも、マジックと digest さえ正しければヒットとして扱う
+  （「40バイト未満なら壊れている」という境界の、未満ではない側）
+- `NB:*COMPILE-CACHE-DIRECTORY*` が `:DEFAULT`（既定値）のとき、環境変数
+  `NABLA_CACHE_DIR` が設定されていれば `<それ>/vmfb/` に、設定されて
+  いなければ `${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/` に書き込む
+  （`SB-POSIX:SETENV` / `SB-POSIX:UNSETENV` で `NABLA_CACHE_DIR` と
+  `XDG_CACHE_HOME` の両方を退避・復元しながら確かめる。`UIOP:XDG-CACHE-HOME`
+  は呼び出しのたびに `XDG_CACHE_HOME` を読み直すため、未設定側も
+  `XDG_CACHE_HOME` を一時ディレクトリへ向け直すだけで確かめられ、
+  実プロセスが共有する `~/.cache` には一切触れない）
+
 ### 変換の合成
 
 - `jit(grad f)` = `grad f`
@@ -272,6 +304,7 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `gc-and-run-finalizers`（`tests/iree/support.lisp`） | `(sb-ext:gc :full t)` の後に `(sb-kernel:run-pending-finalizers)` を呼ぶ（#11）。SBCL は finalizer を別スレッドで非同期に実行するので、GC だけでは確認できない。finalizer 系のテストは必ずこれを使う |
 | `reference-add` / `reference-matmul` / `reference-reduce-sum`（`tests/support/reference.lisp`） | 素朴なループで計算する参照実装。DOUBLE-FLOAT で計算し `(simple-array double-float shape)` を返す。`nabla/iree` の `invoke` の期待値として使う |
 | `fake-backend` / `fake-backend-compile-count`（`tests/support/fake-backend.lisp`） | `nabla:backend` プロトコルのフェイク実装（issue #9）。IREE を経由せず add / matmul / reduce-sum の3演算だけを f32 で計算する。`fake-backend-compile-count` は `backend-compile` を呼んだ回数（#10 のキャッシュのヒット・ミスを数えるのに使う） |
+| `with-temporary-directory`（`tests/support/temporary-directory.lisp`） | `(uiop:temporary-directory)` の下に使い捨てのディレクトリを作って本体を評価し、`unwind-protect` で丸ごと削除する。vmfb ディスクキャッシュ（issue #10）のテストなど、ファイルを実際に読み書きするテストで `~/.cache` に触らないために使う |
 
 部品を追加・変更したら、この表も直す。
 

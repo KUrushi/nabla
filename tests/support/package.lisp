@@ -43,5 +43,7 @@
    #:fake-backend
    #:fake-backend-compile-count
    #:fake-array
+   ;; 一時ディレクトリ（issue #10 のディスクキャッシュのテストなどで使う）
+   #:with-temporary-directory
    ;; 回帰テスト
    #:regression-path))
