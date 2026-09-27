@@ -195,6 +195,10 @@ AVAL のリスト）でトレースし、CHECK-GRAPH した GRAPH を返す。
 戻り値（多値。0個なら outvars も0個）を %OUTVAR-OF で1つずつ outvar に変換し、
 GRAPH を組み立てる。FN 自身が呼び出したトレース対象の演算は、すべて
 %TRACE-EQN 経由で *CURRENT-TRACE* に積まれる。"
+  (unless (typep fn 'traceable-function)
+    (error 'tracing-error
+           :format-control "FN は TRACEABLE-FUNCTION でなければならない（WITH-TRACING で作る）: ~S"
+           :format-arguments (list fn)))
   (%check-avals-length fn avals)
   (let* ((invars (mapcar #'make-var avals))
          (trace (%make-trace invars))

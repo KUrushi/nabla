@@ -119,6 +119,120 @@ pin する。fold-direction の変異対策）。"
  (:out %2))"
                (%print-graph-string (nb:with-tracing (x) (+ x 1.0d0)) (list (nb:make-aval '() :f32))))))
 
+(test trace/golden-less-than-is-compare-lt
+  "(< x y) は :COMPARE の EQN を1つ、DIRECTION :LT で持つ graph になる
+（6つの比較演算子のうちどれか2つの DIRECTION を入れ替える変異を検出する
+golden の1つ目）。"
+  (is (string= "(graph
+ (:in (%0 f32 (2)) (%1 f32 (2)))
+ (:const)
+ (:eqns
+  (%2 i1 (2) := compare (:direction :lt) %0 %1))
+ (:out %2))"
+               (%print-graph-string (nb:with-tracing (x y) (< x y))
+                                    (list (nb:make-aval '(2) :f32) (nb:make-aval '(2) :f32))))))
+
+(test trace/golden-greater-equal-with-number-is-compare-ge
+  "(>= x 0) は 0 を X の shape にリフト（定数 + BROADCAST-IN-DIM）してから
+:COMPARE を DIRECTION :GE で足す（golden の2つ目。:GE と :LE / :GT の
+入れ替えを検出する）。"
+  (is (string= "(graph
+ (:in (%0 f32 (2)))
+ (:const (%1 f32 () 0.0))
+ (:eqns
+  (%2 f32 (2) := broadcast-in-dim (:shape (2) :dims ()) %1)
+  (%3 i1 (2) := compare (:direction :ge) %0 %2))
+ (:out %3))"
+               (%print-graph-string (nb:with-tracing (x) (>= x 0)) (list (nb:make-aval '(2) :f32))))))
+
+;;; --- 6つの比較演算子すべてについて、値レベルで direction の対応を確かめる。
+;;; DIRECTION の入れ替え（例: %COMPARE-DIRECTION-FUNCTION や
+;;; *COMPARE-DIRECTIONS* を差し替える）はテキストの golden だけでは
+;;; 気づけないことがあるため（eqn の印字は DIRECTION キーワードをそのまま
+;;; 出すので、対応表自体を入れ替えると golden もそのまま追従してしまう）、
+;;; ここでは実際の数値で REAL/REAL・ARRAY/ARRAY（:COMPARE の :EAGER を直接
+;;; 呼ぶ）・TRACER/TRACER（TRACE-TO-GRAPH + EVAL-GRAPH）の3経路すべてを CL
+;;; の対応する演算子と突き合わせる。
+
+(defparameter *compare-cl-ops*
+  '((< . cl:<) (<= . cl:<=) (> . cl:>) (>= . cl:>=) (= . cl:=) (/= . cl:/=))
+  "WITH-TRACING が書き換える比較演算子と、それに対応する CL の演算子の対応表
+（テスト用。この対応が正しいことが、この節のテストの前提）。")
+
+;;; 以下のテストは、いずれも「本物の CL の演算子を各要素にそのまま適用した
+;;; 結果」という、内部の対応表（*COMPARE-DIRECTIONS* / %COMPARE-DIRECTION-
+;;; FUNCTION）を一切経由しない基準値と比べる。基準値の計算自体が内部の対応
+;;; 表を使ってしまうと、対応表を一貫して（互いに打ち消し合う形で）入れ替える
+;;; 変異を見逃す（PR #57 のレビューで指摘された抜け穴）。
+
+(defun %cl-compare-bit (cl-op a b)
+  "CL-OP（CL の比較演算子）を A・B に適用し、真なら 1、偽なら 0 を返す
+（:COMPARE の :I1（BIT）表現に合わせる）。"
+  (if (funcall (fdefinition cl-op) a b) 1 0))
+
+(test trace/all-six-compare-operators-scalar-matches-cl
+  "6つの比較演算子すべてについて、WITH-TRACING した関数を REAL のスカラーに
+直接適用した結果が、対応する CL の演算子そのものと一致する（DIRECTION の
+対応表を入れ替えるとどれかの組み合わせで食い違う）。"
+  (dolist (pair *compare-cl-ops*)
+    (destructuring-bind (op . cl-op) pair
+      (let ((f (eval `(nb:with-tracing (x y) (,op x y)))))
+        (dolist (xy '((1.0 2.0) (2.0 1.0) (1.0 1.0)))
+          (destructuring-bind (a b) xy
+            (is (eq (not (null (funcall (fdefinition cl-op) a b)))
+                    (not (null (funcall f a b))))
+                "~S ~S ~S: CL の結果と WITH-TRACING の結果が食い違う" op a b)))))))
+
+(test trace/all-six-compare-operators-array-matches-cl-elementwise
+  "6つの比較演算子すべてについて、配列どうしに WITH-TRACING した関数を
+適用した結果（:I1 の BIT 配列）が、対応する CL の演算子を要素ごとに適用
+した結果と一致する。内部の DIRECTION 対応表は一切参照しない。"
+  (dolist (pair *compare-cl-ops*)
+    (destructuring-bind (op . cl-op) pair
+      (let* ((f (eval `(nb:with-tracing (x y) (,op x y))))
+             (a (make-array 3 :element-type 'single-float :initial-contents '(1.0 2.0 3.0)))
+             (b (make-array 3 :element-type 'single-float :initial-contents '(3.0 2.0 1.0)))
+             (expected (make-array 3 :element-type 'bit
+                                     :initial-contents (list (%cl-compare-bit cl-op 1.0 3.0)
+                                                              (%cl-compare-bit cl-op 2.0 2.0)
+                                                              (%cl-compare-bit cl-op 3.0 1.0)))))
+        (is (equalp expected (funcall f a b))
+            "~S の配列適用結果が CL の要素ごとの比較と食い違う" op)))))
+
+(test trace/all-six-compare-operators-traced-matches-cl-elementwise
+  "6つの比較演算子すべてについて、TRACE-TO-GRAPH + EVAL-GRAPH した結果が、
+対応する CL の演算子を要素ごとに適用した結果と一致する。ARRAY/ARRAY の
+テストとは別の実行経路（EQN を足す TRACER/TRACER）を通るので、EQN の
+:DIRECTION パラメタ自体が正しいことも検査する。"
+  (dolist (pair *compare-cl-ops*)
+    (destructuring-bind (op . cl-op) pair
+      (let* ((f (eval `(nb:with-tracing (x y) (,op x y))))
+             (a (make-array 3 :element-type 'single-float :initial-contents '(1.0 2.0 3.0)))
+             (b (make-array 3 :element-type 'single-float :initial-contents '(3.0 2.0 1.0)))
+             (graph (nb:trace-to-graph f (list (nb:array-aval a) (nb:array-aval b))))
+             (expected (make-array 3 :element-type 'bit
+                                     :initial-contents (list (%cl-compare-bit cl-op 1.0 3.0)
+                                                              (%cl-compare-bit cl-op 2.0 2.0)
+                                                              (%cl-compare-bit cl-op 3.0 1.0)))))
+        (is (equalp expected (nb:eval-graph graph a b))
+            "~S: EVAL-GRAPH の結果が CL の要素ごとの比較と食い違う" op)))))
+
+;;; --- %T-IF（T1 の暫定版）: TEST がトレーサ・配列なら TRACING-ERROR ---
+
+(test trace/if-on-traced-test-signals-tracing-error
+  "(if (< x 0) (- x) x) を TRACE-TO-GRAPH すると、TEST（(< x 0)）がトレーサ
+（:I1）になるため TRACING-ERROR を signal する（select への書き換えは t2 の
+仕事で、t1 ではまだ対応しない契約そのものを検査する）。"
+  (signals nb:tracing-error
+    (nb:trace-to-graph (nb:with-tracing (x) (if (< x 0) (- x) x)) (list (nb:make-aval '() :f32)))))
+
+(test trace/if-on-traced-test-signals-tracing-error-eager
+  "同じ関数を eager に（配列を渡して）呼んでも、TEST が配列になるため
+TRACING-ERROR を signal する。"
+  (let ((f (nb:with-tracing (x) (if (< x 0) (- x) x)))
+        (a (make-array 2 :element-type 'single-float :initial-contents '(-1.0 2.0))))
+    (signals nb:tracing-error (funcall f a))))
+
 ;;; --- エラー ---
 
 (defun %stash-into (place value)
@@ -135,6 +249,12 @@ pin する。fold-direction の変異対策）。"
     (nb:trace-to-graph (nb:with-tracing (x) (%stash-into box x)) (list (nb:make-aval '() :f32)))
     (signals nb:tracing-error
       (nb:trace-to-graph (nb:with-tracing (y) (nb::%t-add (aref box 0) y)) (list (nb:make-aval '() :f32))))))
+
+(test trace/trace-to-graph-on-non-traceable-function-signals-tracing-error
+  "TRACE-TO-GRAPH に TRACEABLE-FUNCTION でない関数（ここでは #'IDENTITY）を
+渡すと、内部のリーダーの NO-APPLICABLE-METHOD ではなく TRACING-ERROR を
+signal する（wave 4 向けのドキュメント化されたコンディション）。"
+  (signals nb:tracing-error (nb:trace-to-graph #'identity (list (nb:make-aval '() :f32)))))
 
 (test trace/body-returning-non-traceable-value-signals-tracing-error
   "トレース対象の関数がトレーサ・実数・配列のいずれでもない値（ここではリスト）
