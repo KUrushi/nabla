@@ -48,6 +48,12 @@ shape・dtype を持つ aval を作る。"
                 :regression-id aval/aval-rank/matches-shape-length
                 :regression-file (regression-path "aval-rank-matches-shape-length"))))
 
+(test aval/aval-byte-length/i1-equals-size
+  "make-aval '(2 3) :i1 の aval-byte-length は aval-size と一致する
+（:i1 のバイト幅は1。issue #37）。"
+  (let ((aval (nb:make-aval '(2 3) :i1)))
+    (is (= (nb:aval-byte-length aval) (nb:aval-size aval)))))
+
 (test aval/make-aval/rejects-non-list-shape
   "make-aval は shape がリストでなければエラーを signal する。"
   (signals error (nb:make-aval 3 :f32)))

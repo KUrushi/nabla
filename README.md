@@ -132,11 +132,11 @@ sbcl --non-interactive --load examples/add.lisp
 
 `nabla`（nickname `nb`）が export するシンボルのみ。`nabla.iree` の低水準な C API バインディングはここには載せない（ハイラムの法則に備え、README に載せた名前を事実上の公開約束にしすぎないため）。詳しく知りたければ `src/iree/package.lisp` を見る。
 
-**dtype**（`src/dtype.lisp`）: `dtype`, `dtype-element-type`, `dtype-byte-width`, `array-dtype`, `dtype-mismatch`, `dtype-mismatch-element-type`, `dtype-mismatch-dtype`
+**dtype**（`src/dtype.lisp`）: `dtype`（`:f32` / `:f64` / `:bf16` / `:f16` / `:i1`。`:i1` は issue #37 で追加した真偽値の dtype で、compare の出力・select の条件に使う）, `dtype-element-type`, `dtype-byte-width`, `array-dtype`, `dtype-mismatch`, `dtype-mismatch-element-type`, `dtype-mismatch-dtype`
 
 **aval**（`src/aval.lisp`）: `aval`, `make-aval`, `aval-p`, `aval-shape`, `aval-dtype`, `aval-rank`, `aval-size`, `aval-byte-length`, `array-aval`
 
-**backend プロトコル**（`src/backend.lisp`、issue #9）: `backend`, `make-backend`, `find-backend`, `backend-target`, `backend-fingerprint`, `backend-compile`, `backend-load`, `backend-unload`, `backend-invoke`, `to-device`, `to-host`, `device-array-aval`, `backend-error`, `backend-not-available`, `backend-not-available-kind`
+**backend プロトコル**（`src/backend.lisp`、issue #9）: `backend`, `make-backend`, `find-backend`, `backend-target`, `backend-fingerprint`, `backend-compile`, `backend-load`, `backend-unload`, `backend-invoke`, `to-device`, `to-host`, `device-array-aval`, `backend-error`, `backend-not-available`, `backend-not-available-kind`, `unsupported-dtype`, `unsupported-dtype-dtype`（issue #37。`to-device` にその実行系がデバイス上の表現を持たない dtype——フェーズ1では `:i1` と `:f64`——を渡すと signal する）
 
 **vmfb ディスクキャッシュ**（`src/compile-cache.lisp`、issue #10）: `*compile-cache-directory*`
 

@@ -105,14 +105,17 @@ array-storage-vector が simple-error を出すので、その前に check-type 
 ARRAY が simple-array でなければ（adjustable / displaced）TYPE-ERROR、
 ARRAY の要素型と DTYPE が矛盾すれば NABLA:DTYPE-MISMATCH（NABLA:ARRAY-AVAL
 経由）が signal される。v1 でデバイスに送れる dtype は :f32 / :bf16 / :f16
-だけで、:f64 を指定・推論すると（*element-types* に :f64 が無いため）
-buffer-view-allocate-copy の中でエラーになる（ドキュメントのみ、専用の
-条件は用意しない）。DEVICE が release-device 済みなら
-IREE-OBJECT-RELEASED（kind :device）が signal される。"
+だけで、それ以外（:f64、:i1。*element-types* に無い dtype）を指定・推論
+すると NABLA:UNSUPPORTED-DTYPE が signal される（issue #37。以前 :f64 は
+buffer-view-allocate-copy の中の plain error だったが、決まった条件に
+なった）。DEVICE が release-device 済みなら IREE-OBJECT-RELEASED
+（kind :device）が signal される。"
   (check-type array simple-array)
   (let* ((aval (nabla:array-aval array dtype))
          (element-dtype (nabla:aval-dtype aval))
          (storage (sb-ext:array-storage-vector array)))
+    (unless (assoc element-dtype *element-types*)
+      (error 'nabla:unsupported-dtype :dtype element-dtype))
     (sb-sys:with-pinned-objects (storage)
       (let ((buffer-view
               (buffer-view-allocate-copy device (nabla:aval-shape aval) element-dtype
