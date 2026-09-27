@@ -67,7 +67,15 @@
    #:eval-graph
    #:graph-input-mismatch
    #:primitive-not-evaluable
-   #:primitive-not-evaluable-name)
+   #:primitive-not-evaluable-name
+   ;; トレーサ（issue #32、t1）
+   #:with-tracing
+   #:trace-to-graph
+   #:traceable-function
+   #:unsupported-form
+   #:unsupported-form-form
+   #:unsupported-form-path
+   #:tracing-error)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
 ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend
