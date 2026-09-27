@@ -51,6 +51,11 @@ arid node†（変異させても意味のない箇所）として、次は変�
 - エラーメッセージやコンディションの文字列
 - `declare`、`declaim`、`the` などの型宣言・最適化宣言
 - docstring
+- `defmethod` の specialized lambda list（`((x (eql 0)) ...)` のように
+  specializer を含むもの）。中の値を変異させると、再評価時に元とは
+  別の specializer の組を持つメソッドが新しく増えてしまい、変異体の
+  評価後に元の `defmethod` を評価し直しても（`remove-method` していない
+  ので）消えずに残ってしまうため
 
 ## 4. 生き残った変異体への対処
 
@@ -73,12 +78,34 @@ arid node†（変異させても意味のない箇所）として、次は変�
 
 ## 5. runner（`tools/mutate/`）の仕様
 
-まだ実装していない。実装するときは、この仕様に従う。実装したら、実際のコマンドを SKILL.md と CLAUDE.md の「コマンド」に書く。
+実装済み。使い方の詳細は [`tools/mutate/README.md`](../../../../tools/mutate/README.md) を見る。
 
-- 入力: 対象のファイルと行の範囲（既定は `git diff` で `main` から変わった行）
-- ソースを Lisp の reader で読み、変更した行を含むトップレベルの定義（`defun`、`defmethod`、`defprimitive` など）を探す
-- 各定義に変異演算子を1つずつ当て、変異させた定義を image に `eval` してロードする
+```sh
+# main から HEAD までの git diff で変わった .lisp の行が対象（既定）
+tools/mutate/run.sh
+
+# ファイルや行範囲を指定する
+tools/mutate/run.sh src/core/foo.lisp:10-40
+```
+
+- `run.sh` は既定で対象システム（`--system`、既定 `nabla`）の `<system>/tests`
+  （既定 `nabla/tests`）を読み込んでからテストを実行する。`nabla` 以外を
+  対象にするときや、対象システムに `/tests` が存在しない場合は
+  `--test-system` と `--test-form` で明示的に指定すること
+  （[`tools/mutate/README.md`](../../../../tools/mutate/README.md) 参照）
+- 入力: 対象のファイルと行の範囲（既定は `git diff` で `main` から変わった行のうち、
+  `src/` 以下の `.lisp`。`src/iree/` と `src/pjrt/` の CFFI バインディングは除く）
+- ソースを Lisp の reader で読み、変更した行を含むトップレベルの定義（`defun`、`defmethod`、`defmacro`、`defprimitive`）を探す
+- 各定義に変異演算子（算術演算子の入れ替え・比較の境界・定数の置き換え・`if` の分岐の入れ替え、この順）を1つずつ試し、最初に適用できたものを1つの変異体として、変異させた定義を image に `eval` してロードする
 - 対象のシステムのテストスイートを実行し、落ちれば「殺された」、通れば「生き残った」とする。無限ループに備えてタイムアウトを設け、タイムアウトは「殺された」とみなす
 - 変異体ごとに元の定義をロードし直してから次に進み、変異が他の変異体の結果に混ざらないようにする
-- 出力: 変異体ごとの（ファイル、行、変更前後の式、結果）の一覧と、mutation score†（殺した数 ÷（全数 − 除外数））
-- mutation testing 中は、PBT の試行回数を既定より減らしてよい（変異体の数だけスイートを繰り返すため）。ただし減らしすぎると殺せる変異体を見逃すので、生き残った変異体は既定の試行回数で再確認する
+- 変異体（と baseline チェック）1つの評価ごとに、check-it の
+  `:regression-file` が書き込みうるディレクトリ（既定
+  `tests/regressions/`）の中身と、`check-it::regression-cases` を
+  持つシンボルの plist をまるごとスナップショット・復元し、ある
+  変異体が記録した regression-case が別の変異体の判定に混ざったり、
+  ディスクに副作用として残ったりしないようにする。詳しくは
+  [`tools/mutate/README.md`](../../../../tools/mutate/README.md) の
+  「変異体どうしの隔離（regression 状態）」を見よ
+- 出力: 変異体ごとの（ファイル、行、変更前後の式、結果）の一覧と、mutation score†（（殺した数＋タイムアウト数） ÷（全数 − 除外数））
+- mutation testing 中は、PBT の試行回数を既定より減らしてよい（変異体の数だけスイートを繰り返すため）。ただし減らしすぎると殺せる変異体を見逃すので、生き残った変異体は既定の試行回数で再確認する（runner はこれを自動でやる）

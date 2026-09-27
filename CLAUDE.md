@@ -39,9 +39,15 @@ scripts/build-iree.sh --configure-only    # cmake configure までで止める
 # ビルドした iree-compile / iree-run-module で matmul フィクスチャを実行して確かめる
 NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 scripts/verify-iree.sh
 scripts/verify-iree.sh --cuda             # llvm-cpu に加えて CUDA でも確かめる
+
+# mutation testing（既定は main から HEAD までの git diff で変わった行が対象）
+tools/mutate/run.sh
+tools/mutate/run.sh src/core/foo.lisp:10-40           # ファイル・行範囲を指定する
+tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
 ```
 
-mutation testing（`tools/mutate/`）のコマンドは、それを追加する PR（issue #14）で、ここに追記する。
+mutation testing の詳しいオプションは [`tools/mutate/README.md`](tools/mutate/README.md)、
+考え方は `.claude/skills/nabla-testing` スキルの `references/mutation.md` を見る。
 
 ## 設計上の約束（コードを読んでも分かりにくいもの）
 
