@@ -27,6 +27,9 @@
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "src/primitives/common")
                (:file "src/primitives/arith")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "src/primitives/shape-common")
+               (:file "src/primitives/shape")
                ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
                ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
                ;; この行より前に足す）
@@ -71,6 +74,8 @@
                (:file "tests/ir-print-test")
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/primitives/arith-test")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "tests/primitives/shape-test")
                ;; graph の eager 評価（issue #39、e0）
                (:file "tests/eval-test")
                (:file "tests/regressions"))
@@ -129,4 +134,7 @@
                (:file "tests/iree/ops-test")
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/iree/primitive-support")
-               (:file "tests/iree/arith-test")))
+               (:file "tests/iree/arith-test")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "tests/iree/shape-primitive-support")
+               (:file "tests/iree/shape-test")))

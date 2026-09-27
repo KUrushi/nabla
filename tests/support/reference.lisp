@@ -98,3 +98,47 @@
     (dolist (dim (reverse shape) reversed-subscripts)
       (push (mod row-major-index dim) reversed-subscripts)
       (setf row-major-index (floor row-major-index dim)))))
+
+;;; issue #31 p4: reshape / broadcast-in-dim / transpose の参照実装。
+;;;
+;;; 3つとも値を解釈しない構造だけの演算なので、DOUBLE-FLOAT にデコード
+;;; 済みの配列を受け取り DOUBLE-FLOAT の配列を返す（decode は要素ごとに
+;;; 同じ規則で行うので、reshape / broadcast-in-dim / transpose のような
+;;; 要素の並べ替えとは可換。decode してから並べ替えても、並べ替えてから
+;;; decode しても同じ結果になる）。
+
+(defun reference-reshape (a shape)
+  "A の要素を row-major 順のまま SHAPE に並べ替えて返す。A の要素数と SHAPE
+の積が一致すること。"
+  (unless (= (array-total-size a) (reduce #'* shape :initial-value 1))
+    (error "reference-reshape: 要素数が一致しない: ~A → ~A" (array-dimensions a) shape))
+  (let ((result (make-array shape :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (coerce (row-major-aref a i) 'double-float)))))
+
+(defun reference-broadcast-in-dim (a shape dims)
+  "A（rank (length DIMS)）を StableHLO の broadcast_in_dim の意味で SHAPE に
+広げる。DIMS[i] は A の次元 i が対応する SHAPE 側の次元、A の次元 i は
+1 か SHAPE[DIMS[i]] のどちらかであること。"
+  (let ((in-shape (array-dimensions a))
+        (result (make-array shape :element-type 'double-float)))
+    (dotimes (i (array-total-size result) result)
+      (let* ((out-subscripts (%row-major-index->subscripts i shape))
+             (in-subscripts (loop for operand-dim in in-shape
+                                   for target-dim in dims
+                                   collect (if (= operand-dim 1) 0 (nth target-dim out-subscripts)))))
+        (setf (row-major-aref result i)
+              (coerce (apply #'aref a in-subscripts) 'double-float))))))
+
+(defun reference-transpose (a perm)
+  "A の次元を PERM（0 始まりの permutation）の順に並べ替えて返す。"
+  (let* ((in-shape (array-dimensions a))
+         (out-shape (mapcar (lambda (p) (nth p in-shape)) perm))
+         (result (make-array out-shape :element-type 'double-float)))
+    (dotimes (i (array-total-size result) result)
+      (let ((out-subscripts (%row-major-index->subscripts i out-shape))
+            (in-subscripts (make-list (length in-shape))))
+        (loop for p in perm
+              for s in out-subscripts
+              do (setf (nth p in-subscripts) s))
+        (setf (row-major-aref result i) (coerce (apply #'aref a in-subscripts) 'double-float))))))
