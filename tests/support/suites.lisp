@@ -14,11 +14,3 @@
 
 (def-suite :nabla.large
   :description "GPU での実行や JAX フィクスチャの再生成を伴うテスト。手動または定期実行のみ。")
-
-(def-suite :nabla.isolated-medium
-  :description ":NABLA.MEDIUM と同じ意味論（1台のマシン内で完結する）だが、
-他の medium テストと同じ SBCL プロセスで実行すると in-process の
-libIREECompiler.so が壊れることが分かっているテスト専用のスイート
-（issue #68、tests/iree/support.lisp の DEFINE-IREE-TEST/ISOLATED-MEDIUM）。
-既定で実行するが、scripts/run-tests.sh が :NABLA.MEDIUM とは別の SBCL
-プロセスで実行する。")

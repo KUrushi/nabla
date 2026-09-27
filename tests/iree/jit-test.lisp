@@ -8,25 +8,16 @@
 ;;;; rtol を (1 + eqn数) 倍に緩める（tests/iree/stablehlo-test.lisp と同じ
 ;;;; 考え方。ピットフォール(4)）。
 ;;;;
-;;;; このファイルのテストは DEFINE-IREE-TEST/ISOLATED-MEDIUM を使い、
-;;;; :NABLA.MEDIUM ではなく独立した :NABLA.ISOLATED-MEDIUM スイートに登録
-;;;; する（tests/iree/support.lisp）。理由: tests/iree/ の他の medium テスト
-;;;; （IREE/ARITH・DOT-GENERAL・REDUCE-SUM・STABLEHLO 等）をすべて実行した
-;;;; *あとに* このファイルのどれか（JIT/PBT-MATCHES-EAGER に限らず、最初に
-;;;; 走る jit テストならどれでも）が新しく IREE コンパイラを呼ぶと、
-;;;; in-process の libIREECompiler.so（mlir::OpPassManager の構築中）が
-;;;; メモリ破壊で落ちる（SB-SYS:MEMORY-FAULT-ERROR、issue #34 PR #67 の
-;;;; レビューで発見、issue #68 で追跡）。原因は IREE の *実行* ではなく
-;;;; コンパイラ自身の in-process 状態で、medium スイート全体が積み重ねる
-;;;; distinct コンパイルの総量に依存するらしい（issue #68 に詳細）。
-;;;;
-;;;; :NABLA.ISOLATED-MEDIUM は :NABLA.MEDIUM とは別の SBCL プロセスで実行
-;;;; する（scripts/run-tests.sh）。まっさらなプロセスから始まるので他の
-;;;; medium テストのコンパイルが積み重ならず、このファイル単独ではクラッシュ
-;;;; しないことを確認済み。NABLA_TEST_SIZES に "medium" が含まれる限り
-;;;; scripts/run-tests.sh が必ずこのスイートも実行するので、CI の既定
-;;;; スイートは引き続き #35 の「jit(f)(x) の結果は (f x) の結果と一致する」
-;;;; を medium で検査する。
+;;;; このファイルのテストは DEFINE-IREE-TEST を使い、tests/iree/ の他の
+;;;; medium テストと同じ :NABLA.MEDIUM スイート・同じ SBCL プロセスで実行
+;;;; する。以前はここが in-process の libIREECompiler.so を壊すという
+;;;; issue #68 のため独立プロセスに隔離されていたが、原因（K=0 の
+;;;; dot_general が float trap を C++ フレームを越えて非ローカル脱出させ、
+;;;; コンパイラの状態を壊す）は PR #69 で修正済み: 該当テストは子プロセスで
+;;;; 実行し、非ローカル脱出のあとはコンパイラを poison して以後の呼び出しを
+;;;; 即座に IREE-COMPILE-ERROR にする（src/iree/compiler.lisp）。この
+;;;; ファイルの jit テストは、他の全 medium テストと同じプロセスで問題なく
+;;;; 実行できる。
 
 (in-package #:nabla.iree.tests)
 
@@ -106,20 +97,45 @@
         for i from 0
         collect (make-random-array (make-array-spec (nb:aval-shape aval) (nb:aval-dtype aval)) :seed (+ base-seed i))))
 
+(defun %jit-pbt-magnitude-bound (graph)
+  "GRAPH の invars の shape に現れる最大の次元サイズを返す（無ければ 1）。
+生成器は m・k・n を 1〜4 の範囲でしか選ばず、要素の値は [-1, 1) なので、
+この値は「二項演算1回で足し合わされる項の個数」および「reduce や dot の
+契約次元の長さ」の控えめな上界になる（%JIT-PBT-TOLERANCE 参照）。"
+  (let ((max-dim 1))
+    (dolist (v (nb:graph-invars graph) max-dim)
+      (dolist (d (nb:aval-shape (nb:var-aval v)))
+        (setf max-dim (max max-dim d))))))
+
 (defun %jit-pbt-tolerance (graph dtype)
   "GRAPH の中で実際に使われた最も粗い浮動小数点 dtype で許容誤差を決める
-（tests/iree/stablehlo-test.lisp と同じ考え方）。bf16/f16 は
-(1 + eqn数) 倍に緩める。(values rtol atol)。"
+（tests/iree/stablehlo-test.lisp と同じ考え方）。bf16/f16 は IREE が
+エレメントワイズ演算を融合して1回だけ丸めるのに対し eager
+（EVAL-GRAPH）は演算ごとに丸めるため、rtol を (1 + eqn数) 倍に緩める。
+
+出力が打ち消し合ってほぼ0になる試行（reduce-sum(+ a b) で a+b の丸め
+誤差がそのまま2項の差に乗る。回帰: tests/regressions/iree-jit-matches-eager.lisp
+の (7 4 2 4 :BF16 858539031)）では、rtol を出力の絶対値に掛けるだけでは
+足りない。丸め1回分の絶対誤差は出力の大きさではなく、丸めが起きた
+*中間値*（このケースでは a + b）の大きさに比例するので、中間値の大きさの
+控えめな上界（%JIT-PBT-MAGNITUDE-BOUND の2倍。二項演算1回で足し合わされる
+分）を rtol に掛けた分だけ atol にも足す。(values rtol atol)。"
   (let* ((tolerance-dtype (or (graph-worst-float-dtype graph) dtype))
          (n-eqns (length (nb:graph-eqns graph))))
     (multiple-value-bind (rtol atol) (dtype-tolerance tolerance-dtype)
-      (values (if (member tolerance-dtype '(:bf16 :f16)) (* rtol (1+ n-eqns)) rtol) atol))))
+      (if (member tolerance-dtype '(:bf16 :f16))
+          (values (* rtol (1+ n-eqns))
+                  (+ atol (* rtol 2 (%jit-pbt-magnitude-bound graph))))
+          (values rtol atol)))))
 
 (defun %jit-pbt-matches-eager-p (backend template-index m k n dtype base-seed)
   "TEMPLATE-INDEX・M・K・N・DTYPE から組み立てた関数を BACKEND 上で JIT した
-結果が、f32 なら直接呼んだ eager 実装、bf16 なら EVAL-GRAPH の結果と、
+結果が、f32 なら直接呼んだ eager 実装、bf16/f16 なら EVAL-GRAPH の結果と、
 許容誤差つきで一致するかどうかを返す（jit とキャッシュの性質
-「jit(f)(x) = f(x)」の medium 版、契約 J2.4）。"
+「jit(f)(x) = f(x)」の medium 版、契約 J2.4）。bf16/f16 は生の
+(unsigned-byte 16) 配列を jit に渡すと %JIT-ARGUMENT-AVAL の dtype 推論が
+効かず JIT-ERROR になる（src/jit.lisp）ので、あらかじめ TO-DEVICE で
+device array にしてから渡す。"
   (let* ((f (%jit-pbt-traceable-function template-index m k))
          (avals (%jit-pbt-avals template-index m k n dtype))
          (arrays (%jit-pbt-arrays avals base-seed))
@@ -127,7 +143,7 @@
          (jf (nb:jit f :backend backend)))
     (unwind-protect
          (multiple-value-bind (rtol atol) (%jit-pbt-tolerance graph dtype)
-           (if (eq dtype :bf16)
+           (if (member dtype '(:bf16 :f16))
                (let* ((device-arrays (mapcar (lambda (array aval) (to-device array backend :dtype (nb:aval-dtype aval)))
                                               arrays avals))
                       (jit-result nil)
@@ -146,13 +162,10 @@
       ;; %JIT-CACHE-FORGET して毎回すぐ解放する。
       (nb::%jit-cache-forget f))))
 
-(define-iree-test/isolated-medium jit/pbt-matches-eager
+(define-iree-test jit/pbt-matches-eager
     "ランダムな with-tracing 本体（+ - max min neg tanh exp dot transpose
 where reduce-sum/max reshape broadcast-in-dim）を IREE 上で jit した結果は、
-f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一致する。
-:NABLA.ISOLATED-MEDIUM スイート（ファイル冒頭のコメント参照: 他の medium
-テストと同じプロセスで実行すると IREE コンパイラの in-process 状態が
-壊れることを確認したため、別プロセスで実行する。issue #68）。"
+f32 なら直接呼んだ eager 実装、bf16/f16 なら eval-graph の結果と一致する。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
         (*num-trials* 15)
@@ -161,7 +174,7 @@ f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一�
                                      (uniform-integer :lo 1 :hi 4)
                                      (uniform-integer :lo 1 :hi 4)
                                      (uniform-integer :lo 1 :hi 4)
-                                     (or (quote :f32) (quote :bf16))
+                                     (or (quote :f32) (quote :bf16) (quote :f16))
                                      (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
                   (lambda (args)
                     (destructuring-bind (template m k n dtype seed) args
@@ -177,7 +190,7 @@ f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一�
 
 ;;; --- 複数の出力値 ---
 
-(define-iree-test/isolated-medium jit/multiple-values
+(define-iree-test jit/multiple-values
     "(values (nb:dot x w) (+ x x)) を jit すると、host 配列2つが多値で返る
 （E2: 1つは invar そのもの）。"
   (skip-unless-iree :library :both)
@@ -194,7 +207,7 @@ f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一�
 
 ;;; --- 再定義しなければ再コンパイルしない ---
 
-(define-iree-test/isolated-medium jit/does-not-recompile-on-repeated-call
+(define-iree-test jit/does-not-recompile-on-repeated-call
     "同じ shape・dtype で2回呼んでも、2回目は NB::*JIT-MISS-COUNT* が増えない
 （IREE backend にはコンパイル回数を直接数える手段がないので、代わりに
 *JIT-MISS-COUNT* のデルタと %JIT-CACHE-ENTRY-COUNT で確かめる。契約の
@@ -287,7 +300,7 @@ out2（eager）の4つを別々の FIVEAM:IS にして、どれが食い違っ�
                    "~A: out2 (jit) が eval-graph と一致しない" dtype)))
         (when (eq dtype :bf16) (dolist (da jit-args) (release-device-array da)))))))
 
-(define-iree-test/isolated-medium jit/mlp-matches-jax-fixture-and-eval-graph
+(define-iree-test jit/mlp-matches-jax-fixture-and-eval-graph
     "DEFJIT した小さな MLP 相当の関数（elementwise + dot + reduce-sum/max +
 reshape + broadcast-in-dim）は、f32・bf16 のどちらでも、JAX で生成した
 フィクスチャ（tests/fixtures/jit/mlp.lisp）および同じ graph を
@@ -301,7 +314,7 @@ EVAL-GRAPH で評価した結果と、許容誤差つきで一致する（#35 �
 
 ;;; --- コンパイル診断からどの eqn が原因かを逆引きできる（jit 経由） ---
 
-(define-iree-test/isolated-medium jit/compile-error-maps-back-to-broken-eqn
+(define-iree-test jit/compile-error-maps-back-to-broken-eqn
     "わざと壊した eqn（tests/iree/stablehlo-test.lisp の %TEST-BAD-RESHAPE）
 だけを持つ関数を jit すると JIT-COMPILE-ERROR が signal され、
 JIT-COMPILE-ERROR-EQN-INDEX が 0（壊れた唯一の eqn）になる。"
@@ -321,7 +334,7 @@ JIT-COMPILE-ERROR-EQN-INDEX が 0（壊れた唯一の eqn）になる。"
 
 ;;; --- README の使用例（examples/jit.lisp）が壊れていないことを確かめる ---
 
-(define-iree-test/isolated-medium example/jit-lisp/prints-expected-sum
+(define-iree-test example/jit-lisp/prints-expected-sum
     "examples/jit.lisp（README の使用例）を読み込むと、標準出力に4要素の
 加算結果 \"11.0 22.0 33.0 44.0\" が2回（1回目・2回目）現れる。"
   (skip-unless-iree :library :both)

@@ -149,7 +149,7 @@ export CL_SOURCE_REGISTRY="$PWD/:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lis
 sbcl --non-interactive --load examples/jit.lisp
 ```
 
-`defjit` は `with-tracing` で本体をトレース対象にしてから `jit` した通常の Lisp 関数を定義する。1回目の呼び出しでトレース・emit・コンパイルし、`add2` の同一性（このマクロ展開1回分）・引数の `aval`・`*default-backend*` が変わらない限り、2回目以降はインメモリのキャッシュを引くだけでコンパイルし直さない（同じ `defjit` フォームを再評価すると、古いキャッシュは捨てて次の呼び出しで作り直す）。`tests/iree/jit-test.lisp` の `example/jit-lisp/prints-expected-sum` がこの例を `load` して出力を確認している（このファイルの jit の IREE 経由 end-to-end テストは、既定の small+medium ではなく `:nabla.large` スイートで動く。理由は同ファイル冒頭のコメント参照——medium の他のテストと合わせて実行すると、この固定コミットの IREE 3.11.0 コンパイラの in-process 状態が壊れることを確認したため。根本原因の調査は follow-up）。
+`defjit` は `with-tracing` で本体をトレース対象にしてから `jit` した通常の Lisp 関数を定義する。1回目の呼び出しでトレース・emit・コンパイルし、`add2` の同一性（このマクロ展開1回分）・引数の `aval`・`*default-backend*` が変わらない限り、2回目以降はインメモリのキャッシュを引くだけでコンパイルし直さない（同じ `defjit` フォームを再評価すると、古いキャッシュは捨てて次の呼び出しで作り直す）。`tests/iree/jit-test.lisp` の `example/jit-lisp/prints-expected-sum` がこの例を `load` して出力を確認している。jit の IREE 経由 end-to-end テストは、他の `nabla/iree` の medium テストと同じ既定の small+medium スイート・同じ SBCL プロセスで動く（issue #34）。
 
 ## 公開 API
 

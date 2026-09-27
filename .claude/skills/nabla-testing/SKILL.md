@@ -41,8 +41,6 @@ Google のテストサイズ†の分類で、テストの置き場所と実行�
 
 GPU を使うテストは別スイートに分け、既定のスイートは GPU のないマシンでも通るようにする。
 
-medium の中で、他の medium テストと同じ SBCL プロセスで実行すると壊れることが分かっているテスト（`tests/iree/jit-test.lisp`。issue #68 の in-process libIREECompiler.so 破壊）は、FiveAM のスイート `:nabla.isolated-medium`（`define-iree-test/isolated-medium`、tests/iree/support.lisp）に置く。意味論は medium と同じで既定で実行するが、`scripts/run-tests.sh` が `:nabla.medium` とは別の SBCL プロセスでこのスイートを実行する。
-
 ## よいテストの条件
 
 Google の *Software Engineering at Google* のテストの章の考え方にならう。

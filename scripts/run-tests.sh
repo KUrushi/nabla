@@ -20,40 +20,12 @@ DEPS_DIR="${NABLA_LISP_DEPS:-${HOME:?NABLA_LISP_DEPS も HOME も未設定です
 # 既定レジストリ（fiveam / cffi など）も残す。
 export CL_SOURCE_REGISTRY="${REPO_ROOT}/:${DEPS_DIR}//:"
 
-CHECK_ASD_SOURCE_FILE="(let ((expected (merge-pathnames \"nabla.asd\" #p\"${REPO_ROOT}/\"))
+exec sbcl --non-interactive \
+  --eval '(require :asdf)' \
+  --eval "(let ((expected (merge-pathnames \"nabla.asd\" #p\"${REPO_ROOT}/\"))
                 (actual (asdf:system-source-file \"nabla\")))
             (unless (equal (truename expected) (truename actual))
-              (error \"scripts/run-tests.sh: nabla.asd が想定と違う場所から見つかった。期待: ~A 実際: ~A\" expected actual)))"
-
-main_status=0
-sbcl --non-interactive \
-  --eval '(require :asdf)' \
-  --eval "${CHECK_ASD_SOURCE_FILE}" \
+              (error \"scripts/run-tests.sh: nabla.asd が想定と違う場所から見つかった。期待: ~A 実際: ~A\" expected actual)))" \
   --eval '(asdf:load-system "nabla/tests")' \
   --eval '(asdf:load-system "nabla/iree/tests")' \
-  --eval '(uiop:quit (if (nabla.tests.support:run-tests) 0 1))' \
-  || main_status=$?
-
-# tests/iree/jit-test.lisp（:NABLA.ISOLATED-MEDIUM スイート）は、他の
-# medium テストと同じ SBCL プロセスで実行すると in-process の
-# libIREECompiler.so が壊れて落ちることが分かっている（issue #68）ので、
-# NABLA_TEST_SIZES に "medium" が含まれるときだけ、上とは別の SBCL
-# プロセスでこのスイートを実行する。"medium" が含まれるかどうかの判定は
-# ここで NABLA_TEST_SIZES を独自に parse し直さず、常に別プロセスを
-# 起動した上で NABLA.TESTS.SUPPORT:SIZES-FROM-ENV（既定値・区切り文字の
-# 扱いの正本）自身に判定させる（判定ロジックの二重管理を避ける）。medium が
-# 含まれなければそのプロセスは何もせず 0 で終了する。
-isolated_status=0
-sbcl --non-interactive \
-  --eval '(require :asdf)' \
-  --eval "${CHECK_ASD_SOURCE_FILE}" \
-  --eval '(asdf:load-system "nabla/iree/tests")' \
-  --eval '(uiop:quit (if (member :medium (nabla.tests.support:sizes-from-env))
-                         (if (fiveam:run! :nabla.isolated-medium) 0 1)
-                         0))' \
-  || isolated_status=$?
-
-if [ "${main_status}" -ne 0 ] || [ "${isolated_status}" -ne 0 ]; then
-  exit 1
-fi
-exit 0
+  --eval '(uiop:quit (if (nabla.tests.support:run-tests) 0 1))'

@@ -35,24 +35,6 @@ in-suite を経由せずに）変わることがあり、周囲の *suite* に�
      (block iree-test
        ,@body)))
 
-(defmacro define-iree-test/isolated-medium (name docstring &body body)
-  "DEFINE-IREE-TEST と同じ形・同じ意味論（IREE の local backend での
-実行を確かめる medium テスト。skip-unless-iree も同じ）だが、
-:nabla.medium ではなく独立したスイート :nabla.isolated-medium に登録する。
-
-対象は、tests/iree/ の他の medium テストと同じ SBCL プロセス内で実行すると
-in-process の libIREECompiler.so が壊れて SB-SYS:MEMORY-FAULT-ERROR で
-プロセスごと落ちることが分かっているテスト（issue #34 の jit end-to-end
-テスト、issue #68 で追跡）。scripts/run-tests.sh は NABLA_TEST_SIZES に
-\"medium\" が含まれる限り、:nabla.medium を実行するのとは別の SBCL
-プロセスでこのスイートを実行する。CI の既定スイートには含まれる
-（つまり #35 の「jit(f)(x) の結果は (f x) の結果と一致する」性質は
-medium で検査され続ける）が、他の medium テストが積み重ねる distinct な
-IREE コンパイルの総量とは無関係な、まっさらなプロセスから始まる。"
-  `(fiveam:test (,name :suite :nabla.isolated-medium) ,docstring
-     (block iree-test
-       ,@body)))
-
 (defmacro skip-unless-iree (&key (library :both))
   "(iree-available-p :library LIBRARY) が偽なら、NABLA_REQUIRE_IREE 環境変数が
 設定されていれば fiveam:fail で失敗させ、無ければ fiveam:skip でこのテストを
