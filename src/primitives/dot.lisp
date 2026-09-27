@@ -54,6 +54,36 @@ SB-INT:PROPER-LIST-P で正リストであることも確かめる。"
 (defun %dot-dims-string (dims)
   (format nil "[~{~D~^, ~}]" dims))
 
+(defun %dot-accumulate-in-f32-p (dtype)
+  "DTYPE が :BF16 / :F16 なら真。IREE（llvm-cpu）の dot_general は入力
+dtype のまま累積し、eager 実装（single-float 累積）と縮約が長いときに
+許容誤差を超えてずれる（issue #54）ので、この場合だけ f32 で累積させて
+から元の dtype に戻す2行の :emit にする。"
+  (member dtype '(:bf16 :f16)))
+
+(defun %dot-aux-name (tag out-name)
+  "OUT-NAME（\"%7\" のような SSA 名）の数字部分を使った補助 SSA 名
+（\"%acc_7\"）を返す。src/primitives/reduce.lisp の %reduce-aux-name と
+同じ規約。"
+  (format nil "%~A_~A" tag (subseq out-name 1)))
+
+(defun %dot-general-line (out-name lhs-name rhs-name lhs-batch rhs-batch
+                          lhs-contracting rhs-contracting lhs-type rhs-type result-type)
+  "stablehlo.dot_general 1行分のテキストを組み立てる（結果型 RESULT-TYPE
+は出力の dtype と異なっていてもよい。f32 累積の中間結果を作るときに使う）。"
+  (format nil "~A = stablehlo.dot_general ~A, ~A, ~Acontracting_dims = ~A x ~A : (~A, ~A) -> ~A"
+          out-name lhs-name rhs-name
+          (if (or lhs-batch rhs-batch)
+              (format nil "batching_dims = ~A x ~A, "
+                      (%dot-dims-string lhs-batch) (%dot-dims-string rhs-batch))
+              "")
+          (%dot-dims-string lhs-contracting) (%dot-dims-string rhs-contracting)
+          lhs-type rhs-type result-type))
+
+(defun %dot-convert-line (out-name in-name in-type out-type)
+  "stablehlo.convert 1行分のテキストを組み立てる。"
+  (format nil "~A = stablehlo.convert ~A : (~A) -> ~A" out-name in-name in-type out-type))
+
 (defun %dot-build-subscripts (rank batch-dims batch-subs free-dims free-subs
                               contract-dims contract-subs)
   "RANK 個の添字のリストを組み立てる。BATCH-DIMS[i] 番目の次元に
@@ -130,15 +160,20 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
         (make-aval out-shape (aval-dtype lhs)))))
   :emit
   (lambda (in-names in-avals out-name out-aval &key lhs-contracting rhs-contracting lhs-batch rhs-batch)
-    (format nil "~A = stablehlo.dot_general ~A, ~A, ~Acontracting_dims = ~A x ~A : (~A, ~A) -> ~A"
-            out-name (first in-names) (second in-names)
-            (if (or lhs-batch rhs-batch)
-                (format nil "batching_dims = ~A x ~A, "
-                        (%dot-dims-string lhs-batch) (%dot-dims-string rhs-batch))
-                "")
-            (%dot-dims-string lhs-contracting) (%dot-dims-string rhs-contracting)
-            (tensor-type-string (first in-avals)) (tensor-type-string (second in-avals))
-            (tensor-type-string out-aval)))
+    (let ((lhs-type (tensor-type-string (first in-avals)))
+          (rhs-type (tensor-type-string (second in-avals)))
+          (out-type (tensor-type-string out-aval)))
+      (if (%dot-accumulate-in-f32-p (aval-dtype out-aval))
+          (let* ((acc-name (%dot-aux-name "acc" out-name))
+                 (acc-type (tensor-type-string (make-aval (aval-shape out-aval) :f32))))
+            (format nil "~A~%~A"
+                    (%dot-general-line acc-name (first in-names) (second in-names)
+                                       lhs-batch rhs-batch lhs-contracting rhs-contracting
+                                       lhs-type rhs-type acc-type)
+                    (%dot-convert-line out-name acc-name acc-type out-type)))
+          (%dot-general-line out-name (first in-names) (second in-names)
+                             lhs-batch rhs-batch lhs-contracting rhs-contracting
+                             lhs-type rhs-type out-type))))
   :eager
   (lambda (arrays in-avals &key lhs-contracting rhs-contracting lhs-batch rhs-batch)
     (let* ((dtype (aval-dtype (first in-avals)))
