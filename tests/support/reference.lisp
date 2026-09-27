@@ -48,10 +48,9 @@
 ;; issue #31 p1
 (defun reference-div (a b)
   "A / B（要素ごとの商）を返す。A と B は同じ shape を持つこと。B に0を
-渡すとそのまま DOUBLE-FLOAT の除算に委ねる（このプロジェクトの参照実装は
-有限の値だけを対象にする。CLAUDE.md「テストの中にロジックを書かない」/
-このスキルの pitfall #4: reference-* には浮動小数点トラップのマスクを
-足さない。0除算を確かめるテストは eager 側を直接呼ぶ）。"
+渡すとそのまま DOUBLE-FLOAT の除算に委ねる（reference-* には浮動小数点
+トラップのマスクを意図的に足していない。0除算を確かめるテストは eager
+側を直接呼ぶ）。"
   (unless (equal (array-dimensions a) (array-dimensions b))
     (error "reference-div: 形状が違う: ~A と ~A" (array-dimensions a) (array-dimensions b)))
   (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
