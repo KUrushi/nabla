@@ -24,6 +24,10 @@
                (:file "src/ir")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "src/ir-print")
+               ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
+               ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
+               ;; この行より前に足す）
+               (:file "src/eval")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -62,6 +66,8 @@
                (:file "tests/ir-test")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "tests/ir-print-test")
+               ;; graph の eager 評価（issue #39、e0）
+               (:file "tests/eval-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))

@@ -144,6 +144,8 @@ sbcl --non-interactive --load examples/add.lisp
 
 **graph の印字**（`src/ir-print.lisp`、issue #29）: `print-graph`（graph を jaxpr 風のテキストに変換する。読み込み側の `read-graph` はテキスト形式をフェーズ1では公開契約にしないため export しない）
 
+**graph の eager 評価**（`src/eval.lisp`、issue #39）: `eval-graph`（graph を各プリミティブの `:eager` 実装で CPU 上で評価し、出力を多値で返す。`check-graph` は呼ばない）, `graph-input-mismatch`（渡した配列の個数・aval が graph の invars と合わないときに signal する）, `primitive-not-evaluable`, `primitive-not-evaluable-name`（`:eager` を持たないプリミティブに当たったときに signal する）
+
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
 
 - `iree-backend`（`(nb:make-backend :iree :target :local | :cuda :cuda-arch "sm_80")`）
