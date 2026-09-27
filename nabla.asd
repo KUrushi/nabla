@@ -42,6 +42,8 @@
                (:file "src/eval")
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "src/primitives/reduce")
+               ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
+               (:file "src/stablehlo")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -60,6 +62,8 @@
                (:file "tests/support/fake-backend")
                (:file "tests/support/temporary-directory")
                (:file "tests/support/regression")
+               ;; StableHLO emitter の medium PBT が使うレシピ生成器（issue #33、s1）
+               (:file "tests/support/primitive-recipes")
                (:file "tests/support/run-tests")))
 
 (defsystem "nabla/tests"
@@ -95,6 +99,8 @@
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "tests/primitives/reduce-test")
                (:file "tests/primitives/registry-test")
+               ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
+               (:file "tests/stablehlo-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -162,4 +168,6 @@
                ;; issue #31 p5: dot-general
                (:file "tests/iree/dot-test")
                ;; issue #31 p6: reduce-sum / reduce-max
-               (:file "tests/iree/reduce-test")))
+               (:file "tests/iree/reduce-test")
+               ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
+               (:file "tests/iree/stablehlo-test")))

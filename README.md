@@ -146,6 +146,8 @@ sbcl --non-interactive --load examples/add.lisp
 
 **graph の eager 評価**（`src/eval.lisp`、issue #39）: `eval-graph`（graph を各プリミティブの `:eager` 実装で CPU 上で評価し、出力を多値で返す。`check-graph` は呼ばない）, `graph-input-mismatch`（渡した配列の個数・aval が graph の invars と合わないときに signal する）, `primitive-not-evaluable`, `primitive-not-evaluable-name`（`:eager` を持たないプリミティブに当たったときに signal する）
 
+**StableHLO テキスト emitter**（`src/stablehlo.lisp`、issue #33）: `emit-stablehlo`（graph を、無名の module の中に1つの `func.func`（既定名 `main`）を持つ StableHLO テキストに変換する。`backend-compile` にそのまま渡せる。各 eqn の出力行には `loc("eqn-N")` が付く）, `primitive-not-emittable`, `primitive-not-emittable-name`（`:emit` を持たないプリミティブに当たったときに signal する）
+
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
 
 - `iree-backend`（`(nb:make-backend :iree :target :local | :cuda :cuda-arch "sm_80")`）

@@ -67,7 +67,11 @@
    #:eval-graph
    #:graph-input-mismatch
    #:primitive-not-evaluable
-   #:primitive-not-evaluable-name)
+   #:primitive-not-evaluable-name
+   ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
+   #:emit-stablehlo
+   #:primitive-not-emittable
+   #:primitive-not-emittable-name)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
 ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend
