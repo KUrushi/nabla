@@ -31,14 +31,18 @@ pointer。解放は行わない（プロセスの寿命まで生きる。設計�
   "iree-instance が一度作った INSTANCE。プロセスにつき1つだけ作る。")
 
 (defun %create-instance ()
-  (cffi:with-foreign-object (options '(:struct %runtime-instance-options-t))
-    (%runtime-instance-options-initialize options)
-    (%runtime-instance-options-use-all-available-drivers options)
-    (cffi:with-foreign-object (out-instance :pointer)
-      (check-status
-       (%runtime-instance-create options (system-allocator) out-instance)
-       "iree-instance")
-      (%make-instance (cffi:mem-ref out-instance :pointer)))))
+  ;; issue #53: instance の生成がドライバの実装によっては（将来的に）
+  ;; スレッドを作りうるので、他の生成点と同じく呼び出しスレッドを
+  ;; with-all-float-traps-masked（float-traps.lisp）で包んでおく。
+  (with-all-float-traps-masked
+    (cffi:with-foreign-object (options '(:struct %runtime-instance-options-t))
+      (%runtime-instance-options-initialize options)
+      (%runtime-instance-options-use-all-available-drivers options)
+      (cffi:with-foreign-object (out-instance :pointer)
+        (check-status
+         (%runtime-instance-create options (system-allocator) out-instance)
+         "iree-instance")
+        (%make-instance (cffi:mem-ref out-instance :pointer))))))
 
 (defun iree-instance ()
   "プロセス全体で共有する iree_runtime_instance_t を返す（無ければ作る）。
@@ -144,17 +148,19 @@ INDEX は既定 0 のみを受け付ける（v1 は各ドライバの既定デ�
 signal される。
 
 :local-task ドライバはここでワーカースレッドプールを作る。そのワーカー
-スレッドは、生成時に SBCL の浮動小数点例外トラップ（デフォルトで
-:overflow :invalid :divide-by-zero が有効）を引き継ぐ。マスクせずに作ると、
-レーン数の倍数でない形状に対するベクトル化されたカーネル（例
-stablehlo.divide のパディングレーン）が division-by-zero などのトラップを
-起こし、SIGFPE で SBCL プロセスごと落ちる（issue #31 p1 レビュー）。この
-関数を SB-INT:WITH-FLOAT-TRAPS-MASKED で包み、生成時点のワーカースレッドを
-マスク済みの状態にする（INVOKE 側だけをマスクしても、すでに未マスクの
-状態で作られたワーカースレッドには効かないため直らない）。"
+スレッドは、生成時に SBCL の浮動小数点例外トラップを引き継ぐ（Linux は
+スレッド生成時に生成元スレッドの MXCSR をそのままコピーするため）。
+マスクせずに作ると、レーン数の倍数でない形状に対するベクトル化された
+カーネル（例 stablehlo.divide のパディングレーン）が division-by-zero
+などのトラップを起こし、SIGFPE で SBCL プロセスごと落ちる（issue #31 p1
+レビュー）。この関数を WITH-ALL-FLOAT-TRAPS-MASKED（float-traps.lisp、
+issue #53 でトラップの種類を SBCL（x86-64）が制御できる5種類全部に広げた）で包み、
+生成時点のワーカースレッドをマスク済みの状態にする（INVOKE 側だけを
+マスクしても、すでに未マスクの状態で作られたワーカースレッドには効かない
+ため直らない）。"
   (unless (zerop index)
     (error "make-device: index ~S はまだサポートされていない（0 だけ受け付ける）" index))
-  (sb-int:with-float-traps-masked (:overflow :invalid :divide-by-zero)
+  (with-all-float-traps-masked
     (let* ((canonical (%canonical-driver driver))
            (name (%driver-name-string canonical))
            (instance (iree-instance)))
@@ -244,17 +250,23 @@ release-device する。"
 
 (defun make-session (device)
   "DEVICE に固定した iree_runtime_session_t を作る
-（iree_runtime_session_create_with_device）。"
-  (let ((instance (iree-instance)))
-    (cffi:with-foreign-object (options '(:struct %runtime-session-options-t))
-      (%runtime-session-options-initialize options)
-      (cffi:with-foreign-object (out-session :pointer)
-        (check-status
-         (%runtime-session-create-with-device
-          (instance-pointer instance) options (%live-device-pointer device "make-session")
-          (system-allocator) out-session)
-         "make-session")
-        (make-instance 'session :pointer (cffi:mem-ref out-session :pointer) :device device)))))
+（iree_runtime_session_create_with_device）。
+
+session の作成はモジュールをロードする前段なので、この時点ではまだ
+カーネルは走らない。それでも issue #53 の教訓（float-traps.lisp 冒頭）
+どおり、実装によっては session 作成時にもスレッドが生じうるため、他の
+生成点と同じく WITH-ALL-FLOAT-TRAPS-MASKED で包む（多重防御）。"
+  (with-all-float-traps-masked
+    (let ((instance (iree-instance)))
+      (cffi:with-foreign-object (options '(:struct %runtime-session-options-t))
+        (%runtime-session-options-initialize options)
+        (cffi:with-foreign-object (out-session :pointer)
+          (check-status
+           (%runtime-session-create-with-device
+            (instance-pointer instance) options (%live-device-pointer device "make-session")
+            (system-allocator) out-session)
+           "make-session")
+          (make-instance 'session :pointer (cffi:mem-ref out-session :pointer) :device device))))))
 
 (defun session-released-p (session)
   "SESSION が release-session 済みなら真を返す。"
@@ -295,30 +307,36 @@ iree_runtime_session_append_bytecode_module_from_memory でモジュールとし
 flatbuffer_allocator には iree_allocator_null を渡す（データの所有権は
 このメモリブロックを追跡している nabla.iree 側にあるため。
 session.h:150-164 の doc コメントのとおり、失敗時も含めてこの引数が呼ばれる
-だけで、null アロケータなので何も起きない）。"
+だけで、null アロケータなので何も起きない）。
+
+モジュールの追加（実行可能コードのロード）はここで起き、ドライバによっては
+ここでカーネル実行に使うワーカースレッドを実際に生成・起動する
+（float-traps.lisp 冒頭のコメント参照）。そのため本体全体を
+WITH-ALL-FLOAT-TRAPS-MASKED で包む。"
   (check-type bytes (simple-array (unsigned-byte 8) (*)))
-  (let* ((length (length bytes))
-         (block (cffi:foreign-alloc :uint8 :count (max length 1))))
-    (when (plusp length)
-      (sb-sys:with-pinned-objects (bytes)
-        (cffi:foreign-funcall "memcpy"
-                               :pointer block
-                               :pointer (sb-sys:vector-sap bytes)
-                               :size length
-                               :pointer)))
-    (handler-case
-        (progn
-          (check-status
-           (%runtime-session-append-bytecode-module-from-memory
-            (%live-session-pointer session "session-append-module")
-            (list 'data block 'data-length length)
-            (null-allocator))
-           "session-append-module")
-          (push block (%session-module-blocks session))
-          (values))
-      (error (condition)
-        (cffi:foreign-free block)
-        (error condition)))))
+  (with-all-float-traps-masked
+    (let* ((length (length bytes))
+           (block (cffi:foreign-alloc :uint8 :count (max length 1))))
+      (when (plusp length)
+        (sb-sys:with-pinned-objects (bytes)
+          (cffi:foreign-funcall "memcpy"
+                                 :pointer block
+                                 :pointer (sb-sys:vector-sap bytes)
+                                 :size length
+                                 :pointer)))
+      (handler-case
+          (progn
+            (check-status
+             (%runtime-session-append-bytecode-module-from-memory
+              (%live-session-pointer session "session-append-module")
+              (list 'data block 'data-length length)
+              (null-allocator))
+             "session-append-module")
+            (push block (%session-module-blocks session))
+            (values))
+        (error (condition)
+          (cffi:foreign-free block)
+          (error condition))))))
 
 (defun session-append-module-from-file (session path)
   "PATH（文字列または pathname）にある vmfb ファイルを、メモリマップ経由で

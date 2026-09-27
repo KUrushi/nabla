@@ -202,10 +202,22 @@ MLIR の診断（あれば）が DIAGNOSTICS に入る。共有ライブラリ�
 ときは IREE-LIBRARY-NOT-FOUND を signal する。
 
 呼び出しごとに新しいセッションと invocation を作るので、複数スレッドから
-並行に呼んでよい。"
+並行に呼んでよい。
+
+本体は WITH-ALL-FLOAT-TRAPS-MASKED（float-traps.lisp）で包む（issue #53）。
+LLVM のコード生成は、Pipeline を呼んだこの Lisp スレッドの上で直接走ることが
+あり、かつ初回コンパイル時に LLVM が内部で作るスレッドプールもこの時点の
+呼び出し元スレッドの MXCSR を引き継ぐ（ガイダンス(3)）。
+
+ただし、ゼロサイズの contracting 次元を持つ dot_general が起こす
+DIVISION-BY-ZERO はこのマスクでは防げない（float-traps.lisp 冒頭の
+コメント参照。x86 の整数除算命令による #DE で、マスクビットが無いため）。
+その対策は %compile-stablehlo の Pipeline 呼び出しのすぐ側にある
+ARITHMETIC-ERROR のハンドリング（IREE-COMPILE-ERROR への変換）。"
   (ensure-compiler-loaded)
   (with-lisp-signal-handlers-preserved
-    (%compile-stablehlo text flags source-name)))
+    (with-all-float-traps-masked
+      (%compile-stablehlo text flags source-name))))
 
 (defparameter *warm-up-module* "func.func @main() { return }"
   "ensure-compiler-loaded が %register-llvm-signal-handlers のフォールバック
@@ -223,9 +235,13 @@ MLIR の診断（あれば）が DIAGNOSTICS に入る。共有ライブラリ�
 その間に別の Lisp スレッドが GC を始めると登録前の LLVM のハンドラと
 競合する隙間が残る（呼び出し元の ensure-compiler-loaded が警告する）。
 ensure-compiler-loaded から（ロードロックを持ったまま）呼ぶので、
-ensure-compiler-loaded を再度呼び出す compile-stablehlo は経由しない。"
+ensure-compiler-loaded を再度呼び出す compile-stablehlo は経由しない。
+
+本体は WITH-ALL-FLOAT-TRAPS-MASKED で包む（compile-stablehlo と同じ理由。
+issue #53）。"
   (with-lisp-signal-handlers-preserved
-    (%compile-stablehlo *warm-up-module* (compile-flags :local) "nabla-warm-up.mlir")))
+    (with-all-float-traps-masked
+      (%compile-stablehlo *warm-up-module* (compile-flags :local) "nabla-warm-up.mlir"))))
 
 (defun %compile-stablehlo (text flags source-name)
   "compile-stablehlo の本体。ensure-compiler-loaded 済みで、かつ
@@ -261,9 +277,36 @@ SIGUSR2 などのハンドラを上書きしうる。compiler.lisp 冒頭のコ�
                     (unless (%compiler-invocation-parse-source invocation source)
                       (error 'iree-compile-error :phase :parse
                                                   :diagnostics (%diagnostics-end cookie)))
-                    (unless (%compiler-invocation-pipeline invocation +compiler-pipeline-std+)
-                      (error 'iree-compile-error :phase :compile
-                                                  :diagnostics (%diagnostics-end cookie)))
+                    ;; issue #53: ゼロサイズの contracting 次元を持つ dot_general
+                    ;; （例 tensor<2x0xf32> x tensor<0x3xf32>）は、この固定コミットの
+                    ;; IREE では ireeCompilerInvocationPipeline の内部（MLIR の
+                    ;; タイリング関連パスと見られる）で本物の整数 0 除算
+                    ;; （x86 の idiv 系命令。実験で確認: WITH-ALL-FLOAT-TRAPS-MASKED
+                    ;; でも glibc の fedisableexcept でも防げない——MXCSR は
+                    ;; 浮動小数点例外だけを制御し、整数の 0 除算 (#DE) には
+                    ;; マスクビットが存在しないため）を起こし、SBCL の
+                    ;; SIGFPE ハンドラ経由で DIVISION-BY-ZERO の Lisp
+                    ;; コンディションとして飛んでくる。プロセスは落ちない
+                    ;; （SIGFPE は正しく Lisp コンディションに変換され、
+                    ;; 通常の非局所脱出で戻ってこられる）ので、ここで
+                    ;; ARITHMETIC-ERROR（DIVISION-BY-ZERO や
+                    ;; FLOATING-POINT-OVERFLOW 等のスーパークラス）を捕まえ、
+                    ;; 他のフェーズと同じ IREE-COMPILE-ERROR（:phase :compile）に
+                    ;; 変換する。これにより BACKEND-COMPILE の呼び出し側は、
+                    ;; どんな失敗でも常に IREE-COMPILE-ERROR という1種類の
+                    ;; コンディションだけを見ればよくなる（生の
+                    ;; DIVISION-BY-ZERO が漏れ出ない）。実際に正しい vmfb を
+                    ;; 得られるようにする根本修正は IREE 側のバグなので、
+                    ;; nabla 側では対応できない（follow-up 課題）。
+                    (handler-case
+                        (unless (%compiler-invocation-pipeline invocation +compiler-pipeline-std+)
+                          (error 'iree-compile-error :phase :compile
+                                                      :diagnostics (%diagnostics-end cookie)))
+                      (arithmetic-error (condition)
+                        (error 'iree-compile-error :phase :compile
+                               :message (format nil "Pipeline 実行中に Lisp の算術エラーが発生した ~
+（IREE/LLVM 側の内部エラーの可能性が高い。詳細: ~A）" condition)
+                               :diagnostics (%diagnostics-end cookie))))
                     (cffi:with-foreign-object (out-output :pointer)
                       (let ((error (%compiler-output-open-membuffer out-output)))
                         (unless (cffi:null-pointer-p error)
