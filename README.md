@@ -146,6 +146,8 @@ sbcl --non-interactive --load examples/add.lisp
 
 **graph の eager 評価**（`src/eval.lisp`、issue #39）: `eval-graph`（graph を各プリミティブの `:eager` 実装で CPU 上で評価し、出力を多値で返す。`check-graph` は呼ばない）, `graph-input-mismatch`（渡した配列の個数・aval が graph の invars と合わないときに signal する）, `primitive-not-evaluable`, `primitive-not-evaluable-name`（`:eager` を持たないプリミティブに当たったときに signal する）
 
+**トレーサ**（`src/trace.lisp`、`src/walk.lisp`、issue #32）: `with-tracing`（Lisp のコードをコードウォークしてトレース対象にするマクロ。CL の標準関数呼び出しを内部の演算に書き換え、`setq` など対応していない特殊形式は `unsupported-form` にする）, `trace-to-graph`（`with-tracing` が返す関数を実際の `aval` でトレースし `graph` にする）, `traceable-function`（`with-tracing` が返す関数のクラス）, `unsupported-form`, `unsupported-form-form`, `unsupported-form-path`, `tracing-error`。Lisp の数値はトレース対象の演算に自動でリフト（`%lift-number`）されるが、rank 0 の値どうし・rank 0 と rank ≥1 のブロードキャストは issue #32 の後続 PR（t2）が対応する。shape の不一致はプリミティブの `primitive-error` になる。
+
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
 
 - `iree-backend`（`(nb:make-backend :iree :target :local | :cuda :cuda-arch "sm_80")`）

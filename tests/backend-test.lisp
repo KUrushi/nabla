@@ -115,8 +115,10 @@ signal され、その KIND が読み出せる。"
 
 (test backend/nabla-system/does-not-depend-on-nabla-iree
   "nabla（core）システムは nabla/iree に depends-on していない（core は
-実行系の実装を知らない、という設計の約束を ASDF の構成でも守る）。"
-  (is (not (member "nabla/iree" (asdf:system-depends-on (asdf:find-system "nabla"))
+実行系の実装を知らない、という設計の約束を ASDF の構成でも守る）。
+DEPENDS-ON には (:REQUIRE \"sb-cltl2\") のような文字列でないエントリも
+混ざりうる（issue #32、t1）ので、文字列のエントリだけを対象にする。"
+  (is (not (member "nabla/iree" (remove-if-not #'stringp (asdf:system-depends-on (asdf:find-system "nabla")))
                     :test #'string-equal))))
 
 (test (backend/core-sources/do-not-mention-iree :suite :nabla.medium)
