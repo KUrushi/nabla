@@ -3,7 +3,7 @@
 nabla は Common Lisp で書く、JAX に相当する深層学習ライブラリ。Lisp の関数をトレース（実行を記録）して自前の中間表現（IR）に変換し、`jit` / `grad` / `vmap` で書き換えてから StableHLO を出力し、IREE で CPU や NVIDIA GPU 上で実行する。
 
 - 計画と設計の正本は Artifact「Common Lisp × IREE 深層学習ライブラリ 計画」（計画タブ・設計タブ）。設計に迷ったらまずそこを確認する。このファイルと食い違うときは Artifact を優先し、このファイルを直す
-- フェーズ1（トレースと jit、親 issue #35）は 2026-09-27 に完了予定（jit / defjit、issue #34）。フェーズ0（IREE 疎通、#2）は 2026-09-26 に完了（GPU での数値一致 #12 のみ未測定）。知見は docs/phase0-report.md。次はフェーズ2（grad。jvp + transpose 方式の自動微分）。ロードマップは フェーズ0 IREE 疎通 → 1 トレースと jit → 2 grad → 3 vmap と制御構造 → 4 Flax 相当 → 5 Grain 相当
+- フェーズ1（トレースと jit、親 issue #35）は 2026-09-27 に完了した（`with-tracing` / `trace-to-graph` / `emit-stablehlo` / `jit` / `defjit`、issue #34）。フェーズ0（IREE 疎通、#2）は 2026-09-26 に完了（GPU での数値一致 #12 のみ未測定）。知見は docs/phase0-report.md。次はフェーズ2（grad。jvp + transpose 方式の自動微分）。ロードマップは フェーズ0 IREE 疎通 → 1 トレースと jit → 2 grad → 3 vmap と制御構造 → 4 Flax 相当 → 5 Grain 相当
 - 専門用語の説明は [docs/glossary.md](docs/glossary.md) にある。本文で † が付いた語は用語集に解説がある。新しい専門用語を使い始めたら用語集にも追加する
 
 ## 構成

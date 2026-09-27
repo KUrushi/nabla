@@ -305,7 +305,10 @@ JIT-COMPILE-ERROR-EQN・JIT-COMPILE-ERROR-EQN-INDEX はどちらも NIL にな�
            (jf (nb:jit f :backend backend))
            (a (make-random-array (make-array-spec '(2 3) :f32) :seed 36))
            (b (make-random-array (make-array-spec '(2 3) :f32) :seed 37)))
-      (handler-case (funcall jf a b)
+      (handler-case
+          (progn
+            (funcall jf a b)
+            (fail "フェイク backend の (- a b) がコンパイルに成功してしまった"))
         (nb:jit-compile-error (c)
           (is (null (nb:jit-compile-error-eqn c)))
           (is (null (nb:jit-compile-error-eqn-index c))))))))

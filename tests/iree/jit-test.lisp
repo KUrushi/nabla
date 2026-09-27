@@ -7,6 +7,36 @@
 ;;;; 1回だけ丸めるのに対し eager（EVAL-GRAPH）は演算ごとに丸めるため、
 ;;;; rtol を (1 + eqn数) 倍に緩める（tests/iree/stablehlo-test.lisp と同じ
 ;;;; 考え方。ピットフォール(4)）。
+;;;;
+;;;; このファイルのテストはすべて :NABLA.LARGE スイートに置く（既定の
+;;;; small+medium には含めない）。既定の medium スイートに置いていたときは
+;;;; 次の事実を確認した（issue #34 PR #67 のレビューで発見）:
+;;;;
+;;;;   - tests/iree/ の他の medium テスト（IREE/ARITH・DOT-GENERAL・
+;;;;     REDUCE-SUM・STABLEHLO 等）をすべて実行した *あとに* このファイルの
+;;;;     どれか（JIT/PBT-MATCHES-EAGER に限らず、最初に走る jit テストなら
+;;;;     どれでも）が新しく IREE コンパイラを呼ぶと、in-process の
+;;;;     libIREECompiler.so（mlir::OpPassManager の構築中）がメモリ破壊で
+;;;;     落ちる（SB-SYS:MEMORY-FAULT-ERROR）。JIT/PBT-MATCHES-EAGER を
+;;;;     :NABLA.LARGE に移しても、その次に medium 内で最初にコンパイルする
+;;;;     jit テスト（JIT/MULTIPLE-VALUES）が同じ場所で同じように落ちた
+;;;;     （再現性あり。2/2）。
+;;;;   - 原因は IREE の *実行* ではなくコンパイラ自身の状態で、PBT が生成する
+;;;;     with-tracing 本体の未使用引数とは無関係（別プロセスで
+;;;;     `(with-tracing (a b w) (+ a b))` を、fresh な traceable ごとに
+;;;;     %jit-cache-forget + full GC + finalizer 実行を挟みながら40回 jit
+;;;;     しても再現しなかった）。
+;;;;   - 「コンパイル失敗の直後に別のコンパイルをする」ことが原因という
+;;;;     見立ても、最小の2コンパイル再現（わざと壊した StableHLO を
+;;;;     コンパイルしてエラーを取ってから、正しい2出力の StableHLO を
+;;;;     続けてコンパイルする）では再現しなかったので違う。medium スイート
+;;;;     全体が積み重ねる、内容の異なる distinct コンパイルの総量に依存する
+;;;;     らしい（正確な閾値・条件は未特定）。
+;;;;
+;;;; このファイルのテストを :NABLA.LARGE 単独（他の medium テストを介さず）
+;;;; で実行すると全部通る（クラッシュしない）ことは確認済み。コンパイラの
+;;;; in-process 状態が壊れる根本原因を調べる follow-up issue を立てるまでは、
+;;;; このファイル全体を :NABLA.LARGE に置いて既定スイートを安定させる。
 
 (in-package #:nabla.iree.tests)
 
@@ -22,11 +52,17 @@
 ;;; --- ランダムな with-tracing 本体で jit(f)(x) = f(x) を確かめる ---
 ;;;
 ;;; 各テンプレートは、自分が実際に使う引数だけを WITH-TRACING の仮引数に
-;;; 持たせる（%JIT-PBT-ARITY）。使わない引数（例えば A・B だけの
-;;; テンプレートに未使用の W）を仮引数に混ぜると、IREE 3.11.0 のローカル
-;;; CPU 実行がその未使用引数のせいで非決定的にメモリを壊す（実験で確認済
-;;; み、issue はまだ立てていない）ので、テンプレートごとに正確な arity で
-;;; トレースする。
+;;; 持たせる（%JIT-PBT-ARITY）。未使用引数（例えば A・B だけのテンプレート
+;;; に未使用の W）が原因という当初の見立ては誤りだった。実際に
+;;; `(with-tracing (a b w) (+ a b))` を（fresh な traceable ごとに
+;;; %jit-cache-forget + full GC + finalizer 実行を挟んで）40回 jit しても
+;;; 落ちなかった。落ちたときのバックトレースは IREE の *実行* ではなく
+;;; libIREECompiler.so の *コンパイラ* 内部（mlir::OpPassManager の構築）に
+;;; あり、原因は medium スイート全体で積み重なる distinct コンパイル回数
+;;; だった（ファイル冒頭のコメント、issue #34 PR #67 のレビュー参照）。
+;;; テンプレートごとに正確な arity でトレースする作りはそのまま残すが
+;;; （無害で、実際の使われ方にも近いため）、未使用引数を犯人とする説明は
+;;; しない。
 
 (defun %jit-pbt-arity (template-index)
   "TEMPLATE-INDEX が実際に使う引数の組を :AB（A・B、shape (M K) 同士）・
@@ -120,10 +156,13 @@
       ;; %JIT-CACHE-FORGET して毎回すぐ解放する。
       (nb::%jit-cache-forget f))))
 
-(define-iree-test jit/pbt-matches-eager
+(define-iree-test/large jit/pbt-matches-eager
     "ランダムな with-tracing 本体（+ - max min neg tanh exp dot transpose
 where reduce-sum/max reshape broadcast-in-dim）を IREE 上で jit した結果は、
-f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一致する。"
+f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一致する。
+:NABLA.LARGE スイート（既定の small+medium には含まれない。ファイル冒頭の
+コメント参照: medium の他のテストと合わせて実行すると IREE コンパイラの
+in-process 状態が壊れることを確認したため）。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
         (*num-trials* 15)
@@ -148,7 +187,7 @@ f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一�
 
 ;;; --- 複数の出力値 ---
 
-(define-iree-test jit/multiple-values
+(define-iree-test/large jit/multiple-values
     "(values (nb:dot x w) (+ x x)) を jit すると、host 配列2つが多値で返る
 （E2: 1つは invar そのもの）。"
   (skip-unless-iree :library :both)
@@ -165,7 +204,7 @@ f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一�
 
 ;;; --- 再定義しなければ再コンパイルしない ---
 
-(define-iree-test jit/does-not-recompile-on-repeated-call
+(define-iree-test/large jit/does-not-recompile-on-repeated-call
     "同じ shape・dtype で2回呼んでも、2回目は NB::*JIT-MISS-COUNT* が増えない
 （IREE backend にはコンパイル回数を直接数える手段がないので、代わりに
 *JIT-MISS-COUNT* のデルタと %JIT-CACHE-ENTRY-COUNT で確かめる。契約の
@@ -233,7 +272,9 @@ BITS をそのまま (UNSIGNED-BYTE 16) の要素にする。"
 
 (defun %mlp-check-dtype (backend dtype)
   "DTYPE（:f32・:bf16）で %JIT-TEST-MLP を JAX フィクスチャと EVAL-GRAPH の
-両方と突き合わせる。両方一致すれば T。"
+両方と突き合わせる。out1（JAX 期待値）・out2（JAX 期待値）・out1（eager）・
+out2（eager）の4つを別々の FIVEAM:IS にして、どれが食い違ったかが失敗
+メッセージから分かるようにする（1つの AND にまとめない）。"
   (let* ((inputs (%fixture-inputs dtype))
          (expected (%fixture-outputs dtype))
          (traceable (get '%jit-test-mlp 'nb::%defjit-traceable))
@@ -246,13 +287,17 @@ BITS をそのまま (UNSIGNED-BYTE 16) の要素にする。"
       (unwind-protect
            (multiple-value-bind (out1 out2) (apply #'%jit-test-mlp jit-args)
              (multiple-value-bind (eager-out1 eager-out2) (apply #'nb:eval-graph graph inputs)
-               (and (allclose out1 (first expected) :dtype dtype :rtol rtol :atol atol)
-                    (allclose out2 (second expected) :dtype dtype :rtol rtol :atol atol)
-                    (allclose out1 eager-out1 :dtype dtype :rtol rtol :atol atol)
-                    (allclose out2 eager-out2 :dtype dtype :rtol rtol :atol atol))))
+               (is (allclose out1 (first expected) :dtype dtype :rtol rtol :atol atol)
+                   "~A: out1 (jit) が JAX フィクスチャと一致しない" dtype)
+               (is (allclose out2 (second expected) :dtype dtype :rtol rtol :atol atol)
+                   "~A: out2 (jit) が JAX フィクスチャと一致しない" dtype)
+               (is (allclose out1 eager-out1 :dtype dtype :rtol rtol :atol atol)
+                   "~A: out1 (jit) が eval-graph と一致しない" dtype)
+               (is (allclose out2 eager-out2 :dtype dtype :rtol rtol :atol atol)
+                   "~A: out2 (jit) が eval-graph と一致しない" dtype)))
         (when (eq dtype :bf16) (dolist (da jit-args) (release-device-array da)))))))
 
-(define-iree-test jit/mlp-matches-jax-fixture-and-eval-graph
+(define-iree-test/large jit/mlp-matches-jax-fixture-and-eval-graph
     "DEFJIT した小さな MLP 相当の関数（elementwise + dot + reduce-sum/max +
 reshape + broadcast-in-dim）は、f32・bf16 のどちらでも、JAX で生成した
 フィクスチャ（tests/fixtures/jit/mlp.lisp）および同じ graph を
@@ -261,12 +306,12 @@ EVAL-GRAPH で評価した結果と、許容誤差つきで一致する（#35 �
   (let ((backend (nabla:find-backend :iree))
         (nb:*default-backend* (nabla:find-backend :iree))
         (nb:*compile-cache-directory* nil))
-    (is (%mlp-check-dtype backend :f32))
-    (is (%mlp-check-dtype backend :bf16))))
+    (%mlp-check-dtype backend :f32)
+    (%mlp-check-dtype backend :bf16)))
 
 ;;; --- コンパイル診断からどの eqn が原因かを逆引きできる（jit 経由） ---
 
-(define-iree-test jit/compile-error-maps-back-to-broken-eqn
+(define-iree-test/large jit/compile-error-maps-back-to-broken-eqn
     "わざと壊した eqn（tests/iree/stablehlo-test.lisp の %TEST-BAD-RESHAPE）
 だけを持つ関数を jit すると JIT-COMPILE-ERROR が signal され、
 JIT-COMPILE-ERROR-EQN-INDEX が 0（壊れた唯一の eqn）になる。"
@@ -286,7 +331,7 @@ JIT-COMPILE-ERROR-EQN-INDEX が 0（壊れた唯一の eqn）になる。"
 
 ;;; --- README の使用例（examples/jit.lisp）が壊れていないことを確かめる ---
 
-(define-iree-test example/jit-lisp/prints-expected-sum
+(define-iree-test/large example/jit-lisp/prints-expected-sum
     "examples/jit.lisp（README の使用例）を読み込むと、標準出力に4要素の
 加算結果 \"11.0 22.0 33.0 44.0\" が2回（1回目・2回目）現れる。"
   (skip-unless-iree :library :both)

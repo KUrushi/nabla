@@ -310,7 +310,16 @@ EVAL-GRAPH で評価し、多値で返す（USE-EAGER リスタートの本体�
 2つのリスタートを提供する: USE-EAGER はこの呼び出しだけ GRAPH を
 EVAL-GRAPH で評価して返す（何もキャッシュしないので、次の呼び出しは
 また同じコンパイルを試みる）。RECOMPILE はもう一度 %JIT-CALL 自体を
-やり直す（コンパイルが直っていれば今度はキャッシュに載る）。"
+やり直す（コンパイルが直っていれば今度はキャッシュに載る）。
+
+follow-up（振る舞いは変えない。仕様通りだが、次に触るときのための
+メモ）: RECOMPILE は %JIT-COMPILE-AND-LOAD だけをやり直すのではなく
+%JIT-CALL を再帰的に呼び直すので、引数の検証・backend の解決・
+GRAPH-THUNK によるトレースをすべてやり直す（無害だが無駄があり、かつ
+ハンドラが毎回 RECOMPILE し続ければ再帰の深さに上限が無い）。同様に
+USE-EAGER は GRAPH-THUNK を呼び直して本体を2回目のトレースにかけている
+（コンパイルに失敗した GRAPH をそのまま JIT-COMPILE-ERROR の条件に
+運んで再利用すれば、この2回目のトレースは要らない）。"
   (let* ((fn (%jitted-function-fn jitted))
          (static-positions (%jitted-function-static-positions jitted))
          (arity (length (traceable-function-lambda-list fn))))
