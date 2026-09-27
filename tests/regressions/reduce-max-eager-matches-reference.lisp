@@ -1,0 +1,3 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME REDUCE-MAX/EAGER-MATCHES-REFERENCE :DATUM "((3 0) (1))"
+                 :TIMESTAMP 3999478054)

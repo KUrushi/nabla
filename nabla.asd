@@ -29,6 +29,8 @@
                (:file "src/primitives/shape")
                ;; issue #31 p5: dot-general
                (:file "src/primitives/dot")
+               ;; issue #31 p6: reduce-sum / reduce-max
+               (:file "src/primitives/reduce")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -71,6 +73,9 @@
                (:file "tests/primitives/shape-test")
                ;; issue #31 p5: dot-general
                (:file "tests/primitives/dot-test")
+               ;; issue #31 p6: reduce-sum / reduce-max
+               (:file "tests/primitives/reduce-test")
+               (:file "tests/primitives/registry-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -129,4 +134,6 @@
                (:file "tests/iree/shape-primitive-support")
                (:file "tests/iree/shape-test")
                ;; issue #31 p5: dot-general
-               (:file "tests/iree/dot-test")))
+               (:file "tests/iree/dot-test")
+               ;; issue #31 p6: reduce-sum / reduce-max
+               (:file "tests/iree/reduce-test")))

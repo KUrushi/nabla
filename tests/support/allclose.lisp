@@ -19,7 +19,10 @@ RTOL / ATOL が明示されていれば、そちらを優先する。"
   "スカラー A と B が許容誤差つきで一致するか。
 
 |A - B| <= ATOL + RTOL * |B| なら真。A・B のどちらかが NaN なら常に偽。
-比較は DOUBLE-FLOAT で行う。
+A と B が（無限大同士も含めて）CL:= で等しければ、引き算をせずに真を
+返す（同符号の無限大同士の引き算は FLOATING-POINT-INVALID-OPERATION を
+signal するため。reduce する次元のサイズが0のとき reduce-max の結果が
+-inf になる、といったケースで踏む）。比較は DOUBLE-FLOAT で行う。
 
 ALLCLOSE と違い、DTYPE が :bf16 / :f16 でもビット列のデコードはしない
 （A・B はすでに CL の数値として渡される前提）。bf16 / f16 の生の
@@ -30,7 +33,8 @@ ALLCLOSE と違い、DTYPE が :bf16 / :f16 でもビット列のデコードは
           (b (coerce b 'double-float)))
       (and (not (%nan-p a))
            (not (%nan-p b))
-           (<= (abs (- a b)) (+ atol (* rtol (abs b))))))))
+           (or (= a b)
+               (<= (abs (- a b)) (+ atol (* rtol (abs b)))))))))
 
 (defun allclose (actual expected &key dtype rtol atol)
   "配列 ACTUAL と EXPECTED の全要素が許容誤差つきで一致するか。
@@ -58,6 +62,10 @@ DTYPE を渡すと、その dtype の要素の格納形式（bf16 / f16 のビ�
             ((or (%nan-p a) (%nan-p b))
              (setf nan-seen t
                    out-of-tolerance t))
+            ;; 同符号の無限大同士は CL:= で真になり、引き算せずに一致
+            ;; とみなす（(- a b) は FLOATING-POINT-INVALID-OPERATION を
+            ;; signal するため。APPROX= の docstring 参照）。
+            ((= a b))
             (t
              (let ((diff (abs (- a b))))
                (when (> diff max-diff)
