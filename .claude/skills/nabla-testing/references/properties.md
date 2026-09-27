@@ -103,6 +103,13 @@ I/O とスレッドを使うので medium）。
 - `with-tracing` でトレースした graph を eager で評価した結果 = 元の Lisp 関数の結果
 - 対応していない形式（`setq` など）を含むコードは、決まったコンディションを出す
 
+### eval-graph（graph の eager 評価、issue #39）
+
+- `eval-graph` の結果 = 同じ graph を手で eqn 順に `primitive-eager` に適用した独立なオラクルの結果（別の実装と比べる性質）
+- 各出力配列の `(array-aval result (aval-dtype outvar))` は対応する `graph-outvars` の var-aval と一致する
+- 同じ graph・同じ入力を2回 `eval-graph` すると同じ結果になる（決定性）
+- bf16 / f16 の invar を持つ graph も評価できる（invar チェックは invar の dtype を渡して `array-aval` を呼び、`(unsigned-byte 16)` の配列を正しく :bf16 / :f16 と判別する。dtype を渡さない実装は全ての bf16 / f16 入力を誤って `graph-input-mismatch` にするので、この正の経路は例（outvar がそのまま invar である graph、dtype に依らない eqn を1つ挟んだ graph）で確かめる）
+
 ### PyTree†
 
 - `unflatten(flatten(x))` = `x`
