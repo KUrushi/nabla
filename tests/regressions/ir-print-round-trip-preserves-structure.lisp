@@ -1,0 +1,6 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME IR-PRINT/ROUND-TRIP-PRESERVES-STRUCTURE :DATUM
+                 "((:IN :F16 NIL) (:IN :F32 (3)) (:IN :F16 (4 4))
+ (:CONST :BF16 (1 1 4) 184893669) (:UNARY :%TEST-NEG 1)
+ (:BINARY :%TEST-ADD 0 0) (:OUT 1))"
+                 :TIMESTAMP 3999463666)

@@ -49,3 +49,9 @@
         (error 'nb:primitive-error :name :%test-reduce :in-avals in-avals
                :format-control "axis ~S が shape ~S の範囲外" :format-arguments (list axis shape)))
       (nb:make-aval (append (subseq shape 0 axis) (subseq shape (1+ axis))) (nb:aval-dtype in)))))
+
+;; ir-print.lisp の READ-GRAPH が params 中の T を CL:T に正規化することを
+;; 確かめるための、フラグ（真偽値）パラメタを持つテスト専用プリミティブ
+;; （issue #29、u1b）。
+(nb:defprimitive %test-flag (:keep)
+  :abstract-eval (lambda (in-avals &key keep) (declare (ignore keep)) (first in-avals)))
