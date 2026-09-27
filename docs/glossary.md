@@ -28,6 +28,12 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **jit（Just-In-Time コンパイル）**
 : 関数が最初に呼ばれたときにコンパイルし、2回目以降はコンパイル済みのものを使う仕組み。nabla では、トレース → StableHLO 出力 → IREE でコンパイル、の流れになる。
 
+**loc（位置情報）**
+: MLIR のテキストで、ある演算がソースのどこに由来するかを添える注釈（`stablehlo.add %a, %b : tensor<4xf32> loc("eqn-3")` の末尾部分）。nabla の `emit-stablehlo` は各 eqn の出力行に `loc("eqn-N")`（N は `graph-eqns` 中の0始まりの位置）を付ける。IREE のコンパイルエラーの診断がこの loc を含んでいれば、`graph-eqn-for-diagnostic` でどの eqn が原因かを逆引きできる。
+
+**診断（diagnostic）**
+: コンパイラがエラーや警告を報告するときの1つのメッセージ（ファイル位置・重大度・本文を持つ）。IREE の `iree-compile-error` は複数の診断を持つことがある。
+
 **静的形状（static shape）**
 : 配列の形がコンパイルの時点で決まっていること。形が変わるたびに再コンパイルが必要になる代わりに、実装が単純になる。
 

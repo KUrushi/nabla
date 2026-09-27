@@ -48,6 +48,8 @@
                (:file "src/walk")
                ;; if を select に、配列レベルの公開 API（issue #32、t2）
                (:file "src/array-api")
+               ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
+               (:file "src/stablehlo")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -66,6 +68,8 @@
                (:file "tests/support/fake-backend")
                (:file "tests/support/temporary-directory")
                (:file "tests/support/regression")
+               ;; StableHLO emitter の medium PBT が使うレシピ生成器（issue #33、s1）
+               (:file "tests/support/primitive-recipes")
                (:file "tests/support/run-tests")))
 
 (defsystem "nabla/tests"
@@ -107,6 +111,8 @@
                ;; if を select に、配列レベルの公開 API（issue #32、t2）
                (:file "tests/trace-if-test")
                (:file "tests/array-api-test")
+               ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
+               (:file "tests/stablehlo-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -178,4 +184,6 @@
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "tests/iree/reduce-test")
                ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
-               (:file "tests/iree/float-traps-test")))
+               (:file "tests/iree/float-traps-test")
+               ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
+               (:file "tests/iree/stablehlo-test")))
