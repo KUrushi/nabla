@@ -1,0 +1,6 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME
+                 SUPPORT/MAKE-RANDOM-ARRAY/POSITIVE-DOMAIN-STAYS-IN-OPEN-UNIT-INTERVAL
+                 :DATUM
+                 "(#S(NABLA.TESTS.SUPPORT::ARRAY-SPEC% :SHAPE (7 6 4 4) :DTYPE :F16) 6)"
+                 :TIMESTAMP 3999394574)

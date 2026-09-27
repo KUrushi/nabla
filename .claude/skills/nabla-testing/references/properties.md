@@ -98,7 +98,20 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
 
 ## 3. 書き方のひな形
 
-以下はひな形で、関数名は実装に合わせて読み替える。check-it のキーワード引数の正確な名前は、使っている版のソースで確かめる。
+以下はひな形で、関数名は実装に合わせて読み替える。
+
+check-it（b79c9103665be3976915b56b570038f03486e62f）の `check-it` マクロは
+`(check-it generator test &key examples shrink-failures random-state
+regression-id regression-file)`。次の2点に注意する。
+
+- `:regression-file` は `:regression-id` も一緒に渡さないと何もしない。
+  失敗例を保存したいテストには、必ずどちらも書く
+- `:regression-id` はマクロが渡された式をそのまま `quote` するので、
+  **クォートせずにシンボルを書く**（`:regression-id foo/bar`。
+  `:regression-id 'foo/bar` と書くと、渡る値が `foo/bar` というシンボル
+  ではなく `(quote foo/bar)` というリストになり、型エラーになる）
+- `regression-path` が渡したファイルを無ければ作るので、`:regression-file`
+  には毎回 `(regression-path "名前")` を渡してよい
 
 ### 別の実装と比べる性質
 
@@ -111,6 +124,7 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
                     (allclose (nb:exp x)
                               (funcall (nb:jit #'nb:exp) x)
                               :dtype (array-spec-dtype spec))))
+                :regression-id primitive/exp/eager-matches-jit
                 :regression-file (regression-path "primitive-exp"))))
 ```
 
@@ -123,6 +137,7 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
                 (lambda (tree)
                   (multiple-value-bind (leaves treedef) (nb:tree-flatten tree)
                     (tree-equal* tree (nb:tree-unflatten treedef leaves))))
+                :regression-id pytree/flatten-roundtrip
                 :regression-file (regression-path "pytree-roundtrip"))))
 ```
 
@@ -139,10 +154,31 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
                     (approx= (inner (nb:vjp #'nb:tanh x u) v)
                              (inner u (nb:jvp #'nb:tanh x v))
                              :dtype :f64)))
+                :regression-id grad/tanh/dot-product
                 :regression-file (regression-path "grad-tanh-dot"))))
 ```
 
 テスト名は `<対象>/<演算や関数>/<性質>` の形にする。docstring には性質を1文で書く。失敗したとき、テスト名と docstring だけで何が壊れたか分かるようにするため。
+
+check-it の generator DSL（`(generator ...)` の中で使える形式）は主に次のとおり:
+`(integer lo hi)`、`(real lo hi)`、`(list g)`、`(tuple g...)`、`(or g...)`、
+`(guard pred g)`、`(map fn g...)`、`(chain ((v g)...) body)`、
+`(struct type :slot g ...)`。名前付きの生成器は `def-generator` で作る
+（`tests/support/array-spec.lisp` の `array-spec` を参照）。
+
+`check-it:*num-trials*`（既定100）が試行回数のノブで、mutation testing の
+runner はこれを下げて実行する。fiveam も同名の `*num-trials*` を export
+しているので、check-it と fiveam を両方 `:use` するパッケージは
+`(:shadowing-import-from #:check-it #:*num-trials*)` で check-it 側を選ぶ。
+
+`(real lo hi)` には既知のバグがある（`real-generator-function` が
+`new-low` を `hi` の絶対値と `lo` の符号から計算するため、`lo` と `hi` が
+同じ非0の符号のとき（例: `(real 2 5)`）に範囲の幅が消え、`(random 0.0)` で
+落ちる。`lo` が 0 のとき（`(signum 0)` = 0）は壊れない）。加えて両端は
+`check-it::*size*`（既定 10）でクランプされるので、`(real -100 100)` のような
+範囲を書いても実際に出るのは `[-10, 10]` の値になる。0 未満から 0 以上を
+またぐ範囲か `(real 0 hi)` の形にし、境界が消えないよう生成した値に
+小さな定数を足すなどして避ける。
 
 ## 4. 共通の生成器と比較関数
 
@@ -152,8 +188,61 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
 | --- | --- |
 | `array-spec` 生成器 | rank 0〜4、各次元 1〜8 の形状と dtype の組を作る。`:dtypes` で候補を絞れる |
 | `make-random-array` | spec と固定シードから配列を作る。`:domain` で定義域（正の数だけ、など）を指定できる |
-| `pytree-spec` 生成器 | リスト・ベクタ・`defmodule` 構造体を入れ子にした木を作る |
+| `pytree-spec` 生成器（未実装） | リスト・ベクタ・`defmodule` 構造体を入れ子にした木を作る予定（フェーズ1で PyTree を実装するときに追加する。それまでは `tests/support/` に存在しない） |
+| `uniform-integer` / `uniform-real` 生成器 | `check-it::*size*` にクランプされない、指定した範囲全体から一様に選ぶ整数・実数の生成器。下の「check-it の落とし穴」を読んでから `(integer lo hi)` / `(real lo hi)` の代わりに使う |
 | `allclose` / `approx=` | dtype ごとの既定の許容誤差で比べ、失敗時に最大誤差とその位置を出力する |
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |
 
 部品を追加・変更したら、この表も直す。
+
+### check-it の (integer lo hi) / (real lo hi) の落とし穴
+
+check-it 組み込みの `(integer lo hi)` / `(real lo hi)` は、指定した `lo` /
+`hi` を無視して `check-it::*size*`（既定 10）に値をクランプする
+（`check-it` の `int-generator-function` / `real-generator-function` の
+実装が、内部で `(min (abs limit) *size*) を取っているため）。たとえば
+`(generator (integer 0 1023))` は、見た目には 0..1023 の一様分布に見え
+るが、実際には 0..10 の値しか生成しない。
+
+この落とし穴は check-it のドキュメントには書かれておらず、生成された
+値の分布を実際に確認しない限り気づけない。テストは「落ちないから正し
+い」と誤解しやすく、実際に nabla のこの PBT（f16 の非正規化数の仮数、
+`make-random-array` の乱数シード）がこれに引っかかり、意図した範囲の
+1% 未満しか検査していないのに全部パスしていた。
+
+対策として `lo` / `hi` が `check-it::*size*`（既定 10）を超えうる範囲を
+使いたいときは、必ず `tests/support/uniform-generator.lisp` の
+`uniform-integer` / `uniform-real`（または `make-uniform-integer-generator`
+/ `make-uniform-real-generator`）を使う。これらは check-it の generator
+プロトコル（`generate` / `shrink`）だけを自前で実装し、`*size*` による
+クランプを経由しない。新しい PBT で `(integer ...)` / `(real ...)` を
+書くときは、範囲の上限が 10 を大きく超えないか、超えるならこちらを
+使っているかを必ず確認する。
+
+`array-spec` 生成器も、rank と各次元の範囲を選ぶのにこの `uniform-integer`
+を使っている。`:max-rank` / `:max-dim` に 10 より大きい値を渡しても、
+実際にその範囲まで rank や次元が届くことを
+`support/array-spec/respects-larger-than-ten-max-rank-and-max-dim`
+（`tests/support-test.lisp`）で確かめている。
+
+### check-it のもう1つの落とし穴: 同じ Lisp イメージ内での再実行
+
+check-it は失敗例を見つけると、`:regression-file` に書き出すのと同時に、
+`(get regression-id 'regression-cases)` という plist にも生の文字列
+（`(format nil "~S" value)`）をそのまま `push` する（`check-it.lisp` の
+`save-regression`）。一方、regression ファイルを `load` して過去の失敗例
+を再生するときは `regression-case` マクロ（`regression-case%`）経由で
+`datum` アクセサを持つ `REGRESSION-CASE` オブジェクトとして登録される。
+
+そのため、同じ SBCL プロセス（同じ Lisp イメージ）の中で、あるテストが
+新しい失敗例を見つけて保存した「あと」に、同じテストフォームをもう一度
+評価すると、2回目の実行は `(get regression-id 'regression-cases)` の中に
+`REGRESSION-CASE` オブジェクトと生の文字列が混在した状態で
+`(datum regression-case)` を呼ぶことになり、生の文字列に対しては
+`datum` の実装（メソッド）が無いため `NO-APPLICABLE-METHOD` で落ちる。
+これは check-it 側の実装の非対称性が原因で、nabla 側のコードの不具合
+ではない。`scripts/run-tests.sh` のように毎回新しい SBCL プロセスを
+起動する通常の実行では、プロセス起動時点でこの plist が空なので問題に
+ならない。SLIME / REPL などで同じイメージのまま同じテストを何度も
+`(fiveam:run! ...)` し直すときにだけ注意する（プロセスを再起動するか、
+`(remprop 'テスト名 'check-it::regression-cases)` で一旦クリアする）。
