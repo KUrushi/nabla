@@ -17,6 +17,9 @@
   :components ((:file "src/package")
                (:file "src/dtype")
                (:file "src/aval")
+               ;; IR と defprimitive（issue #29、u1a）
+               (:file "src/primitive")
+               (:file "src/ir")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -46,6 +49,11 @@
                (:file "tests/aval-test")
                (:file "tests/backend-test")
                (:file "tests/compile-cache-test")
+               ;; IR と defprimitive（issue #29、u1a）
+               (:file "tests/test-primitives")
+               (:file "tests/graph-recipes")
+               (:file "tests/primitive-test")
+               (:file "tests/ir-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))

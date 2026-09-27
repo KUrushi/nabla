@@ -10,6 +10,12 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **aval（抽象値, abstract value）**
 : 配列の「中身」を持たず、「形状と dtype」だけを持つ値。トレース中は実際の数値が分からないので、aval だけを追って出力の形を決める。
 
+**プリミティブ（primitive）**
+: `add` や `reduce-sum` のような、nabla が知っている最小単位の演算。`defprimitive` で宣言し、形状推論（abstract-eval）・StableHLO 出力（emit）・eager 用の CPU 実装（eager）を束ねる。`jvp` / transpose ルール / バッチ化ルールは、その演算を `grad` / `vmap` に対応させるときに、同じプリミティブに追加する。
+
+**形状推論（abstract-eval）**
+: 入力の `aval`（形状と dtype）とパラメタから、実際の数値を計算せずに出力の `aval` を決めること。プリミティブごとに `defprimitive` の `:abstract-eval` として書く。トレース中は実データが無いので、この計算だけで IR の各 `var` の形状・dtype を決められる。
+
 **トレース（trace）/ トレーサ（tracer）**
 : 関数を実際の数値ではなく特別なオブジェクト（トレーサ）で呼び出し、どんな演算が行われたかを記録すること。記録した結果が IR になる。
 
