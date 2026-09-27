@@ -17,6 +17,7 @@
    ;; dtype と許容誤差
    #:*dtypes*
    #:dtype-tolerance
+   #:graph-worst-float-dtype
    ;; check-it::*size* にクランプされない一様な整数・実数の生成器
    ;; （.claude/skills/nabla-testing/references/properties.md の
    ;; 「check-it の (integer lo hi) / (real lo hi) の落とし穴」参照）
@@ -74,4 +75,5 @@
    ;; （issue #33、wave 3 s1）
    #:primitive-graph-recipe
    #:build-primitive-graph
-   #:primitive-recipe-eqn-count))
+   #:primitive-recipe-eqn-count
+   #:replay-recipe-avals))

@@ -75,6 +75,37 @@ NB::CHECK-GRAPH を通る（issue #33 のリグレッション: :DOT ステッ�
       (let ((shrunk (shrink gen (lambda (recipe) (declare (ignore recipe)) nil))))
         (is (nb::check-graph (build-primitive-graph shrunk)))))))
 
+(defun %recipe-vars-match-replayed-avals-p (recipe)
+  "RECIPE から BUILD-PRIMITIVE-GRAPH した実際の var（IDX ごとに1つ、生成順）
+の (shape . dtype) が、REPLAY-RECIPE-AVALS がレシピの記述だけから独立に
+計算した期待値と、要素数・中身とも完全に一致するか。
+
+CHECK-GRAPH ベースの GENERATED-RECIPE-BUILDS-VALID-GRAPH は「IDX がずれて
+無関係の var を参照しても、たまたま shape/dtype が一致すれば valid な
+graph のまま」を見逃す（旧 :DOT バグはこの見逃しで約8割しか検出できな
+かった）。この性質は VARS の中身そのものを REPLAY-RECIPE-AVALS と1個ずつ
+突き合わせるので、IDX のずれを取りこぼさず毎回検出する。"
+  (let ((expected (replay-recipe-avals recipe)))
+    (multiple-value-bind (graph vars) (build-primitive-graph recipe)
+      (declare (ignore graph))
+      (and (= (length expected) (length vars))
+           (every (lambda (expected-aval var)
+                    (equal expected-aval
+                           (cons (nb:aval-shape (nb:var-aval var))
+                                 (nb:aval-dtype (nb:var-aval var)))))
+                  expected (coerce vars 'list))))))
+
+(test support/primitive-graph-recipe/vars-match-replayed-avals
+  "BUILD-PRIMITIVE-GRAPH が組み立てる各 IDX の var の (shape . dtype) は、
+REPLAY-RECIPE-AVALS がレシピ自身の記述から独立に計算した期待値と一致する
+（issue #33 のリグレッション: :DOT が rhs 定数を VARS に混ぜて、以降の
+IDX が VARS 上で1つずれていた。%RECIPE-VARS-MATCH-REPLAYED-AVALS-P の
+docstring も参照）。"
+  (is (check-it (generator (primitive-graph-recipe :max-ops 4))
+                #'%recipe-vars-match-replayed-avals-p
+                :regression-id support/primitive-graph-recipe/vars-match-replayed-avals
+                :regression-file (regression-path "primitive-graph-recipe-vars-match-replayed-avals"))))
+
 (test support/array-spec/respects-larger-than-ten-max-rank-and-max-dim
   "array-spec の生成器は :max-rank / :max-dim に check-it::*size*
 （既定10）より大きい値を渡しても、実際にその範囲まで rank や次元が届く。
@@ -263,6 +294,36 @@ coerce したもの）と一致するかどうかを返す。両方とも NaN �
                        (approx= (decode-element :f16 (nabla.tests.support::dtype-value :f16 x)) x :dtype :f16)))
                 :regression-id support/dtype-value/round-trips-within-dtype-tolerance-of-input
                 :regression-file (regression-path "dtype-value-round-trips-within-dtype-tolerance"))))
+
+(test support/graph-worst-float-dtype/ignores-branch-unreachable-from-output
+  "GRAPH-WORST-FLOAT-DTYPE は OUTVARS から辿れない枝の dtype を無視する。
+PRIMITIVE-GRAPH-RECIPE は各ステップで過去の任意の IDX を参照でき、
+MAKE-GRAPH は出力に寄与しない eqn を刈らないので、出力が f32 だけで
+計算されているのに無関係な bf16 の枝に釣られて粗い許容誤差を選んで
+しまうと、emit-stablehlo の本当の f32 精度のバグを
+STABLEHLO/IREE-MATCHES-EVAL-GRAPH が見逃しかねない（code-review の指摘）。
+
+x（f32）を neg しただけの graph に、出力とは無関係な bf16 の入力 y を
+足しておく。出力は x の neg だけに依存するので、GRAPH-WORST-FLOAT-DTYPE は
+:F32 を返すべき（y の :BF16 に釣られてはいけない）。"
+  (let* ((x (nb::make-var (nb:make-aval '(2) :f32)))
+         (y (nb::make-var (nb:make-aval '(2) :bf16)))
+         (neg-eqn (nb::make-eqn :neg (list x)))
+         (out (first (nb:eqn-outvars neg-eqn)))
+         (graph (nb::make-graph (list x y) (list neg-eqn) (list out) nil)))
+    (is (eq :f32 (graph-worst-float-dtype graph)))))
+
+(test support/graph-worst-float-dtype/finds-dtype-along-path-to-output
+  "出力の計算に実際に使われている dtype は、途中に convert を挟んでいても
+GRAPH-WORST-FLOAT-DTYPE が正しく拾う（bf16 を neg してから f32 に convert
+した graph は、出力 dtype は f32 でも :BF16 を返すべき）。"
+  (let* ((x (nb::make-var (nb:make-aval '(2) :bf16)))
+         (neg-eqn (nb::make-eqn :neg (list x)))
+         (neg-out (first (nb:eqn-outvars neg-eqn)))
+         (convert-eqn (nb::make-eqn :convert (list neg-out) :dtype :f32))
+         (out (first (nb:eqn-outvars convert-eqn)))
+         (graph (nb::make-graph (list x) (list neg-eqn convert-eqn) (list out) nil)))
+    (is (eq :bf16 (graph-worst-float-dtype graph)))))
 
 (test support/uniform-integer/rejects-lo-greater-than-hi
   "MAKE-UNIFORM-INTEGER-GENERATOR / MAKE-UNIFORM-REAL-GENERATOR は、

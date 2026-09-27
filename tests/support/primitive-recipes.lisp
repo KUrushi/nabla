@@ -132,6 +132,64 @@ with itself」と同じ考え方）。"
           do (rotatef (nth i list) (nth (random (1+ i)) list)))
     list))
 
+(defun %recipe-step-aval (step avals)
+  "STEP が AVALS（(shape . dtype) のリスト、0始まりの IDX に対応）に
+新しく積むはずの (shape . dtype) を返す。:OUT は AVALS を伸ばさないので
+NIL を返す。%GENERATE-PRIMITIVE-RECIPE の各 ECASE 節が計算しているのと
+同じ規則（レシピの各ステップの意味そのもの）を、ここに独立にもう一度
+書き下している。REPLAY-RECIPE-AVALS がこれを使い、既存のレシピ（乱数を
+経由せず、既に確定した IDX・SHAPE・DTYPE を持つ）から同じ AVALS を
+計算し直す。BUILD-PRIMITIVE-GRAPH が IDX の指す var を取り違えていないか
+を、生成器の実装から独立に検査する（issue #33 のリグレッション: :DOT が
+rhs 定数を VARS に混ぜて後続の IDX をずらしたバグ）。"
+  (ecase (first step)
+    (:in (destructuring-bind (dtype shape) (rest step) (cons shape dtype)))
+    (:const (destructuring-bind (dtype shape seed) (rest step)
+              (declare (ignore seed))
+              (cons shape dtype)))
+    (:binary (destructuring-bind (prim idx1 idx2) (rest step)
+               (declare (ignore prim idx2))
+               (nth idx1 avals)))
+    (:unary (destructuring-bind (prim idx) (rest step)
+              (declare (ignore prim))
+              (nth idx avals)))
+    (:compare-select (destructuring-bind (idx1 idx2 direction idx3) (rest step)
+                        (declare (ignore idx2 direction idx3))
+                        (nth idx1 avals)))
+    (:convert (destructuring-bind (idx dtype) (rest step)
+                (cons (car (nth idx avals)) dtype)))
+    (:broadcast (destructuring-bind (idx) (rest step)
+                  (let ((aval (nth idx avals)))
+                    (cons (cons 1 (car aval)) (cdr aval)))))
+    (:reshape (destructuring-bind (idx shape) (rest step)
+                (cons shape (cdr (nth idx avals)))))
+    (:transpose (destructuring-bind (idx perm) (rest step)
+                  (let* ((aval (nth idx avals))
+                         (shape (car aval)))
+                    (cons (mapcar (lambda (p) (nth p shape)) perm) (cdr aval)))))
+    (:reduce (destructuring-bind (prim idx axis) (rest step)
+               (declare (ignore prim))
+               (let* ((aval (nth idx avals))
+                      (shape (car aval)))
+                 (cons (append (subseq shape 0 axis) (subseq shape (1+ axis))) (cdr aval)))))
+    (:dot (destructuring-bind (idx seed n) (rest step)
+            (declare (ignore seed))
+            (let* ((aval (nth idx avals))
+                   (shape (car aval)))
+              (cons (list (first shape) n) (cdr aval)))))
+    (:out nil)))
+
+(defun replay-recipe-avals (recipe)
+  "RECIPE（BUILD-PRIMITIVE-GRAPH と同じ形式）を辿り、各 IDX が指すはずの
+(shape . dtype) を、%GENERATE-PRIMITIVE-RECIPE とは独立にレシピ自身の
+記述だけから計算して (shape . dtype) のリストとして返す。:OUT は含まない
+（IDX の参照先にならないため）。"
+  (let ((avals '()))
+    (dolist (step recipe)
+      (let ((next (%recipe-step-aval step avals)))
+        (when next (setf avals (append avals (list next))))))
+    avals))
+
 (defclass %primitive-graph-recipe-generator (check-it:generator)
   ((max-ops :initarg :max-ops :reader %primitive-graph-recipe-max-ops))
   (:documentation "PRIMITIVE-GRAPH-RECIPE の named generator の実体。"))
@@ -151,7 +209,12 @@ with itself」と同じ考え方）。"
 (defun build-primitive-graph (recipe)
   "RECIPE（このファイル冒頭のレシピ形式）から NB::GRAPH を組み立てて返す。
 実プリミティブの MAKE-EQN を呼ぶので、abstract-eval が形状・dtype の
-不変量を検査する。CHECK-GRAPH は呼ばない。"
+不変量を検査する。CHECK-GRAPH は呼ばない。
+
+第2の値として、RECIPE の各 IDX に対応する var を、生成した順（AVALS の
+インデックスと1対1）に並べたベクタを返す。REPLAY-RECIPE-AVALS が
+独立に計算する期待値と突き合わせるテスト専用の値で、通常の呼び出し側は
+無視してよい。"
   (let ((vars (make-array 0 :adjustable t :fill-pointer 0))
         (invars '())
         (constants '())
@@ -211,7 +274,8 @@ with itself」と同じ考え方）。"
                                                 :lhs-contracting '(1) :rhs-contracting '(0)
                                                 :lhs-batch '() :rhs-batch '())))))
           (:out (setf outvars (list (aref vars (second step)))))))
-      (nb::make-graph (nreverse invars) (nreverse eqns) outvars (nreverse constants)))))
+      (values (nb::make-graph (nreverse invars) (nreverse eqns) outvars (nreverse constants))
+              vars))))
 
 (defun primitive-recipe-eqn-count (recipe)
   "RECIPE から BUILD-PRIMITIVE-GRAPH した graph の eqn 数を返す。emitter の

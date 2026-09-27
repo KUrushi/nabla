@@ -5,6 +5,12 @@
 ;;;; 一致する（issue #33 の完了条件）。graph は tests/support/primitive-recipes.lisp
 ;;;; の PRIMITIVE-GRAPH-RECIPE（実プリミティブ上のランダムな graph）で作る。
 ;;;;
+;;;; 許容誤差は graph の最終的な出力 dtype ではなく、GRAPH-WORST-FLOAT-DTYPE
+;;;; が返す「graph 中で実際に使われた最も粗い浮動小数点 dtype」で決める。
+;;;; 例えば bf16 の入力を演算してから f32 に convert する graph は、出力こそ
+;;;; f32 だが値は bf16 の丸め誤差を引き継いでおり、出力 dtype の厳しい
+;;;; 許容誤差で判定すると誤って失敗する（issue #33 のリグレッション）。
+;;;;
 ;;;; bf16/f16 は IREE がエレメントワイズ演算を融合して1回だけ丸めるのに
 ;;;; 対し、eager は演算ごとに丸めるため、rtol を (1 + eqn数) 倍に緩める
 ;;;; （契約のピットフォール(7)）。distinct な graph = 1回のコンパイル
@@ -31,6 +37,13 @@
          (out-var (first (nb:graph-outvars graph)))
          (out-aval (nb:var-aval out-var))
          (dtype (nb:aval-dtype out-aval))
+         ;; 許容誤差は出力の dtype ではなく、graph の中で実際に使われた
+         ;; 最も粗い浮動小数点 dtype で決める（DECODE-ARRAY 自体は
+         ;; バイト列を正しく解釈する必要があるので、それは引き続き
+         ;; 出力の実際の dtype DTYPE を使う）。理由は
+         ;; GRAPH-WORST-FLOAT-DTYPE の docstring と issue #33 のリグレッション
+         ;; 参照。
+         (tolerance-dtype (or (graph-worst-float-dtype graph) dtype))
          (n-eqns (length (nb:graph-eqns graph)))
          (device-arrays nil)
          (result nil))
@@ -41,11 +54,11 @@
                          host-arrays (nb:graph-invars graph)))
            (setf result (apply #'nabla:backend-invoke backend module "main" device-arrays))
            (let ((eager-result (apply #'nb:eval-graph graph host-arrays)))
-             (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
+             (multiple-value-bind (rtol atol) (dtype-tolerance tolerance-dtype)
                (and (equalp (device-array-aval result) out-aval)
                     (allclose (decode-array (to-host result) dtype)
                               (decode-array eager-result dtype)
-                              :rtol (if (member dtype '(:bf16 :f16)) (* rtol (1+ n-eqns)) rtol)
+                              :rtol (if (member tolerance-dtype '(:bf16 :f16)) (* rtol (1+ n-eqns)) rtol)
                               :atol atol)))))
       (when result (release-device-array result))
       (dolist (da device-arrays) (release-device-array da))
