@@ -59,6 +59,62 @@
             (/ (coerce (row-major-aref a i) 'double-float)
                (coerce (row-major-aref b i) 'double-float))))))
 
+;; issue #31 p2
+(defun reference-neg (a)
+  "-A（要素ごとの符号反転）を返す。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (- (coerce (row-major-aref a i) 'double-float))))))
+
+;; issue #31 p2
+(defun reference-exp (a)
+  "EXP(A)（要素ごとの指数関数）を返す。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (exp (coerce (row-major-aref a i) 'double-float))))))
+
+;; issue #31 p2
+(defun reference-log (a)
+  "LOG(A)（要素ごとの自然対数）を返す。A の要素はすべて正であること
+（負・0の扱いは NaN/-inf の性質として eager 側を直接呼んで確かめる。
+このスキルの「テストの中にロジックを書かない」/このファイル冒頭の注記
+どおり、参照実装は素朴なままにする）。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (log (coerce (row-major-aref a i) 'double-float))))))
+
+;; issue #31 p2
+(defun reference-tanh (a)
+  "TANH(A)（要素ごとの双曲線正接）を返す。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (tanh (coerce (row-major-aref a i) 'double-float))))))
+
+;; issue #31 p2
+(defun reference-max (a b)
+  "MAX(A, B)（要素ごとの大きい方）を返す。A と B は同じ shape を持つこと。
+NaN の伝播は eager 側を直接呼んで確かめる（CL の MAX は NaN を伝播しない
+ため、この参照実装は NaN を含まない入力にだけ使う）。"
+  (unless (equal (array-dimensions a) (array-dimensions b))
+    (error "reference-max: 形状が違う: ~A と ~A" (array-dimensions a) (array-dimensions b)))
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i)
+            (max (coerce (row-major-aref a i) 'double-float)
+                 (coerce (row-major-aref b i) 'double-float))))))
+
+;; issue #31 p2
+(defun reference-min (a b)
+  "MIN(A, B)（要素ごとの小さい方）を返す。REFERENCE-MAX と同じ注記が
+当てはまる。"
+  (unless (equal (array-dimensions a) (array-dimensions b))
+    (error "reference-min: 形状が違う: ~A と ~A" (array-dimensions a) (array-dimensions b)))
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i)
+            (min (coerce (row-major-aref a i) 'double-float)
+                 (coerce (row-major-aref b i) 'double-float))))))
+
 (defun reference-matmul (a b)
   "A @ B（行列積）を返す。A・B は rank 2 で、A の列数と B の行数が一致すること。"
   (unless (and (= (array-rank a) 2) (= (array-rank b) 2))

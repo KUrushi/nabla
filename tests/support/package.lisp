@@ -42,6 +42,13 @@
    #:reference-sub
    #:reference-mul
    #:reference-div
+   ;; issue #31 p2
+   #:reference-neg
+   #:reference-exp
+   #:reference-log
+   #:reference-tanh
+   #:reference-max
+   #:reference-min
    #:reference-matmul
    #:reference-reduce-sum
    ;; issue #31 p4: reshape / broadcast-in-dim / transpose

@@ -30,6 +30,8 @@
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "src/primitives/shape-common")
                (:file "src/primitives/shape")
+               ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
+               (:file "src/primitives/unary")
                ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
                ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
                ;; この行より前に足す）
@@ -76,6 +78,8 @@
                (:file "tests/primitives/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/primitives/shape-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/primitives/unary-test")
                ;; graph の eager 評価（issue #39、e0）
                (:file "tests/eval-test")
                (:file "tests/regressions"))
@@ -137,4 +141,6 @@
                (:file "tests/iree/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/iree/shape-primitive-support")
-               (:file "tests/iree/shape-test")))
+               (:file "tests/iree/shape-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/iree/unary-test")))
