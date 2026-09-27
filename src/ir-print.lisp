@@ -52,7 +52,15 @@ outvars）の番号を振り、var から番号への EQ ハッシュ表を返�
     numbers))
 
 (defun %var-name (numbers var)
-  (format nil "%~D" (gethash var numbers)))
+  "VAR の印字名 \"%N\" を返す。VAR が NUMBERS に無ければ（GRAPH が未定義の
+var を参照している、壊れた graph）、~D に NIL を渡して \"%nil\" のような
+壊れた文字列を返す代わりに MALFORMED-GRAPH を signal する。"
+  (multiple-value-bind (n found) (gethash var numbers)
+    (unless found
+      (error 'malformed-graph :graph nil
+             :format-control "var ~S が graph のどこにも定義されていない（未定義参照）"
+             :format-arguments (list var)))
+    (format nil "%~D" n)))
 
 (defun %print-shape (stream shape)
   "SHAPE（非負整数のリスト）を \"(2 3)\" のように印字する。rank 0（NIL）は
@@ -181,7 +189,11 @@ dtype とプリミティブ名は小文字、shape はリスト（rank 0 は \"(
 
 次の graph は印字できずエラーになる（いずれもフェーズ1では対象外）:
 非有限（NaN / ±inf）の f32 / f64 定数を持つもの、eqn の outvars が1つで
-ないもの、eqn の params にサブグラフ（GRAPH 構造体）を含むもの。"
+ないもの、eqn の params にサブグラフ（GRAPH 構造体）を含むもの。また、
+どこかの eqn の invars や GRAPH-OUTVARS が invars / constants / 他の eqn の
+outvars のどれでも定義されていない var を参照している（未定義参照の
+壊れた graph）場合も MALFORMED-GRAPH を signal する（\"%nil\" のような壊れた
+テキストを黙って出力しない）。"
   (let ((text (with-standard-io-syntax
                 (let ((*print-case* :downcase)
                       (*print-readably* nil))
@@ -230,17 +242,31 @@ NIL は空リストとして特別に読まれるので同様に影響を受け�
     ((symbolp form) (%normalize-graph-syntax-symbol form))
     (t form)))
 
+(defun %whitespace-char-p (char)
+  (member char '(#\Space #\Tab #\Newline #\Return #\Linefeed #\Page)))
+
 (defun %read-graph-form (source)
-  (handler-case
-      (with-standard-io-syntax
-        (let ((*package* (find-package '#:nabla.graph-syntax))
-              (*read-eval* nil))
-          (%normalize-graph-syntax-form
-           (etypecase source
-             (string (read-from-string source))
-             (stream (read source))))))
-    (error (c)
-      (%graph-syntax-error nil "graph のテキストを読めない: ~A" c))))
+  "SOURCE を1つの form として読む。form の後に空白以外の文字が残っていれば
+（末尾に余分なテキストがある壊れたソース）GRAPH-SYNTAX-ERROR を signal する。"
+  (let (form)
+    (handler-case
+        (with-standard-io-syntax
+          (let ((*package* (find-package '#:nabla.graph-syntax))
+                (*read-eval* nil))
+            (etypecase source
+              (string
+               (multiple-value-bind (f pos) (read-from-string source)
+                 (setf form f)
+                 (when (position-if-not #'%whitespace-char-p source :start pos)
+                   (%graph-syntax-error form "form の後に余分なテキストがある: ~S" (subseq source pos)))))
+              (stream
+               (setf form (read source))
+               (unless (eq (peek-char t source nil :eof) :eof)
+                 (%graph-syntax-error form "form の後に余分なテキストがある"))))))
+      (graph-syntax-error (c) (error c))
+      (error (c)
+        (%graph-syntax-error nil "graph のテキストを読めない: ~A" c)))
+    (%normalize-graph-syntax-form form)))
 
 (defun %require-section (form name)
   (unless (and (consp form) (eq (first form) name))
@@ -267,7 +293,12 @@ NIL は空リストとして特別に読まれるので同様に影響を受け�
     (let ((vars (make-hash-table :test 'equal))
           (invars '()) (constants '()) (eqns '()) (outvars '()))
       (flet ((define (name-symbol var)
-               (setf (gethash (symbol-name name-symbol) vars) var))
+               (let ((name (symbol-name name-symbol)))
+                 (when (nth-value 1 (gethash name vars))
+                   (error 'malformed-graph :graph nil
+                          :format-control "var 名 ~A が :in/:const/:eqns の中で複数回定義されている"
+                          :format-arguments (list name)))
+                 (setf (gethash name vars) var)))
              (resolve (name-symbol)
                (multiple-value-bind (var found) (gethash (symbol-name name-symbol) vars)
                  (if found
@@ -317,9 +348,12 @@ NIL は空リストとして特別に読まれるので同様に影響を受け�
 しない）。
 
 構造が不正なテキスト（graph で始まらない、節が欠ける、`:=` が無い、
-印字された aval と再計算した aval が食い違う、など）は GRAPH-SYNTAX-ERROR
-を signal する。未登録のプリミティブ名は UNKNOWN-PRIMITIVE、未定義の var
-参照は MALFORMED-GRAPH のまま伝わる。最後に CHECK-GRAPH を呼ぶ。"
+印字された aval と再計算した aval が食い違う、form の後に余分なテキストが
+ある、など）は GRAPH-SYNTAX-ERROR を signal する。未登録のプリミティブ名は
+UNKNOWN-PRIMITIVE、未定義の var 参照は MALFORMED-GRAPH のまま伝わる。
+:in / :const / :eqns のいずれかで同じ var 名が2回以上定義されている
+（後の定義が前を黙って上書きし、前の var が到達不能になる壊れたテキスト）
+場合も MALFORMED-GRAPH を signal する。最後に CHECK-GRAPH を呼ぶ。"
   (let ((form (%read-graph-form source)))
     (handler-case (%build-graph-from-form form)
       (unknown-primitive (c) (error c))
