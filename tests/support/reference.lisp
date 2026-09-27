@@ -147,22 +147,17 @@ NaN の伝播は eager 側を直接呼んで確かめる（CL の MAX は NaN �
             (if (= 1 (row-major-aref pred i)) (row-major-aref a i) (row-major-aref b i))))))
 
 (defun reference-matmul (a b)
-  "A @ B（行列積）を返す。A・B は rank 2 で、A の列数と B の行数が一致すること。"
+  "A @ B（行列積）を返す。A・B は rank 2 で、A の列数と B の行数が一致すること。
+
+issue #31 p5 以降は REFERENCE-DOT-GENERAL の薄いラッパー（contracting
+(1)/(0)、batch 無し）。"
   (unless (and (= (array-rank a) 2) (= (array-rank b) 2))
     (error "reference-matmul: rank 2 の配列だけを受け付ける: ~A と ~A"
            (array-dimensions a) (array-dimensions b)))
-  (destructuring-bind (m k) (array-dimensions a)
-    (destructuring-bind (k2 n) (array-dimensions b)
-      (unless (= k k2)
-        (error "reference-matmul: A の列数 ~A と B の行数 ~A が一致しない" k k2))
-      (let ((result (make-array (list m n) :element-type 'double-float :initial-element 0.0d0)))
-        (dotimes (i m result)
-          (dotimes (j n)
-            (let ((sum 0.0d0))
-              (dotimes (p k)
-                (incf sum (* (coerce (aref a i p) 'double-float)
-                             (coerce (aref b p j) 'double-float))))
-              (setf (aref result i j) sum))))))))
+  (unless (= (second (array-dimensions a)) (first (array-dimensions b)))
+    (error "reference-matmul: A の列数 ~A と B の行数 ~A が一致しない"
+           (second (array-dimensions a)) (first (array-dimensions b))))
+  (reference-dot-general a b '(1) '(0) '() '()))
 
 (defun reference-reduce-sum (a axis)
   "A の dimension AXIS に沿った総和を返す（結果の rank は A の rank - 1）。"
@@ -229,3 +224,66 @@ NaN の伝播は eager 側を直接呼んで確かめる（CL の MAX は NaN �
               for s in out-subscripts
               do (setf (nth p in-subscripts) s))
         (setf (row-major-aref result i) (coerce (apply #'aref a in-subscripts) 'double-float))))))
+
+;;; issue #31 p5: dot-general の参照実装。REFERENCE-MATMUL（上）はこれの
+;;; 薄いラッパー（contracting (1)/(0)、batch 無し）。
+;;;
+;;; eager 実装（src/primitives/dot.lisp）とは別の書き方（再帰による
+;;; 縮約次元のネストしたループ）にして、同じバグを2箇所で踏まないように
+;;; している。DOUBLE-FLOAT にデコード済みの配列を受け取り DOUBLE-FLOAT の
+;;; 配列を返す。
+
+(defun %dot-general-free-dims (rank batch contracting)
+  "0..RANK-1 のうち BATCH にも CONTRACTING にも含まれない次元を昇順で返す。"
+  (loop for d below rank
+        unless (member d batch) unless (member d contracting)
+        collect d))
+
+(defun %dot-general-build-subscripts (rank batch-dims batch-subs free-dims free-subs
+                                       contract-dims contract-subs)
+  "RANK 個の添字のリストを組み立てる。BATCH-DIMS[i] 番目の次元に
+BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
+番目に CONTRACT-SUBS[i] を入れる。"
+  (let ((subscripts (make-list rank)))
+    (loop for d in batch-dims for s in batch-subs do (setf (nth d subscripts) s))
+    (loop for d in free-dims for s in free-subs do (setf (nth d subscripts) s))
+    (loop for d in contract-dims for s in contract-subs do (setf (nth d subscripts) s))
+    subscripts))
+
+(defun reference-dot-general (a b lhs-contracting rhs-contracting lhs-batch rhs-batch)
+  "StableHLO の dot_general の意味で A・B を縮約する。出力の次元順序は
+（LHS-BATCH の順のバッチ次元、続いて A の自由次元を昇順、続いて B の
+自由次元を昇順）。A・B は DOUBLE-FLOAT の配列であること。"
+  (let* ((a-shape (array-dimensions a))
+         (b-shape (array-dimensions b))
+         (a-rank (length a-shape))
+         (b-rank (length b-shape))
+         (lhs-free (%dot-general-free-dims a-rank lhs-batch lhs-contracting))
+         (rhs-free (%dot-general-free-dims b-rank rhs-batch rhs-contracting))
+         (batch-shape (mapcar (lambda (d) (nth d a-shape)) lhs-batch))
+         (lhs-free-shape (mapcar (lambda (d) (nth d a-shape)) lhs-free))
+         (rhs-free-shape (mapcar (lambda (d) (nth d b-shape)) rhs-free))
+         (contract-shape (mapcar (lambda (d) (nth d a-shape)) lhs-contracting))
+         (out-shape (append batch-shape lhs-free-shape rhs-free-shape))
+         (result (make-array out-shape :element-type 'double-float :initial-element 0.0d0)))
+    (dotimes (i (array-total-size result) result)
+      (let* ((out-subscripts (%row-major-index->subscripts i out-shape))
+             (batch-subs (subseq out-subscripts 0 (length batch-shape)))
+             (lhs-free-subs (subseq out-subscripts (length batch-shape)
+                                    (+ (length batch-shape) (length lhs-free-shape))))
+             (rhs-free-subs (subseq out-subscripts (+ (length batch-shape) (length lhs-free-shape))))
+             (sum 0.0d0))
+        (labels ((sum-contract (remaining-shape contract-subs)
+                   (if (null remaining-shape)
+                       (let ((a-subscripts (%dot-general-build-subscripts
+                                            a-rank lhs-batch batch-subs lhs-free lhs-free-subs
+                                            lhs-contracting (reverse contract-subs)))
+                             (b-subscripts (%dot-general-build-subscripts
+                                            b-rank rhs-batch batch-subs rhs-free rhs-free-subs
+                                            rhs-contracting (reverse contract-subs))))
+                         (incf sum (* (coerce (apply #'aref a a-subscripts) 'double-float)
+                                      (coerce (apply #'aref b b-subscripts) 'double-float))))
+                       (dotimes (k (first remaining-shape))
+                         (sum-contract (rest remaining-shape) (cons k contract-subs))))))
+          (sum-contract contract-shape nil))
+        (setf (row-major-aref result i) sum)))))
