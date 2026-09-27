@@ -54,6 +54,10 @@
    #:reference-select
    #:reference-matmul
    #:reference-reduce-sum
+   ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+   #:reference-reshape
+   #:reference-broadcast-in-dim
+   #:reference-transpose
    ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）
    #:fake-backend
    #:fake-backend-compile-count

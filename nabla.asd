@@ -27,6 +27,9 @@
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "src/primitives/common")
                (:file "src/primitives/arith")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "src/primitives/shape-common")
+               (:file "src/primitives/shape")
                ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
                (:file "src/primitives/unary")
                ;; compare / select / convert（issue #31 p3）
@@ -75,6 +78,8 @@
                (:file "tests/ir-print-test")
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/primitives/arith-test")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "tests/primitives/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/primitives/unary-test")
                ;; compare / select / convert（issue #31 p3）
@@ -138,6 +143,9 @@
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/iree/primitive-support")
                (:file "tests/iree/arith-test")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "tests/iree/shape-primitive-support")
+               (:file "tests/iree/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/iree/unary-test")
                ;; compare / select / convert（issue #31 p3）
