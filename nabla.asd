@@ -46,6 +46,8 @@
                (:file "src/trace")
                (:file "src/trace-ops")
                (:file "src/walk")
+               ;; if を select に、配列レベルの公開 API（issue #32、t2）
+               (:file "src/array-api")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -102,6 +104,9 @@
                ;; トレーサ（issue #32、t1）
                (:file "tests/walk-test")
                (:file "tests/trace-test")
+               ;; if を select に、配列レベルの公開 API（issue #32、t2）
+               (:file "tests/trace-if-test")
+               (:file "tests/array-api-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
