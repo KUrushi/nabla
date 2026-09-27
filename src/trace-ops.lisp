@@ -552,7 +552,7 @@ TRACING-ERROR にする（(WHEN tracer-test x) がトレーサの条件で失敗
 TO-TRACER の eager 版）。"
   (typecase branch
     (array (%array-broadcast-if-rank0 branch shape))
-    (t (%array-broadcast-if-rank0 (%filled-array '() dtype branch) shape))))
+    (t (%filled-array shape dtype branch))))
 
 (defun %eager-select-array (pred a b)
   "PRED（:I1 のビット配列）による %T-SELECT の本体。"
@@ -567,19 +567,41 @@ TO-TRACER の eager 版）。"
     (apply (primitive-eager (find-primitive :select)) (list pred a* b*)
            (list (array-aval pred) (array-aval a*) (array-aval b*)) nil)))
 
+(defun %select-branch-tracer-p (branch)
+  "BRANCH がトレーサなら真を返す。PRED が配列（eager）でも、A・B の
+どちらかがトレーサなら SELECT 全体をトレースしなければならない（PRED を
+定数としてリフトする）ため、その判定に使う。"
+  (typep branch 'tracer))
+
+(defun %eager-select-with-tracer-branch (pred a b)
+  "PRED が配列（eager）だが A・B の少なくとも一方がトレーサのときの
+%T-SELECT の本体。PRED を :I1 の定数トレーサにリフトしてから
+%TRACE-SELECT-TRACER に委ねる（配列と混ぜたトレーサはリフトして定数と
+して扱う、という他の演算子（%T-ADD 等）と同じ規約）。"
+  (%trace-select-tracer (%lift-array-to pred :i1) a b))
+
 (defgeneric %t-select (pred a b)
   (:documentation
    "PRED（:I1 のトレーサまたはビット配列）の真偽で A・B のどちらかを選ぶ。
 A・B はトレーサ・配列・実数を任意に組み合わせられる。数値・rank 0 の
 トレーサ／配列は PRED の shape に合わせてブロードキャストし、dtype は
 もう一方の分岐から決める。両方とも数値、またはどちらかが :I1 の値だと
-TRACING-ERROR になる。"))
+TRACING-ERROR になる。PRED が配列（eager）でも、A・B の少なくとも一方が
+トレーサなら PRED を定数としてリフトしてトレースする（他の演算子で配列と
+トレーサを混ぜたときと同じ規約）。既知の制約: PRED が rank 0 で A・B が
+rank 1 以上のときは、A・B の shape に自動でブロードキャストしない（数値・
+rank 0 の A・B 自身はブロードキャストするが、PRED はしない）ので
+PRIMITIVE-ERROR になる。JAX の WHERE のように rank 0 の PRED を
+ブロードキャストしたいときは、呼び出し側が明示的に
+（BROADCAST-IN-DIM pred shape '()) すること。"))
 
 (defmethod %t-select ((pred tracer) a b)
   (%trace-select-tracer pred a b))
 
 (defmethod %t-select ((pred array) a b)
-  (%eager-select-array pred a b))
+  (if (or (%select-branch-tracer-p a) (%select-branch-tracer-p b))
+      (%eager-select-with-tracer-branch pred a b)
+      (%eager-select-array pred a b)))
 
 ;;; --- %t-if: TEST の種類で分岐する（issue #32、t1 の暫定版を t2 が
 ;;; 置き換える）。TEST が :I1 のトレーサ／ビット配列なら THEN-THUNK と

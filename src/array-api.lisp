@@ -42,7 +42,10 @@ rank 0 の場合も TRACING-ERROR にする）。"
    "A の最後の軸と B の最初の軸を縮約する（バッチ次元は無い）
 dot-general。A・B は rank 1 以上でなければならない（rank 0 は
 TRACING-ERROR）。A が rank 1（ベクタ）なら結果は B の残りの軸だけになる
-（1次元どうしなら rank 0 のスカラー）。"))
+（1次元どうしなら rank 0 のスカラー）。既知の制約: A・B は両方配列か
+両方トレーサでなければならない（+ 等の算術演算子と違い、配列とトレーサを
+混ぜたメソッドは無い）。トレース中に定数の配列と DOT したいときは、呼び
+出し側が明示的にリフトすること。"))
 
 (defmethod dot ((a array) (b array))
   (%dot-check-ranks (array-rank a) (array-rank b))
@@ -104,31 +107,54 @@ TRACING-ERROR）。A が rank 1（ベクタ）なら結果は B の残りの軸�
 潰す）。"
   (loop for i below rank collect i))
 
+(defun %reduce-resolve-axes (axes-supplied-p axes rank)
+  "AXES-SUPPLIED-P・AXES・RANK から実際に潰す軸のリストを決める。AXES が
+明示的に省略された（AXES-SUPPLIED-P が偽）ときだけ全軸をデフォルトにする。
+AXES が明示的に空リストで渡されたとき（AXES-SUPPLIED-P が真）は NIL を
+返し、呼び出し側が「reduce しない（X をそのまま返す）」と解釈する。
+src/primitives/reduce.lisp が空の :AXES を PRIMITIVE-ERROR にする契約上の
+逸脱を、このレイヤーで吸収する（プリミティブより上のレイヤーが axes を
+空に正規化して、そもそも eqn を作らない）。"
+  (cond
+    ((not axes-supplied-p) (%reduce-default-axes rank))
+    ((null axes) nil)
+    (t axes)))
+
 (defgeneric reduce-sum (x &key axes)
   (:documentation
    "X を AXES（省略時は全軸）に沿って総和で潰す。全軸を潰すと rank 0 に
-なる。"))
+なる。AXES を明示的に空リストで渡すと reduce しない（X をそのまま返す。
+eqn も足さない）。"))
 
-(defmethod reduce-sum ((x array) &key axes)
-  (let ((axes (or axes (%reduce-default-axes (array-rank x)))))
-    (apply (primitive-eager (find-primitive :reduce-sum)) (list x) (list (array-aval x)) (list :axes axes))))
+(defmethod reduce-sum ((x array) &key (axes nil axes-p))
+  (let ((axes (%reduce-resolve-axes axes-p axes (array-rank x))))
+    (if axes
+        (apply (primitive-eager (find-primitive :reduce-sum)) (list x) (list (array-aval x)) (list :axes axes))
+        x)))
 
-(defmethod reduce-sum ((x tracer) &key axes)
-  (let ((axes (or axes (%reduce-default-axes (aval-rank (tracer-aval x))))))
-    (%trace-eqn :reduce-sum (list x) :axes axes)))
+(defmethod reduce-sum ((x tracer) &key (axes nil axes-p))
+  (let ((axes (%reduce-resolve-axes axes-p axes (aval-rank (tracer-aval x)))))
+    (if axes
+        (%trace-eqn :reduce-sum (list x) :axes axes)
+        x)))
 
 (defgeneric reduce-max (x &key axes)
   (:documentation
    "X を AXES（省略時は全軸）に沿って最大値で潰す。全軸を潰すと rank 0 に
-なる。"))
+なる。AXES を明示的に空リストで渡すと reduce しない（X をそのまま返す。
+eqn も足さない）。"))
 
-(defmethod reduce-max ((x array) &key axes)
-  (let ((axes (or axes (%reduce-default-axes (array-rank x)))))
-    (apply (primitive-eager (find-primitive :reduce-max)) (list x) (list (array-aval x)) (list :axes axes))))
+(defmethod reduce-max ((x array) &key (axes nil axes-p))
+  (let ((axes (%reduce-resolve-axes axes-p axes (array-rank x))))
+    (if axes
+        (apply (primitive-eager (find-primitive :reduce-max)) (list x) (list (array-aval x)) (list :axes axes))
+        x)))
 
-(defmethod reduce-max ((x tracer) &key axes)
-  (let ((axes (or axes (%reduce-default-axes (aval-rank (tracer-aval x))))))
-    (%trace-eqn :reduce-max (list x) :axes axes)))
+(defmethod reduce-max ((x tracer) &key (axes nil axes-p))
+  (let ((axes (%reduce-resolve-axes axes-p axes (aval-rank (tracer-aval x)))))
+    (if axes
+        (%trace-eqn :reduce-max (list x) :axes axes)
+        x)))
 
 ;;; --- convert ---
 

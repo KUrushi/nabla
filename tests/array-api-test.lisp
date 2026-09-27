@@ -54,6 +54,34 @@
     (is (equalp (%primitive-eager-call :reduce-max (list a) (list (nb:array-aval a)) :axes '(0 1))
                 (nb:reduce-max a)))))
 
+(test array-api/reduce-sum-eager-with-explicit-empty-axes-is-identity
+  "AXES を明示的に空リストで渡すと reduce しない（X をそのまま返す）。
+省略時（デフォルトの全軸）と区別できなければならない。"
+  (let ((a (make-array '(2 3) :element-type 'single-float
+                                :initial-contents '((1.0 1.0 1.0) (1.0 1.0 1.0)))))
+    (is (equalp a (nb:reduce-sum a :axes '())))
+    (is (not (equalp a (nb:reduce-sum a))))))
+
+(test array-api/reduce-max-eager-with-explicit-empty-axes-is-identity
+  (let ((a (make-array '(2 3) :element-type 'single-float
+                                :initial-contents '((1.0 2.0 3.0) (4.0 5.0 6.0)))))
+    (is (equalp a (nb:reduce-max a :axes '())))
+    (is (not (equalp a (nb:reduce-max a))))))
+
+(test array-api/traced-reduce-sum-explicit-empty-axes-adds-no-eqn
+  "トレース時も同じ規約: AXES が明示的に空なら EQN を足さず、そのまま
+入力の VAR を返す（0 個の EQN のグラフ）。"
+  (let* ((f (nb:with-tracing (x) (nb:reduce-sum x :axes '())))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '(2 3) :f32)))))
+    (is (null (nb:graph-eqns graph)))
+    (is (eq (first (nb:graph-invars graph)) (first (nb:graph-outvars graph))))))
+
+(test array-api/traced-reduce-max-explicit-empty-axes-adds-no-eqn
+  (let* ((f (nb:with-tracing (x) (nb:reduce-max x :axes '())))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '(2 3) :f32)))))
+    (is (null (nb:graph-eqns graph)))
+    (is (eq (first (nb:graph-invars graph)) (first (nb:graph-outvars graph))))))
+
 (test array-api/convert-eager-matches-primitive
   (let ((a (make-array 2 :element-type 'single-float :initial-contents '(1.0 2.0))))
     (is (equalp (%primitive-eager-call :convert (list a) (list (nb:array-aval a)) :dtype :f64)
@@ -103,6 +131,18 @@
     (is (equalp (%primitive-eager-call :select (list pred a b)
                                         (list (nb:array-aval pred) (nb:array-aval a) (nb:array-aval b)))
                 (nb:where pred a b)))))
+
+(test array-api/where-eager-array-pred-with-tracer-branch-lifts-pred
+  "WHERE の PRED が eager な bit 配列でも、A・B の少なくとも一方がトレーサ
+なら PRED をリフトしてトレースする（回帰: 直接 %EAGER-SELECT-ARRAY に
+渡すとトレーサが配列演算に落ちて SIMPLE-TYPE-ERROR になる）。"
+  (let* ((pred (make-array 2 :element-type 'bit :initial-contents '(1 0)))
+         (f (nb:with-tracing (x) (nb:where pred x 0.0)))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '(2) :f32))))
+         (x (make-array 2 :element-type 'single-float :initial-contents '(3.0 4.0))))
+    (is (find :select (nb:graph-eqns graph) :key (lambda (e) (nb:primitive-name (nb:eqn-prim e)))))
+    (is (equalp #(3.0 0.0) (funcall f x)))
+    (is (equalp #(3.0 0.0) (nb:eval-graph graph x)))))
 
 (test array-api/where-eager-with-number-branch
   "片方の分岐が数値（実数）なら、もう一方の分岐（配列）の dtype・PRED の
@@ -248,3 +288,57 @@ TRACING-ERROR になる（%T-SELECT の仕様）。"
                                            (list (nb:array-aval broadcast-s) (nb:array-aval x)))))
     (is (equalp expected (nb::%t-add s x)))
     (is (equalp expected (nb::%t-add x s)))))
+
+;;; --- 最終 PBT（#32 の criterion）: 算術・IF/SELECT・配列 API（reshape,
+;;; transpose, 1軸だけの reduce, dot、K ≤ 4）を混ぜた式の
+;;; TRACE-TO-GRAPH + EVAL-GRAPH == 直接呼び出し ---
+;;;
+;;; 形状は M・K・N（すべて 1〜4）で決まる: A・B は (M K)、W は (K N)。
+;;;   X = (IF (> A 0.0) (+ A B) (- A B))     ; 算術 + IF/SELECT（要素ごとの
+;;;                                            PRED なので分岐と shape が
+;;;                                            一致し、rank-0 PRED の既知の
+;;;                                            制約に触れない）
+;;;   Y = (DOT X W)                          ; (M N)、縮約軸は K（≤ 4）
+;;;   Z = (TRANSPOSE Y)                      ; (N M)
+;;;   FLAT = (RESHAPE Z (N*M))               ; reshape で flatten
+;;;   FLAT2 = (RESHAPE FLAT (N M))           ; reshape で戻す
+;;;   R = (REDUCE-SUM FLAT2 :AXES (1))       ; 1軸だけの reduce（全軸ではない）
+;;; M・K・N は WITH-TRACING のコードに直接埋め込む（形状はトレース時に
+;;; 固定されていなければならない）ので、式そのものを EVAL で組み立てる
+;;; （%EXPR-IF-TRACEABLE-FUNCTION 等と同じ考え方）。
+
+(defun %mixed-pbt-form (m k n)
+  "M・K・N（配列 A/B の shape (M K)、W の shape (K N)）から、算術・
+IF/SELECT・DOT/TRANSPOSE/RESHAPE/REDUCE-SUM を混ぜた WITH-TRACING の
+フォームを組み立てる。"
+  `(nb:with-tracing (a b w)
+     (let* ((x (if (> a 0.0) (+ a b) (- a b)))
+            (y (nb:dot x w))
+            (z (nb:transpose y))
+            (flat (nb:reshape z (list ,(* n m))))
+            (flat2 (nb:reshape flat (list ,n ,m)))
+            (r (nb:reduce-sum flat2 :axes (list 1))))
+       r)))
+
+(test array-api/mixed-arithmetic-if-select-and-array-api-eval-graph-matches-direct-call
+  "算術（+/-）・IF/SELECT・DOT/TRANSPOSE/RESHAPE/REDUCE-SUM（1軸）を混ぜた
+式の TRACE-TO-GRAPH + EVAL-GRAPH は、TRACEABLE-FUNCTION を配列に直接
+適用した結果とビット単位で一致する（#32 の最終基準）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 4)
+                                   (uniform-integer :lo 1 :hi 4)
+                                   (uniform-integer :lo 1 :hi 4)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (m k n seed) args
+                    (let* ((f (eval (%mixed-pbt-form m k n)))
+                           (spec-a (make-array-spec (list m k) :f32))
+                           (spec-w (make-array-spec (list k n) :f32))
+                           (a (make-random-array spec-a :seed seed))
+                           (b (make-random-array spec-a :seed (+ seed 1)))
+                           (w (make-random-array spec-w :seed (+ seed 2)))
+                           (direct (funcall f a b w))
+                           (graph (nb:trace-to-graph f (list (nb:array-aval a) (nb:array-aval b) (nb:array-aval w))))
+                           (traced (nb:eval-graph graph a b w)))
+                      (%array-bits-equal-p direct traced))))
+                :regression-id array-api/mixed-arithmetic-if-select-and-array-api-eval-graph-matches-direct-call
+                :regression-file (regression-path "array-api-mixed-matches-eval-graph"))))

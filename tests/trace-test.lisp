@@ -217,21 +217,32 @@ golden の1つ目）。"
         (is (equalp expected (nb:eval-graph graph a b))
             "~S: EVAL-GRAPH の結果が CL の要素ごとの比較と食い違う" op)))))
 
-;;; --- %T-IF（T1 の暫定版）: TEST がトレーサ・配列なら TRACING-ERROR ---
+;;; --- %T-IF: TEST がトレーサ・配列（:I1）なら SELECT に書き換える ---
+;;;
+;;; t1 のこの節は元々「TEST がトレーサ・配列なら TRACING-ERROR」という
+;;; %T-IF の暫定版（t1 単独）の契約を検査していたが、t2（issue #32、
+;;; src/trace-ops.lisp）が %T-IF を SELECT への書き換えに置き換えたため、
+;;; その契約はもう成り立たない。新しい契約（TEST が :I1 のトレーサ・配列
+;;; なら SELECT、それ以外の dtype のトレーサ・配列なら TRACING-ERROR）は
+;;; tests/trace-if-test.lisp が検査する
+;;; （trace-if/compare-then-select・trace-if/non-i1-tracer-test-signals-
+;;; tracing-error など）。ここでは、この節がその新しい契約と矛盾しないこと
+;;; だけを確かめる（golden は trace-if-test.lisp と重複させない）。
 
-(test trace/if-on-traced-test-signals-tracing-error
-  "(if (< x 0) (- x) x) を TRACE-TO-GRAPH すると、TEST（(< x 0)）がトレーサ
-（:I1）になるため TRACING-ERROR を signal する（select への書き換えは t2 の
-仕事で、t1 ではまだ対応しない契約そのものを検査する）。"
-  (signals nb:tracing-error
-    (nb:trace-to-graph (nb:with-tracing (x) (if (< x 0) (- x) x)) (list (nb:make-aval '() :f32)))))
+(test trace/if-on-traced-i1-test-rewrites-to-select
+  "(if (< x 0) (- x) x) を TRACE-TO-GRAPH すると、TEST（(< x 0)）が :I1 の
+トレーサになり、TRACING-ERROR ではなく SELECT の EQN に書き換わる（golden
+は tests/trace-if-test.lisp の TRACE-IF/COMPARE-THEN-SELECT を見よ）。"
+  (let* ((f (nb:with-tracing (x) (if (< x 0) (- x) x)))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '() :f32)))))
+    (is (find :select (nb:graph-eqns graph) :key (lambda (e) (nb:primitive-name (nb:eqn-prim e)))))))
 
-(test trace/if-on-traced-test-signals-tracing-error-eager
-  "同じ関数を eager に（配列を渡して）呼んでも、TEST が配列になるため
-TRACING-ERROR を signal する。"
+(test trace/if-on-traced-i1-test-rewrites-to-select-eager
+  "同じ関数を eager に（配列を渡して）呼んでも、TEST が :I1 の BIT 配列に
+なり、TRACING-ERROR ではなく SELECT で選ばれた結果を返す。"
   (let ((f (nb:with-tracing (x) (if (< x 0) (- x) x)))
         (a (make-array 2 :element-type 'single-float :initial-contents '(-1.0 2.0))))
-    (signals nb:tracing-error (funcall f a))))
+    (is (equalp #(1.0 2.0) (funcall f a)))))
 
 ;;; --- エラー ---
 

@@ -49,6 +49,21 @@ TRACING-ERROR になる。"
   (let* ((f (nb:with-tracing (x) (case (if (> 1 0) 0 1) (0 (- x)) (t x)))))
     (is (= -3.0 (funcall f 3.0)))))
 
+(test trace-if/eager-array-pred-with-tracer-branch-lifts-pred
+  "PRED が eager な bit 配列でも、A・B の少なくとも一方がトレーサなら
+PRED を :I1 の定数としてリフトしてトレースする（PRED を配列のまま
+%EAGER-SELECT-ARRAY に渡すと、トレーサを配列演算に落とそうとして
+SIMPLE-TYPE-ERROR で死ぬ回帰）。"
+  (let* ((f (nb:with-tracing (x)
+              (if (> (make-array 2 :element-type 'single-float :initial-contents '(1.0 -1.0)) 0.0)
+                  x
+                  0.0)))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '(2) :f32))))
+         (x (make-array 2 :element-type 'single-float :initial-contents '(3.0 4.0))))
+    (is (find :select (nb:graph-eqns graph) :key (lambda (e) (nb:primitive-name (nb:eqn-prim e)))))
+    (is (equalp #(3.0 0.0) (funcall f x)))
+    (is (equalp #(3.0 0.0) (nb:eval-graph graph x)))))
+
 (test trace-if/ordinary-if-on-lisp-boolean-produces-no-select
   "TEST がトレーサ・配列でない、ふつうの Lisp の値なら SELECT の EQN を
 足さない（THEN／ELSE の片方だけを評価する、ふつうの IF のまま）。"
