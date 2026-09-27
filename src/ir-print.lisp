@@ -294,7 +294,10 @@ NIL は空リストとして特別に読まれるので同様に影響を受け�
           (invars '()) (constants '()) (eqns '()) (outvars '()))
       (flet ((define (name-symbol var)
                (let ((name (symbol-name name-symbol)))
-                 (when (nth-value 1 (gethash name vars))
+                 ;; VARS には常に VAR 構造体（NIL でない）だけを格納するので、
+                 ;; プライマリ値の真偽で「既に定義済みか」を判定できる
+                 ;; （MULTIPLE-VALUE-BIND で第2値の FOUND を見る必要が無い）。
+                 (when (gethash name vars)
                    (error 'malformed-graph :graph nil
                           :format-control "var 名 ~A が :in/:const/:eqns の中で複数回定義されている"
                           :format-arguments (list name)))
