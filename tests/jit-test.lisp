@@ -209,3 +209,144 @@ JIT-ERROR になる。"
            (a (make-random-array (make-array-spec '(2 3) :f32) :seed 23))
            (b (make-random-array (make-array-spec '(2 3) :f32) :seed 24)))
       (signals nb:jit-error (funcall jf a b)))))
+
+;;; --- defjit（issue #34、wave 4 j2） ---
+
+(test jit/defjit-basic-and-redefinition
+  "DEFJIT で定義した関数は fboundp になり、結果は eager と一致する。2回目の
+呼び出しはコンパイルし直さない。同じ DEFJIT フォームを再評価すると、古い
+TRACEABLE-FUNCTION のキャッシュエントリは0になり（%JIT-CACHE-FORGET 済み）、
+次の呼び出しはまた新しくコンパイルする。"
+  (with-fresh-fake-backend (backend)
+    (let ((nb:*default-backend* backend))
+      (eval '(nb:defjit %jit-test-add (a b) (+ a b)))
+      (is (fboundp '%jit-test-add))
+      (let ((a (make-random-array (make-array-spec '(2 3) :f32) :seed 30))
+            (b (make-random-array (make-array-spec '(2 3) :f32) :seed 31)))
+        (let ((old (get '%jit-test-add 'nb::%defjit-traceable)))
+          (is (allclose (funcall '%jit-test-add a b) (funcall old a b) :dtype :f32))
+          (funcall '%jit-test-add a b)
+          (is (= 1 (fake-backend-compile-count backend)))
+          (eval '(nb:defjit %jit-test-add (a b) (+ a b)))
+          (is (= 0 (nb::%jit-cache-entry-count old))
+              "再定義後、古い TRACEABLE-FUNCTION のエントリは捨てられている")
+          (funcall '%jit-test-add a b)
+          (is (= 2 (fake-backend-compile-count backend))))))))
+
+;;; --- use-eager / recompile リスタート（issue #34、wave 4 j2） ---
+
+(test jit/use-eager-restart-runs-this-call-and-caches-nothing
+  "フェイク backend は (- a b) を分類できないので BACKEND-COMPILE が
+BACKEND-ERROR を signal し、%JIT-CALL は JIT-COMPILE-ERROR に変換する。
+NB:USE-EAGER を invoke するとこの呼び出しだけ EVAL-GRAPH で評価され、
+結果は (FUNCALL f a b) と一致する。何もキャッシュされない（エントリ数0）。
+ハンドラが無ければ JIT-COMPILE-ERROR がそのまま signal され、
+JIT-COMPILE-ERROR-CONDITION は NABLA:BACKEND-ERROR。"
+  (with-fresh-fake-backend (backend)
+    (let* ((f (nb:with-tracing (a b) (- a b)))
+           (jf (nb:jit f :backend backend))
+           (a (make-random-array (make-array-spec '(2 3) :f32) :seed 32))
+           (b (make-random-array (make-array-spec '(2 3) :f32) :seed 33)))
+      (signals nb:jit-compile-error (funcall jf a b))
+      (is (= 0 (nb::%jit-cache-entry-count f)))
+      (handler-case (funcall jf a b)
+        (nb:jit-compile-error (c)
+          (is (typep (nb:jit-compile-error-condition c) 'nb:backend-error))))
+      (let ((result nil))
+        (handler-bind ((nb:jit-compile-error (lambda (c) (declare (ignore c)) (invoke-restart 'nb:use-eager))))
+          (setf result (multiple-value-list (funcall jf a b))))
+        (is (allclose (first result) (funcall f a b) :dtype :f32)))
+      (is (= 0 (nb::%jit-cache-entry-count f))
+          "USE-EAGER は何もキャッシュしない"))))
+
+(defclass %flaky-fake-backend (fake-backend)
+  ((attempts :initform 0 :accessor %flaky-fake-backend-attempts))
+  (:documentation
+   "1回目の BACKEND-COMPILE だけ BACKEND-ERROR を signal し、2回目以降は
+FAKE-BACKEND と同じ振る舞いに戻る backend（NB:RECOMPILE リスタートを
+確かめるためのテスト専用クラス）。"))
+
+(defmethod nabla:backend-compile ((backend %flaky-fake-backend) text)
+  (incf (%flaky-fake-backend-attempts backend))
+  (if (= 1 (%flaky-fake-backend-attempts backend))
+      (progn
+        (incf (fake-backend-compile-count backend))
+        (error 'nabla.tests.support::%fake-backend-unsupported-op
+               :format-control "flaky: わざと1回目だけ失敗する"
+               :format-arguments nil))
+      (call-next-method)))
+
+(test jit/recompile-restart-retries-once
+  "1回目の BACKEND-COMPILE だけ失敗する %FLAKY-FAKE-BACKEND に対して
+NB:RECOMPILE を invoke すると、%JIT-CALL 自体をやり直し、2回目の
+BACKEND-COMPILE は成功してキャッシュされる（BACKEND-COMPILE の呼び出し
+回数は2）。"
+  (let ((nb:*compile-cache-directory* nil)
+        (backend (make-instance '%flaky-fake-backend)))
+    (let* ((f (nb:with-tracing (a b) (+ a b)))
+           (jf (nb:jit f :backend backend))
+           (a (make-random-array (make-array-spec '(2 3) :f32) :seed 34))
+           (b (make-random-array (make-array-spec '(2 3) :f32) :seed 35))
+           (result nil))
+      (handler-bind ((nb:jit-compile-error (lambda (c) (declare (ignore c)) (invoke-restart 'nb:recompile))))
+        (setf result (funcall jf a b)))
+      (is (allclose result (funcall f a b) :dtype :f32))
+      (is (= 2 (fake-backend-compile-count backend)))
+      (is (= 1 (nb::%jit-cache-entry-count f))))))
+
+;;; --- eqn マッピング: loc が無ければ NIL（issue #34、wave 4 j2） ---
+
+(test jit/compile-error-eqn-is-nil-without-loc
+  "フェイク backend のエラーメッセージには loc(\"eqn-N\") が含まれないので、
+JIT-COMPILE-ERROR-EQN・JIT-COMPILE-ERROR-EQN-INDEX はどちらも NIL になる
+（IREE 経由の正のマッピングは tests/iree/jit-test.lisp で確かめる）。"
+  (with-fresh-fake-backend (backend)
+    (let* ((f (nb:with-tracing (a b) (- a b)))
+           (jf (nb:jit f :backend backend))
+           (a (make-random-array (make-array-spec '(2 3) :f32) :seed 36))
+           (b (make-random-array (make-array-spec '(2 3) :f32) :seed 37)))
+      (handler-case
+          (progn
+            (funcall jf a b)
+            (fail "フェイク backend の (- a b) がコンパイルに成功してしまった"))
+        (nb:jit-compile-error (c)
+          (is (null (nb:jit-compile-error-eqn c)))
+          (is (null (nb:jit-compile-error-eqn-index c))))))))
+
+;;; --- USE-EAGER / RECOMPILE はキャッシュミスのコンパイル経路だけを囲む ---
+
+(defclass %broken-invoke-fake-backend (fake-backend)
+  ()
+  (:documentation
+   "BACKEND-COMPILE / BACKEND-LOAD は FAKE-BACKEND と同じだが、
+BACKEND-INVOKE が必ず（BACKEND-ERROR ではない）プレーンな ERROR を
+signal する backend。%JIT-EXECUTE（キャッシュヒット後の実行経路）の
+エラーには NB:USE-EAGER・NB:RECOMPILE が提供されないことを確かめるための
+テスト専用クラス。"))
+
+(defmethod nabla:backend-invoke ((backend %broken-invoke-fake-backend) module function-name &rest arrays)
+  (declare (ignore backend module function-name arrays))
+  (error "broken-invoke-fake-backend: わざと実行時エラーを起こす"))
+
+(test jit/restarts-do-not-cover-execution-errors
+  "コンパイル済みの module を BACKEND-INVOKE する段階（%JIT-EXECUTE）で
+signal されたエラーには、NB:USE-EAGER・NB:RECOMPILE のどちらのリスタートも
+アクティブでない（restart-case は %JIT-CACHE-LOOKUP-OR-COMPILE だけを
+囲むので、キャッシュヒット後の実行時エラーはそのまま伝播する）。"
+  (let* ((backend (make-instance '%broken-invoke-fake-backend))
+         (nb:*compile-cache-directory* nil)
+         (f (nb:with-tracing (a b) (+ a b)))
+         (jf (nb:jit f :backend backend))
+         (a (make-random-array (make-array-spec '(2 3) :f32) :seed 38))
+         (b (make-random-array (make-array-spec '(2 3) :f32) :seed 39))
+         (use-eager-restart :not-checked)
+         (recompile-restart :not-checked))
+    (block done
+      (handler-bind ((error (lambda (c)
+                               (declare (ignore c))
+                               (setf use-eager-restart (find-restart 'nb:use-eager))
+                               (setf recompile-restart (find-restart 'nb:recompile))
+                               (return-from done))))
+        (funcall jf a b)))
+    (is (null use-eager-restart))
+    (is (null recompile-restart))))

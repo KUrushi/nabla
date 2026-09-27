@@ -190,4 +190,6 @@
                ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
                (:file "tests/iree/float-traps-test")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
-               (:file "tests/iree/stablehlo-test")))
+               (:file "tests/iree/stablehlo-test")
+               ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
+               (:file "tests/iree/jit-test")))

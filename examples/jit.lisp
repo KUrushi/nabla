@@ -1,0 +1,7 @@
+(require :asdf)
+(asdf:load-system "nabla/iree")
+(nb:defjit add2 (a b) (+ a b))
+(let ((a (make-array 4 :element-type 'single-float :initial-contents '(1.0 2.0 3.0 4.0)))
+      (b (make-array 4 :element-type 'single-float :initial-contents '(10.0 20.0 30.0 40.0))))
+  (format t "~&1回目（コンパイルする）: ~A~%" (add2 a b))
+  (format t "~&2回目（キャッシュを使う。再コンパイルしない）: ~A~%" (add2 a b)))

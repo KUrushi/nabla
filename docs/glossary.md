@@ -34,6 +34,12 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **インメモリのコンパイルキャッシュ（jit キャッシュ）**
 : `jit` が持つ、プロセス内・メモリ上だけのキャッシュ（`src/jit.lisp`）。キーは「関数の同一性（EQ）・aval・静的引数・実行系（ターゲット）」で、同じキーの2回目の呼び出しはトレース・コンパイルをせずコンパイル済みの module をそのまま使う。プロセスをまたいで効く vmfb のディスクキャッシュ（`src/compile-cache.lisp`、issue #10。`BACKEND-COMPILE` の `:AROUND` メソッドとして実装され、実行系がコンパイルした結果そのものをファイルに残す）とは別の層で、両方が独立に効く（jit キャッシュがヒットすればディスクキャッシュまで届かないし、jit キャッシュがミスしてもディスクキャッシュがヒットすれば実際のコンパイラは呼ばれない）。関数を再定義する（`WITH-TRACING` を再評価する、`defjit` を再評価する）と、新しい `TRACEABLE-FUNCTION` オブジェクトになるため、古いキャッシュは（EQ で一致しないので）使われない。
 
+**defjit**
+: `(defjit name (&rest lambda-list) &body body)`。`body` を `with-tracing` でトレース対象にしてから `jit` した通常の関数を `name` に定義するマクロ（`src/jit.lisp`、issue #34）。CL の `defun` と同じ感覚で「関数を定義したら、その名前で呼べる」ようにする糖衣で、内部では毎回新しい `traceable-function` を作って `(setf (fdefinition name) ...)` する。再評価すると古いキャッシュエントリを捨てるので、関数を再定義したら次の呼び出しは必ず再コンパイルする。
+
+**リスタート（restart）**
+: Common Lisp の条件システムが提供する「コンディションが signal された地点から、あらかじめ用意した別の処理を選んで再開する」仕組み。`error` と違い、呼び出し元（`handler-bind` を書いた側）が `invoke-restart` でどう続けるかを選べる（スタックを一度も巻き戻さずに選べるのが `handler-case` との違い）。nabla の `jit` は、キャッシュミスのコンパイルが `jit-compile-error` を signal したとき2つのリスタートを提供する: `use-eager`（この呼び出しだけ `eval-graph` で eager に評価して返す。何もキャッシュしない）と `recompile`（もう一度コンパイルをやり直す）。
+
 **loc（位置情報）**
 : MLIR のテキストで、ある演算がソースのどこに由来するかを添える注釈（`stablehlo.add %a, %b : tensor<4xf32> loc("eqn-3")` の末尾部分）。nabla の `emit-stablehlo` は各 eqn の出力行に `loc("eqn-N")`（N は `graph-eqns` 中の0始まりの位置）を付ける。IREE のコンパイルエラーの診断がこの loc を含んでいれば、`graph-eqn-for-diagnostic` でどの eqn が原因かを逆引きできる。
 
@@ -175,7 +181,7 @@ pretty form を出力する。
 : 変異させても意味のある違いが生まれない、または確かめる価値の低いコードの箇所。ログ出力、エラーメッセージの文字列、型宣言などがこれにあたる。Google の mutation testing ではこれを除外して、ノイズを減らしている。
 
 **テストサイズ（small / medium / large）**
-: Google の分類で、テストが使ってよい資源の範囲。small は1プロセス内で完結し、I/O やスレッドを使わない。medium は1台のマシン内で、ファイルやローカルのプロセスを使ってよい。large は複数のマシンや外部の資源を使う。小さいほど速く、安定している。
+: Google の分類で、テストが使ってよい資源の範囲。small は1プロセス内で完結し、I/O やスレッドを使わない。medium は1台のマシン内で、ファイルやローカルのプロセスを使ってよい。large は複数のマシンや外部の資源を使う。小さいほど速く、安定している。nabla では FiveAM のスイート `:nabla.small` / `:nabla.medium` / `:nabla.large` がこれに対応し、既定のスイート（scripts/run-tests.sh）は small + medium。
 
 **ハーメティック（hermetic）**
 : テストが外部の状態（ネットワーク、時刻、他のテスト、実行順序）に依存せず、それだけで完結していること。何度実行しても同じ結果になる。

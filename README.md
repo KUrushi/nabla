@@ -15,7 +15,7 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 | フェーズ | 目標 | 目安 |
 | --- | --- | --- |
 | 0. IREE 疎通 | Lisp から IREE を動かす | 完了 |
-| 1. トレースと jit | Lisp 関数から StableHLO を出す | 1〜1.5ヶ月 |
+| 1. トレースと jit | Lisp 関数から StableHLO を出す | 完了 |
 | 2. grad | 逆伝播 | 1〜1.5ヶ月 |
 | 3. vmap と制御構造 | JAX 相当の変換を揃える | 1〜1.5ヶ月 |
 | 4. Flax 相当 | モデル記述 | 1〜2ヶ月 |
@@ -128,7 +128,30 @@ sbcl --non-interactive --load examples/add.lisp
 
 `tests/iree/example-test.lisp` がこの例を毎回 `load` して出力を確認しているので、この例が壊れたら既定のテストスイートが落ちる（ビヨンセ・ルール）。
 
-## 公開 API（フェーズ0時点）
+## 使ってみる（jit）
+
+`examples/jit.lisp`（このコードブロックと同じ内容）:
+
+```lisp
+(require :asdf)
+(asdf:load-system "nabla/iree")
+(nb:defjit add2 (a b) (+ a b))
+(let ((a (make-array 4 :element-type 'single-float :initial-contents '(1.0 2.0 3.0 4.0)))
+      (b (make-array 4 :element-type 'single-float :initial-contents '(10.0 20.0 30.0 40.0))))
+  (format t "~&1回目（コンパイルする）: ~A~%" (add2 a b))
+  (format t "~&2回目（キャッシュを使う。再コンパイルしない）: ~A~%" (add2 a b)))
+```
+
+実行:
+
+```sh
+export CL_SOURCE_REGISTRY="$PWD/:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}//:"
+sbcl --non-interactive --load examples/jit.lisp
+```
+
+`defjit` は `with-tracing` で本体をトレース対象にしてから `jit` した通常の Lisp 関数を定義する。1回目の呼び出しでトレース・emit・コンパイルし、`add2` の同一性（このマクロ展開1回分）・引数の `aval`・`*default-backend*` が変わらない限り、2回目以降はインメモリのキャッシュを引くだけでコンパイルし直さない（同じ `defjit` フォームを再評価すると、古いキャッシュは捨てて次の呼び出しで作り直す）。`tests/iree/jit-test.lisp` の `example/jit-lisp/prints-expected-sum` がこの例を `load` して出力を確認している。jit の IREE 経由 end-to-end テストは、他の `nabla/iree` の medium テストと同じ既定の small+medium スイート・同じ SBCL プロセスで動く（issue #34）。
+
+## 公開 API
 
 `nabla`（nickname `nb`）が export するシンボルのみ。`nabla.iree` の低水準な C API バインディングはここには載せない（ハイラムの法則に備え、README に載せた名前を事実上の公開約束にしすぎないため）。詳しく知りたければ `src/iree/package.lisp` を見る。
 
@@ -154,6 +177,8 @@ sbcl --non-interactive --load examples/add.lisp
 **StableHLO テキスト emitter**（`src/stablehlo.lisp`、issue #33）: `emit-stablehlo`（graph を、無名の module の中に1つの `func.func`（既定名 `main`）を持つ StableHLO テキストに変換する。`backend-compile` にそのまま渡せる。各 eqn の出力行には `loc("eqn-N")` が付く）, `primitive-not-emittable`, `primitive-not-emittable-name`（`:emit` を持たないプリミティブに当たったときに signal する）
 
 **jit**（`src/jit.lisp`、issue #34）: `jit`（`with-tracing` / `defjit` が作った `traceable-function` を、呼ぶたびに必要なら1回だけコンパイルしてから実行する関数にする。`:static-args` で0始まりの引数位置を静的引数に指定でき、`:backend` で使う backend（`nil` なら `*default-backend*`）を指定できる。呼び出し時の動的引数は、CL の配列（`array-aval` で aval を推論する）か device array のどちらでもよい。bf16 / f16 は生の `(unsigned-byte 16)` 配列のままでは dtype を推論できないため、先に `to-device` で device array にしてから渡すこと。戻り値は graph の出力の個数だけ `to-host` した多値になる——v1 は常に host 配列を返す）, `jit-error`（`jit` / jit した関数の呼び出しが誤った使い方を検出したときに signal する）, `*default-backend*`（`jit` に `:backend` を渡さなかったときに使う既定の backend。`nil`・backend の KIND（キーワード）・backend インスタンスのいずれか。`nabla/iree` をロードするとまだ未設定のときに限りこの変数を自分の KIND に設定する）。jit キャッシュは関数の同一性（EQ）・aval・静的引数の値・backend（フィンガープリント込み）をキーにするインメモリのキャッシュで、vmfb のディスクキャッシュ（`*compile-cache-directory*`）とは別の層（`docs/glossary.md` の「インメモリのコンパイルキャッシュ」参照）。
+
+`defjit`（`name (&rest lambda-list) &body body`。マクロ）は `body` を `with-tracing` でトレース対象にしてから `jit` した、通常の関数として呼べるものを `name` に定義する（`:static-args` やドキュメント文字列は v1 では未対応）。同じ `defjit` フォームを再評価するたびに新しい `traceable-function` を作り直し、古いキャッシュエントリはその場で捨てる（Lisp の関数を再定義したときの直感どおり、古いキャッシュを使い続けない）。`jit-compile-error`（`jit-error` のサブタイプ。`backend-compile` / `backend-load` が `backend-error` を signal したときに、失敗した `graph` と、可能なら原因の eqn（`jit-compile-error-eqn` / `-eqn-index`。見つからなければ NIL）を添えて signal する）, `jit-compile-error-condition`（元の `backend-error`）, `jit-compile-error-graph`, `jit-compile-error-eqn`, `jit-compile-error-eqn-index`。`jit-compile-error` を待ち受けるキャッシュミスの経路には2つのリスタートがある: `use-eager`（この呼び出しだけ `eval-graph` で eager 実行し、何もキャッシュしない）, `recompile`（もう一度コンパイルをやり直す）。使い方は `(handler-bind ((nb:jit-compile-error (lambda (c) (invoke-restart 'nb:use-eager)))) (funcall jitted ...))` のように `invoke-restart` で選ぶ。
 
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
 

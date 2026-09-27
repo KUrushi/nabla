@@ -92,8 +92,16 @@
    ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
    #:jit
    #:jit-error
-   #:*default-backend*)
+   #:*default-backend*
+   ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
+   #:defjit
+   #:jit-compile-error
+   #:jit-compile-error-condition
+   #:jit-compile-error-graph
+   #:jit-compile-error-eqn
+   #:jit-compile-error-eqn-index
+   #:use-eager
+   #:recompile)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
-ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend
-プロトコルのみ。"))
+ニックネームは NB。公開シンボルの一覧は README.md の「公開 API」を正とする。"))
