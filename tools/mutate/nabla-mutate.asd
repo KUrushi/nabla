@@ -5,7 +5,7 @@
 (defsystem "nabla-mutate"
   :description "nabla 用の最小限の mutation testing runner"
   :author "nabla contributors"
-  :license "MIT"
+  :license "Apache-2.0"
   :depends-on ("alexandria" "uiop")
   :in-order-to ((test-op (test-op "nabla-mutate/tests")))
   :pathname "src"

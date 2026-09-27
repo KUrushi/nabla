@@ -12,7 +12,7 @@
 (defsystem "nabla"
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
-  :license "MIT"
+  :license "Apache-2.0"
   :depends-on ("ironclad")
   :components ((:file "src/package")
                (:file "src/dtype")
@@ -82,9 +82,12 @@
                ;; device-array-test / execute-test より前）に置く。どれも Lisp の
                ;; 関数としては、より前にロードされる src/iree/*.lisp にしか
                ;; 依存しないので、テストファイルの順序を変えても機能的な依存関係は
-               ;; 壊れない。この順にした理由は finalizer-test.lisp のトップの
-               ;; コメントと PR 本文を参照（nabla.iree の finalizer 機構とは無関係の、
-               ;; SBCL の GC と IREE のスレッドとの既知の相性問題に対する緩和策）。
+               ;; 壊れない。この順にした経緯は finalizer-test.lisp のトップの
+               ;; コメントを参照: かつて発生していた fatal error（issue #5、LLVM が
+               ;; SIGUSR2 のハンドラを上書きすることが原因）の発生頻度を下げる
+               ;; 緩和策として置いたが、根本原因自体は src/iree/signals.lisp で
+               ;; 修正済みなので、この順序はもう必須ではない。害も無いので変えて
+               ;; いない。
                (:file "tests/iree/finalizer-test")
                (:file "tests/iree/backend-test")
                (:file "tests/iree/compile-cache-test")
@@ -93,4 +96,5 @@
                (:file "tests/iree/runtime-test")
                (:file "tests/iree/runtime-cuda-test")
                (:file "tests/iree/device-array-test")
-               (:file "tests/iree/execute-test")))
+               (:file "tests/iree/execute-test")
+               (:file "tests/iree/example-test")))

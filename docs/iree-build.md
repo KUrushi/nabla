@@ -509,16 +509,21 @@ CPU と GPU では `matmul`（`dot_general` の内積）や `reduce_sum` の総�
   `device_bytes_allocated` / `device_bytes_freed` が実測値どおりに動く
   （2x3 の bf16 buffer view 1個で12バイトぶん増減することを確認済み）。
   `nabla.iree:device-allocator-statistics` から読める
-- **finalizer と full GC の相性**（issue #11）: この環境では、`with-device` /
-  `with-session` を数百回作っては壊す既存のテスト（`RUNTIME/MAKE-DEVICE`
-  など）や `compile-stablehlo` の呼び出しが積み重なった後に
-  `(sb-ext:gc :full t)` を呼ぶと、SBCL が
+- **finalizer と full GC の相性**（issue #11、根本原因は issue #5 で特定・修正
+  済み）: この環境では、`with-device` / `with-session` を数百回作っては壊す
+  既存のテスト（`RUNTIME/MAKE-DEVICE` など）や `compile-stablehlo` の呼び出し
+  が積み重なった後に `(sb-ext:gc :full t)` を呼ぶと、SBCL が
   `garbage_collect: no SP known for thread` という fatal error で
-  プロセスごと落ちることがある（確率的で、毎回起きるわけではない）。
-  これは `nabla.iree` の finalizer 機構そのもののバグではなく（
-  `tests/iree/finalizer-test.lisp` を単独で実行すれば毎回問題なく通る）、
-  SBCL のスレッド管理と、IREE のコンパイラ・`local-task` ランタイムが
-  それぞれ独自に作る OS スレッドとの間の、既知の相性問題だと考えられる
-  （PR 本文にも詳しく書いた）。`nabla.asd` では `finalizer-test` を
-  device/session を大量に作るテストより前に置くことで発生頻度を下げている
-  が、根本的な解消ではない
+  プロセスごと落ちることがあった（確率的で、毎回起きるわけではない）。
+  これは `nabla.iree` の finalizer 機構そのもののバグではなく、
+  `libIREECompiler.so` 内の LLVM が初回呼び出し中にプロセス全体のシグナル
+  ハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う
+  SIGUSR2 を上書きすることが根本原因だった（詳しい仕組みは
+  `src/iree/signals.lisp` 冒頭のコメント）。`src/iree/signals.lisp` の
+  `%register-llvm-signal-handlers`（LLVM の登録を、他の全 Lisp スレッドを
+  止めた制御された1点で済ませる）と `with-lisp-signal-handlers-preserved`
+  （IREE を呼ぶ公開関数の本体を包み、ハンドラを元に戻す）で修正済み。
+  `nabla.asd` で `finalizer-test` を device/session を大量に作るテストより
+  前に置いているのは、この修正より前に発生頻度を下げるために採った緩和策の
+  名残で、修正後はもう必須ではない（残るリスクは `signals.lisp` 冒頭に列挙
+  してある）

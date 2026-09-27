@@ -207,7 +207,7 @@ nabla.iree::*llvm-signal-handlers-registered-p* が真になっている
 （%register-llvm-signal-handlers が %call-with-world-stopped の窓の中で
 SIGUSR2 の処分の変化を実際に観測した印。library.lisp / signals.lisp
 参照）。third_party/iree.lock で固定した IREE 3.11.0 では
-ireeCompilerOutputOpenFile を呼ぶだけで実際に登録するので、warm-up
+ireeCompilerOutputOpenMembuffer を呼ぶだけで実際に登録するので、warm-up
 コンパイルへのフォールバック（%warm-up-compiler）を経由せずにここが真に
 なる。"
   (skip-unless-iree :library :compiler)
@@ -259,7 +259,7 @@ SIGUSR2 のハンドラが ensure-compiler-loaded から戻る頃には SBCL の
 (2) ensure-compiler-loaded の前後で外から見える SIGUSR2 のハンドラの
 アドレスが変わらない（LLVM に奪われたハンドラが SBCL のものへ戻っている）
 ことを確かめる。IREE-SetupGlobalCL 経由だった旧版でも通っていた性質だが、
-新しい ireeCompilerOutputOpenFile 経由の登録がこれを壊していないことの
+新しい ireeCompilerOutputOpenMembuffer 経由の登録がこれを壊していないことの
 回帰テスト。"
   (skip-unless-iree :library :compiler)
   (multiple-value-bind (exit-code output) (%run-signal-registration-check-child)
