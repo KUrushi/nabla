@@ -109,6 +109,40 @@ WITH-IEEE-ARITHMETIC に包むこと（ここでは包まない）。"
             (apply fn (mapcar (lambda (a) (row-major-aref a i)) decoded))))
     (%encode-array result out-dtype)))
 
+(defun %unary-float-abstract-eval (name in-avals)
+  "1入力・浮動小数点の演算の abstract-eval の共通部分（issue #31 p2）。
+入力チェックをすべて終えたあと、出力 AVAL（入力そのものの AVAL）を返す。"
+  (%check-arity name in-avals 1)
+  (let ((aval (first in-avals)))
+    (%check-float-dtype name in-avals aval)
+    aval))
+
+(defun %quiet-nan (element-type)
+  "ELEMENT-TYPE（'SINGLE-FLOAT または 'DOUBLE-FLOAT）の canonical quiet NaN
+を返す（issue #31 p2）。ビット列から直接組み立てる（NaN を作るのに NaN を
+生む浮動小数点演算は使わない）。"
+  (ecase element-type
+    (single-float (sb-kernel:make-single-float #x7FC00000))
+    (double-float (sb-kernel:make-double-float #x7FF80000 0))))
+
+(defun %ieee-max (a b)
+  "A と B の大きい方を返す。CL の MAX と違い、どちらか一方でも NaN なら
+NaN を返す（StableHLO の stablehlo.maximum / IREE / jnp.maximum に合わせる。
+issue #31 p2 の pitfall: (max nan 1.0) => 1.0 だが (max 1.0 nan) => NaN、と
+CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。"
+  (cond
+    ((sb-ext:float-nan-p a) a)
+    ((sb-ext:float-nan-p b) b)
+    (t (max a b))))
+
+(defun %ieee-min (a b)
+  "A と B の小さい方を返す。%IEEE-MAX と同じ理由で、どちらか一方でも NaN
+なら NaN を返す。"
+  (cond
+    ((sb-ext:float-nan-p a) a)
+    ((sb-ext:float-nan-p b) b)
+    (t (min a b))))
+
 (defun %emit-elementwise (op-name in-names out-name out-aval)
   "shape/dtype を変えない要素ごとの StableHLO 演算1行を組み立てる:
 \"<out-name> = stablehlo.<op-name> <in-names, 区切り> : <out-avalの型>\"。

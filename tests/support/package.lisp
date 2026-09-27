@@ -42,6 +42,13 @@
    #:reference-sub
    #:reference-mul
    #:reference-div
+   ;; issue #31 p2
+   #:reference-neg
+   #:reference-exp
+   #:reference-log
+   #:reference-tanh
+   #:reference-max
+   #:reference-min
    #:reference-matmul
    #:reference-reduce-sum
    ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）

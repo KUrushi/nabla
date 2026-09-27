@@ -27,6 +27,8 @@
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "src/primitives/common")
                (:file "src/primitives/arith")
+               ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
+               (:file "src/primitives/unary")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -67,6 +69,8 @@
                (:file "tests/ir-print-test")
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/primitives/arith-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/primitives/unary-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -123,4 +127,6 @@
                (:file "tests/iree/ops-test")
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/iree/primitive-support")
-               (:file "tests/iree/arith-test")))
+               (:file "tests/iree/arith-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/iree/unary-test")))
