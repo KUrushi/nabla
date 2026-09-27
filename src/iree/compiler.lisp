@@ -373,32 +373,71 @@ SIGUSR2 などのハンドラを上書きしうる。compiler.lisp 冒頭のコ�
                     ;; 得られるようにする根本修正は IREE 側のバグなので、
                     ;; nabla 側では対応できない（follow-up 課題）。
                     ;;
-                    ;; issue #68: これに加えて、%poison-compiler でプロセス
-                    ;; 全体を汚染済みにする。この #DE は
-                    ;; ireeCompilerInvocationPipeline が mlir::OpPassManager
-                    ;; などの C++ オブジェクトを構築している最中に起き、SBCL の
-                    ;; 非局所脱出はその構築中の C++ スタックフレームのデスト
-                    ;; ラクタを一切走らせずに飛び越える。実験で確認したとおり
-                    ;; （このファイル冒頭近くの *compiler-poison-reason* の
-                    ;; コメント参照）、この1回の呼び出し自体はプロセスを
+                    ;; issue #68: これに加えて、%compiler-invocation-pipeline
+                    ;; の呼び出しが「正常に戻ってこなかった」ときは、理由を
+                    ;; 問わず必ず %poison-compiler でプロセス全体を汚染済みに
+                    ;; する。この呼び出しの最中は ireeCompilerInvocationPipeline
+                    ;; が mlir::OpPassManager などの C++ オブジェクトを構築中
+                    ;; だったり、LLVM のコード生成パスを実行中だったりし、
+                    ;; SBCL の非局所脱出（シグナル起因の Lisp コンディション
+                    ;; だけでなく、SB-SYS:MEMORY-FAULT-ERROR・
+                    ;; SB-SYS:INTERACTIVE-INTERRUPT（Ctrl-C）・
+                    ;; SB-EXT:WITH-TIMEOUT のタイムアウト・
+                    ;; SB-THREAD:INTERRUPT-THREAD 経由の割り込みなど、
+                    ;; どんな経路であれ）はその構築・実行中の C++ スタック
+                    ;; フレームのデストラクタを一切走らせずに飛び越える。
+                    ;; 実験で確認したとおり（このファイル冒頭近くの
+                    ;; *compiler-poison-reason* のコメント参照。ARITHMETIC-ERROR
+                    ;; で確認した現象だが、機構自体はどの非局所脱出にも共通に
+                    ;; 当てはまる）、この1回の呼び出し自体はプロセスを
                     ;; 壊さないが、その後さらに多数の distinct なコンパイルを
                     ;; 重ねると、いつ壊れるか予測できない
                     ;; SB-SYS:MEMORY-FAULT-ERROR として症状が出る。安全に
                     ;; 続行できる保証が無い以上、ここで汚染済みにして以後の
                     ;; compile-stablehlo をすべて明確に失敗させる方が、
                     ;; 黙って破壊された状態のまま走らせ続けるより安全。
-                    (handler-case
-                        (unless (%compiler-invocation-pipeline invocation +compiler-pipeline-std+)
-                          (error 'iree-compile-error :phase :compile
-                                                      :diagnostics (%diagnostics-end cookie)))
-                      (arithmetic-error (condition)
-                        (%poison-compiler (format nil "Pipeline 実行中の ARITHMETIC-ERROR: ~A" condition))
-                        (error 'iree-compile-error :phase :compile
-                               :message (format nil "Pipeline 実行中に Lisp の算術エラーが発生した ~
+                    ;;
+                    ;; 実装（重要: 呼び出しが「正常に戻った」ことと「戻り値が
+                    ;; NIL だった」ことを混同しない）。COMPLETED は
+                    ;; %compiler-invocation-pipeline の呼び出しが正常に
+                    ;; 戻った（例外的な非局所脱出をせず、戻り値
+                    ;; PIPELINE-OK を受け取れた）ときだけ真にする。戻り値が
+                    ;; NIL（正常系の、クラッシュしないコンパイル失敗）でも
+                    ;; COMPLETED は真になる——それは Pipeline 自体は無事に
+                    ;; Lisp へ戻ってきているので、UNLESS PIPELINE-OK による
+                    ;; 後段の IREE-COMPILE-ERROR は純粋な Lisp 制御であり、
+                    ;; 汚染しない。UNWIND-PROTECT の後始末で COMPLETED が
+                    ;; 偽なら、原因を問わずここで一度だけ汚染する。
+                    ;; TRIGGERING-CONDITION は内側の HANDLER-BIND が（スタックを
+                    ;; 巻き戻す前に）捕まえた最初のコンディションを保持し、
+                    ;; 汚染理由に含める。HANDLER-BIND を HANDLER-CASE の
+                    ;; 内側（呼び出しのすぐ外）に置くことで、HANDLER-CASE の
+                    ;; ARITHMETIC-ERROR 節が新たに signal する
+                    ;; IREE-COMPILE-ERROR（HANDLER-CASE は節の本体を、
+                    ;; シグナル元まで巻き戻したあとの動的環境で実行する）は
+                    ;; この HANDLER-BIND の外側で起きるので、二重に捕まえない。
+                    (let ((completed nil) (pipeline-ok nil) (triggering-condition nil))
+                      (unwind-protect
+                           (handler-case
+                               (handler-bind ((condition (lambda (c)
+                                                            (unless triggering-condition
+                                                              (setf triggering-condition c)))))
+                                 (setf pipeline-ok (%compiler-invocation-pipeline invocation +compiler-pipeline-std+))
+                                 (setf completed t))
+                             (arithmetic-error (condition)
+                               (error 'iree-compile-error :phase :compile
+                                      :message (format nil "Pipeline 実行中に Lisp の算術エラーが発生した ~
 （IREE/LLVM 側の内部エラーの可能性が高い。詳細: ~A）。このプロセスの ~
 IREE コンパイラは以後 poisoned として扱われ、次回以降の呼び出しは ~
 :phase :poisoned で失敗する。" condition)
-                               :diagnostics (%diagnostics-end cookie))))
+                                      :diagnostics (%diagnostics-end cookie))))
+                        (unless completed
+                          (%poison-compiler (format nil "ireeCompilerInvocationPipeline の呼び出しが正常に戻らなかった: ~A"
+                                                     (or triggering-condition
+                                                         "原因不明の非局所脱出（Lisp コンディションを伴わない可能性がある）")))))
+                      (unless pipeline-ok
+                        (error 'iree-compile-error :phase :compile
+                                                    :diagnostics (%diagnostics-end cookie))))
                     (cffi:with-foreign-object (out-output :pointer)
                       (let ((error (%compiler-output-open-membuffer out-output)))
                         (unless (cffi:null-pointer-p error)

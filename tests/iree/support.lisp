@@ -135,29 +135,81 @@ CL_SOURCE_REGISTRY の値。scripts/run-tests.sh と同じ組み立て方
                                                  (user-homedir-pathname))))))
     (format nil "~A:~A//:" repo deps)))
 
-(defun %run-in-child-sbcl (source)
+(defparameter *child-sbcl-forwarded-env-vars*
+  '("PATH" "HOME" "LD_LIBRARY_PATH" "LANG" "LC_ALL"
+    "TMPDIR" "XDG_CACHE_HOME" "NABLA_LISP_DEPS" "SBCL_HOME")
+  "子 SBCL プロセスへ、その値があれば転送する環境変数名の共通リスト
+（sbcl・ASDF・CFFI の動作に関わるもの）。子プロセスを立てるテストヘルパー
+（このファイルの %CHILD-SBCL-ENVIRONMENT、compiler-test.lisp の
+%RUN-WITH-MISSING-IREE-HOME・%RUN-SIGNAL-REGISTRATION-CHECK-CHILD）は
+このリストを共有し、転送する変数の組をここ1箇所だけで管理する。
+NABLA_IREE_HOME・CL_SOURCE_REGISTRY は呼び出し側ごとに要件が違う
+（転送するだけでよいか、明示的に上書き・組み立てるか）ため、ここには
+含めない。")
+
+(defun %forward-env-vars (names)
+  "NAMES の各環境変数について、このプロセスに値が設定されていれば
+\"NAME=VALUE\" の文字列を、無ければ何も作らずに、SB-EXT:RUN-PROGRAM の
+:environment にそのまま渡せるリストにして返す。"
+  (remove nil
+          (mapcar (lambda (name)
+                    (let ((v (sb-ext:posix-getenv name)))
+                      (and v (format nil "~A=~A" name v))))
+                  names)))
+
+(defparameter *child-sbcl-timeout-seconds* 120
+  "%RUN-IN-CHILD-SBCL が子プロセスに与えるタイムアウト（秒）。coreutils の
+timeout(1) を使って強制終了させる。無応答（ハング）な子プロセスがテスト
+スイート全体を止めてしまわないための上限で、通常の子プロセスの所要時間
+（数十回の distinct なコンパイルでも数秒程度）よりかなり長く取っている。")
+
+(defun %child-sbcl-environment ()
+  "%RUN-IN-CHILD-SBCL が子プロセスに渡す環境変数のリスト。SB-EXT:RUN-PROGRAM
+は :environment を渡さないと空の環境で子プロセスを起動する（マニュアル
+参照）ため、*CHILD-SBCL-FORWARDED-ENV-VARS* に加えて IREE 関連の変数を
+明示的に転送する。CL_SOURCE_REGISTRY はこのプロセスのものをそのまま
+転送するのではなく、%CHILD-SOURCE-REGISTRY で明示的に組み立て直す。"
+  (append (%forward-env-vars (list* "NABLA_IREE_HOME" "NABLA_REQUIRE_IREE"
+                                     *child-sbcl-forwarded-env-vars*))
+          (list (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry)))))
+
+(defun %run-in-child-sbcl (source &key (timeout-seconds *child-sbcl-timeout-seconds*))
   "SOURCE（Lisp のトップレベルフォームを並べた文字列）を一時ファイルへ書き、
 真っさらな子 SBCL プロセスで --load して実行する。(終了コード . 標準出力 .
-標準エラー出力) を多値で返す。一時ファイルは呼び出し後に削除する。
+標準エラー出力) を多値で返す。一時ファイルは UIOP:WITH-TEMPORARY-FILE が
+（mkstemp 相当のアトミックな一意名で）作り、呼び出し後に削除する
+——SBCL の既定の *RANDOM-STATE* は毎回同じシードから始まるので、
+(RANDOM N) で名前を作ると複数の子プロセスが同じファイル名を選んでしまい
+うる（実際に踏んだ）。
+
+環境は %CHILD-SBCL-ENVIRONMENT で明示的に組み立てる。子プロセスは
+TIMEOUT-SECONDS 秒（既定 *CHILD-SBCL-TIMEOUT-SECONDS*）で coreutils の
+timeout(1) から SIGTERM される。ハングした場合、終了コードは 124
+（timeout(1) の慣習）になり、呼び出し側の IS 節がその値を含めて報告する
+ので、原因不明のまま無限に待つことはない。
 
 issue #68: このプロセス自身の中で libIREECompiler.so を壊しうるコンパイル
 （ゼロサイズの contracting 次元を持つ dot_general の #DE 等）や、
 プロセスを poisoned にする操作を試すテストは、:nabla.medium を実行している
 共有プロセス自身を汚染しないよう、常にこのヘルパー経由で子プロセスの中で
-行うこと。子プロセスの環境は uiop:run-program の既定（親プロセスの環境を
-そのまま継承）に任せるので、CL_SOURCE_REGISTRY や NABLA_IREE_HOME は
-このプロセスに設定済みのものがそのまま子にも渡る。"
-  (let ((script (merge-pathnames
-                 (format nil "nabla-iree-child-~A.lisp" (random 1000000))
-                 (uiop:temporary-directory))))
+行うこと。"
+  (uiop:with-temporary-file (:pathname script :prefix "nabla-iree-child-" :type "lisp" :keep t)
     (unwind-protect
          (progn
            (with-open-file (stream script :direction :output :if-exists :supersede)
              (write-string source stream))
-           (multiple-value-bind (output error-output exit-code)
-               (uiop:run-program (list "sbcl" "--non-interactive" "--load" (namestring script))
-                                  :output '(:string) :error-output '(:string) :ignore-error-status t)
-             (values exit-code output error-output)))
+           (let ((output (make-string-output-stream))
+                 (error-output (make-string-output-stream)))
+             (let ((process (sb-ext:run-program
+                              "timeout"
+                              (list (princ-to-string timeout-seconds)
+                                    "sbcl" "--non-interactive" "--load" (namestring script))
+                              :search t
+                              :environment (%child-sbcl-environment)
+                              :output output :error error-output)))
+               (values (sb-ext:process-exit-code process)
+                       (get-output-stream-string output)
+                       (get-output-stream-string error-output)))))
       (ignore-errors (delete-file script)))))
 
 ;;; tests/regressions/ は nabla/tests の tests/regressions.lisp が全ファイルを
