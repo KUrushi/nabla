@@ -23,23 +23,65 @@
             (+ (coerce (row-major-aref a i) 'double-float)
                (coerce (row-major-aref b i) 'double-float))))))
 
+;;; issue #31 p5: dot-general の参照実装。REFERENCE-MATMUL は
+;;; REFERENCE-DOT-GENERAL を lhs-contracting (1) / rhs-contracting (0) /
+;;; batch なしで呼ぶ薄いラッパーにする。
+
+(defun reference-dot-general (a b &key lhs-contracting rhs-contracting lhs-batch rhs-batch)
+  "A・B（DOUBLE-FLOAT にデコード済みの配列）の stablehlo.dot_general を
+素朴に計算して返す。LHS-CONTRACTING / RHS-CONTRACTING / LHS-BATCH /
+RHS-BATCH は A・B それぞれの次元番号のリスト（対応するペアは同じ長さ・
+同じサイズであること）。出力の shape は batch dims（LHS-BATCH の順）→
+A の free dims（昇順）→ B の free dims（昇順）の順（用語集の
+「contracting dims / batch dims」参照）。"
+  (let* ((a-shape (array-dimensions a))
+         (b-shape (array-dimensions b))
+         (a-excluded (append lhs-batch lhs-contracting))
+         (b-excluded (append rhs-batch rhs-contracting))
+         (a-free (sort (set-difference (loop for i below (length a-shape) collect i) a-excluded) #'<))
+         (b-free (sort (set-difference (loop for i below (length b-shape) collect i) b-excluded) #'<))
+         (n-batch (length lhs-batch))
+         (n-a-free (length a-free))
+         (batch-sizes (mapcar (lambda (d) (nth d a-shape)) lhs-batch))
+         (a-free-sizes (mapcar (lambda (d) (nth d a-shape)) a-free))
+         (b-free-sizes (mapcar (lambda (d) (nth d b-shape)) b-free))
+         (contract-sizes (mapcar (lambda (d) (nth d a-shape)) lhs-contracting))
+         (out-shape (append batch-sizes a-free-sizes b-free-sizes))
+         (result (make-array out-shape :element-type 'double-float :initial-element 0.0d0)))
+    (dotimes (i (array-total-size result) result)
+      (let* ((out-subs (%row-major-index->subscripts i out-shape))
+             (batch-subs (subseq out-subs 0 n-batch))
+             (a-free-subs (subseq out-subs n-batch (+ n-batch n-a-free)))
+             (b-free-subs (subseq out-subs (+ n-batch n-a-free)))
+             (a-subs (make-list (length a-shape) :initial-element 0))
+             (b-subs (make-list (length b-shape) :initial-element 0)))
+        (loop for d in lhs-batch for s in batch-subs do (setf (nth d a-subs) s))
+        (loop for d in rhs-batch for s in batch-subs do (setf (nth d b-subs) s))
+        (loop for d in a-free for s in a-free-subs do (setf (nth d a-subs) s))
+        (loop for d in b-free for s in b-free-subs do (setf (nth d b-subs) s))
+        (let ((sum 0.0d0))
+          (dotimes (c (reduce #'* contract-sizes :initial-value 1))
+            (let ((c-subs (%row-major-index->subscripts c contract-sizes)))
+              (loop for d in lhs-contracting for s in c-subs do (setf (nth d a-subs) s))
+              (loop for d in rhs-contracting for s in c-subs do (setf (nth d b-subs) s))
+              (incf sum (* (coerce (apply #'aref a a-subs) 'double-float)
+                           (coerce (apply #'aref b b-subs) 'double-float)))))
+          (setf (row-major-aref result i) sum))))))
+
 (defun reference-matmul (a b)
-  "A @ B（行列積）を返す。A・B は rank 2 で、A の列数と B の行数が一致すること。"
+  "A @ B（行列積）を返す。A・B は rank 2 で、A の列数と B の行数が一致すること。
+REFERENCE-DOT-GENERAL を lhs-contracting (1) / rhs-contracting (0) /
+batch なしで呼ぶ薄いラッパー。"
   (unless (and (= (array-rank a) 2) (= (array-rank b) 2))
     (error "reference-matmul: rank 2 の配列だけを受け付ける: ~A と ~A"
            (array-dimensions a) (array-dimensions b)))
   (destructuring-bind (m k) (array-dimensions a)
+    (declare (ignore m))
     (destructuring-bind (k2 n) (array-dimensions b)
+      (declare (ignore n))
       (unless (= k k2)
-        (error "reference-matmul: A の列数 ~A と B の行数 ~A が一致しない" k k2))
-      (let ((result (make-array (list m n) :element-type 'double-float :initial-element 0.0d0)))
-        (dotimes (i m result)
-          (dotimes (j n)
-            (let ((sum 0.0d0))
-              (dotimes (p k)
-                (incf sum (* (coerce (aref a i p) 'double-float)
-                             (coerce (aref b p j) 'double-float))))
-              (setf (aref result i j) sum))))))))
+        (error "reference-matmul: A の列数 ~A と B の行数 ~A が一致しない" k k2))))
+  (reference-dot-general a b :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '()))
 
 (defun reference-reduce-sum (a axis)
   "A の dimension AXIS に沿った総和を返す（結果の rank は A の rank - 1）。"

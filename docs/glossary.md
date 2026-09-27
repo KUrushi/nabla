@@ -16,6 +16,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **形状推論（abstract-eval）**
 : 入力の `aval`（形状と dtype）とパラメタから、実際の数値を計算せずに出力の `aval` を決めること。プリミティブごとに `defprimitive` の `:abstract-eval` として書く。トレース中は実データが無いので、この計算だけで IR の各 `var` の形状・dtype を決められる。
 
+**contracting dims / batch dims（縮約次元・バッチ次元）**
+: `dot_general`（`stablehlo.dot_general`）が2つの入力配列を掛け合わせるときに指定する次元の役割。contracting dims は総和を取って消える次元（行列積でいう「内積を取る軸」）、batch dims は総和を取らず、両方の入力とも同じ大きさを持ったまま出力にも残る次元（バッチごとに独立して行列積を計算する軸）。どちらにも属さない次元は free dims（自由次元）と呼び、出力の形は「batch dims（lhs の順） → lhs の free dims（昇順） → rhs の free dims（昇順）」の順に並ぶ。通常の行列積 `A @ B` は batch dims が空で、contracting dims が `A` の最後の次元と `B` の最初の次元。
+
 **トレース（trace）/ トレーサ（tracer）**
 : 関数を実際の数値ではなく特別なオブジェクト（トレーサ）で呼び出し、どんな演算が行われたかを記録すること。記録した結果が IR になる。
 

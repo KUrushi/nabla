@@ -27,6 +27,8 @@
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "src/primitives/shape-common")
                (:file "src/primitives/shape")
+               ;; issue #31 p5: dot-general
+               (:file "src/primitives/dot")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -67,6 +69,8 @@
                (:file "tests/ir-print-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/primitives/shape-test")
+               ;; issue #31 p5: dot-general
+               (:file "tests/primitives/dot-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -123,4 +127,6 @@
                (:file "tests/iree/ops-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/iree/shape-primitive-support")
-               (:file "tests/iree/shape-test")))
+               (:file "tests/iree/shape-test")
+               ;; issue #31 p5: dot-general
+               (:file "tests/iree/dot-test")))
