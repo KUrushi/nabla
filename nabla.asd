@@ -29,6 +29,10 @@
                (:file "src/primitives/arith")
                ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
                (:file "src/primitives/unary")
+               ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
+               ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
+               ;; この行より前に足す）
+               (:file "src/eval")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -71,6 +75,8 @@
                (:file "tests/primitives/arith-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/primitives/unary-test")
+               ;; graph の eager 評価（issue #39、e0）
+               (:file "tests/eval-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
