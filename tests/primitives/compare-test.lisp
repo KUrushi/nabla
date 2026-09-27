@@ -70,6 +70,30 @@ f32/f64 でほとんど値が一致せず、境界の性質を確かめられな
 (defun %constant-bit-array (shape bit)
   (make-array shape :element-type 'bit :initial-element bit))
 
+(defun %compare-nan-value (dtype)
+  "DTYPE の格納表現を持つ quiet NaN の値を1つ返す（rank 0 配列に詰める用途）。
+ビットパターンは NB::%QUIET-NAN（実装の1つの情報源）から取る
+（tests/primitives/unary-test.lisp の %DTYPE-NAN-VALUE と同じ方針。DAMP
+重複は契約 §4 で許容）。"
+  (ecase dtype
+    (:f32 (nb::%quiet-nan 'single-float))
+    (:f64 (nb::%quiet-nan 'double-float))
+    ((:bf16 :f16) (nb::encode-float16 (nb::%quiet-nan 'single-float) dtype))))
+
+(defun %compare-scalar-array (dtype value)
+  "DTYPE の格納表現で VALUE を1つだけ持つ rank 0 配列を返す。"
+  (let ((array (make-array nil :element-type (nb:dtype-element-type dtype))))
+    (setf (row-major-aref array 0) value)
+    array))
+
+(defun %compare-encode-value (double-value dtype)
+  "DOUBLE-VALUE（DOUBLE-FLOAT）を DTYPE の格納表現に変換する
+（:f32/:f64 はそのまま coerce、:bf16/:f16 は NB::ENCODE-FLOAT16 を経由）。"
+  (ecase dtype
+    (:f32 (coerce double-value 'single-float))
+    (:f64 (coerce double-value 'double-float))
+    ((:bf16 :f16) (nb::encode-float16 (coerce double-value 'single-float) dtype))))
+
 ;;; --- 性質1: aval(eager) = abstract-eval ---
 
 (test primitives/compare/aval-matches-abstract-eval
@@ -347,6 +371,22 @@ select_bf16.mlir の op 行と、SSA 名を正規化したうえで一致する�
                           (return nil))))))
                 :regression-id primitives/compare/lt-is-not-ge
                 :regression-file (regression-path "primitives-compare-lt-is-not-ge"))))
+
+(test primitives/compare/nan-on-either-side
+  "契約 §2 の NaN 規則: 比較の一方または両方が NaN のとき、:NE 以外の全方向
+（:LT :LE :GT :GE :EQ）は 0（偽）を、:NE だけ 1（真）を返す（全 dtype、
+NaN op 1.0 / 1.0 op NaN / NaN op NaN の3パターン）。"
+  (dolist (dtype *dtypes*)
+    (let* ((nan (%compare-scalar-array dtype (%compare-nan-value dtype)))
+           (one (%compare-scalar-array dtype (%compare-encode-value 1.0d0 dtype)))
+           (in-avals (list (nb:array-aval nan dtype) (nb:array-aval one dtype)))
+           (eager (nb::primitive-eager (nb::find-primitive :compare))))
+      (dolist (direction %compare-directions)
+        (dolist (pair (list (list nan one) (list one nan) (list nan nan)))
+          (let ((result (funcall eager pair in-avals :direction direction)))
+            (is (= (if (eq direction :ne) 1 0) (row-major-aref result 0))
+                "~A/~A: direction=~A の結果が ~A でない"
+                dtype pair direction (if (eq direction :ne) 1 0))))))))
 
 (test primitives/select/on-true-equals-on-false-returns-that-value
   "select(pred, a, a) は pred の値によらず a と一致する。"
