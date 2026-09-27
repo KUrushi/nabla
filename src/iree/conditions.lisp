@@ -5,10 +5,11 @@
 
 (in-package #:nabla.iree)
 
-(define-condition iree-error (error)
+(define-condition iree-error (nabla:backend-error)
   ()
   (:documentation
-   "nabla.iree が signal するすべてのエラーの root コンディション。"))
+   "nabla.iree が signal するすべてのエラーの root コンディション。
+NABLA:BACKEND-ERROR の subtype（issue #9 の backend プロトコル）。"))
 
 (define-condition iree-library-not-found (iree-error)
   ((path :initarg :path :reader iree-library-not-found-path)

@@ -1,9 +1,12 @@
 ;;;; device-array: Lisp の配列と IREE の buffer view を橋渡しする、JAX の
 ;;;; jax.Array に相当するクラス（issue #7）。
 ;;;;
-;;;; nabla.iree は nabla を :use しないので（設計の約束、#9 の core
-;;;; backend プロトコルが to-device / to-host を両方のパッケージに持たせ
-;;;; られるように）、nabla:make-aval のように常にパッケージ名を書く。
+;;;; nabla.iree は nabla を :use しないので、nabla:make-aval のように常に
+;;;; パッケージ名を書く。ただし TO-DEVICE / TO-HOST / DEVICE-ARRAY-AVAL は
+;;;; core の backend プロトコル（issue #9、src/backend.lisp）の総称関数を
+;;;; src/iree/package.lisp で import-from しており、この3つだけは
+;;;; パッケージ名を付けずに書く（下の DEFMETHOD / :reader がそのまま
+;;;; nabla:to-device などへメソッドを追加する）。
 ;;;;
 ;;;; メモリの所有権: device-array は生成時（%wrap-buffer-view）に、渡された
 ;;;; buffer view の所有権を引き取り、同時に DEVICE の iree_hal_device_t を
@@ -36,7 +39,10 @@
                     :documentation "生成時に retain した iree_hal_device_t*。
 release-device-array の後は null-pointer になる。")
    (aval :reader device-array-aval :initarg :aval
-         :documentation "この device-array の形状と dtype（NABLA:AVAL）。")
+         :documentation "この device-array の形状と dtype（NABLA:AVAL）。
+DEVICE-ARRAY-AVAL は NABLA:DEVICE-ARRAY-AVAL を import-from したシンボルな
+ので、この :reader は core の backend プロトコル（issue #9）の総称関数へ
+メソッドを追加する。")
    (device :reader device-array-device :initarg :device
            :documentation "この device-array を作った nabla.iree:device
 オブジェクト（#8 の invoke が session の device と eq かどうかを比べるのに
@@ -87,7 +93,7 @@ release-device-array 済みなら、解放済みの NULL ポインタを C へ�
     (error 'iree-object-released :kind :device-array :context context))
   (%device-array-pointer device-array))
 
-(defun to-device (array device &key dtype)
+(defmethod to-device (array (device device) &key dtype)
   "ARRAY（simple-array、rank は任意）を DEVICE 上にコピーし、DEVICE-ARRAY を
 返す。コピーは1回だけ行う: sb-ext:array-storage-vector で ARRAY の1次元の
 実体ビューを取り、sb-sys:with-pinned-objects でピン留めしたポインタを
@@ -114,7 +120,7 @@ IREE-OBJECT-RELEASED（kind :device）が signal される。"
                                           (nabla:aval-byte-length aval))))
         (%wrap-buffer-view buffer-view device aval)))))
 
-(defun to-host (device-array)
+(defmethod to-host ((device-array device-array))
   "DEVICE-ARRAY の内容を、DEVICE-ARRAY の aval と同じ shape・dtype を持つ
 新しい多次元 simple-array にコピーして返す（コピーは1回。
 sb-ext:array-storage-vector で結果配列の1次元ビューを取り、そこへ直接

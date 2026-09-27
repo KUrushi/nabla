@@ -91,6 +91,7 @@ GPU を使う large テストは CI では動かさない。
 - bf16 / f16† は `(unsigned-byte 16)` の配列で持ち、`aval` の dtype タグで区別する
 - IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
 - デバイス上のバッファは `device-array` で包む。`device-array` は生成時に自分のデバイス（`iree_hal_device_t`）を retain し、解放時に buffer view → device の順で release する（IREE の heap buffer が確保元 allocator の統計ブロックへの生ポインタを持ち、その allocator を device が所有しているため。device を先に解放すると use-after-free になる）。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）。この解放は `trivial-garbage:finalize` で自動化されており（`device-array` 生成時に登録）、明示的な `release-device-array` は `tg:cancel-finalization` で finalizer を先に取り消してから自分で解放するので、二重解放にはならない。SBCL は finalizer を別スレッド（finalizer thread）で非同期に実行するため、テストで確認するときは `gc-and-run-finalizers`（`tests/iree/support.lisp`）のように GC の後で明示的に保留中の finalizer を実行させる
+- 実行系は `backend` プロトコル（`src/backend.lisp`）の裏に置く。core は IREE の名前を知らない（medium テストで検査）。総称関数は `backend-` 接頭辞（CL の `compile` / `load` と衝突させない）
 - LLVM を呼びうる FFI エントリポイント（IREE コンパイラ、将来の PJRT）は、必ず `with-lisp-signal-handlers-preserved`（`src/iree/signals.lisp`）で本体を包む。LLVM は初回の呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きする。放置すると、以後どこかのスレッドが GC を始めた瞬間に "no SP known for thread" で SBCL が確実に落ちる（issue #5）
 - 上記の LLVM のシグナルハンドラ登録そのものは、`ensure-compiler-loaded` が他の全 Lisp スレッドを SBCL の GC と同じ仕組み（`%call-with-world-stopped`、`src/iree/signals.lisp`）で止めた、制御された1点で済ませる。世界が止まっている間はどのスレッドもシグナルを受け取れないので、登録の瞬間に別スレッドが GC を始める競合の隙間が無くなる（詳しい根拠と残る課題は signals.lisp 冒頭のコメント）
 
