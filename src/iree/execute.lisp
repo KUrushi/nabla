@@ -37,13 +37,14 @@ buffer view を解放してからエラーを signal する。途中で失敗し
 それまでに包んだ出力の device-array をすべて release-device-array してから
 再度エラーを送出する。
 
-CALL-INVOKE 本体は SB-INT:WITH-FLOAT-TRAPS-MASKED で包む（MAKE-DEVICE の
-docstring 参照。カーネルを実行するワーカースレッドは MAKE-DEVICE の時点で
-マスク済みになるが、呼び出し元スレッド自身がここで結果を読み出す・
-計算に参加する場合に備えて同じマスクを及ぼす）。"
+CALL-INVOKE 本体は WITH-ALL-FLOAT-TRAPS-MASKED（float-traps.lisp、issue #53
+で SBCL（x86-64）が制御できる5種類全部に広げた）で包む（MAKE-DEVICE の docstring
+参照。カーネルを実行するワーカースレッドは MAKE-DEVICE の時点でマスク
+済みになるが、呼び出し元スレッド自身がここで結果を読み出す・計算に参加する
+場合に備えて同じマスクを及ぼす）。"
   (dolist (argument arguments)
     (%check-invoke-argument argument session))
-  (sb-int:with-float-traps-masked (:overflow :invalid :divide-by-zero)
+  (with-all-float-traps-masked
     (with-call (call session full-name)
       (dolist (argument arguments)
         (call-push-buffer-view call (%live-device-array-pointer argument "invoke")))
