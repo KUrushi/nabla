@@ -1,13 +1,26 @@
 ;;;; 浮動小数点例外トラップのマスク（issue #53）の medium テスト。
 ;;;;
-;;;; 2つの性質を確かめる:
+;;;; 3つの性質を確かめる:
 ;;;;   1. NaN を含む入力を compare（6方向）+ select・maximum・minimum に通す
 ;;;;      と、IREE の local backend での実行結果は eager 実装と NaN の位置が
 ;;;;      一致し、それ以外の要素は許容誤差つきで一致する（プロセスが落ちない
 ;;;;      こと自体は、このテストが最後まで走って fiveam の結果を報告できる
 ;;;;      ことで保証される）。ALLCLOSE は NaN を含む要素をすべて不一致と
 ;;;;      みなす（tests/support/allclose.lisp）ので、ここでは NaN の位置を
-;;;;      別にチェックする %NAN-AWARE-MATCH-P を使う。
+;;;;      別にチェックする %NAN-AWARE-MATCH-P を使う。ただし、このケース
+;;;;      （NaN を実行時の引数として渡す）は、issue #53 の実際のクラッシュを
+;;;;      再現しない（:local-task の worker スレッドは make-device の時点で
+;;;;      すでにマスク済みのため）。実際にクラッシュするのは次の 1b。
+;;;;   1b. stablehlo.constant に NaN を埋め込んだモジュール（引数なし）を
+;;;;      BACKEND-COMPILE すると、IREE のコンパイル時定数畳み込み
+;;;;      （JitGlobalsPass）がコンパイル中の Lisp スレッド上で NaN の
+;;;;      compare+select+maximum を JIT 実行する。この JIT のワーカー
+;;;;      スレッドはコンパイルスレッドから生成されるためその MXCSR を
+;;;;      引き継ぎ、compile-stablehlo 自身をマスクしていないとここで
+;;;;      SIGFPE によりプロセスごと落ちる——これが issue #53 の実際の
+;;;;      トリガーで、compile-stablehlo へのマスク追加が本 PR の
+;;;;      load-bearing な修正そのもの（float-traps.lisp 冒頭のコメント
+;;;;      参照）。
 ;;;;   2. ゼロサイズの contracting 次元を持つ dot_general の BACKEND-COMPILE
 ;;;;      は、生の DIVISION-BY-ZERO（Lisp コンディション）を漏らさない。
 ;;;;      float-traps.lisp 冒頭のコメントのとおり、この特定のケースは
@@ -122,6 +135,81 @@ eager ~(~A~) 実装と NaN の位置・値が一致する（issue #53）。" mli
 (def-float-traps-minmax-test float-traps/nan-maximum-matches-eager :max "maximum")
 (def-float-traps-minmax-test float-traps/nan-minimum-matches-eager :min "minimum")
 
+;;; --- 性質1b: コンパイル時定数畳み込み（JitGlobalsPass）に NaN 定数を通す ---
+;;;
+;;; 上の性質1（引数として渡す NaN）は、修正前でもクラッシュを再現できな
+;;; かった（:local-task の worker スレッドは make-device の時点ですでに
+;;; 3トラップぶんマスクされていたため。float-traps.lisp 冒頭のコメント
+;;; 参照）。実際に issue #53 のクラッシュを起こすのは、NaN を引数ではなく
+;;; モジュールの stablehlo.constant に埋め込み、コンパイル時定数畳み込み
+;;; （IREE の JitGlobalsPass。実行時ではなくコンパイル中の Lisp スレッド上
+;;; で JIT されたコードが走る）に通す経路で、その JIT コードが生成される
+;;; スレッドは「コンパイルを実行している Lisp スレッド」から fork/clone
+;;; されるため、そのスレッドの MXCSR をそのまま引き継ぐ。
+;;; compile-stablehlo 自身を WITH-ALL-FLOAT-TRAPS-MASKED で包んでいないと、
+;;; このスレッドが未マスクな状態で NaN の compare/maximum を実行し、
+;;; SIGFPE でプロセスごと落ちる（"in non-lisp tid ... resignaling to a
+;;; lisp tid" で終了コード136。fresh sbcl + fresh NABLA_CACHE_DIR での再現
+;;; 手順は PR の説明参照）。vmfb ディスクキャッシュが当たると
+;;; %compile-stablehlo 自体が呼ばれずこの経路を通らないので、
+;;; *compile-cache-directory* を NIL に束縛してキャッシュを毎回外す。
+
+(defun %f32-dense-constant-literal (values aval)
+  "VALUES（single-float のリスト、行優先）から AVAL 型の
+stablehlo.constant 用 dense<...> リテラルを組み立てる。NaN は
+0x7FC00000 のような32ビットのビットパターン16進表記、それ以外は10進で書く
+（StableHLO の完全なリテラル構文パーサではなく、この2ケースだけ扱う最小の
+実装）。"
+  (declare (ignore aval))
+  (format nil "dense<[~{~A~^, ~}]>"
+          (mapcar (lambda (v)
+                    (if (sb-ext:float-nan-p v)
+                        (format nil "0x~8,'0X" (nb::%single-float-bits v))
+                        (format nil "~F" v)))
+                  values)))
+
+(define-iree-test float-traps/nan-constant-fold-does-not-crash-compiler
+    "モジュールの stablehlo.constant に埋め込んだ NaN を compare + select +
+maximum に通した StableHLO を BACKEND-COMPILE すると、IREE のコンパイル時
+定数畳み込み（JitGlobalsPass）がこの経路を JIT 実行する。プロセスが落ちず
+（このテストが最後まで走って結果を報告できることで保証される）、実行結果は
+eager 実装と NaN の位置・値が一致する（issue #53 の実際のクラッシュ経路）。"
+  (skip-unless-iree :library :both)
+  (let* ((aval (nb:make-aval '(4) :f32))
+         (pred-aval (nb:make-aval '(4) :i1))
+         (a (make-array 4 :element-type 'single-float
+                           :initial-contents (list *float-traps-nan-f32* 1.0 *float-traps-nan-f32* 2.0)))
+         (b (make-array 4 :element-type 'single-float
+                           :initial-contents (list 1.0 *float-traps-nan-f32* *float-traps-nan-f32* 3.0)))
+         (text (format nil "func.func @main() -> ~A {~%  ~
+%a = stablehlo.constant ~A : ~A~%  ~
+%b = stablehlo.constant ~A : ~A~%  ~
+%c = stablehlo.compare LT, %a, %b : (~A, ~A) -> ~A~%  ~
+%s = stablehlo.select %c, %a, %b : ~A, ~A~%  ~
+%0 = stablehlo.maximum %s, %b : ~A~%  ~
+func.return %0 : ~A~%}"
+                       (nb::tensor-type-string aval)
+                       (%f32-dense-constant-literal (coerce a 'list) aval) (nb::tensor-type-string aval)
+                       (%f32-dense-constant-literal (coerce b 'list) aval) (nb::tensor-type-string aval)
+                       (nb::tensor-type-string aval) (nb::tensor-type-string aval) (nb::tensor-type-string pred-aval)
+                       (nb::tensor-type-string pred-aval) (nb::tensor-type-string aval)
+                       (nb::tensor-type-string aval)
+                       (nb::tensor-type-string aval)))
+         (expected (let* ((pred (funcall (nb::primitive-eager (nb::find-primitive :compare))
+                                          (list a b) (list aval aval) :direction :lt))
+                          (sel (funcall (nb::primitive-eager (nb::find-primitive :select))
+                                        (list pred a b) (list pred-aval aval aval))))
+                     (funcall (nb::primitive-eager (nb::find-primitive :max))
+                              (list sel b) (list aval aval))))
+         (backend (nabla:find-backend :iree))
+         (nabla:*compile-cache-directory* nil))
+    (let ((module (nabla:backend-load backend (nabla:backend-compile backend text))))
+      (unwind-protect
+           (with-device-arrays ((result (nabla:backend-invoke backend module "main")))
+             (is (%nan-aware-match-p (to-host result) expected :f32)
+                 "定数畳み込みを通した NaN compare+select+maximum の IREE 実行結果が eager 実装と一致しなかった"))
+        (nabla:backend-unload backend module)))))
+
 ;;; --- 性質2: ゼロサイズの contracting 次元を持つ dot_general ---
 
 (define-iree-test float-traps/zero-size-dot-general-does-not-leak-division-by-zero
@@ -177,8 +265,7 @@ buffer view が IREE のアロケータで扱えない可能性がある。follo
 呼び出し前後で変わらない（with-all-float-traps-masked が動的エクステントを
 抜けるときに必ず元へ戻すことの回帰テスト。issue #53）。"
   (skip-unless-iree :library :both)
-  (let* ((backend (nabla:find-backend :iree))
-         (aval (nb:make-aval '(4) :f32))
+  (let* ((aval (nb:make-aval '(4) :f32))
          (before (sb-int:get-floating-point-modes)))
     (with-one-op-module
         ((backend module) (list aval aval) aval

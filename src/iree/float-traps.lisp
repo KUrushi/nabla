@@ -23,23 +23,44 @@
 ;;;; 遅延でスレッドを作ることもありうるため、生成されうる全ての箇所を
 ;;;; 一貫してマスクしておく）。
 ;;;;
-;;;; 実験（このコミットの作業ログ、scratchpad/exp1〜exp3.lisp。fresh な
-;;;; sbcl --non-interactive で再現/未再現を確認したもの。以後の版の IREE や
-;;;; マシンでは変わりうるので、疑わしければ同じ手順で再確認すること）:
-;;;;   - shape (2)・(4 8) の NaN 入力を stablehlo.maximum /
-;;;;     compare+select に通す分には、修正前（make-device / invoke の
-;;;;     3トラップマスクのみ）でもクラッシュを再現できなかった
-;;;;     （:local-task の worker スレッドは make-device の時点ですでに
-;;;;     3トラップぶんマスクされているため）。ここでのマスク拡張
-;;;;     （5トラップ全部）は、この環境ではまだクラッシュしていない残り2つ
-;;;;     （:underflow :inexact）を先回りして塞ぐ多重防御。
+;;;; 実験（fresh な sbcl --non-interactive で再現/未再現を確認したもの。
+;;;; 以後の版の IREE やマシンでは変わりうるので、疑わしければ同じ手順で
+;;;; 再確認すること。再現手順は
+;;;; tests/iree/float-traps-test.lisp の
+;;;; FLOAT-TRAPS/NAN-CONSTANT-FOLD-DOES-NOT-CRASH-COMPILER が実行可能な
+;;;; 形で持っている——このテストの本体から本マクロ（あるいは
+;;;; compile-stablehlo からの呼び出しだけ）を外し、fresh なプロセスで
+;;;; 走らせるとクラッシュが再現する）:
+;;;;   - issue #53 の実際のクラッシュ経路は、NaN を実行時の引数として
+;;;;     渡す compare+select / maximum ではなく、stablehlo.constant に
+;;;;     NaN を埋め込んだモジュールを BACKEND-COMPILE することだった。
+;;;;     IREE の compile-stablehlo が呼ぶ ireeCompilerInvocationPipeline
+;;;;     は、定数だけから計算できる部分をコンパイル時に評価する
+;;;;     const-eval パス（JitGlobalsPass）を含み、これは対象のグラフを
+;;;;     ホストの LLVM JIT でコンパイル・実行して定数へ畳み込む。この
+;;;;     JIT 実行が使うワーカースレッドは、Pipeline を呼んでいる
+;;;;     「コンパイル中の Lisp スレッド」自身から生成されるため、その
+;;;;     時点のコンパイルスレッドの MXCSR を引き継ぐ。修正前は
+;;;;     compile-stablehlo 自身がどのトラップもマスクしていなかったので、
+;;;;     NaN の compare/maximum を含む定数畳み込みが未マスクな MXCSR で
+;;;;     浮動小数点例外を起こし、"in non-lisp tid ... resignaling to a
+;;;;     lisp tid" でプロセスごと落ちた（終了コード136）。実行時の引数と
+;;;;     して渡した NaN（shape (2)・(4 8) の maximum / compare+select）は、
+;;;;     この修正前の版でもクラッシュを再現できなかった（:local-task の
+;;;;     worker スレッドは make-device の時点ですでに3トラップぶん
+;;;;     マスクされているため）。したがって compile-stablehlo 自身への
+;;;;     マスクは「多重防御」ではなく、issue #53 を直接修正する変更
+;;;;     そのものであり、make-device / invoke 側の3トラップマスクは
+;;;;     この経路には効かない。ここでのマスク拡張（5トラップ全部）は、
+;;;;     const-eval の JIT が起こしうる :underflow :inexact も含めて
+;;;;     一貫して塞ぐための多重防御。
 ;;;;   - ゼロサイズの contracting 次元を持つ dot_general
 ;;;;     （tensor<2x0xf32> x tensor<0x3xf32>）の backend-compile は、修正前は
 ;;;;     常に呼び出し元スレッド（コンパイルを実行している Lisp スレッド
 ;;;;     そのもの）で DIVISION-BY-ZERO を signal した。これは
 ;;;;     WITH-ALL-FLOAT-TRAPS-MASKED でも glibc の fedisableexcept(3) の
-;;;;     直接呼び出しでも再現し続けた（scratchpad/exp2c〜exp2f.lisp。
-;;;;     コンパイラのフラグを変えても再現する）ため、SSE の浮動小数点例外
+;;;;     直接呼び出しでも再現し続けた（コンパイラのフラグを変えても
+;;;;     再現する）ため、SSE の浮動小数点例外
 ;;;;     （MXCSR、本マクロが制御する対象）ではなく、x86 の整数除算命令
 ;;;;     （idiv 系、#DE 例外）による 0 除算だと分かった——整数の0除算には
 ;;;;     マスクビットが存在せず、ソフトウェアでは防げない。SBCL の
