@@ -200,6 +200,44 @@ decode-element に渡すことは想定していない）。"
   (is (= (float-sign (decode-element :f16 #x8000)) -1.0d0))
   (is (= (decode-element :f16 #x7BFF) 65504.0d0)))
 
+(defun %decode-element-matches-decode-float16-p (dtype bits)
+  "DTYPE（:bf16 または :f16）のビット列 BITS について、DECODE-ELEMENT の
+結果が src/float16.lisp の NABLA::DECODE-FLOAT16 の結果（DOUBLE-FLOAT に
+coerce したもの）と一致するかどうかを返す。両方とも NaN なら一致とみなす
+（NaN は NaN 自身とも EQL にならないため、EQL の前に別扱いする）。"
+  (let* ((actual (decode-element dtype bits))
+         (expected-single (nabla::decode-float16 bits dtype)))
+    (if (sb-ext:float-nan-p expected-single)
+        (sb-ext:float-nan-p actual)
+        (eql actual (coerce expected-single 'double-float)))))
+
+(test support/decode-element/matches-decode-float16-exhaustive
+  "issue #55: DECODE-ELEMENT の bf16 / f16 は、それぞれ 16bit の全 65536
+パターンについて、src/float16.lisp の DECODE-FLOAT16（最近接偶数丸めの
+唯一の変換元、issue #38）と一致する。
+
+以前の DECODE-ELEMENT は独自のビット変換（%bf16-bits->f32 /
+%f16-bits->f32）を持っていて、無限大・NaN・bf16 の非正規化数を大きな
+有限値として誤ってデコードしていた（issue #55）。EQL で比較するので、
++0.0d0 と -0.0d0 の違いも見逃さない。"
+  (dotimes (bits #x10000)
+    (is (%decode-element-matches-decode-float16-p :bf16 bits)
+        "decode-element :bf16 のビット列 ~4,'0X が decode-float16 と一致しない" bits)
+    (is (%decode-element-matches-decode-float16-p :f16 bits)
+        "decode-element :f16 のビット列 ~4,'0X が decode-float16 と一致しない" bits)))
+
+(test support/dtype-value/round-trips-within-dtype-tolerance-of-input
+  "issue #55: DTYPE-VALUE を NABLA::ENCODE-FLOAT16（RNE）に切り替えても、
+[-1, 1] の入力を DTYPE-VALUE でエンコードしてから DECODE-ELEMENT で戻した
+値は、元の値に対して bf16 / f16 の許容誤差（dtype-tolerance、丸め誤差
+1回分）以内に収まる。"
+  (is (check-it (generator (uniform-real :lo -1.0d0 :hi 1.0d0))
+                (lambda (x)
+                  (and (approx= (decode-element :bf16 (nabla.tests.support::dtype-value :bf16 x)) x :dtype :bf16)
+                       (approx= (decode-element :f16 (nabla.tests.support::dtype-value :f16 x)) x :dtype :f16)))
+                :regression-id support/dtype-value/round-trips-within-dtype-tolerance-of-input
+                :regression-file (regression-path "dtype-value-round-trips-within-dtype-tolerance"))))
+
 (test support/uniform-integer/rejects-lo-greater-than-hi
   "MAKE-UNIFORM-INTEGER-GENERATOR / MAKE-UNIFORM-REAL-GENERATOR は、
 LO が HI より大きいときに、分かりにくいエラー（RANDOM への負の引数

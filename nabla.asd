@@ -117,6 +117,8 @@
   :description "IREE 連携（コンパイラとランタイムの埋め込み C API のバインディング）"
   :depends-on ("nabla" "cffi" "cffi-libffi" "trivial-garbage")
   :components ((:file "src/iree/package")
+               ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
+               (:file "src/iree/float-traps")
                (:file "src/iree/conditions")
                (:file "src/iree/compiler-ffi")
                (:file "src/iree/signals")
@@ -174,4 +176,6 @@
                ;; issue #31 p5: dot-general
                (:file "tests/iree/dot-test")
                ;; issue #31 p6: reduce-sum / reduce-max
-               (:file "tests/iree/reduce-test")))
+               (:file "tests/iree/reduce-test")
+               ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
+               (:file "tests/iree/float-traps-test")))
