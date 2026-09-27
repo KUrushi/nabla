@@ -312,6 +312,13 @@ EVAL-GRAPH で評価して返す（何もキャッシュしないので、次の
 また同じコンパイルを試みる）。RECOMPILE はもう一度 %JIT-CALL 自体を
 やり直す（コンパイルが直っていれば今度はキャッシュに載る）。
 
+この2つのリスタートは %JIT-CACHE-LOOKUP-OR-COMPILE（キャッシュミスの
+トレース・コンパイル経路。JIT-COMPILE-ERROR が起こりうる場所）だけを
+囲む。%JIT-EXECUTE（キャッシュヒット後の TO-DEVICE / BACKEND-INVOKE /
+TO-HOST）はこの restart-case の外にあるので、実行時のエラーには
+USE-EAGER・RECOMPILE のどちらも提供されない（実行時エラーを
+EVAL-GRAPH で読み替えたり、実行をやり直したりする意味が無いため）。
+
 follow-up（振る舞いは変えない。仕様通りだが、次に触るときのための
 メモ）: RECOMPILE は %JIT-COMPILE-AND-LOAD だけをやり直すのではなく
 %JIT-CALL を再帰的に呼び直すので、引数の検証・backend の解決・
@@ -337,16 +344,16 @@ USE-EAGER は GRAPH-THUNK を呼び直して本体を2回目のトレースに�
             dynamic-values (nreverse dynamic-values))
       (let* ((avals (mapcar #'%jit-argument-aval dynamic-values))
              (key (%jit-cache-key backend avals static-values))
-             (graph-thunk (lambda () (%jit-trace fn avals static-positions static-values))))
-        (restart-case
-            (let ((entry (%jit-cache-lookup-or-compile fn key backend graph-thunk)))
-              (%jit-execute backend (%jit-entry-module entry) dynamic-values avals))
-          (use-eager ()
-            :report "この呼び出しだけ eager（eval-graph）で実行する"
-            (%jit-eager-fallback (funcall graph-thunk) dynamic-values))
-          (recompile ()
-            :report "もう一度コンパイルする"
-            (%jit-call jitted args)))))))
+             (graph-thunk (lambda () (%jit-trace fn avals static-positions static-values)))
+             (entry (restart-case
+                        (%jit-cache-lookup-or-compile fn key backend graph-thunk)
+                      (use-eager ()
+                        :report "この呼び出しだけ eager（eval-graph）で実行する"
+                        (return-from %jit-call (%jit-eager-fallback (funcall graph-thunk) dynamic-values)))
+                      (recompile ()
+                        :report "もう一度コンパイルする"
+                        (return-from %jit-call (%jit-call jitted args))))))
+        (%jit-execute backend (%jit-entry-module entry) dynamic-values avals)))))
 
 ;;; --- defjit（issue #34、wave 4 j2） ---
 

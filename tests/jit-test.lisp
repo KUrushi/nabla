@@ -312,3 +312,41 @@ JIT-COMPILE-ERROR-EQN・JIT-COMPILE-ERROR-EQN-INDEX はどちらも NIL にな�
         (nb:jit-compile-error (c)
           (is (null (nb:jit-compile-error-eqn c)))
           (is (null (nb:jit-compile-error-eqn-index c))))))))
+
+;;; --- USE-EAGER / RECOMPILE はキャッシュミスのコンパイル経路だけを囲む ---
+
+(defclass %broken-invoke-fake-backend (fake-backend)
+  ()
+  (:documentation
+   "BACKEND-COMPILE / BACKEND-LOAD は FAKE-BACKEND と同じだが、
+BACKEND-INVOKE が必ず（BACKEND-ERROR ではない）プレーンな ERROR を
+signal する backend。%JIT-EXECUTE（キャッシュヒット後の実行経路）の
+エラーには NB:USE-EAGER・NB:RECOMPILE が提供されないことを確かめるための
+テスト専用クラス。"))
+
+(defmethod nabla:backend-invoke ((backend %broken-invoke-fake-backend) module function-name &rest arrays)
+  (declare (ignore backend module function-name arrays))
+  (error "broken-invoke-fake-backend: わざと実行時エラーを起こす"))
+
+(test jit/restarts-do-not-cover-execution-errors
+  "コンパイル済みの module を BACKEND-INVOKE する段階（%JIT-EXECUTE）で
+signal されたエラーには、NB:USE-EAGER・NB:RECOMPILE のどちらのリスタートも
+アクティブでない（restart-case は %JIT-CACHE-LOOKUP-OR-COMPILE だけを
+囲むので、キャッシュヒット後の実行時エラーはそのまま伝播する）。"
+  (let* ((backend (make-instance '%broken-invoke-fake-backend))
+         (nb:*compile-cache-directory* nil)
+         (f (nb:with-tracing (a b) (+ a b)))
+         (jf (nb:jit f :backend backend))
+         (a (make-random-array (make-array-spec '(2 3) :f32) :seed 38))
+         (b (make-random-array (make-array-spec '(2 3) :f32) :seed 39))
+         (use-eager-restart :not-checked)
+         (recompile-restart :not-checked))
+    (block done
+      (handler-bind ((error (lambda (c)
+                               (declare (ignore c))
+                               (setf use-eager-restart (find-restart 'nb:use-eager))
+                               (setf recompile-restart (find-restart 'nb:recompile))
+                               (return-from done))))
+        (funcall jf a b)))
+    (is (null use-eager-restart))
+    (is (null recompile-restart))))

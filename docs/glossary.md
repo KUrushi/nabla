@@ -181,7 +181,7 @@ pretty form を出力する。
 : 変異させても意味のある違いが生まれない、または確かめる価値の低いコードの箇所。ログ出力、エラーメッセージの文字列、型宣言などがこれにあたる。Google の mutation testing ではこれを除外して、ノイズを減らしている。
 
 **テストサイズ（small / medium / large）**
-: Google の分類で、テストが使ってよい資源の範囲。small は1プロセス内で完結し、I/O やスレッドを使わない。medium は1台のマシン内で、ファイルやローカルのプロセスを使ってよい。large は複数のマシンや外部の資源を使う。小さいほど速く、安定している。
+: Google の分類で、テストが使ってよい資源の範囲。small は1プロセス内で完結し、I/O やスレッドを使わない。medium は1台のマシン内で、ファイルやローカルのプロセスを使ってよい。large は複数のマシンや外部の資源を使う。小さいほど速く、安定している。nabla では FiveAM のスイート `:nabla.small` / `:nabla.medium` / `:nabla.large` がこれに対応し、既定のスイート（scripts/run-tests.sh）は small + medium。`:nabla.isolated-medium`（tests/iree/support.lisp の `define-iree-test/isolated-medium`）は意味論としては medium（1台のマシン内で完結し、既定で実行する）だが、他の medium テストと同じ SBCL プロセスで実行すると in-process の IREE コンパイラが壊れることが分かっている（issue #68）テストを、`:nabla.medium` とは別の SBCL プロセスに隔離するためのスイート。
 
 **ハーメティック（hermetic）**
 : テストが外部の状態（ネットワーク、時刻、他のテスト、実行順序）に依存せず、それだけで完結していること。何度実行しても同じ結果になる。

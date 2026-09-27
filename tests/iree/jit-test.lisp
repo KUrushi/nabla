@@ -8,39 +8,29 @@
 ;;;; rtol を (1 + eqn数) 倍に緩める（tests/iree/stablehlo-test.lisp と同じ
 ;;;; 考え方。ピットフォール(4)）。
 ;;;;
-;;;; このファイルのテストはすべて :NABLA.LARGE スイートに置く（既定の
-;;;; small+medium には含めない）。既定の medium スイートに置いていたときは
-;;;; 次の事実を確認した（issue #34 PR #67 のレビューで発見）:
+;;;; このファイルのテストは DEFINE-IREE-TEST/ISOLATED-MEDIUM を使い、
+;;;; :NABLA.MEDIUM ではなく独立した :NABLA.ISOLATED-MEDIUM スイートに登録
+;;;; する（tests/iree/support.lisp）。理由: tests/iree/ の他の medium テスト
+;;;; （IREE/ARITH・DOT-GENERAL・REDUCE-SUM・STABLEHLO 等）をすべて実行した
+;;;; *あとに* このファイルのどれか（JIT/PBT-MATCHES-EAGER に限らず、最初に
+;;;; 走る jit テストならどれでも）が新しく IREE コンパイラを呼ぶと、
+;;;; in-process の libIREECompiler.so（mlir::OpPassManager の構築中）が
+;;;; メモリ破壊で落ちる（SB-SYS:MEMORY-FAULT-ERROR、issue #34 PR #67 の
+;;;; レビューで発見、issue #68 で追跡）。原因は IREE の *実行* ではなく
+;;;; コンパイラ自身の in-process 状態で、medium スイート全体が積み重ねる
+;;;; distinct コンパイルの総量に依存するらしい（issue #68 に詳細）。
 ;;;;
-;;;;   - tests/iree/ の他の medium テスト（IREE/ARITH・DOT-GENERAL・
-;;;;     REDUCE-SUM・STABLEHLO 等）をすべて実行した *あとに* このファイルの
-;;;;     どれか（JIT/PBT-MATCHES-EAGER に限らず、最初に走る jit テストなら
-;;;;     どれでも）が新しく IREE コンパイラを呼ぶと、in-process の
-;;;;     libIREECompiler.so（mlir::OpPassManager の構築中）がメモリ破壊で
-;;;;     落ちる（SB-SYS:MEMORY-FAULT-ERROR）。JIT/PBT-MATCHES-EAGER を
-;;;;     :NABLA.LARGE に移しても、その次に medium 内で最初にコンパイルする
-;;;;     jit テスト（JIT/MULTIPLE-VALUES）が同じ場所で同じように落ちた
-;;;;     （再現性あり。2/2）。
-;;;;   - 原因は IREE の *実行* ではなくコンパイラ自身の状態で、PBT が生成する
-;;;;     with-tracing 本体の未使用引数とは無関係（別プロセスで
-;;;;     `(with-tracing (a b w) (+ a b))` を、fresh な traceable ごとに
-;;;;     %jit-cache-forget + full GC + finalizer 実行を挟みながら40回 jit
-;;;;     しても再現しなかった）。
-;;;;   - 「コンパイル失敗の直後に別のコンパイルをする」ことが原因という
-;;;;     見立ても、最小の2コンパイル再現（わざと壊した StableHLO を
-;;;;     コンパイルしてエラーを取ってから、正しい2出力の StableHLO を
-;;;;     続けてコンパイルする）では再現しなかったので違う。medium スイート
-;;;;     全体が積み重ねる、内容の異なる distinct コンパイルの総量に依存する
-;;;;     らしい（正確な閾値・条件は未特定）。
-;;;;
-;;;; このファイルのテストを :NABLA.LARGE 単独（他の medium テストを介さず）
-;;;; で実行すると全部通る（クラッシュしない）ことは確認済み。コンパイラの
-;;;; in-process 状態が壊れる根本原因を調べる follow-up issue を立てるまでは、
-;;;; このファイル全体を :NABLA.LARGE に置いて既定スイートを安定させる。
+;;;; :NABLA.ISOLATED-MEDIUM は :NABLA.MEDIUM とは別の SBCL プロセスで実行
+;;;; する（scripts/run-tests.sh）。まっさらなプロセスから始まるので他の
+;;;; medium テストのコンパイルが積み重ならず、このファイル単独ではクラッシュ
+;;;; しないことを確認済み。NABLA_TEST_SIZES に "medium" が含まれる限り
+;;;; scripts/run-tests.sh が必ずこのスイートも実行するので、CI の既定
+;;;; スイートは引き続き #35 の「jit(f)(x) の結果は (f x) の結果と一致する」
+;;;; を medium で検査する。
 
 (in-package #:nabla.iree.tests)
 
-(defun count-substring (needle haystack)
+(defun %count-substring (needle haystack)
   "HAYSTACK の中に NEEDLE が現れる（重なりを許す）回数を返す。"
   (loop with count = 0
         with start = 0
@@ -156,13 +146,13 @@
       ;; %JIT-CACHE-FORGET して毎回すぐ解放する。
       (nb::%jit-cache-forget f))))
 
-(define-iree-test/large jit/pbt-matches-eager
+(define-iree-test/isolated-medium jit/pbt-matches-eager
     "ランダムな with-tracing 本体（+ - max min neg tanh exp dot transpose
 where reduce-sum/max reshape broadcast-in-dim）を IREE 上で jit した結果は、
 f32 なら直接呼んだ eager 実装、bf16 なら eval-graph の結果と一致する。
-:NABLA.LARGE スイート（既定の small+medium には含まれない。ファイル冒頭の
-コメント参照: medium の他のテストと合わせて実行すると IREE コンパイラの
-in-process 状態が壊れることを確認したため）。"
+:NABLA.ISOLATED-MEDIUM スイート（ファイル冒頭のコメント参照: 他の medium
+テストと同じプロセスで実行すると IREE コンパイラの in-process 状態が
+壊れることを確認したため、別プロセスで実行する。issue #68）。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
         (*num-trials* 15)
@@ -187,7 +177,7 @@ in-process 状態が壊れることを確認したため）。"
 
 ;;; --- 複数の出力値 ---
 
-(define-iree-test/large jit/multiple-values
+(define-iree-test/isolated-medium jit/multiple-values
     "(values (nb:dot x w) (+ x x)) を jit すると、host 配列2つが多値で返る
 （E2: 1つは invar そのもの）。"
   (skip-unless-iree :library :both)
@@ -204,7 +194,7 @@ in-process 状態が壊れることを確認したため）。"
 
 ;;; --- 再定義しなければ再コンパイルしない ---
 
-(define-iree-test/large jit/does-not-recompile-on-repeated-call
+(define-iree-test/isolated-medium jit/does-not-recompile-on-repeated-call
     "同じ shape・dtype で2回呼んでも、2回目は NB::*JIT-MISS-COUNT* が増えない
 （IREE backend にはコンパイル回数を直接数える手段がないので、代わりに
 *JIT-MISS-COUNT* のデルタと %JIT-CACHE-ENTRY-COUNT で確かめる。契約の
@@ -297,7 +287,7 @@ out2（eager）の4つを別々の FIVEAM:IS にして、どれが食い違っ�
                    "~A: out2 (jit) が eval-graph と一致しない" dtype)))
         (when (eq dtype :bf16) (dolist (da jit-args) (release-device-array da)))))))
 
-(define-iree-test/large jit/mlp-matches-jax-fixture-and-eval-graph
+(define-iree-test/isolated-medium jit/mlp-matches-jax-fixture-and-eval-graph
     "DEFJIT した小さな MLP 相当の関数（elementwise + dot + reduce-sum/max +
 reshape + broadcast-in-dim）は、f32・bf16 のどちらでも、JAX で生成した
 フィクスチャ（tests/fixtures/jit/mlp.lisp）および同じ graph を
@@ -311,7 +301,7 @@ EVAL-GRAPH で評価した結果と、許容誤差つきで一致する（#35 �
 
 ;;; --- コンパイル診断からどの eqn が原因かを逆引きできる（jit 経由） ---
 
-(define-iree-test/large jit/compile-error-maps-back-to-broken-eqn
+(define-iree-test/isolated-medium jit/compile-error-maps-back-to-broken-eqn
     "わざと壊した eqn（tests/iree/stablehlo-test.lisp の %TEST-BAD-RESHAPE）
 だけを持つ関数を jit すると JIT-COMPILE-ERROR が signal され、
 JIT-COMPILE-ERROR-EQN-INDEX が 0（壊れた唯一の eqn）になる。"
@@ -331,7 +321,7 @@ JIT-COMPILE-ERROR-EQN-INDEX が 0（壊れた唯一の eqn）になる。"
 
 ;;; --- README の使用例（examples/jit.lisp）が壊れていないことを確かめる ---
 
-(define-iree-test/large example/jit-lisp/prints-expected-sum
+(define-iree-test/isolated-medium example/jit-lisp/prints-expected-sum
     "examples/jit.lisp（README の使用例）を読み込むと、標準出力に4要素の
 加算結果 \"11.0 22.0 33.0 44.0\" が2回（1回目・2回目）現れる。"
   (skip-unless-iree :library :both)
@@ -340,5 +330,5 @@ JIT-COMPILE-ERROR-EQN-INDEX が 0（壊れた唯一の eqn）になる。"
     (let ((*standard-output* output))
       (load (asdf:system-relative-pathname "nabla" "examples/jit.lisp")))
     (let ((text (get-output-stream-string output)))
-      (is (<= 2 (count-substring "11.0 22.0 33.0 44.0" text))
+      (is (<= 2 (%count-substring "11.0 22.0 33.0 44.0" text))
           "examples/jit.lisp の出力に期待する和が2回見つからなかった: ~S" text))))
