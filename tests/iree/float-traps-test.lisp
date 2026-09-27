@@ -30,6 +30,15 @@
 ;;;;      ようにする根本修正ではないため、ここでは「クラッシュしない・
 ;;;;      生の DIVISION-BY-ZERO が漏れない」ことだけを確認し、コンパイルが
 ;;;;      実際に成功した場合は invoke まで確かめる（follow-up 課題）。
+;;;;      この性質のテストは手書きの MLIR テキストを直接 BACKEND-COMPILE に
+;;;;      渡すことで compiler.lisp 側の ARITHMETIC-ERROR ->
+;;;;      IREE-COMPILE-ERROR 変換をそのまま確かめ続けるためのもので、
+;;;;      dot-general の :emit 経路（src/primitives/dot.lisp）はこの形の
+;;;;      dot_general をもう出さない（issue #62）。実際のトレース経路
+;;;;      （with-tracing → trace-to-graph → emit-stablehlo）で K=0 の
+;;;;      dot-general がコンパイル・実行できることは
+;;;;      tests/iree/dot-test.lisp の
+;;;;      dot-general/zero-contracting-compiles-and-matches-eager で確認する。
 ;;;;
 ;;;; 3つ目の性質として、繰り返し make-device / invoke しても、呼び出した
 ;;;; スレッド自身の浮動小数点トラップの設定が変わらないこと
