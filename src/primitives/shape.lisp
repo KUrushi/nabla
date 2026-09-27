@@ -74,18 +74,23 @@
             out-name (first in-names) dims (tensor-type-string (first in-avals)) (tensor-type-string out-aval)))
   :eager
   (lambda (arrays in-avals &key shape dims)
-    (let ((in-shape (aval-shape (first in-avals)))
-          (dtype (aval-dtype (first in-avals)))
-          (array (first arrays)))
+    (let* ((in-shape (aval-shape (first in-avals)))
+           (dtype (aval-dtype (first in-avals)))
+           (array (first arrays))
+           ;; SHAPE・IN-SHAPE は出力の全要素にわたって同じなので、ストライド
+           ;; は出力を回すループの外で1度だけ計算する（%SHAPE-EAGER-FILL の
+           ;; 中の closure が要素ごとに毎回計算し直すのを避ける）。
+           (out-strides (%shape-strides shape))
+           (in-strides (%shape-strides in-shape)))
       (%shape-eager-fill
        shape dtype
        (lambda (out-index)
-         (let ((out-subscripts (%shape-subscripts out-index shape)))
+         (let ((out-subscripts (%shape-subscripts out-index shape out-strides)))
            (%shape-row-major-index
             (loop for operand-dim in in-shape
                   for target-dim in dims
                   collect (if (= operand-dim 1) 0 (nth target-dim out-subscripts)))
-            in-shape)))
+            in-shape in-strides)))
        array))))
 
 (defprimitive transpose (:perm)
@@ -111,14 +116,18 @@
            (dtype (aval-dtype (first in-avals)))
            (array (first arrays))
            (out-shape (mapcar (lambda (p) (nth p in-shape)) perm))
-           (rank (length in-shape)))
+           (rank (length in-shape))
+           ;; PERM で出力の rank と入力の rank は等しいので、ストライドは
+           ;; どちらも出力を回すループの外で1度だけ計算する。
+           (out-strides (%shape-strides out-shape))
+           (in-strides (%shape-strides in-shape)))
       (%shape-eager-fill
        out-shape dtype
        (lambda (out-index)
-         (let ((out-subscripts (%shape-subscripts out-index out-shape))
+         (let ((out-subscripts (%shape-subscripts out-index out-shape out-strides))
                (in-subscripts (make-list rank)))
            (loop for p in perm
                  for s in out-subscripts
                  do (setf (nth p in-subscripts) s))
-           (%shape-row-major-index in-subscripts in-shape)))
+           (%shape-row-major-index in-subscripts in-shape in-strides)))
        array))))

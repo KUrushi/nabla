@@ -33,15 +33,18 @@
              (setf acc (* acc (nth i shape))))
     strides))
 
-(defun %shape-row-major-index (subscripts shape)
+(defun %shape-row-major-index (subscripts shape &optional (strides (%shape-strides shape)))
   "SUBSCRIPTS（各次元の添字のリスト）と SHAPE から row-major のインデックス
-を返す。"
-  (reduce #'+ (mapcar #'* subscripts (%shape-strides shape)) :initial-value 0))
+を返す。同じ SHAPE に対して繰り返し呼ぶ場合（%SHAPE-EAGER-FILL のように
+出力の各要素ごとに呼ぶ場合など）は、STRIDES を一度だけ計算して渡すと
+そのたびの再計算を避けられる。"
+  (reduce #'+ (mapcar #'* subscripts strides) :initial-value 0))
 
-(defun %shape-subscripts (index shape)
-  "row-major の INDEX を、SHAPE の各次元ごとの添字のリストに変換する。"
+(defun %shape-subscripts (index shape &optional (strides (%shape-strides shape)))
+  "row-major の INDEX を、SHAPE の各次元ごとの添字のリストに変換する。
+STRIDES は %SHAPE-ROW-MAJOR-INDEX と同じ、再計算を避けるための任意引数。"
   (mapcar (lambda (stride dim) (mod (floor index stride) dim))
-          (%shape-strides shape)
+          strides
           shape))
 
 (defun %shape-eager-fill (out-shape dtype index->in-index array)
