@@ -21,24 +21,37 @@
 ;;;;      トリガーで、compile-stablehlo へのマスク追加が本 PR の
 ;;;;      load-bearing な修正そのもの（float-traps.lisp 冒頭のコメント
 ;;;;      参照）。
-;;;;   2. ゼロサイズの contracting 次元を持つ dot_general の BACKEND-COMPILE
+;;;;   2. ゼロサイズの contracting 次元を持つ dot_general の COMPILE-STABLEHLO
 ;;;;      は、生の DIVISION-BY-ZERO（Lisp コンディション）を漏らさない。
 ;;;;      float-traps.lisp 冒頭のコメントのとおり、この特定のケースは
 ;;;;      x86 の整数 0 除算（#DE）が原因で、浮動小数点トラップのマスクでは
 ;;;;      防げない既知の IREE/LLVM 側の制約なので、compiler.lisp 側で
-;;;;      IREE-COMPILE-ERROR に変換している。実際に正しい vmfb を得られる
-;;;;      ようにする根本修正ではないため、ここでは「クラッシュしない・
-;;;;      生の DIVISION-BY-ZERO が漏れない」ことだけを確認し、コンパイルが
-;;;;      実際に成功した場合は invoke まで確かめる（follow-up 課題）。
-;;;;      この性質のテストは手書きの MLIR テキストを直接 BACKEND-COMPILE に
-;;;;      渡すことで compiler.lisp 側の ARITHMETIC-ERROR ->
-;;;;      IREE-COMPILE-ERROR 変換をそのまま確かめ続けるためのもので、
-;;;;      dot-general の :emit 経路（src/primitives/dot.lisp）はこの形の
-;;;;      dot_general をもう出さない（issue #62）。実際のトレース経路
-;;;;      （with-tracing → trace-to-graph → emit-stablehlo）で K=0 の
-;;;;      dot-general がコンパイル・実行できることは
+;;;;      IREE-COMPILE-ERROR に変換している。
+;;;;
+;;;;      issue #68: この #DE は ireeCompilerInvocationPipeline が C++
+;;;;      オブジェクト（mlir::OpPassManager 等）を構築している最中に起き、
+;;;;      SBCL の非局所脱出はその構築中の C++ フレームのデストラクタを
+;;;;      一切走らせずに飛び越える。実験で確認したとおり（compiler.lisp の
+;;;;      *compiler-poison-reason* 冒頭のコメント参照）、この #DE 単体は
+;;;;      その場ではプロセスを壊さないが、その後さらに多数の distinct な
+;;;;      コンパイルを重ねると in-process の libIREECompiler.so が
+;;;;      SB-SYS:MEMORY-FAULT-ERROR で壊れうる。そのため compiler.lisp は
+;;;;      この #DE を観測したプロセスを以後 poisoned として扱い、次回以降の
+;;;;      compile-stablehlo を :phase :poisoned の IREE-COMPILE-ERROR で
+;;;;      即座に失敗させる。このファイルの他のテストや :nabla.medium 全体と
+;;;;      同じ共有プロセスで実際にこの #DE を起こすと、以後そのプロセスでの
+;;;;      コンパイルが軒並み :phase :poisoned で失敗してしまうため、この
+;;;;      性質のテスト（float-traps/zero-size-dot-general-poisons-compiler-then-fails-clearly）
+;;;;      だけは真っさらな子 SBCL プロセスの中で #DE を起こし、
+;;;;      (1) 生の DIVISION-BY-ZERO が漏れないこと、(2) その直後の別の
+;;;;      compile-stablehlo が :phase :poisoned で明確に失敗することを
+;;;;      確かめる。実際のトレース経路（with-tracing → trace-to-graph →
+;;;;      emit-stablehlo）での K=0 の dot-general は、issue #62 の修正で
+;;;;      dot-general の :emit（src/primitives/dot.lisp）がこの形の
+;;;;      dot_general をもう出さなくなった（ゼロ定数を出す）ため、この #DE
+;;;;      をそもそも踏まない。その経路のコンパイル・実行の確認は
 ;;;;      tests/iree/dot-test.lisp の
-;;;;      dot-general/zero-contracting-compiles-and-matches-eager で確認する。
+;;;;      dot-general/zero-contracting-compiles-and-matches-eager で行う。
 ;;;;
 ;;;; 3つ目の性質として、繰り返し make-device / invoke しても、呼び出した
 ;;;; スレッド自身の浮動小数点トラップの設定が変わらないこと
@@ -62,15 +75,6 @@ NAN-POSITIONS（整数のリスト）に含まれる要素は NaN、それ以外
             (if (member i nan-positions)
                 *float-traps-nan-f32*
                 (coerce (- (mod i 7) 3) 'single-float))))))
-
-(defun %all-zero-p (array)
-  "ARRAY の全要素が0か。FIVEAM:IS はチェック対象の式をコードウォークして
-失敗時の値を報告しようとするため、DOTIMES のような特殊な束縛構文を直接
-(IS ...) の中に書くと誤ってマクロ展開されることがある（実際に mutation
-testing の runner の再コンパイル時にだけ踏んだ）。そのため素朴なループは
-小さな名前付き関数に出しておく。"
-  (dotimes (i (array-total-size array) t)
-    (unless (zerop (row-major-aref array i)) (return nil))))
 
 (defun %nan-aware-match-p (actual expected dtype)
   "ACTUAL と EXPECTED（DTYPE の格納表現を持つ配列）が、要素ごとに
@@ -221,50 +225,87 @@ func.return %0 : ~A~%}"
 
 ;;; --- 性質2: ゼロサイズの contracting 次元を持つ dot_general ---
 
-(define-iree-test float-traps/zero-size-dot-general-does-not-leak-division-by-zero
-    "ゼロサイズの contracting 次元を持つ dot_general
-（tensor<2x0xf32> x tensor<0x3xf32> -> tensor<2x3xf32>）の BACKEND-COMPILE は、
-生の DIVISION-BY-ZERO（Lisp コンディション）を漏らさない（issue #53）。
-この特定の形は x86 の整数0除算（#DE、マスクできない）が原因の既知の
-IREE/LLVM 側の制約なので、コンパイル自体が失敗する場合は
-NABLA.IREE:IREE-COMPILE-ERROR として報告されることまでを確かめる
-（compiler.lisp 冒頭のコメント、float-traps.lisp 冒頭のコメント参照。
-follow-up 課題）。コンパイルが成功した場合は、そのまま invoke まで確かめる。"
-  (skip-unless-iree :library :both)
-  (let* ((lhs-aval (nb:make-aval '(2 0) :f32))
-         (rhs-aval (nb:make-aval '(0 3) :f32))
-         (out-aval (nb:make-aval '(2 3) :f32))
-         (text (format nil "func.func @main(%a0: ~A, %a1: ~A) -> ~A {~%  ~
-%0 = stablehlo.dot_general %a0, %a1, contracting_dims = [1] x [0] : (~A, ~A) -> ~A~%  ~
-func.return %0 : ~A~%}"
-                       (nb::tensor-type-string lhs-aval) (nb::tensor-type-string rhs-aval)
-                       (nb::tensor-type-string out-aval)
-                       (nb::tensor-type-string lhs-aval) (nb::tensor-type-string rhs-aval)
-                       (nb::tensor-type-string out-aval)
-                       (nb::tensor-type-string out-aval)))
-         (backend (nabla:find-backend :iree)))
-    (handler-case
-        (let ((octets (nabla:backend-compile backend text)))
-          (let ((module (nabla:backend-load backend octets)))
-            (unwind-protect
-                 (let ((lhs (make-array '(2 0) :element-type 'single-float))
-                       (rhs (make-array '(0 3) :element-type 'single-float)))
-                   (handler-case
-                       (with-device-arrays ((da (to-device lhs backend :dtype :f32))
-                                            (db (to-device rhs backend :dtype :f32)))
-                         (with-device-arrays ((result (nabla:backend-invoke backend module "main" da db)))
-                           (is (equalp (device-array-aval result) out-aval))
-                           (is (%all-zero-p (to-host result)))))
-                     (error (c)
-                       (fiveam:pass "compile+load は成功したが to-device/invoke は失敗した（0バイトの ~
-buffer view が IREE のアロケータで扱えない可能性がある。follow-up 課題）: ~A" c))))
-              (nabla:backend-unload backend module))))
-      (nabla.iree:iree-compile-error (c)
-        (fiveam:pass "backend-compile は生の DIVISION-BY-ZERO ではなく IREE-COMPILE-ERROR ~
-（phase ~A）として報告した（既知の IREE/LLVM 側の制約。follow-up 課題）"
-                     (nabla.iree:iree-compile-error-phase c)))
-      (division-by-zero ()
-        (fiveam:fail "backend-compile が生の DIVISION-BY-ZERO を漏らした（issue #53 が未修正）")))))
+(defparameter *zero-size-dot-general-poison-check-child-source*
+  "(require :asdf)
+(asdf:load-system \"nabla/iree\")
+(in-package :nabla.iree)
+
+;; issue #68: 実際に SB-SYS:MEMORY-FAULT-ERROR を踏んだ再現手順は、他の
+;; distinct なコンパイルを多数（125個）行った *後に* この #DE を起こす、
+;; というものだった。ここでも、まず20個の distinct な StableHLO を
+;; コンパイルしてから #DE を起こす（少ない回数でも安全側に倒すため
+;; 125 ではなく20にしているが、この後の poison チェックは
+;; compiler.lisp が #DE を観測した時点で無条件に効くので、実際には
+;; 事前のコンパイル回数に依存しない——それ自体も、この回帰テストが
+;; 保証する契約の一部）。
+(dotimes (n 20)
+  (let ((text (format nil \"func.func @main(%a0: tensor<~Dx~Dxf32>) -> tensor<~Dx~Dxf32> {~%  func.return %a0 : tensor<~Dx~Dxf32>~%}\"
+                       (1+ n) (1+ n) (1+ n) (1+ n) (1+ n) (1+ n))))
+    (unless (plusp (length (compile-stablehlo text)))
+      (format t \"PRE-VOLUME-RESULT=FAILED-AT-~D~%\" n)
+      (sb-ext:exit :code 1))))
+(format t \"PRE-VOLUME-RESULT=OK~%\")
+
+(defparameter *k0-text* \"func.func @main(%a0: tensor<2x0xf32>, %a1: tensor<0x3xf32>) -> tensor<2x3xf32> {
+  %0 = stablehlo.dot_general %a0, %a1, contracting_dims = [1] x [0] : (tensor<2x0xf32>, tensor<0x3xf32>) -> tensor<2x3xf32>
+  func.return %0 : tensor<2x3xf32>
+}\")
+(defparameter *trivial-text* \"func.func @main() { return }\")
+
+(handler-case
+    (progn (compile-stablehlo *k0-text*)
+           (format t \"K0-RESULT=COMPILED-OK~%\"))
+  (iree-compile-error (c)
+    (format t \"K0-RESULT=COMPILE-ERROR PHASE=~A~%\" (iree-compile-error-phase c)))
+  (division-by-zero ()
+    (format t \"K0-RESULT=RAW-DIVISION-BY-ZERO-LEAKED~%\")))
+
+(handler-case
+    (progn (compile-stablehlo *trivial-text*)
+           (format t \"FOLLOWUP-RESULT=COMPILED-OK~%\"))
+  (iree-compile-error (c)
+    (format t \"FOLLOWUP-RESULT=COMPILE-ERROR PHASE=~A~%\" (iree-compile-error-phase c))))
+
+(sb-ext:exit :code 0)
+"
+  "%RUN-IN-CHILD-SBCL に渡す、子プロセス側の完全なソース。support.lisp の
+%RUN-IN-CHILD-SBCL を使う（issue #68。ファイル冒頭のコメント参照）。")
+
+(define-iree-test float-traps/zero-size-dot-general-poisons-compiler-then-fails-clearly
+    "多数の distinct な compile-stablehlo（20個）に続けて、ゼロサイズの
+contracting 次元を持つ dot_general
+（tensor<2x0xf32> x tensor<0x3xf32> -> tensor<2x3xf32>）の生 MLIR を
+compile-stablehlo に通すと、x86 の整数0除算（#DE、マスクできない。
+float-traps.lisp 冒頭のコメント参照）が起き、生の DIVISION-BY-ZERO
+（Lisp コンディション）は漏れず、IREE-COMPILE-ERROR として報告される
+（issue #53）。
+
+issue #68: この #DE の直後に行う別の（問題のない）compile-stablehlo は、
+:phase :poisoned の IREE-COMPILE-ERROR で明確に失敗し、メモリ不正アクセスへ
+進まない（ファイル冒頭のコメント、compiler.lisp の *compiler-poison-reason*
+冒頭のコメント参照）。#DE を起こす経路は、このファイルの他のテストや
+:nabla.medium 全体と同じ共有プロセスを汚染しないよう、常に真っさらな子
+SBCL プロセス（%RUN-IN-CHILD-SBCL、tests/iree/support.lisp）の中で実行する。"
+  (skip-unless-iree :library :compiler)
+  (multiple-value-bind (exit-code output error-output)
+      (%run-in-child-sbcl *zero-size-dot-general-poison-check-child-source*)
+    (is (= 0 exit-code)
+        "child process exited ~D (should always exit 0, even when the #DE path is hit); stdout:~%~A~%stderr:~%~A"
+        exit-code output error-output)
+    (is (search "PRE-VOLUME-RESULT=OK" output)
+        "child did not finish its 20 pre-volume compiles; output:~%~A" output)
+    (is (not (search "K0-RESULT=RAW-DIVISION-BY-ZERO-LEAKED" output))
+        "child leaked a raw DIVISION-BY-ZERO instead of IREE-COMPILE-ERROR (issue #53 regressed); output:~%~A"
+        output)
+    (is (or (search "K0-RESULT=COMPILED-OK" output) (search "K0-RESULT=COMPILE-ERROR" output))
+        "child did not report a recognized K0 result; output:~%~A" output)
+    (if (search "K0-RESULT=COMPILE-ERROR" output)
+        (is (search "FOLLOWUP-RESULT=COMPILE-ERROR PHASE=POISONED" output)
+            "after the #DE-triggering compile, a later ordinary compile should fail with :phase :poisoned ~
+instead of proceeding on corrupted in-process compiler state (issue #68); output:~%~A" output)
+        (is (search "FOLLOWUP-RESULT=COMPILED-OK" output)
+            "K0 compiled without hitting the #DE, so the compiler should not have been poisoned; output:~%~A"
+            output))))
 
 ;;; --- 性質3: 呼び出しスレッド自身のトラップ設定は変わらない ---
 
