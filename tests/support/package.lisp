@@ -44,6 +44,8 @@
    #:reference-reshape
    #:reference-broadcast-in-dim
    #:reference-transpose
+   ;; issue #31 p5: dot-general
+   #:reference-dot-general
    ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）
    #:fake-backend
    #:fake-backend-compile-count
