@@ -58,22 +58,28 @@ FLOAT-SIGN と %ORACLE-FLOOR-LOG2 だけで組み立てる。"
 ;;; 1. 往復: NaN 以外の全ビット列で decode . encode = id。
 
 (test float16/f16/round-trips-over-all-non-nan-bits
-  "f16 の 65536 ビット列すべてで、NaN 以外は encode(decode(bits)) = bits。"
-  (loop for bits from 0 below 65536
-        for exp16 = (ldb (byte 5 10) bits)
-        for mant16 = (ldb (byte 10 0) bits)
-        unless (and (= exp16 #x1F) (/= mant16 0))
-          do (is (= bits (nb::encode-float16 (nb::decode-float16 bits :f16) :f16))
-                 "f16 bits=~4,'0X" bits)))
+  "f16 の 65536 ビット列すべてで、NaN 以外は encode(decode(bits)) = bits。
+不一致は個別に is を出さず、一致しなかったビット列だけを集めて一度に
+報告する（失敗時に分かる情報は同じで、FiveAM の記録件数を抑える）。"
+  (let ((mismatches
+          (loop for bits from 0 below 65536
+                for exp16 = (ldb (byte 5 10) bits)
+                for mant16 = (ldb (byte 10 0) bits)
+                unless (or (and (= exp16 #x1F) (/= mant16 0))
+                           (= bits (nb::encode-float16 (nb::decode-float16 bits :f16) :f16)))
+                  collect bits)))
+    (is (null mismatches) "f16 bits=~{~4,'0X~^ ~}" mismatches)))
 
 (test float16/bf16/round-trips-over-all-non-nan-bits
   "bf16 の 65536 ビット列すべてで、NaN 以外は encode(decode(bits)) = bits。"
-  (loop for bits from 0 below 65536
-        for exp16 = (ldb (byte 8 7) bits)
-        for mant16 = (ldb (byte 7 0) bits)
-        unless (and (= exp16 #xFF) (/= mant16 0))
-          do (is (= bits (nb::encode-float16 (nb::decode-float16 bits :bf16) :bf16))
-                 "bf16 bits=~4,'0X" bits)))
+  (let ((mismatches
+          (loop for bits from 0 below 65536
+                for exp16 = (ldb (byte 8 7) bits)
+                for mant16 = (ldb (byte 7 0) bits)
+                unless (or (and (= exp16 #xFF) (/= mant16 0))
+                           (= bits (nb::encode-float16 (nb::decode-float16 bits :bf16) :bf16)))
+                  collect bits)))
+    (is (null mismatches) "bf16 bits=~{~4,'0X~^ ~}" mismatches)))
 
 (test float16/f16/nan-decodes-to-nan-and-encodes-back-to-canonical-nan
   "f16 の NaN ビット列は decode すると NaN になり、その NaN を encode すると
@@ -203,6 +209,61 @@ DTYPE の範囲内にあるものだけを返す。"
                 :regression-id float16/bf16/nearest-value-with-ties-to-even
                 :regression-file (regression-path "float16-bf16-nearest-ties-to-even"))))
 
+;;; 3.5. ちょうど等距離な入力を直接構成して、偶数側に丸められることを
+;;;      確かめる。性質3（%nearest-with-ties-to-even-p）はランダムな32bit
+;;;      パターンから等距離な入力に当たることをほぼ期待できない（f16 は
+;;;      仮数下位13bit、bf16 は下位16bitが特定のパターンになる確率が
+;;;      2^-13 / 2^-16 しかない）ので、生成器に均等に探させるのではなく、
+;;;      隣接するビット列 BITS16 と BITS16+1 のちょうど中間の値を明示的に
+;;;      作る（decode-float16 はビット列ごとの往復・既存デコーダとの一致
+;;;      で既に確かめてあるので、その値をオラクルとして使ってよい）。
+
+(defun %tie-input (bits16 dtype)
+  "BITS16 と (1+ BITS16) が表す DTYPE の隣接する2値のちょうど中間の
+SINGLE-FLOAT を返す。両方とも同じ符号側で有限であることを呼び出し側が
+保証する。中間値は元の2値より仮数が高々1bit深いだけなので、
+SINGLE-FLOAT の24bit精度に対して常に正確に表現できる。"
+  (let ((v (rational (nb::decode-float16 bits16 dtype)))
+        (v2 (rational (nb::decode-float16 (1+ bits16) dtype))))
+    (coerce (/ (+ v v2) 2) 'single-float)))
+
+(defun %expected-tie-bits (bits16)
+  "BITS16 と (1+ BITS16) のちょうど中間の値を最近接偶数丸めしたときの
+ビット列。どちらか偶数の方（指数部はまたがらないので、BITS16 が偶数なら
+そのまま、奇数なら (1+ BITS16) が偶数）。"
+  (if (evenp bits16) bits16 (1+ bits16)))
+
+(defun %exact-tie-picks-even-neighbour-p (magnitude sign dtype)
+  "符号 SIGN・絶対値ビット MAGNITUDE から作った DTYPE のビット列と、その
+1つ大きい絶対値のビット列とのちょうど中間の値を encode-float16 に通すと、
+偶数側のビット列に丸められることを確かめる。"
+  (let* ((bits16 (logior (ash sign 15) magnitude))
+         (x (%tie-input bits16 dtype)))
+    (= (nb::encode-float16 x dtype)
+       (logior (ash sign 15) (%expected-tie-bits magnitude)))))
+
+(test float16/f16/exact-midpoint-rounds-to-even-neighbour
+  "f16: 隣接する2値のちょうど中間の値を明示的に構成し、等距離のときは
+偶数側のビット列に丸められることを確かめる（.claude/skills/nabla-testing
+の性質2、ties-to-even を直接構成した入力で検査する）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 0 :hi (1- (%f16-max-finite-bits)))
+                                   (uniform-integer :lo 0 :hi 1)))
+                (lambda (args)
+                  (destructuring-bind (magnitude sign) args
+                    (%exact-tie-picks-even-neighbour-p magnitude sign :f16)))
+                :regression-id float16/f16/exact-midpoint-rounds-to-even-neighbour
+                :regression-file (regression-path "float16-f16-exact-midpoint-ties-to-even"))))
+
+(test float16/bf16/exact-midpoint-rounds-to-even-neighbour
+  "bf16 版の同じ検査（正規化数・非正規化数の両方を含む）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 0 :hi (1- (%bf16-max-finite-bits)))
+                                   (uniform-integer :lo 0 :hi 1)))
+                (lambda (args)
+                  (destructuring-bind (magnitude sign) args
+                    (%exact-tie-picks-even-neighbour-p magnitude sign :bf16)))
+                :regression-id float16/bf16/exact-midpoint-rounds-to-even-neighbour
+                :regression-file (regression-path "float16-bf16-exact-midpoint-ties-to-even"))))
+
 ;;; 4. 交差確認: 既存の（切り捨ての）デコーダ tests/support/random-array.lisp
 ;;;    と一致するか。既存デコーダは exp16 が全1（無限大・NaN 用のビット
 ;;;    パターン）を正しく扱わない（無限大を有限の巨大な値にデコードして
@@ -212,24 +273,28 @@ DTYPE の範囲内にあるものだけを返す。"
 (test float16/f16/matches-existing-decoder-outside-inf-nan-range
   "f16 の全ビット列のうち、指数が全1でない範囲（有限）で、nb::decode-float16
 が既存の nabla.tests.support::%f16-bits->f32 と一致する。"
-  (loop for bits from 0 below 65536
-        for exp16 = (ldb (byte 5 10) bits)
-        unless (= exp16 #x1F)
-          do (is (= (nb::decode-float16 bits :f16)
-                    (nabla.tests.support::%f16-bits->f32 bits))
-                 "f16 bits=~4,'0X" bits)))
+  (let ((mismatches
+          (loop for bits from 0 below 65536
+                for exp16 = (ldb (byte 5 10) bits)
+                unless (or (= exp16 #x1F)
+                           (= (nb::decode-float16 bits :f16)
+                              (nabla.tests.support::%f16-bits->f32 bits)))
+                  collect bits)))
+    (is (null mismatches) "f16 bits=~{~4,'0X~^ ~}" mismatches)))
 
 (test float16/bf16/matches-existing-decoder-for-all-non-nan-bits
   "bf16 は全ビット列（NaN 以外）で nb::decode-float16 が既存の
 nabla.tests.support::%bf16-bits->f32 と一致する（両方とも単純なビット
 シフトで、常に正確）。"
-  (loop for bits from 0 below 65536
-        for mant8 = (ldb (byte 8 0) bits)
-        for exp8 = (ldb (byte 8 7) bits)
-        unless (and (= exp8 #xFF) (/= mant8 0))
-          do (is (= (nb::decode-float16 bits :bf16)
-                    (nabla.tests.support::%bf16-bits->f32 bits))
-                 "bf16 bits=~4,'0X" bits)))
+  (let ((mismatches
+          (loop for bits from 0 below 65536
+                for mant8 = (ldb (byte 8 0) bits)
+                for exp8 = (ldb (byte 8 7) bits)
+                unless (or (and (= exp8 #xFF) (/= mant8 0))
+                           (= (nb::decode-float16 bits :bf16)
+                              (nabla.tests.support::%bf16-bits->f32 bits)))
+                  collect bits)))
+    (is (null mismatches) "bf16 bits=~{~4,'0X~^ ~}" mismatches)))
 
 ;;; 5. 符号付きゼロ・無限大。
 
@@ -273,9 +338,15 @@ decode-float16 と一致し、encode-float16-array で元のビット列に戻�
 ;;;    で生成した jax-cross-check.lisp を JAX 側のオラクルとして使う）。
 
 (defun %load-jax-cross-check-fixture ()
-  (with-open-file (stream (asdf:system-relative-pathname
-                            "nabla" "tests/fixtures/float16/jax-cross-check.lisp"))
-    (read stream)))
+  "コミット済みのフィクスチャファイルを読む。READ に既定のリーダ状態を
+使うと `#.` などでコードが実行されうるので、フェーズ1 wave 1 契約が
+read-graph（issue #29、u1b）に課している約束と同じく
+with-standard-io-syntax + *read-eval* nil で読む。"
+  (with-standard-io-syntax
+    (let ((*read-eval* nil))
+      (with-open-file (stream (asdf:system-relative-pathname
+                                "nabla" "tests/fixtures/float16/jax-cross-check.lisp"))
+        (read stream)))))
 
 (test float16/jax-cross-check/matches-jax-bfloat16-and-float16-conversion
   "tests/fixtures/float16/generate.py が JAX (jnp.asarray(...).view(uint16))

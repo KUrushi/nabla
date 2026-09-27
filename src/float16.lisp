@@ -125,7 +125,14 @@ EXPONENT-BITS ビットの浮動小数点表現に RNE で変換する。丸め�
   (%make-single-float (ash bits 16)))
 
 (defun single-float->bf16-bits (x)
-  "SINGLE-FLOAT X を bf16 のビット列に RNE で変換する。"
+  "SINGLE-FLOAT X を bf16 のビット列に RNE で変換する。
+
+bf16 は f32 と指数部の幅・バイアスが同じなので、実際には「上位16bit +
+RNE の桁上がり」（(ash (+ bits #x7FFF lsb) -16)、lsb は元のビット列の
+bit 16）という短い専用パスも書ける。ここではあえて %single-float->fp16-bits
+の一般的な有理数演算パスを使っている。JAX との交差確認で正しさを確認済み
+で、100k要素でも約0.04秒と十分速く、bf16/f16 で実装を1本にまとめられる
+ため（issue #38 のレビューで検討し、この選択にした）。"
   (%single-float->fp16-bits x 7 8 127))
 
 (defun %f16-subnormal->single-float-bits (sign mant16)
