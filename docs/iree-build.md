@@ -413,6 +413,63 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
   あるマシンが必要 |
 | `scripts/verify-iree.sh --cuda` | 未実施（環境に GPU/CUDA なし） | - | 同上 |
 
+## GPU で確かめる手順（issue #12）
+
+同じ StableHLO から作った vmfb を `local`（CPU）と `cuda`（NVIDIA GPU）の
+両方で実行し、結果が数値的に一致することを確かめる large テスト
+（`tests/iree/cross-device-test.lisp`）がある。既定のテストスイート
+（small + medium）には含まれず、`NABLA_TEST_SIZES=large` を明示したときだけ
+実行される。GPU の無いこのマシンでは `skip-unless-cuda`
+（`tests/iree/support.lisp`）が常にこのテストをスキップする。
+
+### 手順（GPU があるマシンで）
+
+```sh
+# 1. CUDA HAL ドライバを含むランタイムをビルドする。コンパイラは既定の
+#    PyPI ホイールに CUDA ターゲットバックエンドが含まれている
+#    （契約 §0 事実3: GPU の無いこのマシンでも --iree-hal-target-device=cuda
+#    でのコンパイルは成功する）。
+scripts/build-iree.sh --cuda
+
+# 2. large スイートを、CUDA が無ければ黙ってスキップせず失敗させる
+#    NABLA_REQUIRE_CUDA=1 を立てて実行する。
+NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh
+```
+
+`tests/iree/cross-device-test.lisp` は add / matmul / reduce_sum のそれぞれ
+f32 版・bf16 版（計6テスト）で、`local` と `cuda`（cuda-arch は指定せず
+IREE の既定に任せる）に同じ乱数入力を渡し、結果を dtype ごとの既定の許容
+誤差（f32: rtol 1e-5 / atol 1e-6、bf16: rtol 1e-2 / atol 1e-3）で比較する
+（`allclose` が不一致のとき最大誤差を表示する）。あわせて、同じテキストに
+対する vmfb ディスクキャッシュ（issue #10）のファイルが `local` と `cuda`
+で別々にできていること（キャッシュのキーにターゲットが入っていること）も
+確かめる。
+
+CPU と GPU では `matmul`（`dot_general` の内積）や `reduce_sum` の総和の
+順序が異なりうる。既定の許容誤差で不安定に失敗するようなら、
+`tests/iree/cross-device-test.lisp` のコメントに理由（総和順序の違い）を
+書いた上で緩める。
+
+### 結果（この環境: GPU なしのため未測定）
+
+この環境には NVIDIA GPU が無いため、上の手順は実行できていない
+（`skip-unless-cuda` が毎回スキップする）。GPU のあるマシンで実行したら、
+下の表を実測値で埋める。
+
+| fixture | dtype | 最大誤差 | GPU | sm_XX | CUDA 版 | IREE commit |
+| --- | --- | --- | --- | --- | --- | --- |
+| add | f32 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
+| add | bf16 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
+| matmul | f32 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
+| matmul | bf16 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
+| reduce_sum | f32 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
+| reduce_sum | bf16 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
+
+（「最大誤差」は `allclose` が不一致のときに表示する値。一致した場合は
+許容誤差の範囲内だったことと、実測した最大誤差をここに書く。「GPU」は
+`nvidia-smi -L` などで分かる GPU の製品名。issue #12 は、この表が実測値で
+埋まるまで open のままにする）
+
 ## Lisp からの呼び出し（issue #6）
 
 `nabla/iree` の実行時バインディング（`src/iree/runtime*.lisp`）は

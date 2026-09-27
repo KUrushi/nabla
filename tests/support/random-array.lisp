@@ -112,6 +112,17 @@ value = mantissa * 2^-24。f16 は指数バイアス15、仮数10bit なので�
     ((:f32 :f64) (zerop value))
     ((:bf16 :f16) (zerop (logand value #x7FFF)))))
 
+(defun decode-array (array dtype)
+  "ARRAY（DTYPE の格納表現を持つ配列。bf16 / f16 ならビット列）と同じ shape の
+DOUBLE-FLOAT 配列を返す。各要素は DECODE-ELEMENT でデコードする。
+
+allclose の :DTYPE 引数は ACTUAL と EXPECTED の両方を同じ DTYPE でデコード
+する前提なので、reference-*（常に DOUBLE-FLOAT を返す）の期待値と比べる
+ときはこちらで先にデコードしてから allclose を dtype 無しで呼ぶ（issue #12）。"
+  (let ((result (make-array (array-dimensions array) :element-type 'double-float)))
+    (dotimes (i (array-total-size array) result)
+      (setf (row-major-aref result i) (decode-element dtype (row-major-aref array i))))))
+
 (defun make-random-array (spec &key (seed 0) (domain :any))
   "SPEC (array-spec) と SEED から決定的な配列を作る。
 

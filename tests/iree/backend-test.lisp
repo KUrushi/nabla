@@ -96,3 +96,69 @@ find-backend :iree のプロトコル経由で実行した結果は、reference-
     "iree-error は nabla:backend-error の subtype（IREE の共有ライブラリの
 有無に関係なく成り立つ、クラス階層だけの性質）。"
   (is (subtypep 'iree-error 'nabla:backend-error)))
+
+;;; issue #12: cuda ターゲットの backend は device を遅延生成するので
+;;; （src/iree/backend.lisp のファイル先頭コメント参照）、GPU の無い
+;;; このマシンでも make-backend / backend-compile はここまで成功する
+;;; （実行だけが GPU を要る。契約 §0 事実3）。
+
+(define-iree-test backend/cuda-target/compiles-all-fixtures-without-a-gpu
+    "target :cuda・cuda-arch \"sm_80\" の IREE-BACKEND は、GPU の無い
+このマシンでも、6つのフィクスチャ（add / matmul / reduce_sum の f32・bf16
+版）すべてを非空の vmfb にコンパイルできる（device は使わないので不要）。"
+  (skip-unless-iree :library :both)
+  (let ((cuda (nabla:make-backend :iree :target :cuda :cuda-arch "sm_80")))
+    (dolist (fixture '("add" "matmul" "reduce_sum" "add_bf16" "matmul_bf16" "reduce_sum_bf16"))
+      (let ((vmfb (nabla:backend-compile cuda (stablehlo-fixture fixture))))
+        (is (plusp (length vmfb)) "~A の cuda 向けコンパイル結果が空だった" fixture)))))
+
+(define-iree-test backend/cuda-target/fingerprint-and-cache-differ-from-local
+    "target :cuda の backend-fingerprint は target :local と異なり、同じ
+テキストを local と cuda でそれぞれ backend-compile すると、vmfb ディスク
+キャッシュ（issue #10）に別々の .module ファイルができる（GPU 不要。
+device は使わない）。"
+  (skip-unless-iree :library :both)
+  (with-temporary-directory (dir)
+    (let* ((nabla:*compile-cache-directory* dir)
+           (local (nabla:find-backend :iree))
+           (cuda (nabla:make-backend :iree :target :cuda :cuda-arch "sm_80"))
+           (text (stablehlo-fixture "add")))
+      (is (not (equal (nabla:backend-fingerprint local) (nabla:backend-fingerprint cuda))))
+      (nabla:backend-compile local text)
+      (nabla:backend-compile cuda text)
+      (is (= 2 (length (directory (make-pathname :name :wild :type "module" :defaults dir))))))))
+
+(define-iree-test backend/bf16/local-matches-reference
+    "add_bf16 / matmul_bf16 / reduce_sum_bf16 の各フィクスチャを local
+backend で実行した結果は、decode-array で double-float に戻した
+reference-* の期待値と、bf16 の許容誤差（rtol 1e-2 / atol 1e-3）で一致する
+（GPU 不要）。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree)))
+    (multiple-value-bind (rtol atol) (dtype-tolerance :bf16)
+      (flet ((%run-bf16-fixture (fixture arrays)
+               (let ((module (nabla:backend-load backend (nabla:backend-compile backend (stablehlo-fixture fixture)))))
+                 (unwind-protect
+                      (let ((das (mapcar (lambda (a) (to-device a backend :dtype :bf16)) arrays)))
+                        (unwind-protect
+                             (multiple-value-bind (result)
+                                 (apply #'nabla:backend-invoke backend module "main" das)
+                               (unwind-protect
+                                    (decode-array (to-host result) :bf16)
+                                 (release-device-array result)))
+                          (dolist (da das) (release-device-array da))))
+                   (nabla:backend-unload backend module)))))
+        (let* ((a (make-random-array (make-array-spec '(4 8) :bf16) :seed 100))
+               (b (make-random-array (make-array-spec '(4 8) :bf16) :seed 101)))
+          (is (allclose (%run-bf16-fixture "add_bf16" (list a b))
+                        (reference-add (decode-array a :bf16) (decode-array b :bf16))
+                        :rtol rtol :atol atol)))
+        (let* ((a (make-random-array (make-array-spec '(2 3) :bf16) :seed 102))
+               (b (make-random-array (make-array-spec '(3 2) :bf16) :seed 103)))
+          (is (allclose (%run-bf16-fixture "matmul_bf16" (list a b))
+                        (reference-matmul (decode-array a :bf16) (decode-array b :bf16))
+                        :rtol rtol :atol atol)))
+        (let ((a (make-random-array (make-array-spec '(4 8) :bf16) :seed 104)))
+          (is (allclose (%run-bf16-fixture "reduce_sum_bf16" (list a))
+                        (reference-reduce-sum (decode-array a :bf16) 1)
+                        :rtol rtol :atol atol)))))))

@@ -77,6 +77,7 @@
   :depends-on ("nabla/iree" "nabla/test-support")
   :components ((:file "tests/iree/package")
                (:file "tests/iree/support")
+               (:file "tests/iree/support-test")
                ;; finalizer-test はここ（compiler-test / runtime-test /
                ;; device-array-test / execute-test より前）に置く。どれも Lisp の
                ;; 関数としては、より前にロードされる src/iree/*.lisp にしか
@@ -87,6 +88,7 @@
                (:file "tests/iree/finalizer-test")
                (:file "tests/iree/backend-test")
                (:file "tests/iree/compile-cache-test")
+               (:file "tests/iree/cross-device-test")
                (:file "tests/iree/compiler-test")
                (:file "tests/iree/runtime-test")
                (:file "tests/iree/runtime-cuda-test")
