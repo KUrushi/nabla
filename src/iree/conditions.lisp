@@ -46,3 +46,34 @@ LIBRARY は :compiler または :runtime、HOME は探索に使った NABLA_IREE
 (severity . text) のリスト（severity は :note :warning :error :remark の
 どれかで、MLIR が出した順）。MESSAGE は iree_compiler_error_t から得た
 テキスト（無ければ NIL）。"))
+
+(define-condition iree-object-released (iree-error)
+  ((kind :initarg :kind :reader iree-object-released-kind)
+   (context :initarg :context :reader iree-object-released-context))
+  (:report
+   (lambda (condition stream)
+     (format stream "~A に解放済みの ~A を渡した。"
+             (iree-object-released-context condition)
+             (iree-object-released-kind condition))))
+  (:documentation
+   "release-device / release-session で解放済みのオブジェクトを、それを
+必要とするラッパー関数に渡したときに signal する。KIND は :device または
+:session、CONTEXT は呼び出した nabla.iree 側の関数の名前（文字列）。C 側に
+解放済みポインタを渡すとメモリ不正アクセスになるため、渡す前にここで
+検出する。"))
+
+(define-condition iree-status-error (iree-error)
+  ((code :initarg :code :reader iree-status-error-code)
+   (message :initarg :message :reader iree-status-error-message)
+   (context :initarg :context :reader iree-status-error-context))
+  (:report
+   (lambda (condition stream)
+     (format stream "IREE ランタイムの呼び出し ~A が ~A で失敗した: ~A"
+             (iree-status-error-context condition)
+             (iree-status-error-code condition)
+             (iree-status-error-message condition))))
+  (:documentation
+   "IREE ランタイムの iree_status_t が非OKだったときに signal する。CODE は
+iree_status_code_e から得たキーワード（例: :not-found）。MESSAGE は
+iree_status_to_string のテキスト（\"file.c:line: CODE; msg\" の形式を含む）。
+CONTEXT は失敗した nabla.iree 側のラッパー関数の名前。"))

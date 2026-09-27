@@ -97,3 +97,33 @@ cffi:*foreign-library-directories* に push しておく必要がある。"
           (%warm-up-compiler)))
       (setf *compiler-loaded-p* t)))
   (values))
+
+(cffi:define-foreign-library nabla-iree-runtime
+  (:unix "libnabla_iree_runtime.so"))
+
+(defvar *runtime-load-lock* (sb-thread:make-mutex :name "nabla-iree-runtime-load")
+  "ensure-runtime-loaded を複数スレッドから呼んでも、ロードがちょうど1回だけ
+起きるようにするロック。")
+
+(defvar *runtime-loaded-p* nil
+  "libnabla_iree_runtime.so のロードが済んでいれば真。")
+
+(defun ensure-runtime-loaded ()
+  "libnabla_iree_runtime.so を（まだなら）ロードする。共有ライブラリが
+見つからなければ IREE-LIBRARY-NOT-FOUND を signal する。コンパイラと違い
+プロセス全体のグローバル初期化関数は無い（instance の作成は runtime.lisp の
+iree-instance が行う）。"
+  (sb-thread:with-mutex (*runtime-load-lock*)
+    (unless *runtime-loaded-p*
+      (let ((home (iree-home)))
+        (pushnew (merge-pathnames "lib/" home) cffi:*foreign-library-directories*
+                  :test #'equal)
+        (handler-case
+            (cffi:load-foreign-library 'nabla-iree-runtime)
+          (cffi:load-foreign-library-error ()
+            (error 'iree-library-not-found
+                   :path (%library-path home :runtime)
+                   :home home
+                   :library :runtime))))
+      (setf *runtime-loaded-p* t)))
+  (values))

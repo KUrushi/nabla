@@ -19,6 +19,10 @@ APT_PACKAGES=(
   cl-lparallel
   cl-closer-mop
   cl-bordeaux-threads
+  # nabla/iree のランタイムバインディングが使う cffi-libffi（cl-cffi に
+  # 同梱）のビルドに必要。libffi-dev がないと cffi-libffi のロード時に
+  # groveller が C コンパイルに失敗する。
+  libffi-dev
 )
 
 # name url pin の3つ組。

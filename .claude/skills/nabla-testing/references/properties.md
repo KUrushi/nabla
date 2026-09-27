@@ -105,6 +105,12 @@ CFFI の生バインディング自体は性質を書きにくいので mutation
 - 同じ入力を繰り返しコンパイルしても、結果のバイト列は毎回一致し（決定性）、メモリ使用量（RSS）が際限なく増え続けない（リークの疎通確認）
 - `compile-flags` は同じ `target` に対して毎回同じフラグのリストを返す（決定性）。未知の `target` はエラーになる
 - IREE の共有ライブラリが要るテストは `skip-unless-iree`（`tests/iree/support.lisp`）でスキップし、`NABLA_REQUIRE_IREE=1`（CI）ならスキップの代わりに失敗させる
+- `make-device` を local ドライバ（`local-task` / `local-sync`）で繰り返し作成・解放しても失敗せず、`release-device` は idempotent（二重解放しても何も起きない）
+- `(driver-names)` に含まれない任意のドライバ名を `make-device` に渡すと、必ず `iree-status-error`（`code` が `:not-found`）が signal される
+- `compile-stablehlo` でコンパイルした vmfb を `session-append-module` でロードすると、`session-function-names` に元の StableHLO の関数名（`main` など）が含まれ、`session-lookup-function` は存在する関数を linkage `IREE_VM_FUNCTION_LINKAGE_EXPORT`（2）で見つけ、存在しない関数には `iree-status-error`（`code` が `:not-found`）を signal する
+- 壊れた（vmfb として無意味な）バイト列を `session-append-module` に渡すと `iree-status-error` を signal し、プロセスは落ちない
+- `session-append-module`（インメモリ）と `session-append-module-from-file`（`iree-compile` の CLI が書いたファイル）は同じ vmfb を同じように呼び出せる（2つの経路の交差確認）
+- `buffer-view-allocate-copy` で作った入力から `call-invoke` した結果を `buffer-view-read-into` で読み戻すと、期待する数値に一致する（許容誤差つき、`allclose :dtype :f32`）。要素型は `buffer-view-element-type` で手計算した `IREE_HAL_ELEMENT_TYPE_*` の定数どおりに decode される
 
 ## 3. 書き方のひな形
 
