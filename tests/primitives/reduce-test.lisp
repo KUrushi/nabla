@@ -235,24 +235,28 @@ bf16 / f16 でも成り立つ——契約のピットフォール(3)参照）。
   (signals nb:primitive-error (%abstract-eval-of :reduce-max (list (nb:make-aval '(4 8) :i1)) :axes '(0))))
 
 (test reduce-sum/invalid-axes-signal-primitive-error
-  "境界: axis = rank（範囲外）、axis = -1、降順、重複、空リストはすべて
-PRIMITIVE-ERROR になる。"
+  "境界: axis = rank（範囲外）、axis = -1、降順、重複、空リスト、ドット対
+（真正なリストでない）はすべて PRIMITIVE-ERROR になる（生の TYPE-ERROR を
+逃さない）。"
   (let ((in-avals (list (nb:make-aval '(4 8) :f32))))
     (signals nb:primitive-error (%abstract-eval-of :reduce-sum in-avals :axes '(2)))
     (signals nb:primitive-error (%abstract-eval-of :reduce-sum in-avals :axes '(-1)))
     (signals nb:primitive-error (%abstract-eval-of :reduce-sum in-avals :axes '(1 0)))
     (signals nb:primitive-error (%abstract-eval-of :reduce-sum in-avals :axes '(0 0)))
-    (signals nb:primitive-error (%abstract-eval-of :reduce-sum in-avals :axes '()))))
+    (signals nb:primitive-error (%abstract-eval-of :reduce-sum in-avals :axes '()))
+    (signals nb:primitive-error (%abstract-eval-of :reduce-sum in-avals :axes '(0 . 1)))))
 
 (test reduce-max/invalid-axes-signal-primitive-error
-  "境界: axis = rank（範囲外）、axis = -1、降順、重複、空リストはすべて
-PRIMITIVE-ERROR になる。"
+  "境界: axis = rank（範囲外）、axis = -1、降順、重複、空リスト、ドット対
+（真正なリストでない）はすべて PRIMITIVE-ERROR になる（生の TYPE-ERROR を
+逃さない）。"
   (let ((in-avals (list (nb:make-aval '(4 8) :f32))))
     (signals nb:primitive-error (%abstract-eval-of :reduce-max in-avals :axes '(2)))
     (signals nb:primitive-error (%abstract-eval-of :reduce-max in-avals :axes '(-1)))
     (signals nb:primitive-error (%abstract-eval-of :reduce-max in-avals :axes '(1 0)))
     (signals nb:primitive-error (%abstract-eval-of :reduce-max in-avals :axes '(0 0)))
-    (signals nb:primitive-error (%abstract-eval-of :reduce-max in-avals :axes '()))))
+    (signals nb:primitive-error (%abstract-eval-of :reduce-max in-avals :axes '()))
+    (signals nb:primitive-error (%abstract-eval-of :reduce-max in-avals :axes '(0 . 1)))))
 
 ;;; ============================== emit ==============================
 

@@ -27,8 +27,12 @@
 
 (defun %reduce-check-axes (name in-avals axes rank)
   "AXES（[0, RANK) の範囲内の、非空・重複無し・昇順の整数のリスト）を
-検証する。不正なら PRIMITIVE-ERROR を signal する。"
-  (unless (and (listp axes) (every #'integerp axes))
+検証する。不正なら PRIMITIVE-ERROR を signal する。LISTP だけでは
+`(0 . 1)` のようなドットリストを弾けず、その後の EVERY が生の TYPE-ERROR
+を signal してしまう（p5 の %DOT-CHECK-INTEGER-LIST と同じ理由。
+SB-INT:PROPER-LIST-P は循環リストも安全に NIL 判定する）ので、
+SB-INT:PROPER-LIST-P で正リストであることも確かめる。"
+  (unless (and (sb-int:proper-list-p axes) (every #'integerp axes))
     (error 'primitive-error :name name :in-avals in-avals
            :format-control "axes は整数のリストでなければならない: ~S"
            :format-arguments (list axes)))
