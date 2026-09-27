@@ -106,7 +106,15 @@ session-append-module・iree-instance の初回生成）と、LLVM を呼ぶ
 ensure-compiler-loaded の LLVM シグナルハンドラ登録点）は、必ずこのマクロで
 本体を包むこと（ファイル冒頭のコメント参照。新しいスレッドは生成元スレッドの
 MXCSR をそのまま引き継ぐので、生成元スレッドを生成の瞬間にマスクしておく
-必要がある）。"
+必要がある）。
+
+呼び出し側では WITH-LISP-SIGNAL-HANDLERS-PRESERVED（signals.lisp）の内側に
+このマクロを置いている（外側ではない）が、これは意図的な選択ではなく
+どちらでもよい。MXCSR のマスク（このマクロが書き換える、スレッドローカルな
+浮動小数点例外の設定）と、sigaction によるプロセス全体のシグナルハンドラの
+保存・復元（signals.lisp が対象にする、LLVM が上書きしうる SIGUSR2 など）は
+互いに独立したオペレーティングシステムの状態なので、入れ子の順序は
+どちらでも機能上の違いは無い。"
   `(sb-int:with-float-traps-masked
        (:underflow :overflow :inexact :invalid :divide-by-zero)
      ,@body))
