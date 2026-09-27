@@ -27,6 +27,9 @@
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "src/primitives/common")
                (:file "src/primitives/arith")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "src/primitives/shape-common")
+               (:file "src/primitives/shape")
                ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
                (:file "src/primitives/unary")
                ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
@@ -73,6 +76,8 @@
                (:file "tests/ir-print-test")
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/primitives/arith-test")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "tests/primitives/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/primitives/unary-test")
                ;; graph の eager 評価（issue #39、e0）
@@ -134,5 +139,8 @@
                ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/iree/primitive-support")
                (:file "tests/iree/arith-test")
+               ;; issue #31 p4: reshape / broadcast-in-dim / transpose
+               (:file "tests/iree/shape-primitive-support")
+               (:file "tests/iree/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/iree/unary-test")))
