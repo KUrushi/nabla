@@ -110,3 +110,54 @@ main では IREE が入力 dtype のまま累積するため半分近くの seed
                       :regression-id dot-general/bf16-f16-k64-iree-matches-eager
                       :regression-file (regression-path "iree-dot-general-k64" :package "NABLA.IREE.TESTS"))
             (format t "~&dot-general k64 ~A: ok~%" dtype))))))
+
+;;; ===================== K=0（issue #62）: IREE でコンパイル・実行できる =====================
+;;;
+;;; #62 が直る前は、この形（縮約次元がゼロサイズ）の dot_general を含む
+;;; StableHLO を BACKEND-COMPILE すると IREE のコンパイラが SIGFPE で
+;;; 落ちていた（float-traps-test.lisp の性質2、契約 (E1)）。ここでは、
+;;; %DOT-EMIT-LINES が実際に選ぶ経路（with-tracing → trace-to-graph →
+;;; emit-stablehlo）を通してモジュールをビルドし、コンパイル・ロード・
+;;; to-device・invoke・to-host のすべてが成功し、結果が eval-graph（eager）
+;;; と一致することを確かめる。ディスクキャッシュが当たっているとこの
+;;; コンパイル自体が起きないので、*compile-cache-directory* を NIL に
+;;; 束縛して毎回外す。"
+
+(defun %dot-k0-trace-and-compile (backend lhs-aval rhs-aval)
+  "(with-tracing (a b) (nb:dot a b)) を LHS-AVAL・RHS-AVAL でトレースして
+graph を作り、emit-stablehlo → BACKEND-COMPILE → BACKEND-LOAD した
+MODULE と GRAPH を (values module graph) で返す。"
+  (let* ((fn (nb:with-tracing (a b) (nb:dot a b)))
+         (graph (nb:trace-to-graph fn (list lhs-aval rhs-aval)))
+         (text (nb:emit-stablehlo graph))
+         (module (nabla:backend-load backend (nabla:backend-compile backend text))))
+    (values module graph)))
+
+(define-iree-test dot-general/zero-contracting-compiles-and-matches-eager
+    "K=0（lhs (2 0)、rhs (0 3)、dot の縮約は lhs の最後の軸 vs rhs の最初の軸
+なのでちょうど K=0 になる）の dot-general を実際のトレース経路
+（with-tracing → trace-to-graph → emit-stablehlo）でビルドすると、f32・
+bf16 のどちらでも BACKEND-COMPILE / BACKEND-LOAD / TO-DEVICE /
+BACKEND-INVOKE / TO-HOST がすべて成功し、結果は eval-graph（eager）が
+返すゼロ配列、aval は (2 3) と一致する（issue #62 の完了基準・
+tests/iree/float-traps-test.lisp 性質2 で確認されていた失敗例）。"
+  (skip-unless-iree :library :both)
+  (dolist (dtype '(:f32 :bf16))
+    (let* ((backend (nabla:find-backend :iree))
+           (nabla:*compile-cache-directory* nil)
+           (lhs-aval (nb:make-aval '(2 0) dtype))
+           (rhs-aval (nb:make-aval '(0 3) dtype))
+           (out-aval (nb:make-aval '(2 3) dtype))
+           (lhs (make-array '(2 0) :element-type (nb::dtype-element-type dtype)))
+           (rhs (make-array '(0 3) :element-type (nb::dtype-element-type dtype))))
+      (multiple-value-bind (module graph) (%dot-k0-trace-and-compile backend lhs-aval rhs-aval)
+        (unwind-protect
+             (let ((expected (nb:eval-graph graph lhs rhs)))
+               (with-device-arrays ((da (to-device lhs backend :dtype dtype))
+                                    (db (to-device rhs backend :dtype dtype)))
+                 (with-device-arrays ((result (nabla:backend-invoke backend module "main" da db)))
+                   (is (equalp out-aval (device-array-aval result))
+                       "~S: out aval が一致しない" dtype)
+                   (is (equalp expected (to-host result))
+                       "~S: IREE の実行結果が eval-graph（eager）のゼロ配列と一致しない" dtype))))
+          (nabla:backend-unload backend module))))))

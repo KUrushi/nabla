@@ -138,6 +138,74 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
   "クッキー（整数）-> 集めている診断のリスト（逆順）。")
 (defvar *next-diagnostics-cookie* 0)
 
+;; issue #68: プロセス内 poison フラグ。
+;;
+;; ゼロサイズの contracting 次元を持つ dot_general が起こす x86 の整数0除算
+;; （#DE、下の %compile-stablehlo の ARITHMETIC-ERROR ハンドラのコメント
+;; 参照）は、SBCL の SIGFPE ハンドラによって通常の Lisp コンディションに
+;; 変換され、その場では非局所脱出で安全に戻れる（プロセスは落ちない）。
+;; しかし #DE が発生した瞬間、ireeCompilerInvocationPipeline は
+;; mlir::OpPassManager などの C++ オブジェクトを構築している最中であり、
+;; SBCL の非局所脱出はここより下の C++ スタックフレームをそのまま飛び越える
+;; ため、それらのフレームのデストラクタ（RAII で握っているロック・
+;; スレッドプール・グローバルなパスレジストリの後始末など）は一切走らない。
+;; 実験で確認した事実（issue #68 の調査）:
+;;   - この #DE を起こす compile-stablehlo 呼び出し単体を、直後に何度
+;;     （5回）繰り返しても、それだけではプロセスは壊れない。
+;;   - しかし「他の distinct な StableHLO を多数（125個）コンパイルした
+;;     *後に*」この #DE を1回起こすと、続けて別の distinct なコンパイルを
+;;     行った際に in-process の libIREECompiler.so が
+;;     SB-SYS:MEMORY-FAULT-ERROR で壊れる（2/2 で再現）。同じ125個から
+;;     この #DE 経路のテストだけを除くと、以後何回コンパイルしても壊れない
+;;     （2/2 で非再現）。
+;; つまり #DE の瞬間に飛び越えられる C++ デストラクタの欠落は、その場では
+;; 症状を出さない「静かなプロセス全体の状態破壊」で、その後の別のコンパイル
+;; が使うメモリ配置と重なって初めて症状（メモリ不正アクセス）として現れる。
+;; nabla 側では IREE/LLVM の C++ 内部を直接直せないので、根本修正
+;; （デストラクタを確実に走らせる、または #DE 自体を起こさない）はできない。
+;; そのため「この #DE を一度でも観測したら、そのプロセスの
+;; libIREECompiler.so は二度と安全に呼べない」とみなし、以後の
+;; compile-stablehlo をすべて明確な IREE-COMPILE-ERROR（:phase :poisoned）
+;; で失敗させ、実際に破壊された状態へさらに踏み込ませない（黙って以後の
+;; コンパイルを許すより、はっきり失敗してプロセスの再起動を促すほうが
+;; 安全）。フラグは一度真になったら戻さない。
+
+(defvar *compiler-poison-lock* (sb-thread:make-mutex :name "nabla-iree-compiler-poison"))
+(defvar *compiler-poison-reason* nil
+  "NIL なら未汚染。文字列なら、その内容を理由にプロセス内の
+libIREECompiler.so をこれ以上呼べないと判断したことを示す（一度立てたら
+戻さない）。*compiler-poison-lock* で守る。")
+
+(defun %poison-compiler (reason)
+  "REASON（文字列）を理由に、以後このプロセスの compile-stablehlo を
+すべて失敗させる。複数スレッドが同時に汚染しても最初の理由を残す。"
+  (sb-thread:with-mutex (*compiler-poison-lock*)
+    (unless *compiler-poison-reason*
+      (setf *compiler-poison-reason* reason))))
+
+(defun %check-compiler-not-poisoned ()
+  "汚染済みなら IREE-COMPILE-ERROR（:phase :poisoned）を signal する。
+compile-stablehlo は FFI に触れる前に必ずこれを呼ぶこと。
+
+注意（check-then-act のレース）: この関数と、実際に Pipeline を呼ぶ箇所の
+間には隙間があり、スレッド B がここを汚染前に通過した直後にスレッド A の
+#DE が汚染を起こすと、スレッド B は汚染後の状態で Pipeline に入ってしまう
+可能性がある（compile-stablehlo は複数スレッドから並行に呼べる設計のため）。
+これは許容している。#DE の瞬間にすでに Pipeline の中にいるスレッドはどの道
+救えない（他スレッドの %poison-compiler を待たずに独立に破壊されうる）ため、
+呼び出し全体を1本のグローバルロックで直列化しない限りこの隙間は原理的に
+閉じられず、そうすると compile-stablehlo の「並行に呼んでよい」という設計を
+壊してしまう。このチェックの目的は完全な排他ではなく、汚染が一度確定した
+「あと」の圧倒的多数の呼び出しを、破壊された状態に踏み込ませず早期に
+弾くこと。"
+  (let ((reason (sb-thread:with-mutex (*compiler-poison-lock*) *compiler-poison-reason*)))
+    (when reason
+      (error 'iree-compile-error :phase :poisoned
+                                  :message
+                                  (format nil "この IREE コンパイラは以前の内部エラーで ~
+プロセス全体の状態が壊れている可能性があるため、これ以上は呼べない ~
+（このプロセスを再起動すること）。元の理由: ~A" reason)))))
+
 (defun %diagnostics-begin ()
   (sb-thread:with-mutex (*diagnostics-lock*)
     (let ((cookie (incf *next-diagnostics-cookie*)))
@@ -213,7 +281,13 @@ LLVM のコード生成は、Pipeline を呼んだこの Lisp スレッドの上
 DIVISION-BY-ZERO はこのマスクでは防げない（float-traps.lisp 冒頭の
 コメント参照。x86 の整数除算命令による #DE で、マスクビットが無いため）。
 その対策は %compile-stablehlo の Pipeline 呼び出しのすぐ側にある
-ARITHMETIC-ERROR のハンドリング（IREE-COMPILE-ERROR への変換）。"
+ARITHMETIC-ERROR のハンドリング（IREE-COMPILE-ERROR への変換）だが、この
+経路を一度でも通ると、以後このプロセスで compile-stablehlo を呼ぶたびに
+PHASE :poisoned の IREE-COMPILE-ERROR を即座に signal する（issue #68。
+このファイル冒頭近くの *compiler-poison-reason* のコメント参照。IREE の
+C++ 内部状態が静かに壊れており、コンパイルを続けさせるとプロセスごと
+メモリ不正アクセスで落ちるおそれがあるため、プロセスの再起動を促す）。"
+  (%check-compiler-not-poisoned)
   (ensure-compiler-loaded)
   (with-lisp-signal-handlers-preserved
     (with-all-float-traps-masked
@@ -298,15 +372,72 @@ SIGUSR2 などのハンドラを上書きしうる。compiler.lisp 冒頭のコ�
                     ;; DIVISION-BY-ZERO が漏れ出ない）。実際に正しい vmfb を
                     ;; 得られるようにする根本修正は IREE 側のバグなので、
                     ;; nabla 側では対応できない（follow-up 課題）。
-                    (handler-case
-                        (unless (%compiler-invocation-pipeline invocation +compiler-pipeline-std+)
-                          (error 'iree-compile-error :phase :compile
-                                                      :diagnostics (%diagnostics-end cookie)))
-                      (arithmetic-error (condition)
+                    ;;
+                    ;; issue #68: これに加えて、%compiler-invocation-pipeline
+                    ;; の呼び出しが「正常に戻ってこなかった」ときは、理由を
+                    ;; 問わず必ず %poison-compiler でプロセス全体を汚染済みに
+                    ;; する。この呼び出しの最中は ireeCompilerInvocationPipeline
+                    ;; が mlir::OpPassManager などの C++ オブジェクトを構築中
+                    ;; だったり、LLVM のコード生成パスを実行中だったりし、
+                    ;; SBCL の非局所脱出（シグナル起因の Lisp コンディション
+                    ;; だけでなく、SB-SYS:MEMORY-FAULT-ERROR・
+                    ;; SB-SYS:INTERACTIVE-INTERRUPT（Ctrl-C）・
+                    ;; SB-EXT:WITH-TIMEOUT のタイムアウト・
+                    ;; SB-THREAD:INTERRUPT-THREAD 経由の割り込みなど、
+                    ;; どんな経路であれ）はその構築・実行中の C++ スタック
+                    ;; フレームのデストラクタを一切走らせずに飛び越える。
+                    ;; 実験で確認したとおり（このファイル冒頭近くの
+                    ;; *compiler-poison-reason* のコメント参照。ARITHMETIC-ERROR
+                    ;; で確認した現象だが、機構自体はどの非局所脱出にも共通に
+                    ;; 当てはまる）、この1回の呼び出し自体はプロセスを
+                    ;; 壊さないが、その後さらに多数の distinct なコンパイルを
+                    ;; 重ねると、いつ壊れるか予測できない
+                    ;; SB-SYS:MEMORY-FAULT-ERROR として症状が出る。安全に
+                    ;; 続行できる保証が無い以上、ここで汚染済みにして以後の
+                    ;; compile-stablehlo をすべて明確に失敗させる方が、
+                    ;; 黙って破壊された状態のまま走らせ続けるより安全。
+                    ;;
+                    ;; 実装（重要: 呼び出しが「正常に戻った」ことと「戻り値が
+                    ;; NIL だった」ことを混同しない）。COMPLETED は
+                    ;; %compiler-invocation-pipeline の呼び出しが正常に
+                    ;; 戻った（例外的な非局所脱出をせず、戻り値
+                    ;; PIPELINE-OK を受け取れた）ときだけ真にする。戻り値が
+                    ;; NIL（正常系の、クラッシュしないコンパイル失敗）でも
+                    ;; COMPLETED は真になる——それは Pipeline 自体は無事に
+                    ;; Lisp へ戻ってきているので、UNLESS PIPELINE-OK による
+                    ;; 後段の IREE-COMPILE-ERROR は純粋な Lisp 制御であり、
+                    ;; 汚染しない。UNWIND-PROTECT の後始末で COMPLETED が
+                    ;; 偽なら、原因を問わずここで一度だけ汚染する。
+                    ;; TRIGGERING-CONDITION は内側の HANDLER-BIND が（スタックを
+                    ;; 巻き戻す前に）捕まえた最初のコンディションを保持し、
+                    ;; 汚染理由に含める。HANDLER-BIND を HANDLER-CASE の
+                    ;; 内側（呼び出しのすぐ外）に置くことで、HANDLER-CASE の
+                    ;; ARITHMETIC-ERROR 節が新たに signal する
+                    ;; IREE-COMPILE-ERROR（HANDLER-CASE は節の本体を、
+                    ;; シグナル元まで巻き戻したあとの動的環境で実行する）は
+                    ;; この HANDLER-BIND の外側で起きるので、二重に捕まえない。
+                    (let ((completed nil) (pipeline-ok nil) (triggering-condition nil))
+                      (unwind-protect
+                           (handler-case
+                               (handler-bind ((condition (lambda (c)
+                                                            (unless triggering-condition
+                                                              (setf triggering-condition c)))))
+                                 (setf pipeline-ok (%compiler-invocation-pipeline invocation +compiler-pipeline-std+))
+                                 (setf completed t))
+                             (arithmetic-error (condition)
+                               (error 'iree-compile-error :phase :compile
+                                      :message (format nil "Pipeline 実行中に Lisp の算術エラーが発生した ~
+（IREE/LLVM 側の内部エラーの可能性が高い。詳細: ~A）。このプロセスの ~
+IREE コンパイラは以後 poisoned として扱われ、次回以降の呼び出しは ~
+:phase :poisoned で失敗する。" condition)
+                                      :diagnostics (%diagnostics-end cookie))))
+                        (unless completed
+                          (%poison-compiler (format nil "ireeCompilerInvocationPipeline の呼び出しが正常に戻らなかった: ~A"
+                                                     (or triggering-condition
+                                                         "原因不明の非局所脱出（Lisp コンディションを伴わない可能性がある）")))))
+                      (unless pipeline-ok
                         (error 'iree-compile-error :phase :compile
-                               :message (format nil "Pipeline 実行中に Lisp の算術エラーが発生した ~
-（IREE/LLVM 側の内部エラーの可能性が高い。詳細: ~A）" condition)
-                               :diagnostics (%diagnostics-end cookie))))
+                                                    :diagnostics (%diagnostics-end cookie))))
                     (cffi:with-foreign-object (out-output :pointer)
                       (let ((error (%compiler-output-open-membuffer out-output)))
                         (unless (cffi:null-pointer-p error)

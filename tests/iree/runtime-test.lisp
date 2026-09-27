@@ -115,34 +115,35 @@ session-append-module-from-file でロードした場合も、compile-stablehlo 
     (unless (probe-file iree-compile)
       (fiveam:skip "~A が無いので iree-compile 経由の交差確認をスキップする" iree-compile)
       (return-from iree-test))
-    (let ((vmfb-path (merge-pathnames
-                       (format nil "nabla-iree-runtime-test-~A.vmfb" (random 1000000))
-                       (uiop:temporary-directory)))
-          (mlir-path (merge-pathnames
-                      (format nil "nabla-iree-runtime-test-~A.mlir" (random 1000000))
-                      (uiop:temporary-directory))))
-      (unwind-protect
-           (progn
-             (with-open-file (stream mlir-path :direction :output :if-exists :supersede)
-               (write-string (stablehlo-fixture "matmul") stream))
-             (multiple-value-bind (output error-output exit-code)
-                 (uiop:run-program
-                  (list (namestring iree-compile)
-                        "--iree-input-type=stablehlo"
-                        "--iree-hal-target-device=local"
-                        "--iree-hal-local-target-device-backends=llvm-cpu"
-                        "--iree-llvmcpu-target-cpu=host"
-                        (namestring mlir-path)
-                        "-o" (namestring vmfb-path))
-                  :output '(:string) :error-output '(:string) :ignore-error-status t)
-               (declare (ignore output))
-               (is (zerop exit-code) "iree-compile failed: ~A" error-output))
-             (with-device (device :local)
-               (with-session (session device)
-                 (session-append-module-from-file session vmfb-path)
-                 (is (member "main" (session-function-names session) :test #'string=)))))
-        (ignore-errors (delete-file vmfb-path))
-        (ignore-errors (delete-file mlir-path))))))
+    ;; ファイル名は UIOP:WITH-TEMPORARY-FILE の一意な一時ファイル（mkstemp
+    ;; 相当）にする。(RANDOM N) を SBCL の既定の *RANDOM-STATE*（毎回同じ
+    ;; シードから始まる）で使うと、並行に走る複数のテストプロセスが同じ
+    ;; ファイル名を選んで衝突しうる（issue #68 のレビューで実際に踏んだ、
+    ;; 見かけ上無関係なテストの偽陽性の失敗）。
+    (uiop:with-temporary-file (:pathname mlir-path :prefix "nabla-iree-runtime-test-" :type "mlir" :keep t)
+      (uiop:with-temporary-file (:pathname vmfb-path :prefix "nabla-iree-runtime-test-" :type "vmfb" :keep t)
+        (unwind-protect
+             (progn
+               (with-open-file (stream mlir-path :direction :output :if-exists :supersede)
+                 (write-string (stablehlo-fixture "matmul") stream))
+               (multiple-value-bind (output error-output exit-code)
+                   (uiop:run-program
+                    (list (namestring iree-compile)
+                          "--iree-input-type=stablehlo"
+                          "--iree-hal-target-device=local"
+                          "--iree-hal-local-target-device-backends=llvm-cpu"
+                          "--iree-llvmcpu-target-cpu=host"
+                          (namestring mlir-path)
+                          "-o" (namestring vmfb-path))
+                    :output '(:string) :error-output '(:string) :ignore-error-status t)
+                 (declare (ignore output))
+                 (is (zerop exit-code) "iree-compile failed: ~A" error-output))
+               (with-device (device :local)
+                 (with-session (session device)
+                   (session-append-module-from-file session vmfb-path)
+                   (is (member "main" (session-function-names session) :test #'string=)))))
+          (ignore-errors (delete-file vmfb-path))
+          (ignore-errors (delete-file mlir-path)))))))
 
 (defun %f32-octets (values)
   "VALUES（single-float のリスト）を、リトルエンディアン f32 のバイト列

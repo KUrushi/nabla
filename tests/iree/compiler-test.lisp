@@ -77,7 +77,12 @@ CUT はそのまま使わず、全体の長さの [1, len-2] に必ず収まる�
 構造的に異なる壊れ方（切り詰め・型の不一致・未知の演算・括弧の不整合）を
 OR で混ぜる。方言プレフィックスは常に登録済み（stablehlo / func）にして、
 未登録の方言によるセグフォルト（issue #5 の別バグ、下のコメント参照）を
-避ける。"
+避ける。
+
+issue #68 の回帰: これらはどれも（プロセスを壊さない）普通のコンパイル
+失敗であって #DE のような非局所脱出ではないので、コンパイラを poisoned に
+してはならない。テストの最後で NABLA.IREE::*COMPILER-POISON-REASON* が
+NIL のままであることを確かめる。"
   (skip-unless-iree :library :compiler)
   (is (check-it (generator (or (map #'%garbage-after-open-brace (string))
                                 (map #'%truncated-valid-module (integer 0 500))
@@ -92,6 +97,9 @@ OR で混ぜる。方言プレフィックスは常に登録済み（stablehlo /
                             (iree-compile-error-diagnostics condition)))))
                 :regression-id compiler/compile-stablehlo/malformed-text-signals-compile-error
                 :regression-file (regression-path "iree-compiler-malformed" :package "NABLA.IREE.TESTS")))
+  (is (null nabla.iree::*compiler-poison-reason*)
+      "ordinary (non-crashing) malformed compiles should never poison the compiler (issue #68): ~A"
+      nabla.iree::*compiler-poison-reason*)
   ;; 具体例1: 未知の演算。
   (handler-case
       (progn
@@ -170,7 +178,10 @@ ireeCompilerSetupGlobalCL を呼ばなくなった今、このテストが再び
 known for thread' で確実に落ちる、compiler.lisp 冒頭のコメント参照）の
 再発を、nabla の実際の使い方に近い形で検知する回帰テスト。有効な入力と
 （安全な方言の）壊れた入力を混ぜ、コンパイルの合間に大量に consing して
-自動 GC を何度も誘発する。"
+自動 GC を何度も誘発する。
+
+issue #68 の回帰: 150回のうちどれも普通の（プロセスを壊さない）成功・失敗
+なので、コンパイラが poisoned にならないことも確かめる。"
   (skip-unless-iree :library :compiler)
   (let ((valid (stablehlo-fixture "matmul"))
         (malformed (%unknown-op-in-known-dialect "not_a_real_op")))
@@ -182,7 +193,35 @@ known for thread' で確実に落ちる、compiler.lisp 冒頭のコメント参
           (handler-case
               (progn (compile-stablehlo malformed)
                      (fiveam:fail "malformed input unexpectedly compiled"))
-            (iree-compile-error () nil))))))
+            (iree-compile-error () nil)))))
+  (is (null nabla.iree::*compiler-poison-reason*)
+      "150 rounds of ordinary compiles/failures should never poison the compiler (issue #68): ~A"
+      nabla.iree::*compiler-poison-reason*))
+
+(define-iree-test compiler/compile-stablehlo/poisoned-state-signals-clear-error
+    "issue #68 の回帰テスト（compiler.lisp の *compiler-poison-reason* 冒頭の
+コメント参照）。NABLA.IREE::*COMPILER-POISON-REASON*（defvar、動的スコープの
+特殊変数）を LET で汚染状態に束縛すると、compile-stablehlo は FFI に
+一切触れずに IREE-COMPILE-ERROR（:phase :poisoned、MESSAGE に理由を含む）を
+signal する。LET の動的エクステントを抜ければ元の（NIL の）値に自動的に
+戻るので、実際に #DE を起こす経路を通さずに、この契約だけをこのプロセス
+自身の中で安全に・決定的に検査できる（他のテストを汚染しない）。エクステント
+を抜けたあとは普通のコンパイルが成功することも確かめる。"
+  (skip-unless-iree :library :compiler)
+  (let ((nabla.iree::*compiler-poison-reason* "synthetic poison for compiler/compile-stablehlo/poisoned-state-signals-clear-error"))
+    (handler-case
+        (progn
+          (compile-stablehlo (stablehlo-fixture "matmul"))
+          (fiveam:fail "compile-stablehlo succeeded although *compiler-poison-reason* was bound"))
+      (iree-compile-error (c)
+        (is (eq :poisoned (iree-compile-error-phase c)))
+        (is (search "synthetic poison for compiler/compile-stablehlo/poisoned-state-signals-clear-error"
+                    (iree-compile-error-message c))
+            "poisoned の IREE-COMPILE-ERROR の MESSAGE に理由が含まれていない: ~A"
+            (iree-compile-error-message c)))))
+  ;; LET を抜けたので *compiler-poison-reason* は NIL に戻っており、普通の
+  ;; コンパイルが成功する。
+  (is (plusp (length (compile-stablehlo (stablehlo-fixture "matmul"))))))
 
 (define-iree-test compiler/compile-stablehlo/keeps-sbcl-signal-handlers
     "compile-stablehlo（と ensure-compiler-loaded）を呼んでも、SBCL が GC の
@@ -237,15 +276,8 @@ SIGUSR2 のハンドラが ensure-compiler-loaded から戻る頃には SBCL の
                     (sb-ext:exit :code 0))"))
          (args (list* "--non-interactive" "--disable-debugger"
                       (loop for form in forms append (list "--eval" form))))
-         (env (remove nil
-                      (append
-                       (mapcar (lambda (name)
-                                 (let ((v (sb-ext:posix-getenv name)))
-                                   (and v (format nil "~A=~A" name v))))
-                               '("PATH" "HOME" "LD_LIBRARY_PATH" "LANG" "LC_ALL"
-                                 "TMPDIR" "XDG_CACHE_HOME" "NABLA_LISP_DEPS"
-                                 "SBCL_HOME" "NABLA_IREE_HOME"))
-                       (list (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry))))))
+         (env (append (%forward-env-vars (list* "NABLA_IREE_HOME" *child-sbcl-forwarded-env-vars*))
+                      (list (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry)))))
          (output (make-string-output-stream))
          (process (sb-ext:run-program "sbcl" args
                                        :search t :environment env
@@ -322,15 +354,8 @@ sb-sys:without-gcing の中（*gc-inhibit* が真）から呼ぶとエラーに�
   (skip-unless-iree :library :compiler)
   (is (search (%locked-iree-commit) (compiler-revision))))
 
-(defun %child-source-registry ()
-  "子プロセスの ASDF に、このリポジトリと依存の置き場所を見せる
-CL_SOURCE_REGISTRY の値。scripts/run-tests.sh と同じ組み立て方
-（リポジトリは非再帰、依存は再帰）にする。"
-  (let* ((repo (namestring (asdf:system-source-directory "nabla")))
-         (deps (or (sb-ext:posix-getenv "NABLA_LISP_DEPS")
-                   (namestring (merge-pathnames ".local/share/nabla/lisp-deps/"
-                                                 (user-homedir-pathname))))))
-    (format nil "~A:~A//:" repo deps)))
+;; %child-source-registry は tests/iree/support.lisp（このファイルより先に
+;; ロードされる）で共有定義している。
 
 (defun %run-with-missing-iree-home (missing-home)
   "MISSING-HOME を NABLA_IREE_HOME として渡した、真っさらな子 SBCL
@@ -353,16 +378,9 @@ ensure-compiler-loaded の実際のロードは検証できないため、別プ
          ;; 全体を読み出す標準の手段が無いので、代わりに sbcl・ASDF・CFFI の
          ;; 動作に関わりうる変数を明示的に転送し、NABLA_IREE_HOME と
          ;; CL_SOURCE_REGISTRY だけ上書きする。
-         (env (remove nil
-                      (append
-                       (mapcar (lambda (name)
-                                 (let ((v (sb-ext:posix-getenv name)))
-                                   (and v (format nil "~A=~A" name v))))
-                               '("PATH" "HOME" "LD_LIBRARY_PATH" "LANG" "LC_ALL"
-                                 "TMPDIR" "XDG_CACHE_HOME" "NABLA_LISP_DEPS"
-                                 "SBCL_HOME"))
-                       (list (format nil "NABLA_IREE_HOME=~A" (namestring missing-home))
-                             (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry))))))
+         (env (append (%forward-env-vars *child-sbcl-forwarded-env-vars*)
+                      (list (format nil "NABLA_IREE_HOME=~A" (namestring missing-home))
+                            (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry)))))
          (process (sb-ext:run-program "sbcl" args
                                        :search t :environment env
                                        :output *standard-output* :error *standard-output*)))
@@ -417,15 +435,8 @@ scratchpad/adv/ 参照）。修正後は、LLVM の登録がコンパイルを1�
          ;; 環境をそのまま複製してくれるが、SBCL には環境全体を読み出す標準の
          ;; 手段が無いので、%run-with-missing-iree-home と同じ組み立て方で
          ;; 明示的に転送する（今回は NABLA_IREE_HOME も現在の値のまま渡す）。
-         (env (remove nil
-                      (append
-                       (mapcar (lambda (name)
-                                 (let ((v (sb-ext:posix-getenv name)))
-                                   (and v (format nil "~A=~A" name v))))
-                               '("PATH" "HOME" "LD_LIBRARY_PATH" "LANG" "LC_ALL"
-                                 "TMPDIR" "XDG_CACHE_HOME" "NABLA_LISP_DEPS"
-                                 "SBCL_HOME" "NABLA_IREE_HOME"))
-                       (list (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry))))))
+         (env (append (%forward-env-vars (list* "NABLA_IREE_HOME" *child-sbcl-forwarded-env-vars*))
+                      (list (format nil "CL_SOURCE_REGISTRY=~A" (%child-source-registry)))))
          (process (sb-ext:run-program "timeout" args
                                        :search t :environment env
                                        :output *standard-output* :error *standard-output*)))
