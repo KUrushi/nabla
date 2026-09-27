@@ -32,6 +32,8 @@
                (:file "src/primitives/shape")
                ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
                (:file "src/primitives/unary")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "src/primitives/compare")
                ;; issue #31 p5: dot-general
                (:file "src/primitives/dot")
                ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
@@ -82,6 +84,8 @@
                (:file "tests/primitives/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/primitives/unary-test")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "tests/primitives/compare-test")
                ;; issue #31 p5: dot-general
                (:file "tests/primitives/dot-test")
                ;; graph の eager 評価（issue #39、e0）
@@ -148,5 +152,7 @@
                (:file "tests/iree/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/iree/unary-test")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "tests/iree/compare-test")
                ;; issue #31 p5: dot-general
                (:file "tests/iree/dot-test")))
