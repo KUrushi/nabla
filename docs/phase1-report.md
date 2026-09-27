@@ -22,7 +22,7 @@
 
 `aval`（形状＋dtype）/ `var` / `eqn` / `graph` の4つの構造体と、`defprimitive` マクロを `src/primitive.lisp` / `src/ir.lisp` に実装した。`defprimitive` は1つの演算に `:abstract-eval`（形状推論）・`:emit`（StableHLO 出力）・`:eager`（CPU 実装）の3つを束ねる（CLAUDE.md の設計上の約束どおり、jvp / transpose ルール・バッチ化ルールは未実装で、これがフェーズ2/3の仕事になる）。
 
-`src/ir-print.lisp`（PR #44 / #48）に `print-graph`（export）と内部の `read-graph` を実装し、graph を jaxpr 風のテキストに変換・読み戻せるようにした。この往復（round-trip）に対する property-based testing がフェーズ1で2つのバグを見つけている（§5.6）。
+`src/ir-print.lisp`（PR #44 / #48）に `print-graph`（export）と内部の `read-graph` を実装し、graph を jaxpr 風のテキストに変換・読み戻せるようにした。この往復（round-trip）の性質テストとレビューで、2つのバグが見つかった（§4.6）。
 
 ### 2.2 op 対応表（#30、PR #40）
 
@@ -85,7 +85,7 @@ IREE はコンパイル時に複数の演算を融合できるため、eager 実
 
 ### 4.6 check-it の往復（round-trip）検査が見つけた IR の等値性の落とし穴（#29、PR #44 / #48）
 
-`print-graph` → `read-graph` → `print-graph` が同じテキストになることを検査する property-based testing が、2つの独立したバグを見つけた。1つは `read-graph` が `*package*` を何も `:use` しない専用パッケージに束縛して読むため、params に `T` のようなブール値が現れると `CL:T` と `eq` でない別のシンボルとして読まれ、round-trip の契約を壊すバグ（読んだ形全体を walk して正規化する `%normalize-graph-syntax-form` で修正）。もう1つは `print-graph` の内部で var 名を引く `gethash` が、見つからなかったときの挙動（デフォルトの `NIL`）を「値そのものが `NIL`」なのか「キーが無い」なのか区別せずに使っていたため、未定義参照を含む graph で `%nil` をそのまま印字してしまうバグ（`gethash` の第2値（found）を見るように修正）。どちらも「構造体やシンボルの同一性は、パッケージやハッシュ表の既定の読み方に暗黙に依存する」という落とし穴で、フェーズ2で grad の中間 graph を印字・比較するときにも同じ注意が要る。
+`print-graph` → `read-graph` → `print-graph` が同じテキストになることを検査する property-based testing と、その PR へのレビューで、2つの独立したバグが見つかった。1つは `read-graph` が `*package*` を何も `:use` しない専用パッケージに束縛して読むため、params に `T` のようなブール値が現れると `CL:T` と `eq` でない別のシンボルとして読まれ、round-trip の契約を壊すバグ（読んだ形全体を walk して正規化する `%normalize-graph-syntax-form` で修正）。もう1つは `print-graph` の内部で var 名を引く `gethash` が、見つからなかったときの挙動（デフォルトの `NIL`）を「値そのものが `NIL`」なのか「キーが無い」なのか区別せずに使っていたため、未定義参照を含む graph で `%nil` をそのまま印字してしまうバグ（`gethash` の第2値（found）を見るように修正）。どちらも「構造体やシンボルの同一性は、パッケージやハッシュ表の既定の読み方に暗黙に依存する」という落とし穴で、フェーズ2で grad の中間 graph を印字・比較するときにも同じ注意が要る。
 
 ### 4.7 stacked PR + squash merge のワークフロー
 
