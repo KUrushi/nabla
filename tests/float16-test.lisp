@@ -15,21 +15,32 @@
   ;; bf16 の最大有限値のビット列（符号なし。指数全1未満、仮数全1）。
   #x7F7F)
 
+(defun %oracle-floor-log2 (r)
+  "正の有理数 R について 2^E <= R < 2^(E+1) となる整数 E を求める。
+nb::%floor-log2（分子・分母のビット長から求める）とは違う道筋（対数
+関数による見積もり）から出発し、最後は有理数のまま正確な比較で補正する
+ので、%floor-log2 に同じバグがあっても道連れにならない。"
+  (let ((e (floor (log (float r 1.0d0) 2))))
+    (loop while (< r (expt 2 e)) do (decf e))
+    (loop while (>= r (expt 2 (1+ e))) do (incf e))
+    e))
+
 (defun %rational-oracle-encode (x dtype)
   "X (SINGLE-FLOAT, 有限) を、有理数演算だけを使ったオラクルで DTYPE の
 ビット列に変換する。nb::encode-float16 とは独立な実装で、最近接偶数丸め
-（RNE）を確かめる（.claude/skills/nabla-testing の性質2）。"
+（RNE）を確かめる（.claude/skills/nabla-testing の性質2）。ビット演算
+（nb::%single-float-bits / nb::%floor-log2）を経由せず、CL の
+FLOAT-SIGN と %ORACLE-FLOOR-LOG2 だけで組み立てる。"
   (let* ((mantissa-bits (ecase dtype (:f16 10) (:bf16 7)))
          (exponent-bits (ecase dtype (:f16 5) (:bf16 8)))
          (exponent-bias (ecase dtype (:f16 15) (:bf16 127)))
          (width (+ mantissa-bits exponent-bits))
          (max-biased-exp (- (ash 1 exponent-bits) 2))
-         (bits (nb::%single-float-bits x))
-         (sign (ldb (byte 1 31) bits))
+         (sign (if (minusp (float-sign x)) 1 0))
          (r (rational (abs x))))
     (if (zerop r)
         (ash sign width)
-        (let* ((e (max (- 1 exponent-bias) (nb::%floor-log2 r)))
+        (let* ((e (max (- 1 exponent-bias) (%oracle-floor-log2 r)))
                (shift (- mantissa-bits e))
                (q (if (>= shift 0)
                       (round (* r (expt 2 shift)))
@@ -100,15 +111,25 @@
                 :regression-id float16/f16/matches-rational-oracle-for-unit-interval-values
                 :regression-file (regression-path "float16-f16-oracle-unit-interval"))))
 
+(defun %encode-matches-oracle-or-is-inf-p (x dtype)
+  "X が有限なら nb::encode-float16 とオラクルが一致することを、X が
+無限大なら（オラクルは有理数を要求するので扱えない）nb::encode-float16
+の結果が符号を保った無限大にデコードし直せることを確かめる。X が NaN
+なら常に真（NaN は性質1で別に検査する）。"
+  (cond
+    ((sb-ext:float-nan-p x) t)
+    ((sb-ext:float-infinity-p x)
+     (let ((decoded (nb::decode-float16 (nb::encode-float16 x dtype) dtype)))
+       (and (sb-ext:float-infinity-p decoded)
+            (eq (plusp x) (plusp decoded)))))
+    (t (= (nb::encode-float16 x dtype) (%rational-oracle-encode x dtype)))))
+
 (test float16/f16/matches-rational-oracle-for-arbitrary-bit-patterns
   "任意の32bitパターンから作った SINGLE-FLOAT（非正規化数・巨大値・inf を
 含む。NaN は除く）について、encode-float16 (:f16) が有理数オラクルと一致する。"
   (is (check-it (generator (uniform-integer :lo 0 :hi #xFFFFFFFF))
                 (lambda (u32)
-                  (let ((x (nb::%make-single-float u32)))
-                    (or (sb-ext:float-nan-p x)
-                        (= (nb::encode-float16 x :f16)
-                           (%rational-oracle-encode x :f16)))))
+                  (%encode-matches-oracle-or-is-inf-p (nb::%make-single-float u32) :f16))
                 :regression-id float16/f16/matches-rational-oracle-for-arbitrary-bit-patterns
                 :regression-file (regression-path "float16-f16-oracle-arbitrary-bits"))))
 
@@ -127,10 +148,7 @@
 含む。NaN は除く）について、encode-float16 (:bf16) が有理数オラクルと一致する。"
   (is (check-it (generator (uniform-integer :lo 0 :hi #xFFFFFFFF))
                 (lambda (u32)
-                  (let ((x (nb::%make-single-float u32)))
-                    (or (sb-ext:float-nan-p x)
-                        (= (nb::encode-float16 x :bf16)
-                           (%rational-oracle-encode x :bf16)))))
+                  (%encode-matches-oracle-or-is-inf-p (nb::%make-single-float u32) :bf16))
                 :regression-id float16/bf16/matches-rational-oracle-for-arbitrary-bit-patterns
                 :regression-file (regression-path "float16-bf16-oracle-arbitrary-bits"))))
 
