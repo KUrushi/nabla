@@ -75,7 +75,16 @@
    #:unsupported-form
    #:unsupported-form-form
    #:unsupported-form-path
-   #:tracing-error)
+   #:tracing-error
+   ;; if を select に、配列レベルの公開 API（issue #32、t2）
+   #:dot
+   #:reshape
+   #:transpose
+   #:broadcast-in-dim
+   #:reduce-sum
+   #:reduce-max
+   #:convert
+   #:where)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
 ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend

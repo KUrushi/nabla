@@ -23,9 +23,11 @@
   (funcall fn a b))
 
 (defun %trace-op-array-array (prim-name a b)
-  "A・B が両方配列のときの共通実装: PRIM-NAME の :EAGER を直接呼ぶ
-（shape/dtype の不一致は abstract-eval が PRIMITIVE-ERROR として報告する）。"
-  (apply (primitive-eager (find-primitive prim-name)) (list a b) (list (array-aval a) (array-aval b)) nil))
+  "A・B が両方配列のときの共通実装: rank 0 のブロードキャストで shape を
+合わせてから、PRIM-NAME の :EAGER を直接呼ぶ（それでも残る shape/dtype
+の不一致は abstract-eval が PRIMITIVE-ERROR として報告する）。"
+  (multiple-value-bind (a* b*) (%align-array-pair a b)
+    (apply (primitive-eager (find-primitive prim-name)) (list a* b*) (list (array-aval a*) (array-aval b*)) nil)))
 
 (defun %trace-op-real-array (prim-name a b)
   "A が REAL、B が配列のときの共通実装: A を B と同じ shape/dtype に埋めて
@@ -36,9 +38,66 @@
   "A が配列、B が REAL のときの共通実装（%TRACE-OP-REAL-ARRAY と対称）。"
   (%trace-op-array-array prim-name a (%fill-array b a)))
 
+;;; --- rank 0 のブロードキャスト（issue #32、t2） ---
+;;;
+;;; 数値でも配列全体でもなく、すでに演算の結果である rank 0 のトレーサ／
+;;; 配列（例: (REDUCE-SUM X) の結果）を、より rank の高いオペランドと
+;;; 組み合わせるときは :BROADCAST-IN-DIM で shape を合わせる。それ以外の
+;;; shape の不一致は、そのままプリミティブの abstract-eval に委ねる
+;;; （PRIMITIVE-ERROR になる）。「数値と rank 0 の値だけがブロードキャスト
+;;; され、それ以外はしない」というルール（README に明記する）。
+
+(defun %broadcast-tracer-if-rank0 (tracer shape)
+  "TRACER の shape が SHAPE とすでに等しければそのまま返す。TRACER が
+rank 0 で SHAPE が rank 0 でなければ :BROADCAST-IN-DIM で SHAPE まで
+広げる。それ以外（rank が2つとも0より大きく、かつ食い違う）は変えずに
+返す（後続の演算の abstract-eval が PRIMITIVE-ERROR にする）。"
+  (let ((tracer-shape (aval-shape (tracer-aval tracer))))
+    (cond
+      ((equal tracer-shape shape) tracer)
+      ((null tracer-shape) (%trace-eqn :broadcast-in-dim (list tracer) :shape shape :dims '()))
+      (t tracer))))
+
+(defun %align-tracer-pair (a b)
+  "A・B（両方トレーサ）のうち、片方だけが rank 0 ならもう片方の shape に
+ブロードキャストした2つのトレーサを (VALUES A* B*) で返す。"
+  (let ((shape-a (aval-shape (tracer-aval a))) (shape-b (aval-shape (tracer-aval b))))
+    (cond
+      ((equal shape-a shape-b) (values a b))
+      ((null shape-a) (values (%broadcast-tracer-if-rank0 a shape-b) b))
+      ((null shape-b) (values a (%broadcast-tracer-if-rank0 b shape-a)))
+      (t (values a b)))))
+
+(defun %broadcast-rank0-array (array target-shape)
+  "ARRAY（rank 0 の配列）を TARGET-SHAPE まで広げた新しい配列を返す
+（:BROADCAST-IN-DIM の :EAGER をそのまま呼ぶ）。"
+  (apply (primitive-eager (find-primitive :broadcast-in-dim)) (list array) (list (array-aval array))
+         (list :shape target-shape :dims '())))
+
+(defun %array-broadcast-if-rank0 (array shape)
+  "ARRAY の shape が SHAPE とすでに等しければそのまま返す。ARRAY が rank 0
+で SHAPE が rank 0 でなければ %BROADCAST-RANK0-ARRAY で広げる。"
+  (let ((array-shape (array-dimensions array)))
+    (cond
+      ((equal array-shape shape) array)
+      ((null array-shape) (%broadcast-rank0-array array shape))
+      (t array))))
+
+(defun %align-array-pair (a b)
+  "A・B（両方配列）のうち、片方だけが rank 0 ならもう片方の shape に
+ブロードキャストした2つの配列を (VALUES A* B*) で返す。"
+  (let ((shape-a (array-dimensions a)) (shape-b (array-dimensions b)))
+    (cond
+      ((equal shape-a shape-b) (values a b))
+      ((null shape-a) (values (%array-broadcast-if-rank0 a shape-b) b))
+      ((null shape-b) (values a (%array-broadcast-if-rank0 b shape-a)))
+      (t (values a b)))))
+
 (defun %trace-op-tracer-tracer (prim-name a b)
-  "A・B が両方トレーサのときの共通実装: PRIM-NAME の EQN を1つ足す。"
-  (%trace-eqn prim-name (list a b)))
+  "A・B が両方トレーサのときの共通実装: rank 0 のブロードキャストで shape
+を合わせてから、PRIM-NAME の EQN を1つ足す。"
+  (multiple-value-bind (a* b*) (%align-tracer-pair a b)
+    (%trace-eqn prim-name (list a* b*))))
 
 (defun %trace-op-real-tracer (prim-name a b)
   "A が REAL、B がトレーサのときの共通実装: A を B と同じ dtype/shape に
@@ -338,10 +397,12 @@ CL の (真/偽) を返す比較関数を返す。"
   (funcall (%compare-direction-function direction) a b))
 
 (defun %trace-op-compare-array-array (a b direction)
-  "A・B が両方配列のときの共通実装: :COMPARE プリミティブの :EAGER を直接
-呼び、:I1（BIT）の配列を返す。"
-  (apply (primitive-eager (find-primitive :compare)) (list a b)
-         (list (array-aval a) (array-aval b)) (list :direction direction)))
+  "A・B が両方配列のときの共通実装: rank 0 のブロードキャストで shape を
+合わせてから :COMPARE プリミティブの :EAGER を直接呼び、:I1（BIT）の配列を
+返す。"
+  (multiple-value-bind (a* b*) (%align-array-pair a b)
+    (apply (primitive-eager (find-primitive :compare)) (list a* b*)
+           (list (array-aval a*) (array-aval b*)) (list :direction direction))))
 
 (defun %trace-op-compare-real-array (a b direction)
   "A が REAL、B が配列のときの共通実装。"
@@ -352,9 +413,10 @@ CL の (真/偽) を返す比較関数を返す。"
   (%trace-op-compare-array-array a (%fill-array b a) direction))
 
 (defun %trace-op-compare-tracer-tracer (a b direction)
-  "A・B が両方トレーサのときの共通実装: :COMPARE の EQN を1つ足す
-（:I1 のトレーサを返す）。"
-  (%trace-eqn :compare (list a b) :direction direction))
+  "A・B が両方トレーサのときの共通実装: rank 0 のブロードキャストで shape
+を合わせてから :COMPARE の EQN を1つ足す（:I1 のトレーサを返す）。"
+  (multiple-value-bind (a* b*) (%align-tracer-pair a b)
+    (%trace-eqn :compare (list a* b*) :direction direction)))
 
 (defun %trace-op-compare-real-tracer (a b direction)
   "A が REAL、B がトレーサのときの共通実装。"
@@ -406,18 +468,140 @@ A・B が両方トレーサなら :I1 のトレーサ、両方配列なら BIT �
 (defmethod %t-compare ((a tracer) (b array) direction)
   (%trace-op-compare-tracer-array a b direction))
 
-;;; --- %t-if（T1 の暫定版）: TEST がトレーサ／配列なら、まだ SELECT に
-;;; 変換できないため（T2 が対応する）TRACING-ERROR を signal する。それ
-;;; 以外（ふつうの Lisp の値）は、ふつうの IF と同じく TEST の真偽で
-;;; THEN-THUNK／ELSE-THUNK のどちらか一方だけを呼ぶ。
+;;; --- %t-select: PRED（:I1 のトレーサ／ビット配列）の真偽で A・B のどちら
+;;; かを選ぶ（issue #32、t2）。数値・rank 0 のトレーサ／配列は PRED の
+;;; shape に合わせてブロードキャストし、dtype はもう一方の分岐から決める
+;;; （両方数値なら dtype が決まらず TRACING-ERROR）。A・B のどちらかが :I1
+;;; の値（トレーサ／ビット配列）なら TRACING-ERROR にする。これは AND/OR を
+;;; トレーサの条件に使ったとき、SB-CLTL2:MACROEXPAND-ALL が
+;;; (IF #:G #:G ELSE) に展開し、#:G（PRED と同じ :I1 の値）がそのまま分岐に
+;;; 現れる（契約のピットフォール(1)）ケースを、分かりにくい PRIMITIVE-ERROR
+;;; ではなく AND/OR を名指しするメッセージで報告するため。 ---
 
-(defun %if-test-traced-p (test)
-  "TEST がトレーサまたは配列（=トレース対象の値）なら真を返す。"
-  (or (typep test 'tracer) (arrayp test)))
+(defun %lift-number-to (number dtype shape)
+  "NUMBER を DTYPE の定数トレーサにし、SHAPE が rank 0 でなければその形へ
+:BROADCAST-IN-DIM で広げる（%LIFT-NUMBER の、既存のトレーサの dtype/shape
+を経由しない汎用版。%T-SELECT が分岐を PRED の shape・もう一方の dtype に
+合わせるのに使う）。"
+  (let ((const-tracer (%lift-constant (%scalar-array number dtype) (make-aval '() dtype) *current-trace*)))
+    (if (plusp (length shape))
+        (%trace-eqn :broadcast-in-dim (list const-tracer) :shape shape :dims '())
+        const-tracer)))
+
+(defun %lift-array-to (array dtype)
+  "ARRAY を DTYPE の定数トレーサにする（%LIFT-ARRAY の、既存のトレーサを
+経由しない汎用版）。"
+  (%lift-constant array (array-aval array dtype) *current-trace*))
+
+(defun %select-branch-dtype (branch)
+  "BRANCH（トレーサ・配列・実数のいずれか）の dtype を返す。実数なら NIL
+（%SELECT-RESOLVE-DTYPE がもう一方の分岐から決める）。"
+  (cond
+    ((typep branch 'tracer) (aval-dtype (tracer-aval branch)))
+    ((arrayp branch) (aval-dtype (array-aval branch)))
+    (t nil)))
+
+(defun %select-check-branch-type (branch)
+  "BRANCH がトレーサ・配列・実数のいずれでもなければ TRACING-ERROR を
+signal する。WHEN／UNLESS が省略した ELSE は NIL（Lisp のブール偽）に
+展開されるが、NIL は数値としてリフトできないので、ここで分かりやすい
+TRACING-ERROR にする（(WHEN tracer-test x) がトレーサの条件で失敗する、
+という契約に明記されたドキュメント上の既知の制約）。"
+  (unless (typep branch '(or tracer array real))
+    (error 'tracing-error
+           :format-control "SELECT/WHERE の分岐はトレーサ・配列・実数のいずれかでなければならない（WHEN/UNLESS が省略した ELSE は NIL になり使えない）: ~S"
+           :format-arguments (list branch))))
+
+(defun %select-check-branch-not-i1 (branch)
+  "BRANCH が :I1 の値（トレーサ／配列）なら TRACING-ERROR を signal する。"
+  (when (eq (%select-branch-dtype branch) :i1)
+    (error 'tracing-error
+           :format-control "SELECT/WHERE の分岐に :i1 の値は使えない（AND/OR がトレーサの条件に対して (IF X X ELSE) に展開されるため、X がそのままここに来ている可能性が高い。明示的な比較や WHERE を使うこと）: ~S"
+           :format-arguments (list branch))))
+
+(defun %select-resolve-dtype (a b)
+  "A・B の一方が数値でなければその dtype を、両方数値なら
+（決めようがないので）TRACING-ERROR を signal する。"
+  (or (%select-branch-dtype a) (%select-branch-dtype b)
+      (error 'tracing-error
+             :format-control "SELECT/WHERE の両方の分岐が数値では dtype を決められない: ~S / ~S"
+             :format-arguments (list a b))))
+
+(defun %select-lift-branch-to-tracer (branch dtype shape)
+  "BRANCH（トレーサ・配列・実数）を、DTYPE・SHAPE のトレーサにする。
+トレーサ・配列は rank 0 なら SHAPE にブロードキャストする。"
+  (typecase branch
+    (tracer (%broadcast-tracer-if-rank0 branch shape))
+    (array (%broadcast-tracer-if-rank0 (%lift-array-to branch dtype) shape))
+    (t (%lift-number-to branch dtype shape))))
+
+(defun %trace-select-tracer (pred a b)
+  "PRED（:I1 のトレーサ）による %T-SELECT の本体。"
+  (%select-check-branch-type a)
+  (%select-check-branch-type b)
+  (%select-check-branch-not-i1 a)
+  (%select-check-branch-not-i1 b)
+  (let* ((dtype (%select-resolve-dtype a b))
+         (shape (aval-shape (tracer-aval pred)))
+         (a* (%select-lift-branch-to-tracer a dtype shape))
+         (b* (%select-lift-branch-to-tracer b dtype shape)))
+    (%trace-eqn :select (list pred a* b*))))
+
+(defun %select-lift-branch-to-array (branch dtype shape)
+  "BRANCH（配列・実数）を、DTYPE・SHAPE の配列にする（%SELECT-LIFT-BRANCH-
+TO-TRACER の eager 版）。"
+  (typecase branch
+    (array (%array-broadcast-if-rank0 branch shape))
+    (t (%array-broadcast-if-rank0 (%filled-array '() dtype branch) shape))))
+
+(defun %eager-select-array (pred a b)
+  "PRED（:I1 のビット配列）による %T-SELECT の本体。"
+  (%select-check-branch-type a)
+  (%select-check-branch-type b)
+  (%select-check-branch-not-i1 a)
+  (%select-check-branch-not-i1 b)
+  (let* ((dtype (%select-resolve-dtype a b))
+         (shape (array-dimensions pred))
+         (a* (%select-lift-branch-to-array a dtype shape))
+         (b* (%select-lift-branch-to-array b dtype shape)))
+    (apply (primitive-eager (find-primitive :select)) (list pred a* b*)
+           (list (array-aval pred) (array-aval a*) (array-aval b*)) nil)))
+
+(defgeneric %t-select (pred a b)
+  (:documentation
+   "PRED（:I1 のトレーサまたはビット配列）の真偽で A・B のどちらかを選ぶ。
+A・B はトレーサ・配列・実数を任意に組み合わせられる。数値・rank 0 の
+トレーサ／配列は PRED の shape に合わせてブロードキャストし、dtype は
+もう一方の分岐から決める。両方とも数値、またはどちらかが :I1 の値だと
+TRACING-ERROR になる。"))
+
+(defmethod %t-select ((pred tracer) a b)
+  (%trace-select-tracer pred a b))
+
+(defmethod %t-select ((pred array) a b)
+  (%eager-select-array pred a b))
+
+;;; --- %t-if: TEST の種類で分岐する（issue #32、t1 の暫定版を t2 が
+;;; 置き換える）。TEST が :I1 のトレーサ／ビット配列なら THEN-THUNK と
+;;; ELSE-THUNK を両方呼び（配列は要素ごとの意味を持つので、両方の枝を
+;;; 計算する必要がある。契約のピットフォール(3)）、%T-SELECT で選ぶ。TEST
+;;; が :I1 でないトレーサ／配列なら TRACING-ERROR。それ以外（ふつうの
+;;; Lisp の値）は、ふつうの IF と同じく TEST の真偽で THEN-THUNK／
+;;; ELSE-THUNK のどちらか一方だけを呼ぶ。
+
+(defun %if-test-kind (test)
+  "TEST の種類を :TRACER-I1・:TRACER-OTHER・:ARRAY-I1・:ARRAY-OTHER・:PLAIN
+のいずれかで返す。"
+  (cond
+    ((typep test 'tracer) (if (eq (aval-dtype (tracer-aval test)) :i1) :tracer-i1 :tracer-other))
+    ((arrayp test) (if (eq (aval-dtype (array-aval test)) :i1) :array-i1 :array-other))
+    (t :plain)))
 
 (defun %t-if (test then-thunk else-thunk)
-  (if (%if-test-traced-p test)
-      (error 'tracing-error
-             :format-control "IF の条件にトレーサ／配列は使えない（select への変換は issue #32 の後続 PR で対応）: ~S"
-             :format-arguments (list test))
-      (if test (funcall then-thunk) (funcall else-thunk))))
+  (ecase (%if-test-kind test)
+    ((:tracer-i1 :array-i1) (%t-select test (funcall then-thunk) (funcall else-thunk)))
+    ((:tracer-other :array-other)
+     (error 'tracing-error
+            :format-control "IF の条件は :i1（比較の結果）でなければならない: ~S"
+            :format-arguments (list test)))
+    (:plain (if test (funcall then-thunk) (funcall else-thunk)))))
