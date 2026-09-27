@@ -16,6 +16,8 @@
   :depends-on ("ironclad")
   :components ((:file "src/package")
                (:file "src/dtype")
+               ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
+               (:file "src/float16")
                (:file "src/aval")
                ;; IR と defprimitive（issue #29、u1a）
                (:file "src/primitive")
@@ -48,6 +50,8 @@
   :components ((:file "tests/package")
                (:file "tests/support-test")
                (:file "tests/dtype-test")
+               ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
+               (:file "tests/float16-test")
                (:file "tests/aval-test")
                (:file "tests/backend-test")
                (:file "tests/compile-cache-test")
@@ -109,4 +113,6 @@
                (:file "tests/iree/runtime-cuda-test")
                (:file "tests/iree/device-array-test")
                (:file "tests/iree/execute-test")
-               (:file "tests/iree/example-test")))
+               (:file "tests/iree/example-test")
+               ;; StableHLO op 対応表（issue #30、u2）
+               (:file "tests/iree/ops-test")))

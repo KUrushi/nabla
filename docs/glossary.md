@@ -64,6 +64,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **コードウォーク（code walk）/ コードウォーカ**
 : Lisp のコード（リスト）を先頭から順にたどり、特定の形式を別の形式に書き換える処理。nabla では `with-tracing` の中の `if` や `loop` を、トレースできる `cond` / `scan` に書き換えるのに使う。事前に `macroexpand-all` でマクロをすべて展開してからたどる。
 
+**最近接偶数丸め（RNE, round to nearest, ties to even）**
+: 浮動小数点の丸め方式の1つ。表現できる2つの値のうち近い方に丸め、ちょうど中間（等距離）のときは仮数の最下位ビットが0になる方（偶数）に丸める。IEEE 754 の既定の丸めモードで、nabla では bf16 / f16 と single-float の変換（`src/float16.lisp`）に使う。単純な切り捨てと違い、丸め誤差が特定の方向に偏らない。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**

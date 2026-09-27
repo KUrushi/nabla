@@ -74,6 +74,22 @@ reference-reduce-sum の期待値と allclose :dtype :f32 で一致する。"
                 :regression-id backend/fake/round-trip-reduce-sum-matches-reference
                 :regression-file (regression-path "backend-fake-round-trip-reduce-sum"))))
 
+(test backend/fake/to-device-i1-signals-unsupported-dtype
+  "フェイク backend の to-device に BIT 配列 + :i1 を渡すと
+NB:UNSUPPORTED-DTYPE が signal され、その dtype が :i1 で読み出せる
+（issue #37。フェイクは配管の参照実装なので、本物の IREE backend と
+同じ条件を signal するように揃える）。handler-case の節が実際に実行
+されたことも確かめる。"
+  (let ((backend (nb:make-backend :fake))
+        (array (make-array '(2 3) :element-type 'bit :initial-element 0))
+        (entered-handler nil))
+    (handler-case
+        (nb:to-device array backend :dtype :i1)
+      (nb:unsupported-dtype (condition)
+        (setf entered-handler t)
+        (is (eq :i1 (nb:unsupported-dtype-dtype condition)))))
+    (is (eq t entered-handler) "to-device が unsupported-dtype を signal しなかった")))
+
 (test backend/backend-compile/unsupported-text-signals-backend-error
   "add / dot_general / reduce のどれも含まない TEXT を backend-compile に
 渡すと、BACKEND-ERROR の subtype が signal される。"

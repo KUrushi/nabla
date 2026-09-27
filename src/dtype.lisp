@@ -9,8 +9,12 @@
 (in-package #:nabla)
 
 (deftype dtype ()
-  "nabla が扱う要素型のタグ。:f32 / :f64 / :bf16 / :f16 のいずれか。"
-  '(member :f32 :f64 :bf16 :f16))
+  "nabla が扱う要素型のタグ。:f32 / :f64 / :bf16 / :f16 / :i1 のいずれか。
+:i1 は真偽値（1ビット）で、compare の出力・select の条件に使う
+（issue #37）。フェーズ1では :i1 の配列を TO-DEVICE に渡すと
+UNSUPPORTED-DTYPE が signal される（実行系との要素型の対応は各実行系の
+実装が決める。core はその対応を知らない）。"
+  '(member :f32 :f64 :bf16 :f16 :i1))
 
 (define-condition dtype-mismatch (error)
   ((element-type :initarg :element-type :reader dtype-mismatch-element-type)
@@ -30,34 +34,36 @@ ARRAY-ELEMENT-TYPE の返り値、DTYPE は呼び出し時に渡された dtype 
   "DTYPE に対応する Common Lisp の配列要素型を返す。
 
 :f32 → SINGLE-FLOAT、:f64 → DOUBLE-FLOAT、:bf16 / :f16 → (UNSIGNED-BYTE 16)
-（bf16 / f16 はビット列をそのまま持つ。CLAUDE.md の約束）。"
+（bf16 / f16 はビット列をそのまま持つ。CLAUDE.md の約束）、:i1 → BIT。"
   (check-type dtype dtype)
   (ecase dtype
     (:f32 'single-float)
     (:f64 'double-float)
-    ((:bf16 :f16) '(unsigned-byte 16))))
+    ((:bf16 :f16) '(unsigned-byte 16))
+    (:i1 'bit)))
 
 (defun dtype-byte-width (dtype)
   "DTYPE の1要素あたりのバイト数を返す。:f32 → 4、:f64 → 8、
-:bf16 / :f16 → 2。"
+:bf16 / :f16 → 2、:i1 → 1。"
   (check-type dtype dtype)
   (ecase dtype
     (:f32 4)
     (:f64 8)
-    ((:bf16 :f16) 2)))
+    ((:bf16 :f16) 2)
+    (:i1 1)))
 
 (defun array-dtype (array &optional dtype)
   "ARRAY の要素型から dtype キーワードを決めて返す。
 
-SINGLE-FLOAT の配列は :f32、DOUBLE-FLOAT の配列は :f64 と決まる。
-(UNSIGNED-BYTE 16) の配列は :bf16 と :f16 のどちらとも解釈できるため、
-DTYPE で必ずどちらかを指定する必要がある。
+SINGLE-FLOAT の配列は :f32、DOUBLE-FLOAT の配列は :f64、BIT の配列は :i1
+と決まる。(UNSIGNED-BYTE 16) の配列は :bf16 と :f16 のどちらとも解釈できる
+ため、DTYPE で必ずどちらかを指定する必要がある。
 
 DTYPE を渡した場合、ARRAY の要素型から決まる dtype と食い違っていれば
 （:f32 の配列に :f64 を渡す、(unsigned-byte 16) の配列に :f32 を渡す、
-(unsigned-byte 16) の配列に DTYPE を渡さない、など）、DTYPE-MISMATCH を
-signal する。サポートしない要素型（上の3通り以外）も DTYPE-MISMATCH に
-なる。"
+(unsigned-byte 16) の配列に DTYPE を渡さない、BIT の配列に :i1 以外を
+渡す、など）、DTYPE-MISMATCH を signal する。サポートしない要素型（上の
+4通り以外）も DTYPE-MISMATCH になる。"
   (let ((element-type (array-element-type array)))
     (flet ((signal-mismatch ()
              (error 'dtype-mismatch :element-type element-type :dtype dtype))
@@ -74,4 +80,6 @@ signal する。サポートしない要素型（上の3通り以外）も DTYPE
          (if (and dtype (not (eq dtype :f64))) (signal-mismatch) :f64))
         ((type= element-type '(unsigned-byte 16))
          (if (member dtype '(:bf16 :f16)) dtype (signal-mismatch)))
+        ((type= element-type 'bit)
+         (if (and dtype (not (eq dtype :i1))) (signal-mismatch) :i1))
         (t (signal-mismatch))))))

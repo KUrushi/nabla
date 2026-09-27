@@ -96,7 +96,8 @@ BACKEND-UNLOAD にそのまま渡すこと以外の使い道は保証しない�
    "ARRAY（Lisp の simple-array）を BACKEND 上にコピーし、その BACKEND
 実装ごとの device array を返す。DTYPE を渡すと、ARRAY の要素型との対応を
 そのつもりで確かめる（ARRAY-AVAL 経由。矛盾すれば DTYPE-MISMATCH を
-signal する）。"))
+signal する）。BACKEND がその dtype のデバイス上の表現を持たなければ
+UNSUPPORTED-DTYPE を signal する（実装ごとのメソッドが行う。issue #37）。"))
 
 (defgeneric to-host (device-array)
   (:documentation
@@ -115,6 +116,19 @@ NABLA:AVAL を返す。"))
    "BACKEND-COMPILE / BACKEND-LOAD / BACKEND-INVOKE など、実行系の呼び出しが
 signal するすべてのエラーの root コンディション。実装ごとのエラーは
 これの subtype にする。"))
+
+(define-condition unsupported-dtype (backend-error)
+  ((dtype :initarg :dtype :reader unsupported-dtype-dtype))
+  (:report
+   (lambda (condition stream)
+     (format stream
+             "この実行系は dtype ~S のデバイス上の表現を持たない。"
+             (unsupported-dtype-dtype condition))))
+  (:documentation
+   "TO-DEVICE に、その BACKEND の実装がデバイス上の表現を持たない DTYPE の
+配列を渡したときに、実装ごとの TO-DEVICE メソッドが signal する
+（issue #37）。DTYPE は TO-DEVICE に渡した（または ARRAY-AVAL が推論した）
+dtype キーワードそのもの。"))
 
 (define-condition backend-not-available (backend-error)
   ((kind :initarg :kind :reader backend-not-available-kind))

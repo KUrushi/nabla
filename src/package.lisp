@@ -41,6 +41,9 @@
    #:backend-error
    #:backend-not-available
    #:backend-not-available-kind
+   ;; :i1 dtype と TO-DEVICE の未対応 dtype（issue #37、u3）
+   #:unsupported-dtype
+   #:unsupported-dtype-dtype
    ;; vmfb ディスクキャッシュ（issue #10）
    #:*compile-cache-directory*
    ;; IR と defprimitive（issue #29、u1a）
