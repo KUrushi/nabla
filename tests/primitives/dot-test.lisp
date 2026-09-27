@@ -436,3 +436,86 @@ batching_dims 自体を省く。"
                          (list (nb:make-aval '(2 3) :f32) (nb:make-aval '(4 5) :f32))
                          "%0" (nb:make-aval '(2 3 4 5) :f32)
                          :lhs-contracting '() :rhs-contracting '() :lhs-batch '() :rhs-batch '()))))
+
+;;; ===================== K=0（issue #62）: ゼロ定数 :emit =====================
+;;;
+;;; IREE 3.11.0 のコンパイラは、縮約次元（contracting dim）のサイズが0の
+;;; dot_general で AnnotateDispatches の整数0除算により落ちる（issue #62）。
+;;; :emit はこの形のとき dot_general を出さず、数学的に正しい結果
+;;; （空和 = 0）であるゼロ定数を1行だけ出す。
+
+(test dot-general/emit-zero-constant-for-zero-contracting-f32
+  "K=0（lhs (2 0)、rhs (0 3)、contracting [1] x [0]）の :emit（f32）は、
+dot_general ではなく `stablehlo.constant dense<0.0>` を1行だけ出す。"
+  (is (string= "%0 = stablehlo.constant dense<0.0> : tensor<2x3xf32>"
+               (%emit-of :dot-general '("%a" "%b")
+                         (list (nb:make-aval '(2 0) :f32) (nb:make-aval '(0 3) :f32))
+                         "%0" (nb:make-aval '(2 3) :f32)
+                         :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '()))))
+
+(test dot-general/emit-zero-constant-for-zero-contracting-bf16-f16
+  "K=0 の :emit は bf16 / f16 でも f32 累積の acc/convert を経由せず、
+ゼロ定数1行だけを出す（issue #54 の分岐より前で処理する）。"
+  (dolist (dtype '(:bf16 :f16))
+    (let ((text (%emit-of :dot-general '("%a" "%b")
+                           (list (nb:make-aval '(2 0) dtype) (nb:make-aval '(0 3) dtype))
+                           "%0" (nb:make-aval '(2 3) dtype)
+                           :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '())))
+      (is (string= (format nil "%0 = stablehlo.constant dense<0.0> : tensor<2x3x~(~A~)>" dtype) text))
+      (is (not (search "%acc_" text)))
+      (is (not (search "stablehlo.convert" text))))))
+
+(test dot-general/emit-k1-still-emits-dot-general
+  "K=1（境界値。ゼロサイズではない）は今まで通り stablehlo.dot_general を
+出す（K=0 判定が < や <= ではなく = 0 であることを確かめる）。"
+  (is (search "stablehlo.dot_general"
+              (%emit-of :dot-general '("%a" "%b")
+                        (list (nb:make-aval '(2 1) :f32) (nb:make-aval '(1 3) :f32))
+                        "%0" (nb:make-aval '(2 3) :f32)
+                        :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '()))))
+
+(test dot-general/emit-zero-constant-batched
+  "batch 付き K=0（lhs (2 3 0)、rhs (2 0 5)、batch (0)x(0)、
+contracting (2)x(1)）の :emit もゼロ定数1行になる。"
+  (is (string= "%0 = stablehlo.constant dense<0.0> : tensor<2x3x5xf32>"
+               (%emit-of :dot-general '("%a" "%b")
+                         (list (nb:make-aval '(2 3 0) :f32) (nb:make-aval '(2 0 5) :f32))
+                         "%0" (nb:make-aval '(2 3 5) :f32)
+                         :lhs-contracting '(2) :rhs-contracting '(1) :lhs-batch '(0) :rhs-batch '(0)))))
+
+(test dot-general/emit-zero-constant-only-second-contracting-dim-zero
+  "縮約次元が2つあり、後ろの次元だけがゼロサイズ（lhs (2 3 0)、
+rhs (3 0 4)、contracting (1 2) x (0 1)）でも判定される
+（K=0 判定が最初の縮約次元だけを見ていないことを確かめる）。"
+  (is (string= "%0 = stablehlo.constant dense<0.0> : tensor<2x4xf32>"
+               (%emit-of :dot-general '("%a" "%b")
+                         (list (nb:make-aval '(2 3 0) :f32) (nb:make-aval '(3 0 4) :f32))
+                         "%0" (nb:make-aval '(2 4) :f32)
+                         :lhs-contracting '(1 2) :rhs-contracting '(0 1) :lhs-batch '() :rhs-batch '()))))
+
+(test dot-general/emit-zero-constant-rank0-and-zero-size-output
+  "完全に縮約された rank0 の K=0（lhs (0)、rhs (0)、contracting (0)x(0)）は
+`tensor<f32>` のゼロ定数、ゼロサイズ出力の K=0（lhs (0 0)、rhs (0 3)）は
+`tensor<0x3xf32>` のゼロ定数になる（出力側の特殊扱いは不要）。"
+  (is (string= "%0 = stablehlo.constant dense<0.0> : tensor<f32>"
+               (%emit-of :dot-general '("%a" "%b")
+                         (list (nb:make-aval '(0) :f32) (nb:make-aval '(0) :f32))
+                         "%0" (nb:make-aval '() :f32)
+                         :lhs-contracting '(0) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '())))
+  (is (string= "%0 = stablehlo.constant dense<0.0> : tensor<0x3xf32>"
+               (%emit-of :dot-general '("%a" "%b")
+                         (list (nb:make-aval '(0 0) :f32) (nb:make-aval '(0 3) :f32))
+                         "%0" (nb:make-aval '(0 3) :f32)
+                         :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '()))))
+
+(test dot-general/eager-zero-contracting-returns-zeros
+  "K=0 の eager 実装は、すべての要素が0の (2 3) 配列（f32）を返す
+（:emit の変更は eager には影響しないことの回帰テスト）。"
+  (let* ((lhs (make-array '(2 0) :element-type 'single-float))
+         (rhs (make-array '(0 3) :element-type 'single-float))
+         (result (%eager-of :dot-general (list lhs rhs)
+                             (list (nb:array-aval lhs :f32) (nb:array-aval rhs :f32))
+                             :lhs-contracting '(1) :rhs-contracting '(0)
+                             :lhs-batch '() :rhs-batch '())))
+    (is (equalp (nb:make-aval '(2 3) :f32) (nb:array-aval result :f32)))
+    (is (loop for i below 2 always (loop for j below 3 always (zerop (aref result i j)))))))

@@ -91,14 +91,32 @@ node 判定に埋もれさせず、この 1 を変異させられるようにす
   "stablehlo.convert 1行分のテキストを組み立てる。"
   (format nil "~A = stablehlo.convert ~A : (~A) -> ~A" out-name in-name in-type out-type))
 
+(defun %dot-zero-contracting-p (lhs-aval lhs-contracting)
+  "LHS-AVAL の LHS-CONTRACTING（縮約次元の番号のリスト）のうち、どれか
+1つでもサイズ0の次元があれば真（rhs 側の対応する次元は abstract-eval で
+サイズが一致することを確かめ済みなので、lhs だけ見ればよい）。IREE
+3.11.0 のコンパイラは、この形（K=0）の stablehlo.dot_general で
+AnnotateDispatches の整数0除算により落ちる（issue #62）。"
+  (some (lambda (d) (zerop (nth d (aval-shape lhs-aval)))) lhs-contracting))
+
+(defun %dot-zero-constant-line (out-name out-aval)
+  "K=0（縮約次元がゼロサイズ）のときに dot_general の代わりに出す、
+OUT-ATYPE 型のゼロ定数1行（数学的には空和なので0が正しい結果。
+issue #62）。"
+  (format nil "~A = stablehlo.constant dense<0.0> : ~A" out-name (tensor-type-string out-aval)))
+
 (defun %dot-emit-lines (in-names in-avals out-name out-aval
                         lhs-batch rhs-batch lhs-contracting rhs-contracting)
-  "dot-general の :emit 本体。OUT-AVAL の dtype が bf16/f16 なら、f32 の
-結果型を持つ dot_general と convert の2行を、そうでなければ dot_general
+  "dot-general の :emit 本体。縮約次元がゼロサイズ（K=0）なら、IREE の
+コンパイラクラッシュ（issue #62）を避けるため dot_general を出さずに
+ゼロ定数1行を返す。そうでなく OUT-AVAL の dtype が bf16/f16 なら、f32 の
+結果型を持つ dot_general と convert の2行を、それ以外は dot_general
 1行だけを返す（issue #54）。"
   (let ((lhs-type (tensor-type-string (first in-avals)))
         (rhs-type (tensor-type-string (second in-avals)))
         (out-type (tensor-type-string out-aval)))
+    (if (%dot-zero-contracting-p (first in-avals) lhs-contracting)
+        (%dot-zero-constant-line out-name out-aval)
     (if (%dot-accumulate-in-f32-p (aval-dtype out-aval))
         (let* ((acc-name (%dot-aux-name "acc" out-name))
                (acc-type (tensor-type-string (make-aval (aval-shape out-aval) :f32))))
@@ -109,7 +127,7 @@ node 判定に埋もれさせず、この 1 を変異させられるようにす
                   (%dot-convert-line out-name acc-name acc-type out-type)))
         (%dot-general-line out-name (first in-names) (second in-names)
                            lhs-batch rhs-batch lhs-contracting rhs-contracting
-                           lhs-type rhs-type out-type))))
+                           lhs-type rhs-type out-type)))))
 
 (defun %dot-build-subscripts (rank batch-dims batch-subs free-dims free-subs
                               contract-dims contract-subs)

@@ -43,10 +43,14 @@ LIBRARY は :compiler または :runtime、HOME は探索に使った NABLA_IREE
        (format stream "~%  [~A] ~A" (car diagnostic) (cdr diagnostic)))))
   (:documentation
    "StableHLO のコンパイルが失敗したときに signal する。PHASE は
-:flags / :parse / :compile / :output のどれか。DIAGNOSTICS は
-(severity . text) のリスト（severity は :note :warning :error :remark の
-どれかで、MLIR が出した順）。MESSAGE は iree_compiler_error_t から得た
-テキスト（無ければ NIL）。"))
+:flags / :parse / :compile / :output / :poisoned のどれか。:poisoned は
+MLIR の診断ではなく、以前の compile-stablehlo 呼び出しがプロセス全体の
+コンパイラ状態を壊した（issue #68）ため、このプロセスではもう
+compile-stablehlo を呼べないことを示す（プロセスの再起動が必要）。
+DIAGNOSTICS は (severity . text) のリスト（severity は :note :warning
+:error :remark のどれかで、MLIR が出した順、:poisoned では常に空）。
+MESSAGE は iree_compiler_error_t から得たテキスト、または :poisoned では
+汚染の理由（無ければ NIL）。"))
 
 (define-condition iree-object-released (iree-error)
   ((kind :initarg :kind :reader iree-object-released-kind)
