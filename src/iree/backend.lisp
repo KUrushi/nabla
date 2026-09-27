@@ -137,3 +137,11 @@ IREE 側で \"module\" という名前になる）。ARRAYS はそのまま INVO
 コピーは device に特化した TO-DEVICE メソッド（device-array.lisp）へ
 委譲する。"
   (to-device array (%iree-backend-ensure-device backend) :dtype dtype))
+
+;; jit の既定 backend として自分を設定する（issue #34、wave 4 j1）。
+;; NABLA:*DEFAULT-BACKEND* がまだ未設定（NIL）のときだけ設定するので、
+;; 利用者が明示的に設定した値を上書きしない。core（src/jit.lisp）は
+;; 実行系の実装を知らない設計（issue #9）なので、この対応付けは
+;; nabla/iree のロード時にここで行う。
+(when (null nabla:*default-backend*)
+  (setf nabla:*default-backend* :iree))

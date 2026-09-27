@@ -51,7 +51,9 @@
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
-               (:file "src/compile-cache"))
+               (:file "src/compile-cache")
+               ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
+               (:file "src/jit"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
 
 (defsystem "nabla/test-support"
@@ -113,6 +115,8 @@
                (:file "tests/array-api-test")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "tests/stablehlo-test")
+               ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
+               (:file "tests/jit-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
