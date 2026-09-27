@@ -440,3 +440,9 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
   既定で「polyglot zip」形式（`--iree-vm-emit-polyglot-zip`）なので、先頭4バイトは
   ZIP local-file-header シグネチャ `50 4B 03 04`（"PK\3\4"）で、フラットバッファ
   自体の識別子ではない
+- **invoke の入力検査**（issue #8）: コンパイルされた vmfb は、関数の入出力に
+  `hal.buffer_view.assert` を自動で挿入する。そのため `nabla.iree:invoke` に
+  StableHLO の宣言と違う形状・dtype・個数の buffer view を渡すと、プロセスが
+  落ちたり未定義動作になったりせず、`iree_runtime_call_invoke` が
+  `IREE_STATUS_INVALID_ARGUMENT` の `iree_status_t` を返す
+  （`nabla.iree:iree-status-error` の `code` が `:invalid-argument` になる）

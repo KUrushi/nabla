@@ -16,6 +16,17 @@ element-type-for-dtype の実装と1対1で対応させない（実装をなぞ�
     (:f64 'double-float)
     ((:bf16 :f16) '(unsigned-byte 16))))
 
+(defun %coerce-to-double-nested (array shape)
+  "ARRAY（SHAPE を持つ）の全要素を double-float に coerce した、
+initial-contents に渡せる入れ子リストを作る（reference-* のテスト専用の
+小さなヘルパー）。"
+  (labels ((build (indices remaining-shape)
+             (if (null remaining-shape)
+                 (coerce (apply #'aref array (reverse indices)) 'double-float)
+                 (loop for i below (first remaining-shape)
+                       collect (build (cons i indices) (rest remaining-shape))))))
+    (build nil shape)))
+
 (test support/array-spec/within-bounds
   "array-spec の生成器は、rank 0..4、各次元 1..8、指定した dtype だけを出す。"
   (is (check-it (generator (array-spec :dtypes '(:f32 :f64 :bf16 :f16)
@@ -285,6 +296,65 @@ chained-generator は事前に選んだ rank を再選択しないので、そ�
                   (equalp spec (read-from-string (prin1-to-string spec))))
                 :regression-id support/array-spec/prints-readably
                 :regression-file (regression-path "array-spec-prints-readably"))))
+
+(test support/reference-matmul/matches-matmul-fixture-documented-values
+  "reference-matmul は matmul.mlir フィクスチャのコメントに書かれた期待値
+（58 64 139 154）を再現する（フィクスチャの期待値は、コメントとして
+明記されているぶんには例ベースのテストで確かめてよい、というスキルの
+例外に当たる）。"
+  (let ((a (make-array '(2 3) :element-type 'double-float
+                        :initial-contents '((1.0d0 2.0d0 3.0d0) (4.0d0 5.0d0 6.0d0))))
+        (b (make-array '(3 2) :element-type 'double-float
+                        :initial-contents '((7.0d0 8.0d0) (9.0d0 10.0d0) (11.0d0 12.0d0)))))
+    (is (equalp (reference-matmul a b)
+                (make-array '(2 2) :element-type 'double-float
+                            :initial-contents '((58.0d0 64.0d0) (139.0d0 154.0d0)))))))
+
+(test support/reference-add/commutative-and-zero-identity
+  "reference-add は可換で、0 を足しても変わらない（x + 0 = x）。"
+  (is (check-it (generator (array-spec :dtypes '(:f32 :f64)))
+                (lambda (spec)
+                  (let* ((x (make-random-array spec))
+                         (y (make-random-array spec :seed 99))
+                         (zero (make-array (array-spec-shape spec)
+                                           :element-type (%expected-element-type (array-spec-dtype spec))
+                                           :initial-element (coerce 0 (%expected-element-type (array-spec-dtype spec))))))
+                    (and (equalp (reference-add x y) (reference-add y x))
+                         (equalp (reference-add x zero)
+                                 (make-array (array-spec-shape spec) :element-type 'double-float
+                                             :initial-contents
+                                             (%coerce-to-double-nested x (array-spec-shape spec)))))))
+                :regression-id support/reference-add/commutative-and-zero-identity
+                :regression-file (regression-path "reference-add-commutative-and-zero-identity"))))
+
+(test support/reference-reduce-sum/ones-array-equals-dimension
+  "全要素が1の配列を、どの axis に沿って総和しても、その axis の次元数に
+等しい（rank 0 の配列には axis が無いので対象外）。"
+  (is (check-it (generator (array-spec :dtypes '(:f32 :f64)))
+                (lambda (spec)
+                  (let ((shape (array-spec-shape spec)))
+                    (or (zerop (length shape))
+                        (let ((ones (make-array shape :element-type (%expected-element-type (array-spec-dtype spec))
+                                                :initial-element (coerce 1 (%expected-element-type (array-spec-dtype spec))))))
+                          (loop for axis below (length shape)
+                                for result = (reference-reduce-sum ones axis)
+                                always (loop for i below (array-total-size result)
+                                             always (= (row-major-aref result i)
+                                                       (coerce (nth axis shape) 'double-float))))))))
+                :regression-id support/reference-reduce-sum/ones-array-equals-dimension
+                :regression-file (regression-path "reference-reduce-sum-ones-array-equals-dimension"))))
+
+(test support/reference-matmul/identity-is-identity
+  "単位行列を掛けても値が変わらない（A @ I = A）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 6) (uniform-integer :lo 1 :hi 6)))
+                (lambda (dims)
+                  (destructuring-bind (m n) dims
+                    (let* ((a (make-random-array (make-array-spec (list m n) :f64)))
+                           (identity (make-array (list n n) :element-type 'double-float :initial-element 0.0d0)))
+                      (dotimes (i n) (setf (aref identity i i) 1.0d0))
+                      (allclose (reference-matmul a identity) a :dtype :f64))))
+                :regression-id support/reference-matmul/identity-is-identity
+                :regression-file (regression-path "reference-matmul-identity-is-identity"))))
 
 (test support/allclose/reflexive
   "allclose は、同じ配列どうしなら常に真になる。"
