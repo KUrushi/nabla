@@ -116,6 +116,37 @@ NaN の伝播は eager 側を直接呼んで確かめる（CL の MAX は NaN �
             (min (coerce (row-major-aref a i) 'double-float)
                  (coerce (row-major-aref b i) 'double-float))))))
 
+;; issue #31 p3
+(defun reference-compare (a b direction)
+  "A DIRECTION B（要素ごとの比較）を BIT の配列で返す。A と B は同じ shape を
+持つこと。DIRECTION は :LT :LE :GT :GE :EQ :NE のいずれか。NaN を含まない
+入力にだけ使う（NaN の扱いは eager 側を直接呼んで確かめる。このファイル
+冒頭の注記どおり参照実装は素朴なままにする）。"
+  (unless (equal (array-dimensions a) (array-dimensions b))
+    (error "reference-compare: 形状が違う: ~A と ~A" (array-dimensions a) (array-dimensions b)))
+  (let ((result (make-array (array-dimensions a) :element-type 'bit))
+        (op (ecase direction
+              (:lt #'<) (:le #'<=) (:gt #'>) (:ge #'>=) (:eq #'=) (:ne #'/=))))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i)
+            (if (funcall op
+                         (coerce (row-major-aref a i) 'double-float)
+                         (coerce (row-major-aref b i) 'double-float))
+                1 0)))))
+
+;; issue #31 p3
+(defun reference-select (pred a b)
+  "PRED（BIT の配列）のビットに応じて A または B の要素をそのまま返す
+（PRED・A・B は同じ shape を持つこと。A・B は DOUBLE-FLOAT の配列）。"
+  (unless (and (equal (array-dimensions pred) (array-dimensions a))
+               (equal (array-dimensions pred) (array-dimensions b)))
+    (error "reference-select: 形状が違う: ~A / ~A / ~A"
+           (array-dimensions pred) (array-dimensions a) (array-dimensions b)))
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i)
+            (if (= 1 (row-major-aref pred i)) (row-major-aref a i) (row-major-aref b i))))))
+
 (defun reference-matmul (a b)
   "A @ B（行列積）を返す。A・B は rank 2 で、A の列数と B の行数が一致すること。"
   (unless (and (= (array-rank a) 2) (= (array-rank b) 2))

@@ -49,6 +49,9 @@
    #:reference-tanh
    #:reference-max
    #:reference-min
+   ;; issue #31 p3
+   #:reference-compare
+   #:reference-select
    #:reference-matmul
    #:reference-reduce-sum
    ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）

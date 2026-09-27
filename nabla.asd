@@ -29,6 +29,8 @@
                (:file "src/primitives/arith")
                ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
                (:file "src/primitives/unary")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "src/primitives/compare")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -71,6 +73,8 @@
                (:file "tests/primitives/arith-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/primitives/unary-test")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "tests/primitives/compare-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -129,4 +133,6 @@
                (:file "tests/iree/primitive-support")
                (:file "tests/iree/arith-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
-               (:file "tests/iree/unary-test")))
+               (:file "tests/iree/unary-test")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "tests/iree/compare-test")))
