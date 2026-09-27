@@ -314,42 +314,48 @@ PRIMITIVE-ERROR になる。"
 
 (test primitives/sub/self-is-zero
   "sub(a, a) はどの要素も0になる（浮動小数点の丸め誤差なしで正確に0）。"
-  (is (check-it (generator (array-spec :dtypes *dtypes*))
-                (lambda (spec)
-                  (let* ((dtype (array-spec-dtype spec))
-                         (a (make-random-array spec))
-                         (in-avals (list (nb:array-aval a dtype) (nb:array-aval a dtype)))
-                         (result (funcall (nb::primitive-eager (nb::find-primitive :sub)) (list a a) in-avals)))
-                    (%array-every #'zerop (%decode-arith-array result dtype))))
+  (is (check-it (generator (tuple (array-spec :dtypes *dtypes*)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (spec seed) args
+                    (let* ((dtype (array-spec-dtype spec))
+                           (a (make-random-array spec :seed seed))
+                           (in-avals (list (nb:array-aval a dtype) (nb:array-aval a dtype)))
+                           (result (funcall (nb::primitive-eager (nb::find-primitive :sub)) (list a a) in-avals)))
+                      (%array-every #'zerop (%decode-arith-array result dtype)))))
                 :regression-id primitives/sub/self-is-zero
                 :regression-file (regression-path "primitives-arith-sub-self-is-zero"))))
 
 (test primitives/mul/by-ones-is-identity
   "mul(a, ones) は a と（許容誤差つきで）一致する。"
-  (is (check-it (generator (array-spec :dtypes *dtypes*))
-                (lambda (spec)
-                  (let* ((dtype (array-spec-dtype spec))
-                         (a (make-random-array spec))
-                         (ones (make-array (array-spec-shape spec)
-                                            :element-type (array-element-type a)
-                                            :initial-element (nabla.tests.support::dtype-value dtype 1.0d0)))
-                         (in-avals (list (nb:array-aval a dtype) (nb:array-aval ones dtype)))
-                         (result (funcall (nb::primitive-eager (nb::find-primitive :mul)) (list a ones) in-avals)))
-                    (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
-                      (allclose (%decode-arith-array result dtype) (%decode-arith-array a dtype) :rtol rtol :atol atol))))
+  (is (check-it (generator (tuple (array-spec :dtypes *dtypes*)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (spec seed) args
+                    (let* ((dtype (array-spec-dtype spec))
+                           (a (make-random-array spec :seed seed))
+                           (ones (make-array (array-spec-shape spec)
+                                              :element-type (array-element-type a)
+                                              :initial-element (nabla.tests.support::dtype-value dtype 1.0d0)))
+                           (in-avals (list (nb:array-aval a dtype) (nb:array-aval ones dtype)))
+                           (result (funcall (nb::primitive-eager (nb::find-primitive :mul)) (list a ones) in-avals)))
+                      (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
+                        (allclose (%decode-arith-array result dtype) (%decode-arith-array a dtype) :rtol rtol :atol atol)))))
                 :regression-id primitives/mul/by-ones-is-identity
                 :regression-file (regression-path "primitives-arith-mul-by-ones"))))
 
 (test primitives/div/self-is-one-for-positive
   "正の a について div(a, a) は1になる（許容誤差つき）。"
-  (is (check-it (generator (array-spec :dtypes *dtypes*))
-                (lambda (spec)
-                  (let* ((dtype (array-spec-dtype spec))
-                         (a (make-random-array spec :domain :positive))
-                         (in-avals (list (nb:array-aval a dtype) (nb:array-aval a dtype)))
-                         (result (funcall (nb::primitive-eager (nb::find-primitive :div)) (list a a) in-avals)))
-                    (%array-every (lambda (x) (approx= x 1.0d0 :dtype dtype))
-                                  (%decode-arith-array result dtype))))
+  (is (check-it (generator (tuple (array-spec :dtypes *dtypes*)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (spec seed) args
+                    (let* ((dtype (array-spec-dtype spec))
+                           (a (make-random-array spec :seed seed :domain :positive))
+                           (in-avals (list (nb:array-aval a dtype) (nb:array-aval a dtype)))
+                           (result (funcall (nb::primitive-eager (nb::find-primitive :div)) (list a a) in-avals)))
+                      (%array-every (lambda (x) (approx= x 1.0d0 :dtype dtype))
+                                    (%decode-arith-array result dtype)))))
                 :regression-id primitives/div/self-is-one-for-positive
                 :regression-file (regression-path "primitives-arith-div-self-is-one"))))
 

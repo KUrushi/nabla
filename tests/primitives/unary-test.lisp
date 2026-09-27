@@ -52,6 +52,10 @@
 ;;; --- スカラー配列と decode（無限大・NaN を正しく扱う） ---
 
 (defun %unary-scalar-array (dtype value)
+  ;; ELEMENT-TYPE-FOR-DTYPE / DTYPE-VALUE は NABLA.TESTS.SUPPORT から
+  ;; export されていない内部関数（tests/primitives/arith-test.lisp の
+  ;; %scalar-array と同じ pitfall）。support 側のリファクタリングで
+  ;; 名前や意味が変わってもここは静かに壊れうる。
   (let ((array (make-array '() :element-type (nabla.tests.support::element-type-for-dtype dtype))))
     (setf (row-major-aref array 0) (nabla.tests.support::dtype-value dtype value))
     array))
@@ -78,11 +82,14 @@ DOUBLE-FLOAT の配列を返す。"
       (return nil))))
 
 (defun %dtype-nan-value (dtype)
-  "DTYPE の格納表現を持つ quiet NaN の値を1つ返す（rank 0 配列に詰める用途）。"
+  "DTYPE の格納表現を持つ quiet NaN の値を1つ返す（rank 0 配列に詰める用途）。
+ビットパターンは NB::%QUIET-NAN（実装の1つの情報源）から取る。テストは
+*値* が何らかの NaN であることだけを使うので、これで実装から独立性を
+失うわけではない。"
   (ecase dtype
-    (:f32 (sb-kernel:make-single-float #x7FC00000))
-    (:f64 (sb-kernel:make-double-float #x7FF80000 0))
-    ((:bf16 :f16) (nb::encode-float16 (sb-kernel:make-single-float #x7FC00000) dtype))))
+    (:f32 (nb::%quiet-nan 'single-float))
+    (:f64 (nb::%quiet-nan 'double-float))
+    ((:bf16 :f16) (nb::encode-float16 (nb::%quiet-nan 'single-float) dtype))))
 
 (defun %unary-nan-array (dtype)
   "DTYPE の格納表現で quiet NaN を1つだけ持つ rank 0 配列を返す。"
@@ -135,7 +142,7 @@ DOUBLE-FLOAT の配列を返す。"
                               (result (funcall (nb::primitive-eager prim) (list a b) in-avals)))
                          (equalp (nb:array-aval result dtype) out-aval))))
                    :regression-id ,test-name
-                   :regression-file (regression-path ,(format nil "primitives-unary-~(~A~)-aval" prim-name)))
+                   :regression-file (regression-path ,(format nil "primitives-minmax-~(~A~)-aval" prim-name)))
          ,(format nil "~A: eager の結果の aval が abstract-eval と一致しなかった" prim-name))))
 
 (def-minmax-aval-matches-abstract-eval-test primitives/max/aval-matches-abstract-eval :max)
@@ -187,7 +194,7 @@ DOUBLE-FLOAT の配列を返す。"
                                      (,reference-fn (%decode-unary-array a dtype) (%decode-unary-array b dtype))
                                      :rtol rtol :atol atol)))))
                    :regression-id ,test-name
-                   :regression-file (regression-path ,(format nil "primitives-unary-~(~A~)-reference" prim-name))))))
+                   :regression-file (regression-path ,(format nil "primitives-minmax-~(~A~)-reference" prim-name))))))
 
 (def-minmax-eager-matches-reference-test primitives/max/eager-matches-reference :max reference-max)
 (def-minmax-eager-matches-reference-test primitives/min/eager-matches-reference :min reference-min)
