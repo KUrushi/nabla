@@ -102,3 +102,54 @@ WITH-IEEE-ARITHMETIC でマスクしているので signal せず、IEEE 754 の
           (declare (ignore in-avals))
           (%div-emit in-names out-name out-aval))
   :eager (lambda (arrays in-avals) (%div-eager arrays in-avals)))
+
+;;; --- max / min（issue #31 p2） ---
+;;;
+;;; add/sub/mul/div と同じ二項算術の形（%BINARY-FLOAT-ABSTRACT-EVAL）を
+;;; 持つが、要素ごとの演算に CL の MAX/MIN ではなく %IEEE-MAX/%IEEE-MIN
+;;; （src/primitives/common.lisp）を使う。CL の MAX/MIN は NaN を伝播しない
+;;; ため（(max nan 1.0) => 1.0 だが (max 1.0 nan) => NaN）、StableHLO の
+;;; stablehlo.maximum / stablehlo.minimum・IREE・jnp.maximum に合わせて
+;;; どちらの引数が NaN でも NaN を返す必要がある。
+
+(defun %max-element (a b)
+  "MAX(A, B)（1要素）。どちらかが NaN なら NaN。"
+  (%ieee-max a b))
+
+(defun %min-element (a b)
+  "MIN(A, B)（1要素）。どちらかが NaN なら NaN。"
+  (%ieee-min a b))
+
+(defun %max-abstract-eval (in-avals)
+  (%binary-float-abstract-eval :max in-avals))
+
+(defun %min-abstract-eval (in-avals)
+  (%binary-float-abstract-eval :min in-avals))
+
+(defun %max-emit (in-names out-name out-aval)
+  (%emit-elementwise "maximum" in-names out-name out-aval))
+
+(defun %min-emit (in-names out-name out-aval)
+  (%emit-elementwise "minimum" in-names out-name out-aval))
+
+(defun %max-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%max-element arrays in-avals (%max-abstract-eval in-avals))))
+
+(defun %min-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%min-element arrays in-avals (%min-abstract-eval in-avals))))
+
+(defprimitive max ()
+  :abstract-eval (lambda (in-avals) (%max-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%max-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%max-eager arrays in-avals)))
+
+(defprimitive min ()
+  :abstract-eval (lambda (in-avals) (%min-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%min-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%min-eager arrays in-avals)))

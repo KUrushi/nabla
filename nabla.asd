@@ -30,6 +30,8 @@
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "src/primitives/shape-common")
                (:file "src/primitives/shape")
+               ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
+               (:file "src/primitives/unary")
                ;; issue #31 p5: dot-general
                (:file "src/primitives/dot")
                ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
@@ -78,6 +80,8 @@
                (:file "tests/primitives/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/primitives/shape-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/primitives/unary-test")
                ;; issue #31 p5: dot-general
                (:file "tests/primitives/dot-test")
                ;; graph の eager 評価（issue #39、e0）
@@ -142,5 +146,7 @@
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/iree/shape-primitive-support")
                (:file "tests/iree/shape-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/iree/unary-test")
                ;; issue #31 p5: dot-general
                (:file "tests/iree/dot-test")))
