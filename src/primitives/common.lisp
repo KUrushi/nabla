@@ -129,7 +129,13 @@ WITH-IEEE-ARITHMETIC に包むこと（ここでは包まない）。"
   "A と B の大きい方を返す。CL の MAX と違い、どちらか一方でも NaN なら
 NaN を返す（StableHLO の stablehlo.maximum / IREE / jnp.maximum に合わせる。
 issue #31 p2 の pitfall: (max nan 1.0) => 1.0 だが (max 1.0 nan) => NaN、と
-CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。"
+CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。
+
+符号付きゼロは NaN でない場合 CL の MAX にそのまま委ねているため、
+(%ieee-max -0.0 0.0) は -0.0 になる（CL の MAX は等しい引数のうち最初の
+方を返す）。IREE の stablehlo.maximum と JAX の jnp.maximum はどちらも
++0.0 を返すので、ここは食い違う。allclose の許容誤差の中では無害な
+違いなので phase 1 では直さない（%IEEE-MIN も同様の食い違いを持つ）。"
   (cond
     ((sb-ext:float-nan-p a) a)
     ((sb-ext:float-nan-p b) b)
@@ -137,7 +143,11 @@ CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。"
 
 (defun %ieee-min (a b)
   "A と B の小さい方を返す。%IEEE-MAX と同じ理由で、どちらか一方でも NaN
-なら NaN を返す。"
+なら NaN を返す。
+
+符号付きゼロも %IEEE-MAX と同じ理由で食い違う: (%ieee-min -0.0 0.0) は
+CL の MIN に委ねているため -0.0 になるが、IREE の stablehlo.minimum は
++0.0 を、JAX の jnp.minimum は -0 を返す。%IEEE-MAX の docstring も参照。"
   (cond
     ((sb-ext:float-nan-p a) a)
     ((sb-ext:float-nan-p b) b)

@@ -99,6 +99,12 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **bf16 / f16**
 : 16 ビットの浮動小数点数。f16（半精度）は仮数部が多く範囲が狭い。bf16（brain float 16）は f32 と同じ指数部を持ち、範囲が広い代わりに精度が低い。GPU での学習を速くするために使う。
 
+**NaN（Not a Number）/ quiet NaN**
+: IEEE 754 で「数として定義できない結果」（`0.0/0.0` や負数の `log` など）を表す特別な浮動小数点値。quiet NaN はそのうち、演算に混ざってもプロセスを落とさず（signal を出さず）そのまま伝播する種類の NaN（対になる signaling NaN は使わない）。nabla では `%quiet-nan`（`src/primitives/common.lisp`）がビットパターンから直接組み立てる。
+
+**NaN propagation（NaN 伝播）**
+: 演算の入力のどれかが NaN なら、出力も必ず NaN になるという規則。StableHLO / IREE / JAX の `max` / `min` はこの規則に従うが、Common Lisp の `max` / `min` は引数の順序によって NaN を落としてしまうことがあるため、nabla は `%ieee-max` / `%ieee-min` で明示的に NaN 伝播を実装している。
+
 ## テスト
 
 **property-based testing（PBT, 性質ベーステスト）**

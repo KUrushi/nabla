@@ -21,8 +21,12 @@
 （issue #31 p2 の pitfall）、負の値は明示的に quiet NaN にする。NaN の
 チェックを先に行う（(< nan 0) はトラップをマスクしていても NIL になり、
 負の値のチェックだけでは NaN を見落としうるため）。X=0 は符号によらず
-負の無限大にする（IEEE 754 の規則どおり。-0.0 も MINUSP では拾えないので
-ZEROP で判定する）。"
+負の無限大にする（IEEE 754 の規則どおり）。ZEROP で判定するのが本質的に
+必要（MINUSP ではなく）: with-ieee-arithmetic の下でも SBCL の
+(log 0.0d0) は real の -infinity を返すが、(log -0.0d0) は
+#C(-infinity, pi) という複素数を返す（負の実軸の分岐切断のため）。
+MINUSP は -0.0 を偽にするので、ZEROP のこの分岐が無いと -0.0 の入力が
+(< x 0) の分岐にも入らずそのまま (log x) に落ち、複素数が漏れてしまう。"
   (let ((double-p (typep x 'double-float)))
     (cond
       ((sb-ext:float-nan-p x) x)
