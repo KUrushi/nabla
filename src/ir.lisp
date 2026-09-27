@@ -92,24 +92,22 @@ VAR を作ることによって構成的に保証される。"
         (constants (graph-constants graph))
         (eqns (graph-eqns graph)))
     (flet ((mark-defined (var)
-             (if (gethash var defined)
-                 (error 'malformed-graph :graph graph
-                        :format-control "var ~S が複数回定義されている" :format-arguments (list var))
-                 (setf (gethash var defined) t)))
+             (when (gethash var defined)
+               (error 'malformed-graph :graph graph
+                      :format-control "var ~S が複数回定義されている" :format-arguments (list var)))
+             (setf (gethash var defined) t))
            (check-defined (var)
-             (if (gethash var defined)
-                 t
-                 (error 'malformed-graph :graph graph
-                        :format-control "var ~S が未定義のまま参照されている" :format-arguments (list var)))))
+             (unless (gethash var defined)
+               (error 'malformed-graph :graph graph
+                      :format-control "var ~S が未定義のまま参照されている" :format-arguments (list var)))))
       (dolist (v invars) (mark-defined v))
       (dolist (entry constants)
         (let ((var (car entry)) (array (cdr entry)))
           (mark-defined var)
-          (if (equalp (array-aval array (aval-dtype (var-aval var))) (var-aval var))
-              t
-              (error 'malformed-graph :graph graph
-                     :format-control "constant ~S の配列の aval が var の aval と一致しない"
-                     :format-arguments (list var)))))
+          (unless (equalp (array-aval array (aval-dtype (var-aval var))) (var-aval var))
+            (error 'malformed-graph :graph graph
+                   :format-control "constant ~S の配列の aval が var の aval と一致しない"
+                   :format-arguments (list var)))))
       (dolist (eqn eqns)
         (dolist (v (eqn-invars eqn)) (check-defined v))
         (dolist (v (eqn-outvars eqn)) (mark-defined v)))

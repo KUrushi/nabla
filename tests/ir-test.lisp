@@ -77,10 +77,14 @@
 
 (test ir/make-eqn-params-are-normalized-to-declared-order
   "eqn-params は宣言順の plist になる。呼び出し順を入れ替えて渡しても
-同じ plist になる。"
+同じ plist になる（%test-two-params は :a :b の宣言順に対して :b を先に
+渡す）。"
   (let* ((v (nb::make-var (nb:make-aval '(6) :f32)))
-         (eqn (nb::make-eqn :%test-reshape (list v) :shape '(2 3))))
-    (is (equal '(:shape (2 3)) (nb:eqn-params eqn)))))
+         (eqn (nb::make-eqn :%test-reshape (list v) :shape '(2 3)))
+         (v2 (nb::make-var (nb:make-aval '(2) :f32)))
+         (eqn2 (nb::make-eqn :%test-two-params (list v2) :b 2 :a 1)))
+    (is (equal '(:shape (2 3)) (nb:eqn-params eqn)))
+    (is (equal '(:a 1 :b 2) (nb:eqn-params eqn2)))))
 
 (test ir/check-graph-detects-use-before-def
   "eqn2 が eqn1 の出力に依存する2eqnのグラフで、eqn の順序を入れ替えて

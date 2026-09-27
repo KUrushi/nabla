@@ -58,9 +58,8 @@ AVAL のリスト（分からなければ NIL）。"))
 
 (defun %check-param-keywords (name param-keywords)
   (dolist (k param-keywords)
-    (if (keywordp k)
-        nil
-        (error "DEFPRIMITIVE ~S: パラメタ ~S はキーワードでなければならない" name k))))
+    (unless (keywordp k)
+      (error "DEFPRIMITIVE ~S: パラメタ ~S はキーワードでなければならない" name k))))
 
 (defmacro defprimitive (name (&rest param-keywords) &key abstract-eval emit eager)
   "NAME（シンボル）を名前に持つプリミティブを宣言し、
