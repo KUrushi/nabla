@@ -127,3 +127,32 @@ reduce-max を IREE local backend で実行した結果は、eager 実装（host
                                                :rtol rtol :atol atol)))))))
                       :regression-id reduce-max/all-axes-iree-matches-eager
                       :regression-file (regression-path "iree-reduce-max-all-axes" :package "NABLA.IREE.TESTS")))))))
+
+(define-iree-test reduce-sum/bf16-f16-axis1024-iree-matches-eager
+    "shape (1024) を1本の軸として潰す reduce-sum を bf16・f16 それぞれで
+IREE local backend で実行した結果は、eager 実装（host、single-float 累積）
+の結果と dtype ごとの許容誤差で一致する（issue #63）。軸長 (4 8) の
+ALL-AXES-IREE-MATCHES-EAGER は通っていても、軸長を 1024 まで大きくすると
+main では IREE（llvm-cpu）が入力 dtype のまま累積するため一部の seed で
+ずれることが分かっている。本体（BODY-LINES）は手書きの文字列ではなく、
+プリミティブの実際の :EMIT 出力をそのまま使う。"
+  (skip-unless-iree :library :both)
+  (dolist (dtype '(:bf16 :f16))
+    (let ((in-aval (nb:make-aval '(1024) dtype))
+          (out-aval (nb:make-aval '() dtype)))
+      (with-shape-one-op-module (backend module) (list in-aval) out-aval
+          (%reduce-body-lines :reduce-sum in-aval out-aval '(0))
+        (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
+                      (lambda (seed)
+                        (let ((a (make-random-array (make-array-spec '(1024) dtype) :seed seed)))
+                          (with-device-arrays ((da (to-device a backend :dtype dtype)))
+                            (with-device-arrays ((result (nabla:backend-invoke backend module "main" da)))
+                              (and (equalp (device-array-aval result) out-aval)
+                                   (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
+                                     (allclose (decode-array (to-host result) dtype)
+                                               (decode-array
+                                                (shape-primitive-eager :reduce-sum (list a) (list (nb:array-aval a dtype)) :axes '(0))
+                                                dtype)
+                                               :rtol rtol :atol atol)))))))
+                      :regression-id reduce-sum/bf16-f16-axis1024-iree-matches-eager
+                      :regression-file (regression-path "iree-reduce-sum-axis1024" :package "NABLA.IREE.TESTS")))))))
