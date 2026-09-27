@@ -41,6 +41,22 @@ in-suite を経由せずに）変わることがあり、周囲の *suite* に�
                         (nabla.iree::iree-home))
            (return-from iree-test)))))
 
+(defun gc-and-run-finalizers ()
+  "(sb-ext:gc :full t) してから (sb-kernel:run-pending-finalizers) する
+（#11）。SBCL 2.2.9 は finalizer を別スレッド（finalizer thread）で
+非同期に実行するため、gc :full t の直後に確認しても、ほとんどの
+finalizer はまだ実行されていない（この環境での計測では約3%）。
+sb-kernel:run-pending-finalizers はキューに溜まった finalizer を
+呼び出しスレッドで同期的に実行するので、これを続けて呼ぶことで
+テストから確実に観測できる。それでも保守的なスタックルート（GC が
+「もしかしたらポインタかもしれない」ビット列をルートとして残すこと）
+のせいで、run-pending-finalizers まで呼んでも少数のオブジェクトが
+実行されずに生き残ることがある（この環境での計測では 10000 個中 1個
+程度、つまり 9999 個は実行された）。finalizer 系のテストは、この
+わずかな残留を許容する形で許容量を設定すること（0 で比較しない）。"
+  (sb-ext:gc :full t)
+  (sb-kernel:run-pending-finalizers))
+
 (defmacro with-device-arrays ((&rest bindings) &body body)
   "BINDINGS の各 (VAR FORM) を、書いた順に評価して VAR に束縛し、BODY を
 評価してから、束縛した順とは逆順に release-device-array する（テスト専用の

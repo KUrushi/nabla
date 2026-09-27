@@ -131,6 +131,15 @@ CFFI の生バインディング自体は性質を書きにくいので mutation
 - 解放済みの `device-array` を `invoke` に渡すと `iree-object-released`（kind `:device-array`）が signal される
 - `invoke` を呼んだ `session` の device とは別の device で作った `device-array` を渡すと、plain `error` が signal される
 
+### finalizer とリーク（`device-array`、issue #11）
+
+`device-array` の生成時に登録した finalizer が buffer view と device を実際に解放していることは、値の一致ではなく IREE の allocator 統計（`device-allocator-statistics`）で確かめる。例ベースのテストになる（このスキルの「CFFI の生バインディングの疎通確認は例ベースでよい」の考え方をそのまま当てはめている）。
+
+- `device-array` を作っては参照を捨てる（明示的に `release-device-array` しない）ループを数万回まわしても、`gc-and-run-finalizers` を挟めば「確保した量 − 解放した量」が数個分（stragglers）を超えて増え続けない。1個あたりのバイト数は、最初に1個だけ作って `device-bytes-allocated` の差分から学ぶ（差分が0なら統計が効いていないということなので SKIP ではなく FAIL にする）
+- N個の `device-array` を明示的に `release-device-array` してから `gc-and-run-finalizers` しても、`device-bytes-allocated` と `device-bytes-freed` の増分が一致する（二重解放していれば統計が過剰にカウントされる、あるいはクラッシュする）
+- 解放済みの `device-array` を `to-host` / `invoke` に渡すと `iree-object-released`（kind `:device-array`）が signal され、`release-device-array` 自体は idempotent
+- `with-device` の中で作った `device-array` の参照を捨て、`with-device` を抜けて device 自身が `release-device` された後で `gc-and-run-finalizers` してもクラッシュしない（`device-array` が生成時に device を retain しているため）
+
 ## 3. 書き方のひな形
 
 以下はひな形で、関数名は実装に合わせて読み替える。
@@ -229,7 +238,8 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |
 | `skip-unless-iree`（`tests/iree/support.lisp`） | IREE の共有ライブラリが無ければテストをスキップし（`NABLA_REQUIRE_IREE=1` なら失敗させる）、あれば何もしない |
 | `stablehlo-fixture`（`tests/iree/support.lisp`） | `tests/fixtures/stablehlo/<名前>.mlir` の内容を文字列で返す |
-| `with-device-arrays`（`tests/iree/support.lisp`） | 複数の `device-array` を束縛して本体を評価し、終わったら逆順に `release-device-array` する（finalizer が無い #11 より前の期間、テストごとのリークを防ぐ） |
+| `with-device-arrays`（`tests/iree/support.lisp`） | 複数の `device-array` を束縛して本体を評価し、終わったら逆順に `release-device-array` する。finalizer（#11）はあるが非同期なので、テストの中で確実にすぐ解放したいときはこちらを使う |
+| `gc-and-run-finalizers`（`tests/iree/support.lisp`） | `(sb-ext:gc :full t)` の後に `(sb-kernel:run-pending-finalizers)` を呼ぶ（#11）。SBCL は finalizer を別スレッドで非同期に実行するので、GC だけでは確認できない。finalizer 系のテストは必ずこれを使う |
 | `reference-add` / `reference-matmul` / `reference-reduce-sum`（`tests/support/reference.lisp`） | 素朴なループで計算する参照実装。DOUBLE-FLOAT で計算し `(simple-array double-float shape)` を返す。`nabla/iree` の `invoke` の期待値として使う |
 
 部品を追加・変更したら、この表も直す。

@@ -53,7 +53,7 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 : libffi は C の関数呼び出しを実行時に組み立てるライブラリで、構造体を値で渡したり値で返したりする関数（`iree_allocator_t` や `iree_string_view_t` など）を、素の CFFI では扱えない場合に使う。cffi-libffi はこれを CFFI から使うための拡張で、`nabla/iree` のランタイムバインディングが依存する（ビルドには apt の `libffi-dev` が要る）。
 
 **finalizer**
-: オブジェクトが GC（ガベージコレクタ）に回収されるときに呼ばれる関数。nabla では GPU 上のメモリを解放するのに使う。finalizer の中で対象オブジェクト自身を参照すると、参照が残るので永遠に回収されなくなる。
+: オブジェクトが GC（ガベージコレクタ）に回収されるときに呼ばれる関数。nabla では GPU 上のメモリを解放するのに使う（`device-array`、`trivial-garbage:finalize` で登録）。finalizer の中で対象オブジェクト自身を参照すると、参照が残るので永遠に回収されなくなる。SBCL は finalizer を別スレッド（finalizer thread）で非同期に実行するため、`(sb-ext:gc :full t)` の直後に確認しても、ほとんどの finalizer はまだ実行されていない。テストでは `(sb-kernel:run-pending-finalizers)` を続けて呼び、保留中の finalizer を同期的に実行させて確認する（`tests/iree/support.lisp` の `gc-and-run-finalizers`）。保守的なスタックルートのせいで、full GC を1回しても少数のオブジェクトが生き残ることがあるので、リークを確かめるテストは0ではなく少量の残留を許容する。
 
 **コードウォーク（code walk）/ コードウォーカ**
 : Lisp のコード（リスト）を先頭から順にたどり、特定の形式を別の形式に書き換える処理。nabla では `with-tracing` の中の `if` や `loop` を、トレースできる `cond` / `scan` に書き換えるのに使う。事前に `macroexpand-all` でマクロをすべて展開してからたどる。

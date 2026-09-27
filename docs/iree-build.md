@@ -446,3 +446,22 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
   落ちたり未定義動作になったりせず、`iree_runtime_call_invoke` が
   `IREE_STATUS_INVALID_ARGUMENT` の `iree_status_t` を返す
   （`nabla.iree:iree-status-error` の `code` が `:invalid-argument` になる）
+- **allocator の統計**（issue #11）: このビルドは `IREE_STATISTICS_ENABLE` が
+  既定の1のまま（`scripts/build-iree.sh` はこれを切り替えない）なので、
+  `iree_hal_allocator_query_statistics` は `local-task` で常に有効で、
+  `device_bytes_allocated` / `device_bytes_freed` が実測値どおりに動く
+  （2x3 の bf16 buffer view 1個で12バイトぶん増減することを確認済み）。
+  `nabla.iree:device-allocator-statistics` から読める
+- **finalizer と full GC の相性**（issue #11）: この環境では、`with-device` /
+  `with-session` を数百回作っては壊す既存のテスト（`RUNTIME/MAKE-DEVICE`
+  など）や `compile-stablehlo` の呼び出しが積み重なった後に
+  `(sb-ext:gc :full t)` を呼ぶと、SBCL が
+  `garbage_collect: no SP known for thread` という fatal error で
+  プロセスごと落ちることがある（確率的で、毎回起きるわけではない）。
+  これは `nabla.iree` の finalizer 機構そのもののバグではなく（
+  `tests/iree/finalizer-test.lisp` を単独で実行すれば毎回問題なく通る）、
+  SBCL のスレッド管理と、IREE のコンパイラ・`local-task` ランタイムが
+  それぞれ独自に作る OS スレッドとの間の、既知の相性問題だと考えられる
+  （PR 本文にも詳しく書いた）。`nabla.asd` では `finalizer-test` を
+  device/session を大量に作るテストより前に置くことで発生頻度を下げている
+  が、根本的な解消ではない
