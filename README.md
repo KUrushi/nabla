@@ -8,7 +8,9 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 
 フェーズ0（IREE 疎通）は完了した。ただし GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は GPU の無い環境のため未測定で、issue は open のままにしてある。詳しい知見は [docs/phase0-report.md](docs/phase0-report.md) にまとめてある。
 
-現在はフェーズ1（トレースと jit。親 issue #35）に着手している。
+フェーズ1（トレースと jit。親 issue #35）も完了した。得た知見は [docs/phase1-report.md](docs/phase1-report.md) にまとめてある。
+
+現在はフェーズ2（grad。逆伝播）に着手している。
 
 ロードマップ（計画タブより）:
 
@@ -198,7 +200,7 @@ tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
-docs/                glossary.md, iree-build.md, phase0-report.md
+docs/                glossary.md, iree-build.md, phase0-report.md, phase1-report.md
 examples/            add.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
