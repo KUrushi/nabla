@@ -49,6 +49,32 @@ initial-contents に渡せる入れ子リストを作る（reference-* のテス
                 :regression-id support/array-spec/respects-dtypes-argument
                 :regression-file (regression-path "array-spec-respects-dtypes"))))
 
+(test support/primitive-graph-recipe/generated-recipe-builds-valid-graph
+  "PRIMITIVE-GRAPH-RECIPE が生成するどのレシピも BUILD-PRIMITIVE-GRAPH →
+NB::CHECK-GRAPH を通る（issue #33 のリグレッション: :DOT ステップが rhs の
+定数 var を BUILD-PRIMITIVE-GRAPH の VARS に積んでいたせいで、以降の
+ステップの IDX が VARS 上で1つずれ、無関係な shape の var を参照する
+壊れた graph を作っていた。stablehlo/loc-count-and-order-match-eqn-count が
+その壊れたレシピを踏んで PRIMITIVE-ERROR を報告していた）。"
+  (is (check-it (generator (primitive-graph-recipe :max-ops 4))
+                (lambda (recipe)
+                  (and (nb::check-graph (build-primitive-graph recipe)) t))
+                :regression-id support/primitive-graph-recipe/generated-recipe-builds-valid-graph
+                :regression-file (regression-path "primitive-graph-recipe-generated-recipe-builds-valid-graph"))))
+
+(test support/primitive-graph-recipe/shrink-candidate-builds-valid-graph
+  "PRIMITIVE-GRAPH-RECIPE の SHRINK メソッドが返す候補も、生成直後のレシピと
+同じく BUILD-PRIMITIVE-GRAPH → NB::CHECK-GRAPH を通る。現状の SHRINK は
+恒等写像（レシピを縮小しない設計、primitive-recipes.lisp 冒頭のコメント
+参照）だが、将来 SHRINK を実装したときにも壊れた候補を返さないことを
+ここで確かめる。SHRINK-TEST に常に NIL を返す述語を渡し、check-it% と
+同じ経路（\"失敗\"扱い）で縮小を強制的に走らせる。"
+  (dotimes (i 30)
+    (let ((gen (generator (primitive-graph-recipe :max-ops 4))))
+      (generate gen)
+      (let ((shrunk (shrink gen (lambda (recipe) (declare (ignore recipe)) nil))))
+        (is (nb::check-graph (build-primitive-graph shrunk)))))))
+
 (test support/array-spec/respects-larger-than-ten-max-rank-and-max-dim
   "array-spec の生成器は :max-rank / :max-dim に check-it::*size*
 （既定10）より大きい値を渡しても、実際にその範囲まで rank や次元が届く。

@@ -196,13 +196,16 @@ with itself」と同じ考え方）。"
           (:reduce (destructuring-bind (prim idx axis) (rest step)
                      (push-result (nb::make-eqn prim (list (aref vars idx)) :axes (list axis)))))
           (:dot (destructuring-bind (idx seed n) (rest step)
+                  ;; RHS-VAR は %GENERATE-PRIMITIVE-RECIPE の AVALS には現れない
+                  ;; （AVALS が増えるのは dot の出力1個分だけ）ので、VARS にも
+                  ;; 積まない。積むと後続ステップの IDX が VARS 上で1つずれ、
+                  ;; 無関係な var を参照してしまう（issue #33 のリグレッション）。
                   (let* ((lhs-var (aref vars idx))
                          (lhs-aval (nb:var-aval lhs-var))
                          (dtype (nb:aval-dtype lhs-aval))
                          (k (second (nb:aval-shape lhs-aval)))
                          (rhs-array (make-random-array (make-array-spec (list k n) dtype) :seed seed))
                          (rhs-var (nb::make-var (nb:array-aval rhs-array dtype))))
-                    (vector-push-extend rhs-var vars)
                     (push (cons rhs-var rhs-array) constants)
                     (push-result (nb::make-eqn :dot-general (list lhs-var rhs-var)
                                                 :lhs-contracting '(1) :rhs-contracting '(0)
