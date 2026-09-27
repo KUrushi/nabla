@@ -22,6 +22,24 @@
            :format-control "入力の個数が違う: ~S 個渡されたが ~S 個必要"
            :format-arguments (list (length in-avals) n))))
 
+(defun %shape-check-shape-param (name in-avals param-name shape)
+  "SHAPE が非負整数のリストでなければ PRIMITIVE-ERROR を signal する
+（トレーサから渡された任意の Lisp オブジェクトが、この後の LENGTH /
+REDUCE / NTH に生の型エラーとして流れ込むのを防ぐ。契約 §0）。"
+  (unless (and (listp shape) (every (lambda (d) (typep d '(integer 0))) shape))
+    (error 'primitive-error :name name :in-avals in-avals
+           :format-control "~S は非負整数のリストでなければならない: ~S"
+           :format-arguments (list param-name shape))))
+
+(defun %shape-check-integer-list-param (name in-avals param-name value)
+  "VALUE が整数のリストでなければ PRIMITIVE-ERROR を signal する
+（DIMS / PERM のように、後段で SORT や NTH の添字として使う値の型を
+ここで確定させておく。契約 §0）。"
+  (unless (and (listp value) (every #'integerp value))
+    (error 'primitive-error :name name :in-avals in-avals
+           :format-control "~S は整数のリストでなければならない: ~S"
+           :format-arguments (list param-name value))))
+
 (defun %shape-strides (shape)
   "SHAPE（非負整数のリスト）に対応する row-major のストライドのリストを
 返す（末尾の次元のストライドが1）。"

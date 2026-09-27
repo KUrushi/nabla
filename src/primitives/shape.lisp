@@ -18,10 +18,7 @@
   :abstract-eval
   (lambda (in-avals &key shape)
     (%shape-check-arity :reshape in-avals 1)
-    (unless (and (listp shape) (every (lambda (d) (typep d '(integer 0))) shape))
-      (error 'primitive-error :name :reshape :in-avals in-avals
-             :format-control "shape は非負整数のリストでなければならない: ~S"
-             :format-arguments (list shape)))
+    (%shape-check-shape-param :reshape in-avals :shape shape)
     (let* ((in (first in-avals))
            (out-size (reduce #'* shape :initial-value 1)))
       (unless (= (aval-size in) out-size)
@@ -45,6 +42,8 @@
   :abstract-eval
   (lambda (in-avals &key shape dims)
     (%shape-check-arity :broadcast-in-dim in-avals 1)
+    (%shape-check-shape-param :broadcast-in-dim in-avals :shape shape)
+    (%shape-check-integer-list-param :broadcast-in-dim in-avals :dims dims)
     (let* ((in (first in-avals))
            (in-shape (aval-shape in))
            (out-rank (length shape)))
@@ -97,6 +96,7 @@
   :abstract-eval
   (lambda (in-avals &key perm)
     (%shape-check-arity :transpose in-avals 1)
+    (%shape-check-integer-list-param :transpose in-avals :perm perm)
     (let* ((in (first in-avals))
            (in-shape (aval-shape in))
            (rank (length in-shape)))

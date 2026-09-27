@@ -51,22 +51,30 @@ generator と同じく再現性・regression の記録の対象になる（SHRIN
     (coerce v 'list)))
 
 (defun %distinct-dims (rank &key (max 8))
-  "1..MAX から相異なる RANK 個の次元を選ぶ。mutation testing で
-index 計算（stride の +/* の入れ替えなど）の変異を殺すには、次元が
-すべて異なっていないと同じ結果になってしまうケースが多い（契約 §4 の
-mutation の項）。"
-  (subseq (%shuffled (loop for d from 1 to max collect d)) 0 rank))
+  "0..MAX から相異なる RANK 個の次元を選ぶ（0 を含むので size 0 の次元も
+出る）。mutation testing で index 計算（stride の +/* の入れ替えなど）の
+変異を殺すには、次元がすべて異なっていないと同じ結果になってしまう
+ケースが多い（契約 §4 の mutation の項）。"
+  (subseq (%shuffled (loop for d from 0 to max collect d)) 0 rank))
 
-(defun %random-factors (&key (max-count 4) (max-factor 4))
-  (loop repeat (random (1+ max-count)) collect (1+ (random max-factor))))
+(defun %random-factors (&key (max-count 4) (max-factor 4) (zero-probability 6))
+  "正整数の因数のリストを返す。ZERO-PROBABILITY 分の1の確率で、要素の
+どれかを0にする。0 が %SCATTER-INTO-SHAPE でどれかのバケツに入ると、
+そのバケツの積は以後も0のままになる（0に何を掛けても0）ので、
+in-shape・out-shape が同じ FACTORS を共有していれば、一方に0の次元が
+入ればもう一方にも0の次元が入り、要素数（積）はどちらも0で揃う。"
+  (loop repeat (random (1+ max-count))
+        collect (if (zerop (random zero-probability)) 0 (1+ (random max-factor)))))
 
 (defun %scatter-into-shape (factors rank)
-  "FACTORS（正整数のリスト）をランダムに RANK 個のバケツに配り、各バケツの
-積を shape の各次元にする。RANK が0のときは FACTORS が空（積1）のときだけ
-'() を返し、そうでなければ NIL（呼び出し側で作り直す）を返す。"
+  "FACTORS（非負整数のリスト）をランダムに RANK 個のバケツ（初期値1）に
+配り、各バケツの積を shape の各次元にする。RANK が0のときは FACTORS が
+空（積1）のときだけ '() を返し、そうでなければ :RETRY を返す（rank 0 の
+shape は要素数が常に1なので、0を含む・複数要素の FACTORS とは両立しない。
+呼び出し側で作り直す）。"
   (cond
     ((and (zerop rank) (null factors)) '())
-    ((zerop rank) nil)
+    ((zerop rank) :retry)
     (t (let ((buckets (make-array rank :initial-element 1)))
          (dolist (f factors)
            (let ((idx (random rank)))
@@ -75,12 +83,15 @@ mutation の項）。"
 
 (defun %random-reshape-case ()
   "同じ要素数を持つ (in-shape out-shape) を返す。rank 0〜4、size 0 の次元も
-出ることがある（FACTORS が空なら常に size 1 で、rank 0 の組も出る）。"
+出ることがある（FACTORS が空なら常に size 1 で、rank 0 の組も出る。
+FACTORS に0が含まれれば size 0 の次元も出る）。IN-SHAPE・OUT-SHAPE の
+どちらかが :RETRY（rank 0 なのに FACTORS が空でない）になった組だけを
+作り直す。'() は正当な rank 0 の結果なので、NIL とは区別する。"
   (loop
     (let* ((factors (%random-factors))
            (in-shape (%scatter-into-shape factors (random 5)))
            (out-shape (%scatter-into-shape factors (random 5))))
-      (when (and in-shape out-shape)
+      (unless (or (eq in-shape :retry) (eq out-shape :retry))
         (return (list in-shape out-shape))))))
 
 (defun %random-transpose-case ()
@@ -225,12 +236,14 @@ EQUALP で一致する（往復）。"
     (is (= (aref scalar) (aref result 0 0)))))
 
 (test shape/reshape/invalid-shape-signals-primitive-error
-  "要素数が1つ違う shape、非リストの shape、負の次元を含む shape は
-PRIMITIVE-ERROR になる。"
+  "要素数が1つ違う shape、非リストの shape、負の次元を含む shape、
+非整数の次元を含む shape は、生の Lisp エラー（TYPE-ERROR など）ではなく
+PRIMITIVE-ERROR になる（契約 §0）。"
   (let ((in-aval (nb:make-aval '(2 3) :f32)))
     (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(3 3)))
     (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape 6))
-    (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(2 -3)))))
+    (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(2 -3)))
+    (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(2 3.0)))))
 
 (test shape/reshape/wrong-arity-signals-primitive-error
   "入力が0個・2個の reshape は PRIMITIVE-ERROR になる。"
@@ -319,12 +332,24 @@ broadcast は、全要素がスカラー値になる。"
 
 (test shape/broadcast-in-dim/invalid-dims-signal-primitive-error
   "dims が出力の rank と同じ（境界外）、-1（境界外）、重複、operand の次元が
-1でも一致でもない、のいずれも PRIMITIVE-ERROR になる。"
+1でも一致でもない、非リスト、非整数を含むリスト、のいずれも
+PRIMITIVE-ERROR になる（非リスト・非整数の場合は契約 §0: SORT や NTH に
+生の Lisp エラーとして流れ込ませない）。"
   (let ((in-aval (nb:make-aval '(3 3) :f32)))
     (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(0 2)))
     (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(0 -1)))
     (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(0 0)))
-    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list (nb:make-aval '(4) :f32)) :shape '(3) :dims '(0)))))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list (nb:make-aval '(4) :f32)) :shape '(3) :dims '(0)))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims 5))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(a b)))))
+
+(test shape/broadcast-in-dim/invalid-shape-signals-primitive-error
+  "非リストの shape、非整数を含む shape、負の次元を含む shape は
+PRIMITIVE-ERROR になる（契約 §0）。"
+  (let ((in-aval (nb:make-aval '(3) :f32)))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape 6 :dims '(0 1)))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3.0) :dims '(0 1)))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 -3) :dims '(0 1)))))
 
 (test shape/broadcast-in-dim/wrong-dims-length-signals-primitive-error
   "dims の長さが operand の rank と違えば PRIMITIVE-ERROR になる。"
@@ -418,12 +443,16 @@ reference-transpose の期待値と dtype ごとの許容誤差で一致する�
     (is (equalp scalar result))))
 
 (test shape/transpose/invalid-perm-signals-primitive-error
-  "重複を含む perm（'(0 0)）、rank と長さの合わない perm（rank 2 に '(0 2)）
-は PRIMITIVE-ERROR になる。"
+  "重複を含む perm（'(0 0)）、rank と長さの合わない perm（rank 2 に '(0 2)）、
+非リストの perm、非整数を含む perm は、いずれも生の Lisp エラー
+（TYPE-ERROR や SORT からのエラー）ではなく PRIMITIVE-ERROR になる
+（契約 §0）。"
   (let ((in-aval (nb:make-aval '(2 2) :f32)))
     (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm '(0 0)))
     (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm '(0 2)))
-    (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm '(0)))))
+    (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm '(0)))
+    (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm 3))
+    (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm '(a b)))))
 
 (test shape/transpose/emit-matches-fixture
   "transpose の :emit（f32・bf16）は、SSA 名を正規化した後 transpose.mlir /
