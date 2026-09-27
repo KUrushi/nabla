@@ -60,6 +60,8 @@
    #:reference-transpose
    ;; issue #31 p5: dot-general
    #:reference-dot-general
+   ;; issue #31 p6: reduce-sum / reduce-max
+   #:reference-reduce-max
    ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）
    #:fake-backend
    #:fake-backend-compile-count

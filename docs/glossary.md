@@ -16,6 +16,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **contracting dims / batch dims（縮約次元・バッチ次元）**
 : StableHLO の `dot_general`（nabla の `dot-general` プリミティブ）が、どの次元をどう扱うかを指定する2種類の次元。contracting dims（縮約次元）は、行列積の「掛けて足し込む」次元（`lhs-contracting` / `rhs-contracting`）で、両側のサイズが一致していなければならない。batch dims（バッチ次元）は、縮約せず両オペランドに共通して残る次元（`lhs-batch` / `rhs-batch`）で、その次元ごとに独立した縮約を行う（バッチ行列積）。どちらにも属さない次元は自由次元（free dims）と呼び、出力にはバッチ次元・lhs の自由次元・rhs の自由次元の順で並ぶ。
 
+**reduction / 初期値（init value）**
+: 配列のいくつかの次元を、要素同士を1つずつ組み合わせる二項演算（総和・最大値など）で潰して次元を減らすこと。StableHLO の `stablehlo.reduce`（nabla の `reduce-sum` / `reduce-max` プリミティブ）は、潰す次元ごとに空でないスライスを1つの値にまとめる。init value（初期値）は、その組み合わせを始める前に置いておく値で、演算の単位元（総和なら 0、最大値なら -∞）を使う。潰す次元のサイズが0（スライスが空）のときは、この初期値がそのまま出力になる。
+
 **形状推論（abstract-eval）**
 : 入力の `aval`（形状と dtype）とパラメタから、実際の数値を計算せずに出力の `aval` を決めること。プリミティブごとに `defprimitive` の `:abstract-eval` として書く。トレース中は実データが無いので、この計算だけで IR の各 `var` の形状・dtype を決められる。
 

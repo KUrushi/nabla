@@ -40,6 +40,8 @@
                ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
                ;; この行より前に足す）
                (:file "src/eval")
+               ;; issue #31 p6: reduce-sum / reduce-max
+               (:file "src/primitives/reduce")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -90,6 +92,9 @@
                (:file "tests/primitives/dot-test")
                ;; graph の eager 評価（issue #39、e0）
                (:file "tests/eval-test")
+               ;; issue #31 p6: reduce-sum / reduce-max
+               (:file "tests/primitives/reduce-test")
+               (:file "tests/primitives/registry-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -155,4 +160,6 @@
                ;; compare / select / convert（issue #31 p3）
                (:file "tests/iree/compare-test")
                ;; issue #31 p5: dot-general
-               (:file "tests/iree/dot-test")))
+               (:file "tests/iree/dot-test")
+               ;; issue #31 p6: reduce-sum / reduce-max
+               (:file "tests/iree/reduce-test")))

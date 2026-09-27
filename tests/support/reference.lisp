@@ -159,19 +159,48 @@ issue #31 p5 以降は REFERENCE-DOT-GENERAL の薄いラッパー（contracting
            (second (array-dimensions a)) (first (array-dimensions b))))
   (reference-dot-general a b '(1) '(0) '() '()))
 
-(defun reference-reduce-sum (a axis)
-  "A の dimension AXIS に沿った総和を返す（結果の rank は A の rank - 1）。"
-  (let* ((shape (array-dimensions a))
+(defun reference-reduce-sum (a axes)
+  "A の AXES に沿った総和を返す。AXES は整数1つでも、整数のリストでもよい
+（後方互換: 既存の呼び出し元は整数1つを渡す。issue #31 p6 で拡張）。"
+  (let* ((axes (if (listp axes) axes (list axes)))
+         (shape (array-dimensions a))
          (rank (length shape)))
-    (unless (< -1 axis rank)
-      (error "reference-reduce-sum: axis ~A が rank ~A の範囲外" axis rank))
-    (let* ((out-shape (append (subseq shape 0 axis) (subseq shape (1+ axis))))
+    (dolist (axis axes)
+      (unless (< -1 axis rank)
+        (error "reference-reduce-sum: axis ~A が rank ~A の範囲外" axis rank)))
+    (let* ((out-shape (loop for d in shape for i from 0 unless (member i axes) collect d))
            (result (make-array out-shape :element-type 'double-float :initial-element 0.0d0)))
       (dotimes (i (array-total-size a) result)
         (let* ((in-index (%row-major-index->subscripts i shape))
-               (out-index (append (subseq in-index 0 axis) (subseq in-index (1+ axis)))))
+               (out-index (loop for s in in-index for d from 0 unless (member d axes) collect s)))
           (incf (apply #'aref result out-index)
                 (coerce (row-major-aref a i) 'double-float)))))))
+
+;;; issue #31 p6: reduce-max の参照実装。
+
+(defun reference-reduce-max (a axes)
+  "A の AXES（整数1つ、または整数のリスト）に沿った最大値を返す。NaN が
+含まれるスライスの出力要素は NaN になる（reduce-max の :EAGER と同じ
+意味論のオラクル）。"
+  (let* ((axes (if (listp axes) axes (list axes)))
+         (shape (array-dimensions a))
+         (rank (length shape)))
+    (dolist (axis axes)
+      (unless (< -1 axis rank)
+        (error "reference-reduce-max: axis ~A が rank ~A の範囲外" axis rank)))
+    (let* ((out-shape (loop for d in shape for i from 0 unless (member i axes) collect d))
+           (result (make-array out-shape :element-type 'double-float
+                                :initial-element sb-ext:double-float-negative-infinity)))
+      (dotimes (i (array-total-size a) result)
+        (let* ((in-index (%row-major-index->subscripts i shape))
+               (out-index (loop for s in in-index for d from 0 unless (member d axes) collect s))
+               (v (coerce (row-major-aref a i) 'double-float))
+               (cur (apply #'aref result out-index)))
+          (setf (apply #'aref result out-index)
+                (cond
+                  ((sb-ext:float-nan-p cur) cur)
+                  ((sb-ext:float-nan-p v) v)
+                  (t (max cur v)))))))))
 
 (defun %row-major-index->subscripts (row-major-index shape)
   "SHAPE を持つ配列の ROW-MAJOR-INDEX を、各次元ごとの添字のリストにする

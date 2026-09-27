@@ -1,0 +1,4 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME
+                 REDUCE-MAX/RESULT-IS-AN-ELEMENT-OF-SLICE-AND-IS-AT-LEAST-EVERY-SLICE-ELEMENT
+                 :DATUM "((3 0) (0 1))" :TIMESTAMP 3999478054)
