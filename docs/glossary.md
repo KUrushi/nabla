@@ -37,6 +37,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **HAL（Hardware Abstraction Layer）**
 : IREE の中で、CPU や各種 GPU の違いを隠す層。「HAL ドライバ」を切り替えることで実行するデバイスを選ぶ。
 
+**device-array**
+: IREE デバイス上の buffer view を包む、JAX の `jax.Array` に相当するクラス（`nabla.iree:device-array`）。実データ（buffer view の foreign pointer）と `aval`（形状と dtype）、そのデバイスへの参照を持つ。生成時に自分のデバイス（`iree_hal_device_t`）を retain するので、呼び出し側がデバイス自身を解放した後でも、生きている device-array から値を読み出せる。
+
 **PJRT**
 : XLA（JAX の標準の実行系）を外部から呼ぶための C API。nabla では IREE の次の候補として、`backend` プロトコルの裏に置く。
 

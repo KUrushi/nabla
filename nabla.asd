@@ -14,7 +14,9 @@
   :author "KUrushi"
   :license "MIT"
   :depends-on ()
-  :components ((:file "src/package"))
+  :components ((:file "src/package")
+               (:file "src/dtype")
+               (:file "src/aval"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
 
 (defsystem "nabla/test-support"
@@ -35,6 +37,8 @@
   :depends-on ("nabla" "nabla/test-support")
   :components ((:file "tests/package")
                (:file "tests/support-test")
+               (:file "tests/dtype-test")
+               (:file "tests/aval-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -52,7 +56,8 @@
                (:file "src/iree/compiler")
                (:file "src/iree/runtime-ffi")
                (:file "src/iree/status")
-               (:file "src/iree/runtime")))
+               (:file "src/iree/runtime")
+               (:file "src/iree/device-array")))
 
 ;; nabla/iree/tests は nabla/tests から独立したシステム（システム構成は
 ;; 契約 §2 のとおり）。そのため (asdf:test-system "nabla") はこのシステムを
@@ -65,4 +70,5 @@
                (:file "tests/iree/support")
                (:file "tests/iree/compiler-test")
                (:file "tests/iree/runtime-test")
-               (:file "tests/iree/runtime-cuda-test")))
+               (:file "tests/iree/runtime-cuda-test")
+               (:file "tests/iree/device-array-test")))

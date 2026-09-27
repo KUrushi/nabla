@@ -56,11 +56,11 @@ LIBRARY は :compiler または :runtime、HOME は探索に使った NABLA_IREE
              (iree-object-released-context condition)
              (iree-object-released-kind condition))))
   (:documentation
-   "release-device / release-session で解放済みのオブジェクトを、それを
-必要とするラッパー関数に渡したときに signal する。KIND は :device または
-:session、CONTEXT は呼び出した nabla.iree 側の関数の名前（文字列）。C 側に
-解放済みポインタを渡すとメモリ不正アクセスになるため、渡す前にここで
-検出する。"))
+   "release-device / release-session / release-device-array で解放済みの
+オブジェクトを、それを必要とするラッパー関数に渡したときに signal する。
+KIND は :device / :session / :device-array、CONTEXT は呼び出した
+nabla.iree 側の関数の名前（文字列）。C 側に解放済みポインタを渡すと
+メモリ不正アクセスになるため、渡す前にここで検出する。"))
 
 (define-condition iree-status-error (iree-error)
   ((code :initarg :code :reader iree-status-error-code)

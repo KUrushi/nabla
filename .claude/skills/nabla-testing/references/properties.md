@@ -112,6 +112,16 @@ CFFI の生バインディング自体は性質を書きにくいので mutation
 - `session-append-module`（インメモリ）と `session-append-module-from-file`（`iree-compile` の CLI が書いたファイル）は同じ vmfb を同じように呼び出せる（2つの経路の交差確認）
 - `buffer-view-allocate-copy` で作った入力から `call-invoke` した結果を `buffer-view-read-into` で読み戻すと、期待する数値に一致する（許容誤差つき、`allclose :dtype :f32`）。要素型は `buffer-view-element-type` で手計算した `IREE_HAL_ELEMENT_TYPE_*` の定数どおりに decode される
 
+### device-array（`nabla/iree`）
+
+`to-device` / `to-host` は CFFI の生バインディングではなく nabla.iree の公開 API なので、他の対象と同じく値まで確かめる性質を書く（mutation testing の対象外は生バインディングと FFI オーケストレーションだけ）。
+
+- `to-device` してから `to-host` すると、f32 / bf16 のどの形状（rank 0〜4）でも元の値が変わらない（`allclose`、bf16 はビット列そのものが `equalp` で一致する）
+- `to-device` した `device-array` の `device-array-aval` は `array-aval` と `equalp` で一致し、`to-host` した結果の `array-dimensions` は元の shape と一致する
+- `(unsigned-byte 16)` の配列を `:dtype` なしで `to-device` に渡すと `nabla:dtype-mismatch` が signal される。displaced な配列を渡すと `type-error` が signal される
+- `release-device-array` は idempotent。解放後の `device-array` を `to-host` に渡すと `iree-object-released`（kind `:device-array`）が signal される
+- `device-array` は生成時に自分のデバイスを retain しているので、`release-device` で device オブジェクト自身を解放した後でも、生きている `device-array` の `to-host` は正しい値を返し、`release-device-array` もクラッシュしない
+
 ## 3. 書き方のひな形
 
 以下はひな形で、関数名は実装に合わせて読み替える。
@@ -210,6 +220,7 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |
 | `skip-unless-iree`（`tests/iree/support.lisp`） | IREE の共有ライブラリが無ければテストをスキップし（`NABLA_REQUIRE_IREE=1` なら失敗させる）、あれば何もしない |
 | `stablehlo-fixture`（`tests/iree/support.lisp`） | `tests/fixtures/stablehlo/<名前>.mlir` の内容を文字列で返す |
+| `with-device-arrays`（`tests/iree/support.lisp`） | 複数の `device-array` を束縛して本体を評価し、終わったら逆順に `release-device-array` する（finalizer が無い #11 より前の期間、テストごとのリークを防ぐ） |
 
 部品を追加・変更したら、この表も直す。
 

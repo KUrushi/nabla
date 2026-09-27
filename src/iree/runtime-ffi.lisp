@@ -131,6 +131,13 @@
 (cffi:defcfun ("iree_hal_device_release" %hal-device-release) :void
   (device :pointer))
 
+;; iree_hal_device_retain（hal/device.h:375）。device-array が生成時に device を
+;; retain するために使う（#7 の設計。iree_hal_buffer_heap_t が allocator の
+;; 統計ブロックへの生ポインタを持ち、その allocator は device が所有するため、
+;; device-array が生きている間は device を生かしておく必要がある）。
+(cffi:defcfun ("iree_hal_device_retain" %hal-device-retain) :void
+  (device :pointer))
+
 (cffi:defcfun ("iree_hal_device_allocator" %hal-device-allocator) :pointer
   (device :pointer))
 
