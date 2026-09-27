@@ -5,7 +5,7 @@ nabla のライブラリ本体は Python / JAX に依存しない（CLAUDE.md）
 フィクスチャを作るときにだけ使う開発用スクリプト。生成した mlp.lisp を
 コミットし、venv 自体はコミットしない。
 
-nabla 側の定義（examples/jit.lisp / tests/iree/jit-test.lisp の %mlp）:
+nabla 側の定義（tests/iree/jit-test.lisp の %JIT-TEST-MLP）:
 
     h      = tanh(dot(x, w1) + broadcast(b1))          shape (B H)
     logits = dot(h, w2) + broadcast(b2)                shape (B C)
@@ -15,10 +15,10 @@ nabla 側の定義（examples/jit.lisp / tests/iree/jit-test.lisp の %mlp）:
 bf16 は nabla が実際に emit する数値と合わせるため、dot は
 preferred_element_type=float32 で計算してから bfloat16 に丸め（#54/#59）、
 reduce-sum は float32 に上げてから丸める（#64）。それ以外の要素ごとの演算
-（+、tanh、reduce-max）は bf16 のまま行う（IREE が要素ごとの演算を融合して
-1回だけ丸めるのに対し、この JAX 側は演算ごとに丸めるので、テスト側の
-許容誤差を rtol × (1 + eqn数) に緩めて吸収する。tests/iree/jit-test.lisp
-参照）。
+（+、tanh、reduce-max）は bf16 のまま行う。この JAX 側の出力と IREE 側の
+出力は、どちらも「一度だけ格納 dtype（bf16）に丸めた」値同士なので、
+テスト側は dtype ごとの既定の許容誤差（DTYPE-TOLERANCE）だけで比較できる
+（tests/iree/jit-test.lisp の %JIT-PBT-TOLERANCE 参照）。
 
 出力形式: 1つの読みやすい s式 (:f32 (:inputs (...) :outputs (...)) :bf16 (...))。
 値はすべて整数のビットパターン（f32 は u32、bf16 は u16）にして、Lisp の

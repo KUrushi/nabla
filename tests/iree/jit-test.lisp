@@ -3,10 +3,12 @@
 ;;;;
 ;;;; distinct な (テンプレート・shape・dtype) の組は1回の IREE コンパイル
 ;;;; （約350ms）になるので、PBT の試行回数・演算数は小さく抑える（契約の
-;;;; ピットフォール(6)）。bf16/f16 は IREE がエレメントワイズ演算を融合して
-;;;; 1回だけ丸めるのに対し eager（EVAL-GRAPH）は演算ごとに丸めるため、
-;;;; rtol を (1 + eqn数) 倍に緩める（tests/iree/stablehlo-test.lisp と同じ
-;;;; 考え方。ピットフォール(4)）。
+;;;; ピットフォール(6)）。bf16/f16 の期待値は、演算ごとに丸める eager
+;;;; （EVAL-GRAPH）ではなく、bf16/f16 を f32 に昇格して丸めをほぼ含まない
+;;;; 高精度オラクル（%JIT-PBT-F32-ORACLE）にする。理由は %JIT-PBT-TOLERANCE
+;;;; の docstring と、そのすぐ上のコメントを参照（要旨: IREE はエレメント
+;;;; ワイズ演算を融合し、丸めずに f32 の累積へ渡すことがあるので、eager の
+;;;; 「毎回丸める」という前提がそもそも正しい期待値ではなかった）。
 ;;;;
 ;;;; このファイルのテストは DEFINE-IREE-TEST を使い、tests/iree/ の他の
 ;;;; medium テストと同じ :NABLA.MEDIUM スイート・同じ SBCL プロセスで実行
@@ -39,8 +41,9 @@
 ;;; %jit-cache-forget + full GC + finalizer 実行を挟んで）40回 jit しても
 ;;; 落ちなかった。落ちたときのバックトレースは IREE の *実行* ではなく
 ;;; libIREECompiler.so の *コンパイラ* 内部（mlir::OpPassManager の構築）に
-;;; あり、原因は medium スイート全体で積み重なる distinct コンパイル回数
-;;; だった（ファイル冒頭のコメント、issue #34 PR #67 のレビュー参照）。
+;;; あり、原因は K=0 の dot_general（float traps のテスト）が float trap の
+;;; signal 処理中に C++ フレームを越えて非ローカル脱出し、in-process の
+;;; コンパイラの状態を壊していたこと（issue #68、PR #69 で修正済み）だった。
 ;;; テンプレートごとに正確な arity でトレースする作りはそのまま残すが
 ;;; （無害で、実際の使われ方にも近いため）、未使用引数を犯人とする説明は
 ;;; しない。
@@ -97,61 +100,90 @@
         for i from 0
         collect (make-random-array (make-array-spec (nb:aval-shape aval) (nb:aval-dtype aval)) :seed (+ base-seed i))))
 
-(defun %jit-pbt-magnitude-bound (graph)
-  "GRAPH の invars の shape に現れる最大の次元サイズを返す（無ければ 1）。
-生成器は m・k・n を 1〜4 の範囲でしか選ばず、要素の値は [-1, 1) なので、
-この値は「二項演算1回で足し合わされる項の個数」および「reduce や dot の
-契約次元の長さ」の控えめな上界になる（%JIT-PBT-TOLERANCE 参照）。"
-  (let ((max-dim 1))
-    (dolist (v (nb:graph-invars graph) max-dim)
-      (dolist (d (nb:aval-shape (nb:var-aval v)))
-        (setf max-dim (max max-dim d))))))
+;;; --- 高精度オラクル: bf16/f16 を f32 に昇格して再トレースする ---
+;;;
+;;; 以前は eager（EVAL-GRAPH、演算ごとに bf16/f16 に丸める）を期待値にして
+;;; rtol を (1 + eqn数) 倍に緩めていたが、これは2つの理由で間違っていた:
+;;;
+;;; (1) IREE はエレメントワイズ演算を融合し、その結果を直後の
+;;;     stablehlo.convert（bf16/f16 → f32、reduce-sum/dot の f32 累積の
+;;;     ための変換）にそのまま渡す形に最適化することがある。つまり
+;;;     「丸めずに f32 へ渡す」経路が実在し、eager の「毎回丸める」という
+;;;     前提はそもそも正しい期待値ではない
+;;; (2) この丸め1回分の絶対誤差は出力の大きさではなく丸めが起きた
+;;;     *中間値* の大きさに比例するので、rtol を出力の絶対値に掛けるだけ
+;;;     では、2項が打ち消し合ってほぼ0になる出力（回帰:
+;;;     tests/regressions/iree-jit-matches-eager.lisp の
+;;;     (7 4 2 4 :BF16 858539031)）を正しく評価できない
+;;;
+;;; そこで期待値そのものを「同じ GRAPH を、bf16/f16 の invar/中間値を
+;;; すべて f32 に昇格して EVAL-GRAPH で評価した結果」（%JIT-PBT-F32-ORACLE）
+;;; に変える。これは各演算ごとに丸めるが f32 の丸め誤差（相対 ~1e-7）は
+;;; 無視できるほど小さいので、実質「一切丸めない」高精度な参照値になる。
+;;; IREE の実際の出力との差は、原理的には「出力を格納 dtype（bf16/f16）に
+;;; 丸めたときの誤差」1つだけになるはずなので、許容誤差は dtype ごとの
+;;; 既定値（DTYPE-TOLERANCE、SKILL.md の表）をそのまま使えばよく、
+;;; eqn 数や中間値の大きさで人為的に緩める必要が無くなる。
 
-(defun %jit-pbt-tolerance (graph dtype)
-  "GRAPH の中で実際に使われた最も粗い浮動小数点 dtype で許容誤差を決める
-（tests/iree/stablehlo-test.lisp と同じ考え方）。bf16/f16 は IREE が
-エレメントワイズ演算を融合して1回だけ丸めるのに対し eager
-（EVAL-GRAPH）は演算ごとに丸めるため、rtol を (1 + eqn数) 倍に緩める。
+(defun %jit-pbt-promote-dtype (dtype)
+  "DTYPE が :bf16 / :f16 なら :f32 に、それ以外はそのまま返す。"
+  (if (member dtype '(:bf16 :f16)) :f32 dtype))
 
-出力が打ち消し合ってほぼ0になる試行（reduce-sum(+ a b) で a+b の丸め
-誤差がそのまま2項の差に乗る。回帰: tests/regressions/iree-jit-matches-eager.lisp
-の (7 4 2 4 :BF16 858539031)）では、rtol を出力の絶対値に掛けるだけでは
-足りない。丸め1回分の絶対誤差は出力の大きさではなく、丸めが起きた
-*中間値*（このケースでは a + b）の大きさに比例するので、中間値の大きさの
-控えめな上界（%JIT-PBT-MAGNITUDE-BOUND の2倍。二項演算1回で足し合わされる
-分）を rtol に掛けた分だけ atol にも足す。(values rtol atol)。"
-  (let* ((tolerance-dtype (or (graph-worst-float-dtype graph) dtype))
-         (n-eqns (length (nb:graph-eqns graph))))
-    (multiple-value-bind (rtol atol) (dtype-tolerance tolerance-dtype)
-      (if (member tolerance-dtype '(:bf16 :f16))
-          (values (* rtol (1+ n-eqns))
-                  (+ atol (* rtol 2 (%jit-pbt-magnitude-bound graph))))
-          (values rtol atol)))))
+(defun %jit-pbt-promote-aval (aval)
+  (nb:make-aval (nb:aval-shape aval) (%jit-pbt-promote-dtype (nb:aval-dtype aval))))
+
+(defun %jit-pbt-promote-array (array dtype)
+  "ARRAY（DTYPE の格納表現）を、DTYPE が :bf16 / :f16 なら SINGLE-FLOAT の
+配列にデコードして返す（f32 / f64 はそのまま）。"
+  (if (member dtype '(:bf16 :f16)) (nb::decode-float16-array array dtype) array))
+
+(defun %jit-pbt-f32-oracle (f avals arrays)
+  "F（TRACEABLE-FUNCTION）を AVALS の bf16/f16 をすべて f32 に昇格した aval
+で再トレースし、ARRAYS も対応する SINGLE-FLOAT 配列に変換したうえで
+EVAL-GRAPH した結果を返す（多値）。中間の bf16/f16 丸めが一切無い高精度な
+参照値になる（このファイル冒頭のコメント参照）。"
+  (let* ((f32-avals (mapcar #'%jit-pbt-promote-aval avals))
+         (f32-arrays (mapcar (lambda (array aval) (%jit-pbt-promote-array array (nb:aval-dtype aval)))
+                              arrays avals))
+         (f32-graph (nb:trace-to-graph f f32-avals)))
+    (apply #'nb:eval-graph f32-graph f32-arrays)))
+
+(defun %jit-pbt-tolerance (dtype)
+  "DTYPE（jit に渡した実際の dtype。出力の格納 dtype と同じ、このファイルの
+どのテンプレートも dtype を変えない）の許容誤差を DTYPE-TOLERANCE から
+そのまま返す。期待値が %JIT-PBT-F32-ORACLE（丸めをほぼ含まない）になった
+ことで、IREE の実際の出力との差は原理的に「出力を DTYPE に格納するときの
+丸め」1つ分に収まるはずなので、SKILL.md の表の値（bf16/f16 は 1 ULP の
+数倍程度）をそのまま使う。それでも吸収しきれない差（IREE がまれに
+中間値を bf16/f16 のまま保持する場合）が見つかれば、そのケースを
+tests/regressions/iree-jit-matches-eager.lisp に固定してから、ここに
+理由つきで根拠のある項を足すこと（当てずっぽうに緩めない）。"
+  (dtype-tolerance dtype))
 
 (defun %jit-pbt-matches-eager-p (backend template-index m k n dtype base-seed)
   "TEMPLATE-INDEX・M・K・N・DTYPE から組み立てた関数を BACKEND 上で JIT した
-結果が、f32 なら直接呼んだ eager 実装、bf16/f16 なら EVAL-GRAPH の結果と、
-許容誤差つきで一致するかどうかを返す（jit とキャッシュの性質
-「jit(f)(x) = f(x)」の medium 版、契約 J2.4）。bf16/f16 は生の
-(unsigned-byte 16) 配列を jit に渡すと %JIT-ARGUMENT-AVAL の dtype 推論が
-効かず JIT-ERROR になる（src/jit.lisp）ので、あらかじめ TO-DEVICE で
-device array にしてから渡す。"
+結果が、f32 なら直接呼んだ eager 実装、bf16/f16 なら %JIT-PBT-F32-ORACLE
+（bf16/f16 を一切丸めない高精度な参照値）と、許容誤差つきで一致するか
+どうかを返す（jit とキャッシュの性質「jit(f)(x) = f(x)」の medium 版、
+契約 J2.4）。bf16/f16 は生の (unsigned-byte 16) 配列を jit に渡すと
+%JIT-ARGUMENT-AVAL の dtype 推論が効かず JIT-ERROR になる（src/jit.lisp）
+ので、あらかじめ TO-DEVICE で device array にしてから渡す。"
   (let* ((f (%jit-pbt-traceable-function template-index m k))
          (avals (%jit-pbt-avals template-index m k n dtype))
          (arrays (%jit-pbt-arrays avals base-seed))
-         (graph (nb:trace-to-graph f avals))
          (jf (nb:jit f :backend backend)))
     (unwind-protect
-         (multiple-value-bind (rtol atol) (%jit-pbt-tolerance graph dtype)
+         (multiple-value-bind (rtol atol) (%jit-pbt-tolerance dtype)
            (if (member dtype '(:bf16 :f16))
                (let* ((device-arrays (mapcar (lambda (array aval) (to-device array backend :dtype (nb:aval-dtype aval)))
                                               arrays avals))
                       (jit-result nil)
-                      (eager-result (apply #'nb:eval-graph graph arrays)))
+                      (oracle-result (%jit-pbt-f32-oracle f avals arrays)))
                  (unwind-protect
                       (progn
                         (setf jit-result (apply jf device-arrays))
-                        (allclose jit-result eager-result :dtype dtype :rtol rtol :atol atol))
+                        (allclose (decode-array jit-result dtype) (decode-array oracle-result :f32)
+                                  :rtol rtol :atol atol))
                    (dolist (da device-arrays) (release-device-array da))))
                (allclose (apply jf arrays) (apply f arrays) :dtype dtype :rtol rtol :atol atol)))
       ;; F は毎試行ごとに EVAL で新しく作る TRACEABLE-FUNCTION（1回しか
@@ -165,7 +197,8 @@ device array にしてから渡す。"
 (define-iree-test jit/pbt-matches-eager
     "ランダムな with-tracing 本体（+ - max min neg tanh exp dot transpose
 where reduce-sum/max reshape broadcast-in-dim）を IREE 上で jit した結果は、
-f32 なら直接呼んだ eager 実装、bf16/f16 なら eval-graph の結果と一致する。"
+f32 なら直接呼んだ eager 実装、bf16/f16 なら bf16/f16 を f32 に昇格した
+高精度オラクル（%JIT-PBT-F32-ORACLE）の結果と一致する。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
         (*num-trials* 15)
@@ -186,6 +219,83 @@ f32 なら直接呼んだ eager 実装、bf16/f16 なら eval-graph の結果と
     ;; コンパイル + 実行）の直後は未回収の device array が溜まりやすいので、
     ;; ここで明示的に GC + finalizer を走らせて後続テストへの持ち越しを
     ;; 減らす（tests/iree/support.lisp の GC-AND-RUN-FINALIZERS）。
+    (gc-and-run-finalizers)))
+
+;;; --- jit(f)(x) = f(x) は、reduce-sum / dot の f32 累積が壊れたときにも
+;;; 検出できる（Beyoncé rule） ---
+;;;
+;;; JIT/PBT-MATCHES-EAGER の m・k・n は 1〜4 しか動かさない（コンパイル
+;;; コストのため）ので、%REDUCE-ACCUMULATE-IN-F32-P / %DOT-ACCUMULATE-IN-F32-P
+;;; を無効化する変異（f32 に一度も昇格せず bf16/f16 のまま累積する）を
+;;; 注入しても、その PBT の許容誤差の中に収まってしまうことがレビューで
+;;; 分かった。手元で軸長・契約次元 K を増やしながら測ったところ:
+;;;
+;;;   K/軸長 |  4 |  8 | 16 | 32 | 64  | 512 | 2048  | 65536
+;;;   reduce  0% |  0%|  0%|20% |     | 85% | 95%   | 95〜100%
+;;;   dot     0% |  0%|  5%|28% |100%*| 100%|100%   |
+;;;   (* dot は tests/iree/dot-test.lisp の K64 テストが直接 backend 経由で確認済み)
+;;;
+;;; （割合は20試行中「オラクルと不一致で検出できた」割合。K が小さいと
+;;; bf16/f16 は数項の加算では f32 で計算したのとほぼ同じ値になり
+;;; （CPU 上の bf16/f16 演算は内部で f32 に昇格してから丸めるため、単発の
+;;; 加算では丸め回数が変わらない）、原理的にほぼ検出不可能）。そこで
+;;; K=2048（dot）・軸長 65536（reduce-sum）の固定の1ケースを、jit 経由で
+;;; 高精度オラクルと突き合わせるテストをここに置く。PBT を大きな shape に
+;;; 広げる（distinct なコンパイルが増える）代わりに、この1点だけを
+;;; hermetic な例ベースのテストとして固定する。
+
+(defun %jit-large-dot-matches-oracle-p (backend dtype k)
+  "shape (4 K) @ (K 4) の DOT を jit した結果が、bf16/f16 を f32 に昇格した
+高精度オラクルと一致するかどうかを返す。K を十分大きくすることで、
+%DOT-ACCUMULATE-IN-F32-P が無効化された回帰を高確率で検出できる
+（ファイル冒頭のコメント参照）。"
+  (let* ((f (nb:with-tracing (a w) (nb:dot a w)))
+         (avals (list (nb:make-aval (list 4 k) dtype) (nb:make-aval (list k 4) dtype)))
+         (arrays (%jit-pbt-arrays avals 1))
+         (jf (nb:jit f :backend backend))
+         (device-arrays (mapcar (lambda (array aval) (to-device array backend :dtype (nb:aval-dtype aval)))
+                                 arrays avals))
+         (oracle-result (%jit-pbt-f32-oracle f avals arrays)))
+    (unwind-protect
+         (multiple-value-bind (rtol atol) (%jit-pbt-tolerance dtype)
+           (allclose (decode-array (apply jf device-arrays) dtype) (decode-array oracle-result :f32)
+                     :rtol rtol :atol atol))
+      (dolist (da device-arrays) (release-device-array da))
+      (nb::%jit-cache-forget f))))
+
+(defun %jit-large-reduce-matches-oracle-p (backend dtype axis-size)
+  "shape (2 AXIS-SIZE) を軸1で潰す REDUCE-SUM を jit した結果が、bf16/f16 を
+f32 に昇格した高精度オラクルと一致するかどうかを返す。AXIS-SIZE を十分
+大きくすることで、%REDUCE-ACCUMULATE-IN-F32-P が無効化された回帰を高確率で
+検出できる（ファイル冒頭のコメント参照）。"
+  (let* ((f (nb:with-tracing (a) (nb:reduce-sum a :axes '(1))))
+         (avals (list (nb:make-aval (list 2 axis-size) dtype)))
+         (arrays (%jit-pbt-arrays avals 2))
+         (jf (nb:jit f :backend backend))
+         (device-arrays (mapcar (lambda (array aval) (to-device array backend :dtype (nb:aval-dtype aval)))
+                                 arrays avals))
+         (oracle-result (%jit-pbt-f32-oracle f avals arrays)))
+    (unwind-protect
+         (multiple-value-bind (rtol atol) (%jit-pbt-tolerance dtype)
+           (allclose (decode-array (apply jf device-arrays) dtype) (decode-array oracle-result :f32)
+                     :rtol rtol :atol atol))
+      (dolist (da device-arrays) (release-device-array da))
+      (nb::%jit-cache-forget f))))
+
+(define-iree-test jit/large-reduction-catches-accumulation-regression
+    "shape (4 2048) @ (2048 4) の DOT と、軸長 65536 の REDUCE-SUM を jit した
+結果は、bf16・f16 のどちらでも高精度オラクルと一致する。K・軸長をここまで
+大きくする理由と、JIT/PBT-MATCHES-EAGER（K が 1〜4 しかない）では
+%REDUCE-ACCUMULATE-IN-F32-P / %DOT-ACCUMULATE-IN-F32-P が無効化された回帰を
+ほとんど検出できないことの実測値は、ファイル冒頭のコメントを参照。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (nb:*compile-cache-directory* nil))
+    (dolist (dtype '(:bf16 :f16))
+      (is (%jit-large-dot-matches-oracle-p backend dtype 2048)
+          "~A: K=2048 の dot がオラクルと一致しない" dtype)
+      (is (%jit-large-reduce-matches-oracle-p backend dtype 65536)
+          "~A: 軸長 65536 の reduce-sum がオラクルと一致しない" dtype))
     (gc-and-run-finalizers)))
 
 ;;; --- 複数の出力値 ---
@@ -274,37 +384,43 @@ BITS をそのまま (UNSIGNED-BYTE 16) の要素にする。"
     (values out1 out2)))
 
 (defun %mlp-check-dtype (backend dtype)
-  "DTYPE（:f32・:bf16）で %JIT-TEST-MLP を JAX フィクスチャと EVAL-GRAPH の
-両方と突き合わせる。out1（JAX 期待値）・out2（JAX 期待値）・out1（eager）・
-out2（eager）の4つを別々の FIVEAM:IS にして、どれが食い違ったかが失敗
-メッセージから分かるようにする（1つの AND にまとめない）。"
+  "DTYPE（:f32・:bf16）で %JIT-TEST-MLP を JAX フィクスチャと高精度オラクル
+（%JIT-PBT-F32-ORACLE。bf16 を一切丸めずに同じ graph を評価した参照値）の
+両方と突き合わせる。out1（JAX 期待値）・out2（JAX 期待値）・out1
+（オラクル）・out2（オラクル）の4つを別々の FIVEAM:IS にして、どれが
+食い違ったかが失敗メッセージから分かるようにする（1つの AND にまとめない）。
+JAX フィクスチャは JAX/XLA が実際にコンパイル・実行した bf16 の出力
+（すでに丸め済み）なので、IREE 側の出力とは「両方とも一度だけ格納 dtype に
+丸めた値」同士の比較になり、eval-graph の場合と同じ理由で許容誤差は
+DTYPE-TOLERANCE のままでよい（%JIT-PBT-TOLERANCE 参照）。"
   (let* ((inputs (%fixture-inputs dtype))
          (expected (%fixture-outputs dtype))
          (traceable (get '%jit-test-mlp 'nb::%defjit-traceable))
          (avals (%mlp-avals dtype))
-         (graph (nb:trace-to-graph traceable avals))
          (jit-args (if (eq dtype :bf16)
                        (mapcar (lambda (array) (to-device array backend :dtype dtype)) inputs)
                        inputs)))
-    (multiple-value-bind (rtol atol) (%jit-pbt-tolerance graph dtype)
+    (multiple-value-bind (rtol atol) (%jit-pbt-tolerance dtype)
       (unwind-protect
            (multiple-value-bind (out1 out2) (apply #'%jit-test-mlp jit-args)
-             (multiple-value-bind (eager-out1 eager-out2) (apply #'nb:eval-graph graph inputs)
+             (multiple-value-bind (oracle-out1 oracle-out2)
+                 (%jit-pbt-f32-oracle traceable avals inputs)
                (is (allclose out1 (first expected) :dtype dtype :rtol rtol :atol atol)
                    "~A: out1 (jit) が JAX フィクスチャと一致しない" dtype)
                (is (allclose out2 (second expected) :dtype dtype :rtol rtol :atol atol)
                    "~A: out2 (jit) が JAX フィクスチャと一致しない" dtype)
-               (is (allclose out1 eager-out1 :dtype dtype :rtol rtol :atol atol)
-                   "~A: out1 (jit) が eval-graph と一致しない" dtype)
-               (is (allclose out2 eager-out2 :dtype dtype :rtol rtol :atol atol)
-                   "~A: out2 (jit) が eval-graph と一致しない" dtype)))
+               (is (allclose (decode-array out1 dtype) (decode-array oracle-out1 :f32) :rtol rtol :atol atol)
+                   "~A: out1 (jit) が高精度オラクルと一致しない" dtype)
+               (is (allclose (decode-array out2 dtype) (decode-array oracle-out2 :f32) :rtol rtol :atol atol)
+                   "~A: out2 (jit) が高精度オラクルと一致しない" dtype)))
         (when (eq dtype :bf16) (dolist (da jit-args) (release-device-array da)))))))
 
 (define-iree-test jit/mlp-matches-jax-fixture-and-eval-graph
     "DEFJIT した小さな MLP 相当の関数（elementwise + dot + reduce-sum/max +
 reshape + broadcast-in-dim）は、f32・bf16 のどちらでも、JAX で生成した
-フィクスチャ（tests/fixtures/jit/mlp.lisp）および同じ graph を
-EVAL-GRAPH で評価した結果と、許容誤差つきで一致する（#35 の完了条件）。"
+フィクスチャ（tests/fixtures/jit/mlp.lisp）および同じ graph の高精度
+オラクル（%JIT-PBT-F32-ORACLE。f32 は EVAL-GRAPH そのもの）と、許容誤差
+つきで一致する（#35 の完了条件）。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
         (nb:*default-backend* (nabla:find-backend :iree))

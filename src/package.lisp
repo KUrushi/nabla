@@ -104,5 +104,4 @@
    #:recompile)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
-ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend
-プロトコルのみ。"))
+ニックネームは NB。公開シンボルの一覧は README.md の「公開 API」を正とする。"))

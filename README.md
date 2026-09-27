@@ -8,7 +8,7 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 
 フェーズ0（IREE 疎通）は完了した。ただし GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は GPU の無い環境のため未測定で、issue は open のままにしてある。詳しい知見は [docs/phase0-report.md](docs/phase0-report.md) にまとめてある。
 
-フェーズ1（トレースと jit。親 issue #35）は完了した（`with-tracing` / `trace-to-graph` / `emit-stablehlo` / `jit` / `defjit`。issue #34）。次はフェーズ2（grad、jvp + transpose 方式の自動微分）に進む。
+現在はフェーズ1（トレースと jit。親 issue #35）に着手している。
 
 ロードマップ（計画タブより）:
 
