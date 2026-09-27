@@ -32,13 +32,16 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 : StableHLO などの MLIR を受け取り、CPU / CUDA / ROCm / Vulkan / Metal 向けの実行ファイルを作るコンパイラと、それを動かすランタイム。
 
 **vmfb**
-: IREE のコンパイラが出力する実行用のファイル形式（VM FlatBuffer）。コンパイルに時間がかかるので、nabla ではディスクにキャッシュする。
+: IREE のコンパイラが出力する実行用のファイル形式（VM FlatBuffer）。コンパイルに時間がかかるので、nabla ではディスクにキャッシュする。IREE は既定で「polyglot zip」という形式で vmfb を出す（`--iree-vm-emit-polyglot-zip`）。中身はフラットバッファだが、ファイルの先頭は ZIP の local-file-header シグネチャ（`PK\3\4`、バイト列では `#x50 #x4B #x03 #x04`）で始まる。ランタイムが読み込むときにこの ZIP の皮を剥がすので、フラットバッファそのものの識別子を先頭バイトだと思って比較しないよう注意する。
 
 **HAL（Hardware Abstraction Layer）**
 : IREE の中で、CPU や各種 GPU の違いを隠す層。「HAL ドライバ」を切り替えることで実行するデバイスを選ぶ。
 
 **PJRT**
 : XLA（JAX の標準の実行系）を外部から呼ぶための C API。nabla では IREE の次の候補として、`backend` プロトコルの裏に置く。
+
+**埋め込み C API（embedding API）**
+: IREE がコンパイラ・ランタイムの機能を、別プロセスを起動せずに自分のプロセス内から呼べるように提供している C の関数群。ヘッダは `iree/compiler/embedding_api.h`（コンパイラ）と `iree/runtime/api.h`（ランタイム）。nabla はこれを CFFI で直接 `dlopen` して呼び、`iree-compile` / `iree-run-module` をサブプロセスとして起動しない。
 
 **CFFI**
 : Common Lisp から C のライブラリを呼び出すためのライブラリ。

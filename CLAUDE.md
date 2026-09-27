@@ -23,6 +23,10 @@ scripts/setup-lisp-deps.sh
 # テスト（既定は small + medium。CPU だけで動き、GPU は不要）
 scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
 NABLA_TEST_SIZES=large scripts/run-tests.sh
+# nabla/iree の medium テストは IREE の共有ライブラリ（NABLA_IREE_HOME 配下）が
+# 無いと自動でスキップされる。CI では NABLA_REQUIRE_IREE=1 を立てて、その
+# スキップを失敗にする
+NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 
 # IREE のビルド（third_party/iree.lock で固定したコミットから）。
 # コンパイラは既定で PyPI ホイールを使い、ランタイムは常にソースビルドする
@@ -60,6 +64,8 @@ mutation testing の詳しいオプションは [`tools/mutate/README.md`](tools
 - bf16 / f16† は `(unsigned-byte 16)` の配列で持ち、`aval` の dtype タグで区別する
 - IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
 - デバイス上のバッファは `device-array` で包む。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）
+- LLVM を呼びうる FFI エントリポイント（IREE コンパイラ、将来の PJRT）は、必ず `with-lisp-signal-handlers-preserved`（`src/iree/signals.lisp`）で本体を包む。LLVM は初回の呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きする。放置すると、以後どこかのスレッドが GC を始めた瞬間に "no SP known for thread" で SBCL が確実に落ちる（issue #5）
+- 上記の LLVM のシグナルハンドラ登録そのものは、`ensure-compiler-loaded` が他の全 Lisp スレッドを SBCL の GC と同じ仕組み（`%call-with-world-stopped`、`src/iree/signals.lisp`）で止めた、制御された1点で済ませる。世界が止まっている間はどのスレッドもシグナルを受け取れないので、登録の瞬間に別スレッドが GC を始める競合の隙間が無くなる（詳しい根拠と残る課題は signals.lisp 冒頭のコメント）
 
 ## 開発の原則
 

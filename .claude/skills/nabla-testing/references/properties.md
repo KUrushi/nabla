@@ -96,6 +96,16 @@ JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 �
 - `iterator-state` を保存して `restore-iterator` で再開すると、続きが中断しなかった場合と一致する
 - 1エポックで各インデックスがちょうど1回ずつ出る（`shuffle` しても要素の集合は同じ）
 
+### IREE バインディング（`nabla/iree`）
+
+CFFI の生バインディング自体は性質を書きにくいので mutation testing の対象外（CLAUDE.md）。ここでの性質は主に「壊れた入力でプロセスが落ちない」「結果が決定的」の2つ。
+
+- `compile-stablehlo` は、手書きの StableHLO フィクスチャから非空の vmfb（ZIP local-file-header シグネチャで始まるバイト列）を返す
+- `compile-stablehlo` は、文法の誤った StableHLO（`(string)` 生成器で作ったランダムな断片を関数本体に埋め込む）に対して、必ず少なくとも1つの `:error` 診断を含む `iree-compile-error` を signal し、プロセスは落ちない
+- 同じ入力を繰り返しコンパイルしても、結果のバイト列は毎回一致し（決定性）、メモリ使用量（RSS）が際限なく増え続けない（リークの疎通確認）
+- `compile-flags` は同じ `target` に対して毎回同じフラグのリストを返す（決定性）。未知の `target` はエラーになる
+- IREE の共有ライブラリが要るテストは `skip-unless-iree`（`tests/iree/support.lisp`）でスキップし、`NABLA_REQUIRE_IREE=1`（CI）ならスキップの代わりに失敗させる
+
 ## 3. 書き方のひな形
 
 以下はひな形で、関数名は実装に合わせて読み替える。
@@ -192,6 +202,8 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | `uniform-integer` / `uniform-real` 生成器 | `check-it::*size*` にクランプされない、指定した範囲全体から一様に選ぶ整数・実数の生成器。下の「check-it の落とし穴」を読んでから `(integer lo hi)` / `(real lo hi)` の代わりに使う |
 | `allclose` / `approx=` | dtype ごとの既定の許容誤差で比べ、失敗時に最大誤差とその位置を出力する |
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |
+| `skip-unless-iree`（`tests/iree/support.lisp`） | IREE の共有ライブラリが無ければテストをスキップし（`NABLA_REQUIRE_IREE=1` なら失敗させる）、あれば何もしない |
+| `stablehlo-fixture`（`tests/iree/support.lisp`） | `tests/fixtures/stablehlo/<名前>.mlir` の内容を文字列で返す |
 
 部品を追加・変更したら、この表も直す。
 
