@@ -76,18 +76,26 @@ shape をずらす）。"
                       :jvp (lambda () nil)))))
 
 (test primitive/tensor-type-string-matches-shape-and-dtype
-  "TENSOR-TYPE-STRING は \"tensor<\" + shape を x で繋いだもの + dtype 名 +
-\">\" に一致する（rank 0 は \"tensor<f32>\" のように次元部分が無い）。"
+  "TENSOR-TYPE-STRING は \"tensor<\" + shape の各次元と dtype 名を x で
+繋いだもの + \">\" に一致する。オラクルは実装とは別の組み立て方（shape と
+dtype 名を1本のリストにしてから x で繋ぐ）で計算する。"
   (is (check-it (generator (array-spec))
                 (lambda (spec)
                   (let ((aval (nb:make-aval (array-spec-shape spec) (array-spec-dtype spec))))
                     (string= (nb::tensor-type-string aval)
-                             (format nil "tensor<~{~D~^x~}~:[~;x~]~A>"
-                                     (array-spec-shape spec)
-                                     (not (null (array-spec-shape spec)))
-                                     (nb::dtype-mlir-name (array-spec-dtype spec))))))
+                             (format nil "tensor<~A>"
+                                     (format nil "~{~A~^x~}"
+                                             (append (array-spec-shape spec)
+                                                     (list (nb::dtype-mlir-name (array-spec-dtype spec)))))))))
                 :regression-id primitive/tensor-type-string-matches-shape-and-dtype
                 :regression-file (regression-path "primitive-tensor-type-string"))))
+
+(test primitive/tensor-type-string-fixed-examples
+  "TENSOR-TYPE-STRING の既知の入出力の組（rank 0、要素数0の次元を含む多次元、
+bf16）を固定値で確かめる。"
+  (is (string= "tensor<f32>" (nb::tensor-type-string (nb:make-aval '() :f32))))
+  (is (string= "tensor<2x3xf32>" (nb::tensor-type-string (nb:make-aval '(2 3) :f32))))
+  (is (string= "tensor<0x3xbf16>" (nb::tensor-type-string (nb:make-aval '(0 3) :bf16)))))
 
 (test primitive/dtype-mlir-name-covers-all-dtypes
   "DTYPE-MLIR-NAME は f32/f64/bf16/f16/i1 のすべてに対応する。"

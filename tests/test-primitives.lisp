@@ -5,7 +5,9 @@
 ;;;; の3種の params を網羅する（%TEST-RESHAPE = 整数リスト、%TEST-REDUCE =
 ;;;; 整数、%TEST-CONVERT = キーワード）。ABSTRACT-EVAL のみを持ち（EMIT /
 ;;;; EAGER は省略。u1a のスコープ外）、make-eqn / check-graph の配管を
-;;;; 確かめるためだけに使う。
+;;;; 確かめるためだけに使う。%TEST-TWO-PARAMS はパラメタが2つあるときに
+;;;; make-eqn が呼び出し順ではなく宣言順に正規化することを確かめるための
+;;;; プリミティブ。
 
 (in-package #:nabla.tests)
 
@@ -49,6 +51,9 @@
         (error 'nb:primitive-error :name :%test-reduce :in-avals in-avals
                :format-control "axis ~S が shape ~S の範囲外" :format-arguments (list axis shape)))
       (nb:make-aval (append (subseq shape 0 axis) (subseq shape (1+ axis))) (nb:aval-dtype in)))))
+
+(nb:defprimitive %test-two-params (:a :b)
+  :abstract-eval (lambda (in-avals &key a b) (declare (ignore a b)) (first in-avals)))
 
 ;; ir-print.lisp の READ-GRAPH が params 中の T を CL:T に正規化することを
 ;; 確かめるための、フラグ（真偽値）パラメタを持つテスト専用プリミティブ
