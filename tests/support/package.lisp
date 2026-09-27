@@ -38,6 +38,10 @@
    #:approx=
    ;; 参照実装（テストの中でループを書かずに済むオラクル）
    #:reference-add
+   ;; issue #31 p1
+   #:reference-sub
+   #:reference-mul
+   #:reference-div
    #:reference-matmul
    #:reference-reduce-sum
    ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）

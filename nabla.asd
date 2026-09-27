@@ -24,6 +24,9 @@
                (:file "src/ir")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "src/ir-print")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "src/primitives/common")
+               (:file "src/primitives/arith")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -62,6 +65,8 @@
                (:file "tests/ir-test")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "tests/ir-print-test")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "tests/primitives/arith-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -115,4 +120,7 @@
                (:file "tests/iree/execute-test")
                (:file "tests/iree/example-test")
                ;; StableHLO op 対応表（issue #30、u2）
-               (:file "tests/iree/ops-test")))
+               (:file "tests/iree/ops-test")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "tests/iree/primitive-support")
+               (:file "tests/iree/arith-test")))
