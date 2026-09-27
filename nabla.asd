@@ -13,7 +13,7 @@
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
   :license "Apache-2.0"
-  :depends-on ("ironclad")
+  :depends-on ("ironclad" (:require "sb-cltl2"))
   :components ((:file "src/package")
                (:file "src/dtype")
                ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
@@ -42,6 +42,12 @@
                (:file "src/eval")
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "src/primitives/reduce")
+               ;; トレーサ（issue #32、t1）
+               (:file "src/trace")
+               (:file "src/trace-ops")
+               (:file "src/walk")
+               ;; if を select に、配列レベルの公開 API（issue #32、t2）
+               (:file "src/array-api")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -99,6 +105,12 @@
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "tests/primitives/reduce-test")
                (:file "tests/primitives/registry-test")
+               ;; トレーサ（issue #32、t1）
+               (:file "tests/walk-test")
+               (:file "tests/trace-test")
+               ;; if を select に、配列レベルの公開 API（issue #32、t2）
+               (:file "tests/trace-if-test")
+               (:file "tests/array-api-test")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "tests/stablehlo-test")
                (:file "tests/regressions"))

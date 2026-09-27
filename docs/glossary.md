@@ -86,6 +86,12 @@ pretty form を出力する。
 **コードウォーク（code walk）/ コードウォーカ**
 : Lisp のコード（リスト）を先頭から順にたどり、特定の形式を別の形式に書き換える処理。nabla では `with-tracing` の中の `if` や `loop` を、トレースできる `cond` / `scan` に書き換えるのに使う。事前に `macroexpand-all` でマクロをすべて展開してからたどる。
 
+**funcallable instance**
+: CLOS のオブジェクトでありながら、そのまま `funcall` / `apply` できる（関数としても振る舞う）インスタンス。SBCL では `sb-mop:funcallable-standard-object` をメタクラスに `sb-mop:funcallable-standard-class` を指定して作り、`sb-mop:set-funcallable-instance-function` で実際に呼ばれる関数を差し込む。nabla の `with-tracing` が返す `traceable-function`（`src/trace.lisp`、issue #32）はこれで作る: 呼び出せば eager に実行するふつうの関数として振る舞いつつ、`traceable-function-lambda-list` のようなアクセサでメタデータ（仮引数のリスト）も持てる。
+
+**リフト（lift）**
+: トレース中に、実数（Lisp の数値）や生の配列を、その場にあるトレーサ（`tracer`）と同じ dtype・shape の値に持ち上げること。数値は rank 0 の定数トレーサにしてから、必要なら `:broadcast-in-dim` でトレーサの shape まで広げる（`%lift-number`、`src/trace.lisp`）。配列は `array-aval` で aval を決めて、そのまま定数として graph に足す（`%lift-array`）。`(+ x 1)` のようにトレーサと数値・配列が混ざった式を、常にトレーサどうしの演算に揃えるための下ごしらえ。
+
 **最近接偶数丸め（RNE, round to nearest, ties to even）**
 : 浮動小数点の丸め方式の1つ。表現できる2つの値のうち近い方に丸め、ちょうど中間（等距離）のときは仮数の最下位ビットが0になる方（偶数）に丸める。IEEE 754 の既定の丸めモードで、nabla では bf16 / f16 と single-float の変換（`src/float16.lisp`）に使う。単純な切り捨てと違い、丸め誤差が特定の方向に偏らない。
 

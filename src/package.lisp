@@ -68,6 +68,23 @@
    #:graph-input-mismatch
    #:primitive-not-evaluable
    #:primitive-not-evaluable-name
+   ;; トレーサ（issue #32、t1）
+   #:with-tracing
+   #:trace-to-graph
+   #:traceable-function
+   #:unsupported-form
+   #:unsupported-form-form
+   #:unsupported-form-path
+   #:tracing-error
+   ;; if を select に、配列レベルの公開 API（issue #32、t2）
+   #:dot
+   #:reshape
+   #:transpose
+   #:broadcast-in-dim
+   #:reduce-sum
+   #:reduce-max
+   #:convert
+   #:where
    ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
    #:emit-stablehlo
    #:primitive-not-emittable

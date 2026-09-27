@@ -396,7 +396,31 @@ dot_general.mlir / dot_general_bf16.mlir の op 行と一致する。"
                           (list (nb:make-aval '(2 3) :bf16) (nb:make-aval '(3 2) :bf16))
                           "%0" (nb:make-aval '(2 2) :bf16)
                           :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '()))
-               (%normalize-ssa-names (first (%fixture-op-lines "dot_general_bf16"))))))
+               (%normalize-ssa-names
+                (format nil "~{~A~^~%~}" (%fixture-op-lines "dot_general_bf16"))))))
+
+(test dot-general/emit-accumulates-bf16-f16-in-f32
+  "bf16 / f16 の :emit は、f32 の結果型を持つ stablehlo.dot_general と、
+それを元の dtype に戻す stablehlo.convert の2行を返す（issue #54）。
+f32 / f64 は今まで通り1行のまま変わらない。"
+  (dolist (dtype '(:bf16 :f16))
+    (let* ((text (%emit-of :dot-general '("%a" "%b")
+                            (list (nb:make-aval '(4 64) dtype) (nb:make-aval '(64 4) dtype))
+                            "%12" (nb:make-aval '(4 4) dtype)
+                            :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '()))
+           (lines (uiop:split-string text :separator '(#\Newline))))
+      (is (= 2 (length lines)) "~S dtype: expected 2 lines, got ~S" dtype lines)
+      (is (string= "%acc_12" (subseq (first lines) 0 7)))
+      (is (search "-> tensor<4x4xf32>" (first lines)))
+      (is (string= "%12 = stablehlo.convert %acc_12 : (tensor<4x4xf32>) -> "
+                   (subseq (second lines) 0 (length "%12 = stablehlo.convert %acc_12 : (tensor<4x4xf32>) -> "))))))
+  (dolist (dtype '(:f32 :f64))
+    (let ((text (%emit-of :dot-general '("%a" "%b")
+                           (list (nb:make-aval '(4 64) dtype) (nb:make-aval '(64 4) dtype))
+                           "%12" (nb:make-aval '(4 4) dtype)
+                           :lhs-contracting '(1) :rhs-contracting '(0) :lhs-batch '() :rhs-batch '())))
+      (is (= 1 (length (uiop:split-string text :separator '(#\Newline))))
+          "~S dtype should stay a single line" dtype))))
 
 (test dot-general/emit-with-batch-and-empty-contracting
   "batch 付きの :emit は batching_dims と contracting_dims の両方を出す。
