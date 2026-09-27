@@ -29,10 +29,11 @@
     "ops/dot_general" "ops/dot_general_bf16"
     "ops/reduce_add" "ops/reduce_add_bf16"
     "ops/reduce_max" "ops/reduce_max_bf16")
-  "docs/stablehlo-ops.md の表に載る、対象19 op それぞれの f32 / bf16
-フィクスチャ名（tests/fixtures/stablehlo/<名前>.mlir、拡張子なし）。この
-リストと docs/stablehlo-ops.md の表、tests/fixtures/stablehlo/ops/ 配下の
-ファイルの3つは、常に同じ38個（19 op × 2）を指す。")
+  "docs/stablehlo-ops.md の表に載る、対象19 op + constant の20行それぞれの
+f32 / bf16 フィクスチャ名（tests/fixtures/stablehlo/<名前>.mlir、拡張子
+なし）。このリストと docs/stablehlo-ops.md の表、
+tests/fixtures/stablehlo/ops/ 配下のファイルの3つは、常に同じ40個
+（20行 × 2）を指す。")
 
 (define-iree-test ops/all-fixtures-compile-to-non-empty-vmfb
     "docs/stablehlo-ops.md の表にある全フィクスチャ（f32 と bf16）について、
@@ -47,17 +48,37 @@ backend-compile が非空の (simple-array (unsigned-byte 8) (*)) を返し、
         (is (plusp (length bytes)) "~A" name)
         (is (equalp *vmfb-magic* (subseq bytes 0 4)) "~A" name)))))
 
+(defun %stablehlo-ops-doc-row-count ()
+  "docs/stablehlo-ops.md の「## 対応表」節にある表のデータ行数を返す。
+ヘッダ行・区切り行（`| --- | ... |`）は ○ を含まないので、表の節の中で
+○ を含む行だけを数えれば、データ行（19 op + constant の20行）の数になる。"
+  (let* ((path (asdf:system-relative-pathname "nabla" "docs/stablehlo-ops.md"))
+         (lines (uiop:read-file-lines path))
+         (start (position-if (lambda (line) (search "## 対応表" line)) lines)))
+    (assert start () "docs/stablehlo-ops.md に「## 対応表」の見出しが見つからない")
+    (let* ((rest-lines (subseq lines (1+ start)))
+           (end (or (position-if (lambda (line) (and (>= (length line) 2) (string= "##" (subseq line 0 2))))
+                                  rest-lines)
+                    (length rest-lines)))
+           (table-lines (subseq rest-lines 0 end)))
+      (count-if (lambda (line) (search "○" line)) table-lines))))
+
 (define-iree-test ops/fixture-count-matches-directory
-    "*stablehlo-op-fixtures* に列挙した個数が、
-tests/fixtures/stablehlo/ops/ に実際に置かれた .mlir ファイルの個数と
-一致する。docs/stablehlo-ops.md の表・このリスト・フィクスチャの3つが
-ずれたら検出する、簡単な整合テスト（tests/regressions.lisp と同じ
-uiop:directory-files を使う）。"
+    "*stablehlo-op-fixtures* に列挙した個数・docs/stablehlo-ops.md の
+「## 対応表」節にあるデータ行の個数（× f32/bf16 の2）・
+tests/fixtures/stablehlo/ops/ に実際に置かれた .mlir ファイルの個数の3つが
+一致することを確かめる整合テスト（tests/regressions.lisp と同じ
+uiop:directory-files を使う）。docs の表・このリスト・フィクスチャの3つが
+ずれたらどれか1つの assertion が落ちて検出できる。"
   (let* ((dir (asdf:system-relative-pathname "nabla" "tests/fixtures/stablehlo/ops/"))
-         (files (uiop:directory-files dir "*.mlir")))
+         (files (uiop:directory-files dir "*.mlir"))
+         (doc-fixture-count (* 2 (%stablehlo-ops-doc-row-count))))
     (is (= (length *stablehlo-op-fixtures*) (length files))
         "*stablehlo-op-fixtures* has ~D entries but ~A has ~D .mlir files"
-        (length *stablehlo-op-fixtures*) dir (length files))))
+        (length *stablehlo-op-fixtures*) dir (length files))
+    (is (= doc-fixture-count (length files))
+        "docs/stablehlo-ops.md の対応表は ~D 個のフィクスチャを含意するが、~A には ~D 個の .mlir ファイルがある"
+        doc-fixture-count dir (length files))))
 
 (define-iree-test ops/add-dot-general-reduce-execute-end-to-end
     "表の中でも add / dot_general / reduce(add) の3つは、コンパイルだけで
