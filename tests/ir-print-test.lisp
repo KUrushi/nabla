@@ -153,6 +153,36 @@ NABLA.GRAPH-SYNTAX（何も USE しない）に束縛して読むので、正規
          (read-back-eqn (first (nb:graph-eqns round-tripped))))
     (is (eq t (getf (nb:eqn-params read-back-eqn) :keep)))))
 
+;; issue #29 follow-up (f1)
+(test ir-print/print-graph-rejects-undefined-var-reference
+  "graph-eqns の invars が invars / constants / 他の eqn の outvars のどこにも
+現れない var（未定義参照）を指しているとき、print-graph は \"%nil\" のような
+壊れたテキストを出す代わりに MALFORMED-GRAPH を signal する。"
+  (let* ((v (nb::make-var (nb:make-aval '(2 3) :f32)))
+         (stray (nb::make-var (nb:make-aval '(2 3) :f32)))
+         (eqn (nb::make-eqn :%test-neg (list stray)))
+         (graph (nb::make-graph (list v) (list eqn) (list (first (nb:eqn-outvars eqn))))))
+    (signals nb::malformed-graph (nb:print-graph graph))))
+
+;; issue #29 follow-up (f1)
+(test ir-print/read-graph-rejects-trailing-text
+  "print-graph の出力の末尾に余分なテキストが付くと GRAPH-SYNTAX-ERROR。"
+  (let ((valid (nb:print-graph (%ir-print-sample-graph))))
+    (signals nb::graph-syntax-error (nb::read-graph (concatenate 'string valid " garbage")))))
+
+;; issue #29 follow-up (f1)
+(test ir-print/read-graph-rejects-duplicate-var-names
+  "同じ var 名が :in / :const / :eqns のいずれかで2回定義されているテキストは
+MALFORMED-GRAPH（後の定義が前を黙って上書きし、前の var が到達不能になる
+壊れたテキストを黙って受け入れない）。3つの節それぞれで境界を確かめる。"
+  (signals nb::malformed-graph
+    (nb::read-graph "(graph (:in (%0 f32 (2)) (%0 f32 (2))) (:const) (:eqns) (:out %0))"))
+  (signals nb::malformed-graph
+    (nb::read-graph "(graph (:in) (:const (%0 f32 (2) 1.0 2.0) (%0 f32 (2) 3.0 4.0)) (:eqns) (:out %0))"))
+  (signals nb::malformed-graph
+    (nb::read-graph
+     "(graph (:in (%0 f32 (2))) (:const) (:eqns (%1 f32 (2) := %test-neg () %0) (%1 f32 (2) := %test-neg () %0)) (:out %1))")))
+
 (test ir-print/print-graph-rejects-non-finite-constants
   "NaN を含む f32 定数を持つ graph は print-graph がエラーになる。"
   (let* ((nan (sb-kernel:make-single-float #x7FC00000))

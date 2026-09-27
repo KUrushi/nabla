@@ -29,6 +29,10 @@
                (:file "src/primitives/shape")
                ;; issue #31 p5: dot-general
                (:file "src/primitives/dot")
+               ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
+               ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
+               ;; この行より前に足す）
+               (:file "src/eval")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -71,6 +75,8 @@
                (:file "tests/primitives/shape-test")
                ;; issue #31 p5: dot-general
                (:file "tests/primitives/dot-test")
+               ;; graph の eager 評価（issue #39、e0）
+               (:file "tests/eval-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))

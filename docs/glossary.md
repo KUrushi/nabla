@@ -31,6 +31,16 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **MLIR**
 : LLVM プロジェクトの一部で、コンパイラの IR を作るための共通の枠組み。「方言（dialect）」という単位で命令セットを定義できる。
 
+**pretty form / generic form（MLIR の省略記法と汎用記法）**
+: MLIR のテキスト表現には2つの書き方がある。generic form は
+`"stablehlo.add"(%a, %b) : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xf32>`
+のように、演算名を文字列にし、属性を `{...}` で持つ、どんな方言の演算にも
+使える汎用の書き方。pretty form は `%0 = stablehlo.add %a, %b :
+tensor<4xf32>` のように、その方言が独自に定義した、人が読み書きしやすい
+省略記法。両方とも同じ演算を表し、IREE のコンパイラはどちらも受け付ける
+（`docs/stablehlo-ops.md` の対応表を参照）。nabla の emitter（issue #33）は
+pretty form を出力する。
+
 **StableHLO**
 : MLIR の方言の1つで、機械学習の計算（行列積、畳み込み、要素ごとの演算など）を表すための命令セット。JAX、PyTorch、TensorFlow の共通の出力形式として使われている。nabla と IREE の境界になる。
 
