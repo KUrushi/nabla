@@ -16,6 +16,8 @@
   :depends-on ("ironclad")
   :components ((:file "src/package")
                (:file "src/dtype")
+               ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
+               (:file "src/float16")
                (:file "src/aval")
                (:file "src/backend")
                (:file "src/compile-cache"))
@@ -43,6 +45,8 @@
   :components ((:file "tests/package")
                (:file "tests/support-test")
                (:file "tests/dtype-test")
+               ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
+               (:file "tests/float16-test")
                (:file "tests/aval-test")
                (:file "tests/backend-test")
                (:file "tests/compile-cache-test")
