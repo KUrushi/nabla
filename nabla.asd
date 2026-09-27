@@ -24,11 +24,22 @@
                (:file "src/ir")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "src/ir-print")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "src/primitives/common")
+               (:file "src/primitives/arith")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "src/primitives/shape-common")
                (:file "src/primitives/shape")
+               ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
+               (:file "src/primitives/unary")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "src/primitives/compare")
                ;; issue #31 p5: dot-general
                (:file "src/primitives/dot")
+               ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
+               ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
+               ;; この行より前に足す）
+               (:file "src/eval")
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "src/primitives/reduce")
                (:file "src/backend")
@@ -69,10 +80,18 @@
                (:file "tests/ir-test")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "tests/ir-print-test")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "tests/primitives/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/primitives/shape-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/primitives/unary-test")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "tests/primitives/compare-test")
                ;; issue #31 p5: dot-general
                (:file "tests/primitives/dot-test")
+               ;; graph の eager 評価（issue #39、e0）
+               (:file "tests/eval-test")
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "tests/primitives/reduce-test")
                (:file "tests/primitives/registry-test")
@@ -130,9 +149,16 @@
                (:file "tests/iree/example-test")
                ;; StableHLO op 対応表（issue #30、u2）
                (:file "tests/iree/ops-test")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "tests/iree/primitive-support")
+               (:file "tests/iree/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/iree/shape-primitive-support")
                (:file "tests/iree/shape-test")
+               ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
+               (:file "tests/iree/unary-test")
+               ;; compare / select / convert（issue #31 p3）
+               (:file "tests/iree/compare-test")
                ;; issue #31 p5: dot-general
                (:file "tests/iree/dot-test")
                ;; issue #31 p6: reduce-sum / reduce-max

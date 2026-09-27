@@ -34,6 +34,16 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **MLIR**
 : LLVM プロジェクトの一部で、コンパイラの IR を作るための共通の枠組み。「方言（dialect）」という単位で命令セットを定義できる。
 
+**pretty form / generic form（MLIR の省略記法と汎用記法）**
+: MLIR のテキスト表現には2つの書き方がある。generic form は
+`"stablehlo.add"(%a, %b) : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xf32>`
+のように、演算名を文字列にし、属性を `{...}` で持つ、どんな方言の演算にも
+使える汎用の書き方。pretty form は `%0 = stablehlo.add %a, %b :
+tensor<4xf32>` のように、その方言が独自に定義した、人が読み書きしやすい
+省略記法。両方とも同じ演算を表し、IREE のコンパイラはどちらも受け付ける
+（`docs/stablehlo-ops.md` の対応表を参照）。nabla の emitter（issue #33）は
+pretty form を出力する。
+
 **StableHLO**
 : MLIR の方言の1つで、機械学習の計算（行列積、畳み込み、要素ごとの演算など）を表すための命令セット。JAX、PyTorch、TensorFlow の共通の出力形式として使われている。nabla と IREE の境界になる。
 
@@ -73,6 +83,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **最近接偶数丸め（RNE, round to nearest, ties to even）**
 : 浮動小数点の丸め方式の1つ。表現できる2つの値のうち近い方に丸め、ちょうど中間（等距離）のときは仮数の最下位ビットが0になる方（偶数）に丸める。IEEE 754 の既定の丸めモードで、nabla では bf16 / f16 と single-float の変換（`src/float16.lisp`）に使う。単純な切り捨てと違い、丸め誤差が特定の方向に偏らない。
 
+**float trap（浮動小数点例外トラップ）**
+: CPU が0除算・オーバーフロー・不正な演算（0/0 や sqrt(-1) など）を検出したときに、実行を止めてコンディションを signal する仕組み。SBCL は既定で `:overflow` `:invalid` `:divide-by-zero` の3つのトラップを有効にしているため、`(/ 1.0 0.0)` のような計算はそのままだと `division-by-zero` を signal してしまう。StableHLO / IREE は IEEE 754 どおり無限大・NaN を返す（signal しない）ので、nabla のプリミティブの eager 実装は `sb-int:with-float-traps-masked` でこの3つのトラップをマスクしてから計算し、両者の挙動を揃える（`src/primitives/common.lisp` の `with-ieee-arithmetic`）。マスクは要素ごとではなく、eager 呼び出し全体を1回だけ包む（速度のため）。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**
@@ -101,6 +114,12 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 
 **bf16 / f16**
 : 16 ビットの浮動小数点数。f16（半精度）は仮数部が多く範囲が狭い。bf16（brain float 16）は f32 と同じ指数部を持ち、範囲が広い代わりに精度が低い。GPU での学習を速くするために使う。
+
+**NaN（Not a Number）/ quiet NaN**
+: IEEE 754 で「数として定義できない結果」（`0.0/0.0` や負数の `log` など）を表す特別な浮動小数点値。quiet NaN はそのうち、演算に混ざってもプロセスを落とさず（signal を出さず）そのまま伝播する種類の NaN（対になる signaling NaN は使わない）。nabla では `%quiet-nan`（`src/primitives/common.lisp`）がビットパターンから直接組み立てる。
+
+**NaN propagation（NaN 伝播）**
+: 演算の入力のどれかが NaN なら、出力も必ず NaN になるという規則。StableHLO / IREE / JAX の `max` / `min` はこの規則に従うが、Common Lisp の `max` / `min` は引数の順序によって NaN を落としてしまうことがあるため、nabla は `%ieee-max` / `%ieee-min` で明示的に NaN 伝播を実装している。
 
 ## テスト
 

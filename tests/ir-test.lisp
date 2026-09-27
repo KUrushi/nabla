@@ -121,6 +121,26 @@ MALFORMED-GRAPH。"
          (graph (nb::make-graph '() '() (list v) (list (cons v array)))))
     (signals nb::malformed-graph (nb::check-graph graph))))
 
+;; issue #29 follow-up (f1)
+(test ir/make-eqn-odd-length-params-signals-primitive-error
+  "params が奇数個（plist として不正）だと SB-INT:SIMPLE-PROGRAM-ERROR では
+なく PRIMITIVE-ERROR が signal される。単一の余分なキーだけの場合（長さ1）
+と、宣言済みキーの後ろに1つ余分な値が付く場合（長さ3）の両方の境界を
+確かめる。"
+  (let ((v (nb::make-var (nb:make-aval '(6) :f32))))
+    (signals nb:primitive-error (nb::make-eqn :%test-reshape (list v) :shape))
+    (signals nb:primitive-error (nb::make-eqn :%test-reshape (list v) :shape '(2 3) :extra))))
+
+;; issue #29 follow-up (f1)
+(test ir/check-graph-detects-constant-dtype-mismatch
+  "constants の配列の実際の要素型が var の dtype と矛盾していて ARRAY-AVAL が
+DTYPE-MISMATCH を signal するケース（double-float の配列に :f32 の var）でも、
+CHECK-GRAPH はそれを MALFORMED-GRAPH に読み替えて signal する。"
+  (let* ((array (make-array '(2 3) :element-type 'double-float :initial-element 0d0))
+         (v (nb::make-var (nb:make-aval '(2 3) :f32)))
+         (graph (nb::make-graph '() '() (list v) (list (cons v array)))))
+    (signals nb::malformed-graph (nb::check-graph graph))))
+
 (test ir/print-object-does-not-error
   "var / graph の print-object が単に呼べる（デバッグ表示なので厳密な文字列
 一致は求めない）。"

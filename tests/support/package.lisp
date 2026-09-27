@@ -38,6 +38,20 @@
    #:approx=
    ;; 参照実装（テストの中でループを書かずに済むオラクル）
    #:reference-add
+   ;; issue #31 p1
+   #:reference-sub
+   #:reference-mul
+   #:reference-div
+   ;; issue #31 p2
+   #:reference-neg
+   #:reference-exp
+   #:reference-log
+   #:reference-tanh
+   #:reference-max
+   #:reference-min
+   ;; issue #31 p3
+   #:reference-compare
+   #:reference-select
    #:reference-matmul
    #:reference-reduce-sum
    ;; issue #31 p4: reshape / broadcast-in-dim / transpose

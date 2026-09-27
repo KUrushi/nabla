@@ -31,7 +31,7 @@
 
 | op | フィクスチャの綴り（form） | nabla プリミティブ名 | f32 | bf16 | 代替・備考 |
 | --- | --- | --- | --- | --- | --- |
-| add | `%0 = stablehlo.add %a, %b : tensor<4x8xf32>`（pretty） | `add` | ○ | ○ | |
+| add | `%0 = stablehlo.add %a, %b : tensor<4x8xf32>`（pretty†） | `add` | ○ | ○ | |
 | subtract | `%0 = stablehlo.subtract %a, %b : tensor<4x8xf32>`（pretty） | `sub` | ○ | ○ | |
 | multiply | `%0 = stablehlo.multiply %a, %b : tensor<4x8xf32>`（pretty） | `mul` | ○ | ○ | |
 | divide | `%0 = stablehlo.divide %a, %b : tensor<4x8xf32>`（pretty） | `div` | ○ | ○ | |
@@ -41,7 +41,7 @@
 | exponential | `%0 = stablehlo.exponential %a : tensor<4xf32>`（pretty、単項） | `exp` | ○ | ○ | |
 | log | `%0 = stablehlo.log %a : tensor<4xf32>`（pretty、単項） | `log` | ○ | ○ | |
 | tanh | `%0 = stablehlo.tanh %a : tensor<4xf32>`（pretty、単項） | `tanh` | ○ | ○ | |
-| compare | `%0 = stablehlo.compare LT, %a, %b : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>`（pretty。方向は LT LE GT GE EQ NE、`, FLOAT` の compare_type 付きも可。generic form `"stablehlo.compare"(%a, %b) {comparison_direction = #stablehlo<comparison_direction LT>}` も通る） | `compare` | ○ | ○ | 出力 dtype は nabla の `:i1`（issue #37）。IREE の `iree-run-module` は `4xi1=1,0,...` 形式の入力を受け付けないため、`:i1` は関数の内部値としてのみ使う（to-device は `:i1` を拒否する。issue #37） |
+| compare | `%0 = stablehlo.compare LT, %a, %b : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>`（pretty。方向は LT LE GT GE EQ NE、`, FLOAT` の compare_type 付きも可。generic form† `"stablehlo.compare"(%a, %b) {comparison_direction = #stablehlo<comparison_direction LT>}` も通る） | `compare` | ○ | ○ | 出力 dtype は nabla の `:i1`（issue #37）。IREE の `iree-run-module` は `4xi1=1,0,...` 形式の入力を受け付けないため、`:i1` は関数の内部値としてのみ使う（to-device は `:i1` を拒否する。issue #37） |
 | select | `%1 = stablehlo.select %pred, %a, %b : tensor<4xi1>, tensor<4xf32>`（pretty） | `select` | ○ | ○ | |
 | convert | `%0 = stablehlo.convert %a : (tensor<4xf32>) -> tensor<4xbf16>`（pretty） | `convert` | ○ | ○ | |
 | constant | `%c = stablehlo.constant dense<[1.0, 2.5]> : tensor<2xf32>`（rank 0 は `dense<3.0> : tensor<f32>`）。bf16/f16 は16進ビット列: `dense<[0x3F80, 0x4020]> : tensor<2xbf16>`（実行結果も正しい: 1, 2.5）。max の初期値のような単一値も同じ書き方: `dense<0xFC00> : tensor<f16>`、`dense<0xFF800000> : tensor<f32>` | プリミティブではなく `graph-constants` | ○ | ○ | |
@@ -52,7 +52,7 @@
 | reduce（add） | `%0 = stablehlo.reduce(%a init: %init) applies stablehlo.add across dimensions = [1] : (tensor<4x8xf32>, tensor<f32>) -> tensor<4xf32>`（pretty。全軸 `dimensions = [0, 1]` → `tensor<f32>` も可）。既存 `tests/fixtures/stablehlo/reduce_sum.mlir` の generic form も通る | `reduce-sum` | ○ | ○ | init は `stablehlo.constant dense<0.0>`（f32/f64）または `dense<0x0000>`（bf16。ビット列そのまま） |
 | reduce（max） | reduce（add）と同じ pretty form で `applies stablehlo.maximum`。init は `-inf` を16進で: f32 `0xFF800000`、bf16 `0xFF80`、f16 `0xFC00`、f64 `0xFFF0000000000000`（`dense<-inf>` は書かない） | `reduce-max` | ○ | ○ | |
 
-f16 / f64 は上記すべての op で advisor が確認済み（確認済み、フィクスチャは
+f16 / f64 は上記すべての op で advisor が確認済み（フィクスチャは
 未収録）。ただし f64 は `to-device` が未対応（`unsupported-dtype`、issue
 #37）のままなので、実行系連携のフィクスチャには使わない。
 
@@ -79,7 +79,7 @@ f16 / f64 は上記すべての op で advisor が確認済み（確認済み、
   `reduce` は `reduce_add.mlir` / `reduce_max.mlir` というファイル名にした
   （`reduce-sum` / `reduce-max` という2つのプリミティブに対応するため）
 - `tests/iree/ops-test.lisp`:
-  - 全38フィクスチャ（19 op × f32/bf16）を `backend-compile` して非空の
+  - 全40フィクスチャ（19 op + constant の20行 × f32/bf16）を `backend-compile` して非空の
     vmfb になることを確かめる
   - フィクスチャの個数と `tests/fixtures/stablehlo/ops/` のファイル数が
     一致することを確かめる整合テスト
@@ -87,8 +87,10 @@ f16 / f64 は上記すべての op で advisor が確認済み（確認済み、
     `backend-invoke` まで通して実際に実行し、期待値と数値が一致することを
     確かめる
 
-フィクスチャ40個（既存 add/matmul/reduce_sum の f32/bf16 各3個 + 本 PR の
-38個）のコンパイルがスイートに加わる。1フィクスチャあたり約350ms
+フィクスチャ46個（既存 add/matmul/reduce_sum の f32/bf16 各3個 = 6個 + 本 PR
+の40個。表の20行（19 op + constant）× f32/bf16。
+`ls tests/fixtures/stablehlo/*.mlir tests/fixtures/stablehlo/ops/*.mlir | wc -l`
+で数えられる）のコンパイルがスイートに加わる。1フィクスチャあたり約350ms
 （vmfb ディスクキャッシュのヒット時はほぼ0ms）で、既定スイートに約15秒
 （コールド時）が加わる見込み。CI の warm 実行時間の目安（約44秒、
 CLAUDE.md 参照）に対する影響として記録しておく。
