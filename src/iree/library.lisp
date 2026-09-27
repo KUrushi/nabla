@@ -71,30 +71,39 @@ cffi:*foreign-library-directories* に push しておく必要がある。"
   (sb-thread:with-mutex (*compiler-load-lock*)
     (unless *compiler-loaded-p*
       (with-lisp-signal-handlers-preserved
-        (let ((home (iree-home)))
-          (pushnew (merge-pathnames "lib/" home) cffi:*foreign-library-directories*
-                    :test #'equal)
-          (handler-case
-              (cffi:load-foreign-library 'nabla-iree-compiler)
-            (cffi:load-foreign-library-error ()
-              (error 'iree-library-not-found
-                     :path (%library-path home :compiler)
-                     :home home
-                     :library :compiler))))
-        (%compiler-global-initialize)
-        ;; LLVM の「プロセスにつき1回」のシグナルハンドラ登録
-        ;; （signals.lisp 冒頭のコメント参照）を、他の Lisp スレッドをすべて
-        ;; 止めた状態で、ロックを持ったこの時点で済ませてしまう。こうしないと、
-        ;; 最初の Pipeline 実行中に別の Lisp スレッドが GC を始めた瞬間に
-        ;; SIGUSR2 が LLVM のハンドラに渡り、プロセスが死ぬ。
-        (unless (%register-llvm-signal-handlers)
-          ;; この IREE 版の ireeCompilerOutputOpenMembuffer は開いて閉じる
-          ;; だけでは登録しなかった（固定コミットの 3.11.0 では起きない）。
-          ;; 最後の手段として旧方式（保護付きの warm-up コンパイル）で登録を
-          ;; 済ませる。これは他のスレッドの GC と競合する隙間が残るので警告する。
-          (warn "ireeCompilerOutputOpenMembuffer は LLVM のシグナルハンドラを登録しなかった。~
-                 warm-up コンパイルで代替する（初回コンパイル中の他スレッドの GC と競合しうる）")
-          (%warm-up-compiler)))
+        (with-all-float-traps-masked
+          ;; issue #53: %register-llvm-signal-handlers は世界を止めた窓の中で
+          ;; foreign 呼び出し（ireeCompilerOutputOpenMembuffer/Destroy）を
+          ;; 行うだけで、それ自体がスレッドを作ったり浮動小数点演算を
+          ;; 行ったりはしない。それでも「LLVM を初めて呼ぶ」制御された1点
+          ;; なので、以後 %warm-up-compiler にフォールバックする経路も含めて
+          ;; この呼び出し元スレッドを一貫してマスクしておく
+          ;; （float-traps.lisp 冒頭のコメント。世界が止まっている間の
+          ;; マスクはスレッドローカルな MXCSR の書き換えだけなので安全）。
+          (let ((home (iree-home)))
+            (pushnew (merge-pathnames "lib/" home) cffi:*foreign-library-directories*
+                      :test #'equal)
+            (handler-case
+                (cffi:load-foreign-library 'nabla-iree-compiler)
+              (cffi:load-foreign-library-error ()
+                (error 'iree-library-not-found
+                       :path (%library-path home :compiler)
+                       :home home
+                       :library :compiler))))
+          (%compiler-global-initialize)
+          ;; LLVM の「プロセスにつき1回」のシグナルハンドラ登録
+          ;; （signals.lisp 冒頭のコメント参照）を、他の Lisp スレッドをすべて
+          ;; 止めた状態で、ロックを持ったこの時点で済ませてしまう。こうしないと、
+          ;; 最初の Pipeline 実行中に別の Lisp スレッドが GC を始めた瞬間に
+          ;; SIGUSR2 が LLVM のハンドラに渡り、プロセスが死ぬ。
+          (unless (%register-llvm-signal-handlers)
+            ;; この IREE 版の ireeCompilerOutputOpenMembuffer は開いて閉じる
+            ;; だけでは登録しなかった（固定コミットの 3.11.0 では起きない）。
+            ;; 最後の手段として旧方式（保護付きの warm-up コンパイル）で登録を
+            ;; 済ませる。これは他のスレッドの GC と競合する隙間が残るので警告する。
+            (warn "ireeCompilerOutputOpenMembuffer は LLVM のシグナルハンドラを登録しなかった。~
+                   warm-up コンパイルで代替する（初回コンパイル中の他スレッドの GC と競合しうる）")
+            (%warm-up-compiler))))
       (setf *compiler-loaded-p* t)))
   (values))
 
