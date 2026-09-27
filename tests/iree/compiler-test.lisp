@@ -322,15 +322,8 @@ sb-sys:without-gcing の中（*gc-inhibit* が真）から呼ぶとエラーに�
   (skip-unless-iree :library :compiler)
   (is (search (%locked-iree-commit) (compiler-revision))))
 
-(defun %child-source-registry ()
-  "子プロセスの ASDF に、このリポジトリと依存の置き場所を見せる
-CL_SOURCE_REGISTRY の値。scripts/run-tests.sh と同じ組み立て方
-（リポジトリは非再帰、依存は再帰）にする。"
-  (let* ((repo (namestring (asdf:system-source-directory "nabla")))
-         (deps (or (sb-ext:posix-getenv "NABLA_LISP_DEPS")
-                   (namestring (merge-pathnames ".local/share/nabla/lisp-deps/"
-                                                 (user-homedir-pathname))))))
-    (format nil "~A:~A//:" repo deps)))
+;; %child-source-registry は tests/iree/support.lisp（このファイルより先に
+;; ロードされる）で共有定義している。
 
 (defun %run-with-missing-iree-home (missing-home)
   "MISSING-HOME を NABLA_IREE_HOME として渡した、真っさらな子 SBCL

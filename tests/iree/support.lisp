@@ -125,6 +125,41 @@ sb-kernel:run-pending-finalizers はキューに溜まった finalizer を
         (let ((count (read-sequence text stream)))
           (subseq text 0 count))))))
 
+(defun %child-source-registry ()
+  "子プロセスの ASDF に、このリポジトリと依存の置き場所を見せる
+CL_SOURCE_REGISTRY の値。scripts/run-tests.sh と同じ組み立て方
+（リポジトリは非再帰、依存は再帰）にする。"
+  (let* ((repo (namestring (asdf:system-source-directory "nabla")))
+         (deps (or (sb-ext:posix-getenv "NABLA_LISP_DEPS")
+                   (namestring (merge-pathnames ".local/share/nabla/lisp-deps/"
+                                                 (user-homedir-pathname))))))
+    (format nil "~A:~A//:" repo deps)))
+
+(defun %run-in-child-sbcl (source)
+  "SOURCE（Lisp のトップレベルフォームを並べた文字列）を一時ファイルへ書き、
+真っさらな子 SBCL プロセスで --load して実行する。(終了コード . 標準出力 .
+標準エラー出力) を多値で返す。一時ファイルは呼び出し後に削除する。
+
+issue #68: このプロセス自身の中で libIREECompiler.so を壊しうるコンパイル
+（ゼロサイズの contracting 次元を持つ dot_general の #DE 等）や、
+プロセスを poisoned にする操作を試すテストは、:nabla.medium を実行している
+共有プロセス自身を汚染しないよう、常にこのヘルパー経由で子プロセスの中で
+行うこと。子プロセスの環境は uiop:run-program の既定（親プロセスの環境を
+そのまま継承）に任せるので、CL_SOURCE_REGISTRY や NABLA_IREE_HOME は
+このプロセスに設定済みのものがそのまま子にも渡る。"
+  (let ((script (merge-pathnames
+                 (format nil "nabla-iree-child-~A.lisp" (random 1000000))
+                 (uiop:temporary-directory))))
+    (unwind-protect
+         (progn
+           (with-open-file (stream script :direction :output :if-exists :supersede)
+             (write-string source stream))
+           (multiple-value-bind (output error-output exit-code)
+               (uiop:run-program (list "sbcl" "--non-interactive" "--load" (namestring script))
+                                  :output '(:string) :error-output '(:string) :ignore-error-status t)
+             (values exit-code output error-output)))
+      (ignore-errors (delete-file script)))))
+
 ;;; tests/regressions/ は nabla/tests の tests/regressions.lisp が全ファイルを
 ;;; load しているが、そちらは nabla/iree/tests に依存しない（システム構成が
 ;;; 独立している）ため、nabla/tests を単体でロードする時点では
