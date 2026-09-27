@@ -62,7 +62,12 @@
    #:unknown-primitive-name
    #:primitive-error
    ;; graph の印字と読み込み（issue #29、u1b）
-   #:print-graph)
+   #:print-graph
+   ;; graph の eager 評価（issue #39、e0）
+   #:eval-graph
+   #:graph-input-mismatch
+   #:primitive-not-evaluable
+   #:primitive-not-evaluable-name)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
 ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend

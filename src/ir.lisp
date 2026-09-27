@@ -30,7 +30,15 @@ PRIMITIVE-PARAMS の宣言順に正規化した plist、INVARS / OUTVARS は VAR
 (defun %normalize-params (name declared-params params)
   "PARAMS（plist）のキー集合が DECLARED-PARAMS（宣言順のキーワードの
 リスト）と一致すること（欠落も余分も無いこと）を確かめ、DECLARED-PARAMS の
-順に並べ直した plist を返す。一致しなければ PRIMITIVE-ERROR を signal する。"
+順に並べ直した plist を返す。一致しなければ PRIMITIVE-ERROR を signal する。
+PARAMS の要素数が奇数（plist として不正）のときも、GETF に渡す前に
+PRIMITIVE-ERROR を signal する（奇数のまま渡すと SB-INT:SIMPLE-PROGRAM-ERROR
+が漏れてしまうため）。"
+  (unless (evenp (length params))
+    (error 'primitive-error
+           :name name
+           :format-control "params の要素数が奇数で plist として不正（渡されたのは ~S）"
+           :format-arguments (list params)))
   (let ((given-keys (loop for (k) on params by #'cddr collect k)))
     (if (and (= (length given-keys) (length declared-params))
              (null (set-difference given-keys declared-params))
@@ -43,12 +51,18 @@ PRIMITIVE-PARAMS の宣言順に正規化した plist、INVARS / OUTVARS は VAR
                :format-control "params のキーが ~S と一致しない（渡されたのは ~S）"
                :format-arguments (list declared-params given-keys)))))
 
-(defun make-eqn (prim-name invars &rest params &key &allow-other-keys)
+(defun make-eqn (prim-name invars &rest params)
   "PRIM-NAME（キーワード）・INVARS（VAR のリスト）・PARAMS から EQN を
 作る。手順:
 
 1. (FIND-PRIMITIVE PRIM-NAME) が NIL なら UNKNOWN-PRIMITIVE を signal する。
-2. PARAMS のキー集合が PRIMITIVE-PARAMS と一致しなければ PRIMITIVE-ERROR。
+2. PARAMS の要素数が奇数（plist として不正）、またはキー集合が
+   PRIMITIVE-PARAMS と一致しなければ PRIMITIVE-ERROR。
+
+PARAMS は（&KEY ではなく）&REST で受け取る。&KEY &ALLOW-OTHER-KEYS にすると、
+奇数個のキーワード引数は CL 自身の引数束縛の時点で
+SB-INT:SIMPLE-PROGRAM-ERROR になってしまい、この関数の本体（step 2）に
+たどり着く前に漏れてしまうため。
 3. 宣言順に並べ直した plist を作る。
 4. (APPLY ABSTRACT-EVAL (MAPCAR #'VAR-AVAL INVARS) PLIST) で出力 AVAL を
    計算し、AVAL 型であることを CHECK-TYPE で確かめる。
@@ -75,7 +89,10 @@ VAR を作ることによって構成的に保証される。"
              (malformed-graph-format-arguments condition))))
   (:documentation
    "CHECK-GRAPH が graph の SSA 性・var の未定義参照・constants の aval
-不一致を検出したときに signal する。"))
+不一致を検出したときに signal する。constants の配列の要素型が var の dtype
+と矛盾する場合（本来は DTYPE-MISMATCH になる場合）も、「graph の構造が
+不正」という一貫した契約にするため、この条件に読み替えて signal する
+（CHECK-GRAPH のドキュメント文字列 (c) を参照）。"))
 
 (defun check-graph (graph)
   "GRAPH の構造上の不変量を検査し、問題が無ければ GRAPH をそのまま返す。
@@ -86,7 +103,11 @@ VAR を作ることによって構成的に保証される。"
 (b) 各 eqn の invars と GRAPH-OUTVARS は、その時点までに定義済みの var
     だけを参照する。
 (c) GRAPH-CONSTANTS の各 (var . array) について、ARRAY から作った AVAL
-    が VAR-AVAL と EQUALP で一致する。"
+    が VAR-AVAL と EQUALP で一致する。ARRAY の要素型が VAR-AVAL の dtype と
+    そもそも矛盾していて AVAL が作れない場合（ARRAY-AVAL が DTYPE-MISMATCH
+    を signal する場合）も、この (c) の違反として MALFORMED-GRAPH に
+    読み替える（呼び出し側は「graph の構造が壊れている」という1つの契約
+    だけを気にすればよいようにするため）。"
   (let ((defined (make-hash-table :test 'eq))
         (invars (graph-invars graph))
         (constants (graph-constants graph))
@@ -104,10 +125,15 @@ VAR を作ることによって構成的に保証される。"
       (dolist (entry constants)
         (let ((var (car entry)) (array (cdr entry)))
           (mark-defined var)
-          (unless (equalp (array-aval array (aval-dtype (var-aval var))) (var-aval var))
-            (error 'malformed-graph :graph graph
-                   :format-control "constant ~S の配列の aval が var の aval と一致しない"
-                   :format-arguments (list var)))))
+          (let ((const-aval (handler-case (array-aval array (aval-dtype (var-aval var)))
+                               (dtype-mismatch ()
+                                 (error 'malformed-graph :graph graph
+                                        :format-control "constant ~S の配列の要素型が var の dtype と矛盾する"
+                                        :format-arguments (list var))))))
+            (unless (equalp const-aval (var-aval var))
+              (error 'malformed-graph :graph graph
+                     :format-control "constant ~S の配列の aval が var の aval と一致しない"
+                     :format-arguments (list var))))))
       (dolist (eqn eqns)
         (dolist (v (eqn-invars eqn)) (check-defined v))
         (dolist (v (eqn-outvars eqn)) (mark-defined v)))
