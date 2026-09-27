@@ -6,11 +6,13 @@
   "DTYPE を持つ配列の Common Lisp 上の element-type を返す。
 
 f32 は single-float、f64 は double-float、bf16 / f16 はビット列を
-そのまま持つ (unsigned-byte 16) にする（CLAUDE.md の約束）。"
+そのまま持つ (unsigned-byte 16) にする（CLAUDE.md の約束）。i1（issue #37）
+は bit。"
   (ecase dtype
     (:f32 'single-float)
     (:f64 'double-float)
-    ((:bf16 :f16) '(unsigned-byte 16))))
+    ((:bf16 :f16) '(unsigned-byte 16))
+    (:i1 'bit)))
 
 (defun %u32->s32 (bits)
   "符号なし32bit整数を、SBCL の make-single-float が期待する符号付き表現にする。"
@@ -73,19 +75,26 @@ value = mantissa * 2^-24。f16 は指数バイアス15、仮数10bit なので�
          (sb-kernel:make-single-float (%u32->s32 bits32)))))))
 
 (defun dtype-value (dtype value)
-  "DOUBLE-FLOAT の VALUE を、DTYPE の配列要素として格納する値に変換する。"
+  "DOUBLE-FLOAT の VALUE を、DTYPE の配列要素として格納する値に変換する。
+
+i1（issue #37）は BIT なので、VALUE の符号で 0 / 1 に落とす。"
   (ecase dtype
     (:f64 (coerce value 'double-float))
     (:f32 (coerce value 'single-float))
     (:bf16 (%f32-bits->bf16-bits (%single-float-bits (coerce value 'single-float))))
-    (:f16 (%f32-bits->f16-bits (%single-float-bits (coerce value 'single-float))))))
+    (:f16 (%f32-bits->f16-bits (%single-float-bits (coerce value 'single-float))))
+    (:i1 (if (minusp value) 0 1))))
 
 (defun decode-element (dtype value)
-  "配列に格納されている VALUE を、比較用の DOUBLE-FLOAT に戻す。"
+  "配列に格納されている VALUE を、比較用の DOUBLE-FLOAT に戻す。
+
+i1（issue #37）の VALUE は BIT（0 / 1）そのものなので、そのまま
+DOUBLE-FLOAT に coerce する。"
   (ecase dtype
     ((:f32 :f64) (coerce value 'double-float))
     (:bf16 (coerce (%bf16-bits->f32 value) 'double-float))
-    (:f16 (coerce (%f16-bits->f32 value) 'double-float))))
+    (:f16 (coerce (%f16-bits->f32 value) 'double-float))
+    (:i1 (coerce value 'double-float))))
 
 (defun %random-domain-value (state domain)
   "STATE から DOMAIN に応じた DOUBLE-FLOAT を1つ取り出す。

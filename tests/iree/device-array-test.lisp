@@ -46,6 +46,23 @@ NABLA:DTYPE-MISMATCH が signal される（bf16 / f16 のどちらか曖昧な�
     (let ((array (make-array '(2 3) :element-type '(unsigned-byte 16) :initial-element 0)))
       (signals nabla:dtype-mismatch (to-device array device)))))
 
+(define-iree-test device-array/to-device/i1-signals-unsupported-dtype
+    "BIT 配列を :dtype :i1 で to-device に渡すと NABLA:UNSUPPORTED-DTYPE が
+signal される（issue #37。フェーズ1では IREE との要素型の対応を持たない）。"
+  (skip-unless-iree :library :runtime)
+  (with-device (device :local-task)
+    (let ((array (make-array '(2 3) :element-type 'bit :initial-element 0)))
+      (signals nabla:unsupported-dtype (to-device array device :dtype :i1)))))
+
+(define-iree-test device-array/to-device/f64-signals-unsupported-dtype
+    "DOUBLE-FLOAT 配列を to-device に渡すと NABLA:UNSUPPORTED-DTYPE が
+signal される（以前は *ELEMENT-TYPES* に無い dtype として plain error に
+なっていたが、issue #37 でより具体的な決まった条件になった）。"
+  (skip-unless-iree :library :runtime)
+  (with-device (device :local-task)
+    (let ((array (make-array '(2 3) :element-type 'double-float :initial-element 0.0d0)))
+      (signals nabla:unsupported-dtype (to-device array device)))))
+
 (define-iree-test device-array/to-device/displaced-array-signals-type-error
     "displaced な配列を to-device に渡すと TYPE-ERROR が signal される
 （sb-ext:array-storage-vector が使えないので、コピーの前に弾く）。"
