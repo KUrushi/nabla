@@ -268,3 +268,22 @@ decode-float16 と一致し、encode-float16-array で元のビット列に戻�
                          (equalp encoded array))))
                 :regression-id float16/array/decode-and-encode-round-trip
                 :regression-file (regression-path "float16-array-decode-encode-round-trip"))))
+
+;;; 7. JAX との数値一致フィクスチャ（例ベース。tests/fixtures/float16/generate.py
+;;;    で生成した jax-cross-check.lisp を JAX 側のオラクルとして使う）。
+
+(defun %load-jax-cross-check-fixture ()
+  (with-open-file (stream (asdf:system-relative-pathname
+                            "nabla" "tests/fixtures/float16/jax-cross-check.lisp"))
+    (read stream)))
+
+(test float16/jax-cross-check/matches-jax-bfloat16-and-float16-conversion
+  "tests/fixtures/float16/generate.py が JAX (jnp.asarray(...).view(uint16))
+で計算した bf16 / f16 のビット列と、nb::encode-float16 の結果が一致する。"
+  (dolist (case (%load-jax-cross-check-fixture))
+    (destructuring-bind (bits32 expected-bf16-bits expected-f16-bits) case
+      (let ((x (nb::%make-single-float bits32)))
+        (is (= expected-bf16-bits (nb::encode-float16 x :bf16))
+            "bits32=~D" bits32)
+        (is (= expected-f16-bits (nb::encode-float16 x :f16))
+            "bits32=~D" bits32)))))
