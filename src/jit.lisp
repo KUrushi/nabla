@@ -142,12 +142,6 @@ STATIC-POSITIONS の引数はトレース対象の本体には普通の Lisp の
                             (%jit-merge-args arity static-positions static-values dynamic-args))))))
     (trace-to-graph wrapper avals)))
 
-;;; --- %jit-compile-and-load ---
-
-(defun %jit-compile-and-load (backend text)
-  "TEXT を BACKEND-COMPILE してから BACKEND-LOAD した module を返す。"
-  (backend-load backend (backend-compile backend text)))
-
 ;;; --- 引数から aval を求める ---
 
 (defun %jit-argument-aval (value)
@@ -240,11 +234,56 @@ BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでも
             (remhash fn *jit-cache*)
             count)))))
 
+;;; --- jit-compile-error（issue #34、wave 4 j2） ---
+;;;
+;;; %JIT-COMPILE-AND-LOAD は、コンパイル・ロードが BACKEND-ERROR を signal
+;;; したときに、その eqn を逆引きしてから JIT-COMPILE-ERROR に変換する
+;;; （GRAPH を引数に追加している）。%JIT-CALL は、キャッシュミス時の経路を
+;;; RESTART-CASE（USE-EAGER・RECOMPILE）で包む。
+
+(define-condition jit-compile-error (jit-error)
+  ((condition :initarg :condition :reader jit-compile-error-condition)
+   (graph :initarg :graph :reader jit-compile-error-graph)
+   (eqn :initarg :eqn :initform nil :reader jit-compile-error-eqn)
+   (eqn-index :initarg :eqn-index :initform nil :reader jit-compile-error-eqn-index))
+  (:report
+   (lambda (condition stream)
+     (format stream "jit: コンパイルに失敗した: ~A~@[~%原因の eqn (~D): ~A ~S -> ~S~]"
+             (jit-compile-error-condition condition)
+             (jit-compile-error-eqn-index condition)
+             (and (jit-compile-error-eqn condition)
+                  (primitive-name (eqn-prim (jit-compile-error-eqn condition))))
+             (and (jit-compile-error-eqn condition)
+                  (mapcar #'var-aval (eqn-invars (jit-compile-error-eqn condition))))
+             (and (jit-compile-error-eqn condition)
+                  (var-aval (first (eqn-outvars (jit-compile-error-eqn condition))))))))
+  (:documentation
+   "%JIT-COMPILE-AND-LOAD が BACKEND-COMPILE / BACKEND-LOAD から受け取った
+BACKEND-ERROR を包み直したもの。CONDITION は元のコンディション、GRAPH は
+コンパイルしようとした graph、EQN・EQN-INDEX は
+GRAPH-EQN-FOR-DIAGNOSTIC が (PRINC-TO-STRING CONDITION) から逆引きできた
+原因の eqn とその GRAPH-EQNS 中の位置（逆引きできなければ両方 NIL）。
+
+JIT-ERROR のサブタイプなので、この上に USE-EAGER・RECOMPILE の2つの
+リスタートが %JIT-CALL の中で使える（restart-case の :REPORT を見る）。"))
+
+(defun %jit-compile-and-load (backend text graph)
+  "TEXT を BACKEND-COMPILE してから BACKEND-LOAD した module を返す。
+BACKEND-COMPILE・BACKEND-LOAD のどちらかが BACKEND-ERROR を signal したら、
+GRAPH-EQN-FOR-DIAGNOSTIC で GRAPH の中の原因の eqn を探し（見つからなければ
+NIL・NIL）、JIT-COMPILE-ERROR に変換して signal し直す。"
+  (handler-case (backend-load backend (backend-compile backend text))
+    (backend-error (c)
+      (multiple-value-bind (eqn index) (graph-eqn-for-diagnostic graph (princ-to-string c))
+        (error 'jit-compile-error :condition c :graph graph :eqn eqn :eqn-index index)))))
+
 (defun %jit-cache-lookup-or-compile (fn key backend graph-thunk)
   "*JIT-CACHE* から FN・KEY に対応するエントリを引く。無ければ GRAPH-THUNK
 （引数無しの関数で、GRAPH を返す）を呼んでトレースし、EMIT-STABLEHLO ->
-%JIT-COMPILE-AND-LOAD（BACKEND 上に）した結果を新しいエントリとして
-書き込む。呼び出し全体を *JIT-CACHE-LOCK* で保護する。"
+%JIT-COMPILE-AND-LOAD（BACKEND 上に、GRAPH 付きで診断できる形で）した
+結果を新しいエントリとして書き込む。呼び出し全体を *JIT-CACHE-LOCK* で
+保護する（コンパイルが JIT-COMPILE-ERROR を signal して非局所脱出しても、
+WITH-MUTEX の UNWIND-PROTECT がロックを必ず解放する）。"
   (sb-thread:with-mutex (*jit-cache-lock*)
     (let ((table (or (gethash fn *jit-cache*)
                       (setf (gethash fn *jit-cache*) (make-hash-table :test 'equal)))))
@@ -253,15 +292,25 @@ BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでも
             (incf *jit-miss-count*)
             (let* ((graph (funcall graph-thunk))
                    (text (emit-stablehlo graph))
-                   (module (%jit-compile-and-load backend text)))
+                   (module (%jit-compile-and-load backend text graph)))
               (setf (gethash key table) (%make-jit-entry graph text module))))))))
 
-;;; --- %jit-call ---
+(defun %jit-eager-fallback (graph dynamic-values)
+  "GRAPH を DYNAMIC-VALUES（配列または device array のリスト）に対して
+EVAL-GRAPH で評価し、多値で返す（USE-EAGER リスタートの本体。device array は
+先に TO-HOST してから渡す）。"
+  (apply #'eval-graph graph (mapcar (lambda (value) (if (arrayp value) value (to-host value))) dynamic-values)))
 
 (defun %jit-call (jitted args)
   "JITTED（JITTED-FUNCTION）の呼び出しの糸口。引数の個数を確かめ、backend を
 解決し、静的引数を切り出し、動的引数から aval を求め、キャッシュを引いて
-（無ければコンパイルして）%JIT-EXECUTE する。"
+（無ければコンパイルして）%JIT-EXECUTE する。
+
+キャッシュミスのコンパイルが JIT-COMPILE-ERROR を signal したときのために
+2つのリスタートを提供する: USE-EAGER はこの呼び出しだけ GRAPH を
+EVAL-GRAPH で評価して返す（何もキャッシュしないので、次の呼び出しは
+また同じコンパイルを試みる）。RECOMPILE はもう一度 %JIT-CALL 自体を
+やり直す（コンパイルが直っていれば今度はキャッシュに載る）。"
   (let* ((fn (%jitted-function-fn jitted))
          (static-positions (%jitted-function-static-positions jitted))
          (arity (length (traceable-function-lambda-list fn))))
@@ -279,7 +328,41 @@ BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでも
             dynamic-values (nreverse dynamic-values))
       (let* ((avals (mapcar #'%jit-argument-aval dynamic-values))
              (key (%jit-cache-key backend avals static-values))
-             (entry (%jit-cache-lookup-or-compile
-                     fn key backend
-                     (lambda () (%jit-trace fn avals static-positions static-values)))))
-        (%jit-execute backend (%jit-entry-module entry) dynamic-values avals)))))
+             (graph-thunk (lambda () (%jit-trace fn avals static-positions static-values))))
+        (restart-case
+            (let ((entry (%jit-cache-lookup-or-compile fn key backend graph-thunk)))
+              (%jit-execute backend (%jit-entry-module entry) dynamic-values avals))
+          (use-eager ()
+            :report "この呼び出しだけ eager（eval-graph）で実行する"
+            (%jit-eager-fallback (funcall graph-thunk) dynamic-values))
+          (recompile ()
+            :report "もう一度コンパイルする"
+            (%jit-call jitted args)))))))
+
+;;; --- defjit（issue #34、wave 4 j2） ---
+
+(defun %defjit-install (name traceable)
+  "NAME（シンボル）の property list の :%DEFJIT-TRACEABLE に TRACEABLE を
+記録し、以前そこに TRACEABLE-FUNCTION があれば %JIT-CACHE-FORGET でその
+キャッシュエントリを先に捨て（DEFJIT の再定義のたびに、古いキャッシュを
+使い続けないようにする。design tab の「Lisp らしさ」）、NAME の
+FDEFINITION を (JIT TRACEABLE) にする。"
+  (let ((old (get name '%defjit-traceable)))
+    (when old (%jit-cache-forget old)))
+  (setf (get name '%defjit-traceable) traceable)
+  (setf (fdefinition name) (jit traceable)))
+
+(defmacro defjit (name (&rest lambda-list) &body body)
+  "NAME を、BODY を WITH-TRACING でトレース対象にしてから JIT した関数として
+定義する（呼び出しのたびに必要なら1回だけコンパイルする通常の関数として
+FUNCALL・(NAME ...) の両方で呼べる）。
+
+DEFJIT を再評価するたびに新しい TRACEABLE-FUNCTION が作られるので、以前の
+評価が作ったキャッシュエントリは再利用されず、その場で捨てられる
+（%DEFJIT-INSTALL 参照）。v1 では :STATIC-ARGS やドキュメント文字列は
+サポートしない（後方互換に拡張できるので follow-up）。使う BACKEND は
+呼び出し時の *DEFAULT-BACKEND*。"
+  `(progn
+     (declaim (ftype function ,name))
+     (%defjit-install ',name (with-tracing ,lambda-list ,@body))
+     ',name))
