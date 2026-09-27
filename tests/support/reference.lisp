@@ -23,6 +23,42 @@
             (+ (coerce (row-major-aref a i) 'double-float)
                (coerce (row-major-aref b i) 'double-float))))))
 
+;; issue #31 p1
+(defun reference-sub (a b)
+  "A - B（要素ごとの差）を返す。A と B は同じ shape を持つこと。"
+  (unless (equal (array-dimensions a) (array-dimensions b))
+    (error "reference-sub: 形状が違う: ~A と ~A" (array-dimensions a) (array-dimensions b)))
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i)
+            (- (coerce (row-major-aref a i) 'double-float)
+               (coerce (row-major-aref b i) 'double-float))))))
+
+;; issue #31 p1
+(defun reference-mul (a b)
+  "A * B（要素ごとの積）を返す。A と B は同じ shape を持つこと。"
+  (unless (equal (array-dimensions a) (array-dimensions b))
+    (error "reference-mul: 形状が違う: ~A と ~A" (array-dimensions a) (array-dimensions b)))
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i)
+            (* (coerce (row-major-aref a i) 'double-float)
+               (coerce (row-major-aref b i) 'double-float))))))
+
+;; issue #31 p1
+(defun reference-div (a b)
+  "A / B（要素ごとの商）を返す。A と B は同じ shape を持つこと。B に0を
+渡すとそのまま DOUBLE-FLOAT の除算に委ねる（reference-* には浮動小数点
+トラップのマスクを意図的に足していない。0除算を確かめるテストは eager
+側を直接呼ぶ）。"
+  (unless (equal (array-dimensions a) (array-dimensions b))
+    (error "reference-div: 形状が違う: ~A と ~A" (array-dimensions a) (array-dimensions b)))
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i)
+            (/ (coerce (row-major-aref a i) 'double-float)
+               (coerce (row-major-aref b i) 'double-float))))))
+
 (defun reference-matmul (a b)
   "A @ B（行列積）を返す。A・B は rank 2 で、A の列数と B の行数が一致すること。"
   (unless (and (= (array-rank a) 2) (= (array-rank b) 2))

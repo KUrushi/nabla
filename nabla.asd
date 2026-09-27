@@ -24,6 +24,9 @@
                (:file "src/ir")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "src/ir-print")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "src/primitives/common")
+               (:file "src/primitives/arith")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "src/primitives/shape-common")
                (:file "src/primitives/shape")
@@ -69,6 +72,8 @@
                (:file "tests/ir-test")
                ;; graph の印字と読み込み（issue #29、u1b）
                (:file "tests/ir-print-test")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "tests/primitives/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/primitives/shape-test")
                ;; graph の eager 評価（issue #39、e0）
@@ -127,6 +132,9 @@
                (:file "tests/iree/example-test")
                ;; StableHLO op 対応表（issue #30、u2）
                (:file "tests/iree/ops-test")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               (:file "tests/iree/primitive-support")
+               (:file "tests/iree/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "tests/iree/shape-primitive-support")
                (:file "tests/iree/shape-test")))

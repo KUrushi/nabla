@@ -141,22 +141,33 @@ INDEX は既定 0 のみを受け付ける（v1 は各ドライバの既定デ�
 扱う。0 以外は未対応としてエラーにする）。
 
 登録されていないドライバ名を渡すと、IREE-STATUS-ERROR（code :not-found）が
-signal される。"
+signal される。
+
+:local-task ドライバはここでワーカースレッドプールを作る。そのワーカー
+スレッドは、生成時に SBCL の浮動小数点例外トラップ（デフォルトで
+:overflow :invalid :divide-by-zero が有効）を引き継ぐ。マスクせずに作ると、
+レーン数の倍数でない形状に対するベクトル化されたカーネル（例
+stablehlo.divide のパディングレーン）が division-by-zero などのトラップを
+起こし、SIGFPE で SBCL プロセスごと落ちる（issue #31 p1 レビュー）。この
+関数を SB-INT:WITH-FLOAT-TRAPS-MASKED で包み、生成時点のワーカースレッドを
+マスク済みの状態にする（INVOKE 側だけをマスクしても、すでに未マスクの
+状態で作られたワーカースレッドには効かないため直らない）。"
   (unless (zerop index)
     (error "make-device: index ~S はまだサポートされていない（0 だけ受け付ける）" index))
-  (let* ((canonical (%canonical-driver driver))
-         (name (%driver-name-string canonical))
-         (instance (iree-instance)))
-    (with-string-view (view name)
-      (cffi:with-foreign-object (out-device :pointer)
-        (check-status
-         (%runtime-instance-try-create-default-device
-          (instance-pointer instance) view out-device)
-         "make-device")
-        (make-instance 'device
-                        :pointer (cffi:mem-ref out-device :pointer)
-                        :driver canonical
-                        :name name)))))
+  (sb-int:with-float-traps-masked (:overflow :invalid :divide-by-zero)
+    (let* ((canonical (%canonical-driver driver))
+           (name (%driver-name-string canonical))
+           (instance (iree-instance)))
+      (with-string-view (view name)
+        (cffi:with-foreign-object (out-device :pointer)
+          (check-status
+           (%runtime-instance-try-create-default-device
+            (instance-pointer instance) view out-device)
+           "make-device")
+          (make-instance 'device
+                          :pointer (cffi:mem-ref out-device :pointer)
+                          :driver canonical
+                          :name name))))))
 
 (defun device-released-p (device)
   "DEVICE が release-device 済みなら真を返す。"

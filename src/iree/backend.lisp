@@ -65,7 +65,11 @@ signal する。device はまだ作らない（ファイル先頭のコメント
 
 (defun %iree-backend-ensure-device (backend)
   "BACKEND の device を、まだ無ければ (MAKE-DEVICE (BACKEND-TARGET BACKEND))
-で作って返す（1回だけ、%IREE-BACKEND-DEVICE-LOCK で保護する）。"
+で作って返す（1回だけ、%IREE-BACKEND-DEVICE-LOCK で保護する）。
+
+浮動小数点トラップのマスクは MAKE-DEVICE 自身の責任（runtime.lisp）。ここでは
+何もしない（MAKE-DEVICE を直接呼ぶ他の呼び出し元も同じ保護を受けるように、
+IREE-BACKEND 経由の呼び出しだけをここで包まない）。"
   (sb-thread:with-mutex ((%iree-backend-device-lock backend))
     (or (%iree-backend-device backend)
         (setf (%iree-backend-device backend)
@@ -122,7 +126,9 @@ SESSION-APPEND-MODULE で読み込んで IREE-MODULE に包んで返す。途中
   "MODULE の session に対して、FUNCTION-NAME の前に固定のモジュール名
 \"module\" を付けた \"module.FUNCTION-NAME\" を INVOKE する（フェーズ1の
 StableHLO 出力も無名の builtin.module にする前提。無名モジュールは
-IREE 側で \"module\" という名前になる）。ARRAYS はそのまま INVOKE に渡す。"
+IREE 側で \"module\" という名前になる）。ARRAYS はそのまま INVOKE に渡す。
+
+浮動小数点トラップのマスクは INVOKE 自身の責任（execute.lisp）。"
   (declare (ignore backend))
   (apply #'invoke (iree-module-session module) (format nil "module.~A" function-name) arrays))
 
