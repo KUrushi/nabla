@@ -36,12 +36,19 @@ DTYPE-MISMATCH を signal した場合は NIL を要素に持つ）になる。�
    "EVAL-GRAPH が、:EAGER を持たないプリミティブを使う EQN に当たったときに
 signal される。NAME はそのプリミティブ名（キーワード）。"))
 
+(defun %array-aval-or-nil (array dtype)
+  "(ARRAY-AVAL ARRAY DTYPE) を返す。ARRAY の実際の要素型が DTYPE と食い違って
+DTYPE-MISMATCH を signal したときは、それを飲み込んで NIL を返す。invar
+チェック（GRAPH-INPUT-MISMATCH に変換）と post-eqn の出力チェック
+（PRIMITIVE-ERROR に変換）の両方が共有する小さなヘルパー。"
+  (handler-case (array-aval array dtype)
+    (dtype-mismatch () nil)))
+
 (defun %eval-graph-invar-actual-aval (invar array)
   "ARRAY の aval を (VAR-AVAL INVAR) の dtype で決めて返す。ARRAY の実際の
 要素型と食い違って ARRAY-DTYPE が DTYPE-MISMATCH を signal したときは NIL
 を返す（EVAL-GRAPH はこれを GRAPH-INPUT-MISMATCH に変換する）。"
-  (handler-case (array-aval array (aval-dtype (var-aval invar)))
-    (dtype-mismatch () nil)))
+  (%array-aval-or-nil array (aval-dtype (var-aval invar))))
 
 (defun %eval-graph-bind-invars (graph arrays env)
   "GRAPH-INVARS の個数・aval を ARRAYS と照らし合わせ、問題が無ければ ENV
@@ -91,8 +98,7 @@ signal する（CHECK-GRAPH を通らなかった graph が use-before-def を�
            ;; 食い違って）DTYPE-MISMATCH を signal することがあるので、
            ;; それも「aval が一致しない」場合として PRIMITIVE-ERROR に
            ;; まとめる（生の DTYPE-MISMATCH を漏らさない）。
-           (result-aval (handler-case (array-aval result (aval-dtype out-aval))
-                          (dtype-mismatch () nil))))
+           (result-aval (%array-aval-or-nil result (aval-dtype out-aval))))
       (unless (equalp result-aval out-aval)
         (error 'primitive-error :name (primitive-name prim) :in-avals in-avals
                :format-control "eager の結果の aval が out-aval ~S と一致しない"

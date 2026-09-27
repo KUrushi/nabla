@@ -186,3 +186,30 @@ eqn を持つ graph を評価すると MALFORMED-GRAPH。"
       (is (equal '(1 2) (array-dimensions reshaped)))
       (is (equalp (- (aref array 0)) (aref negated 0)))
       (is (equalp (aref array 0) (aref reshaped 0 0))))))
+
+(test eval/bf16-f16-invar-round-trips-through-outvar
+  "bf16 / f16 の invar をそのまま outvar にした graph は、渡した
+(UNSIGNED-BYTE 16) 配列そのもの（EQ）を返す。invar チェックが ARRAY-AVAL を
+invar の dtype 付きで呼んで dtype を判別する経路（%EVAL-GRAPH-INVAR-ACTUAL-AVAL）
+の正の例。dtype を渡さずに ARRAY-AVAL を呼ぶ壊れた実装だと、u16 配列が既定の
+dtype と誤判定されて GRAPH-INPUT-MISMATCH になり、この検査が失敗する。"
+  (dolist (dtype '(:bf16 :f16))
+    (let* ((a (nb::make-var (nb:make-aval '(2 3) dtype)))
+           (graph (nb::make-graph (list a) '() (list a)))
+           (array (make-random-array (make-array-spec '(2 3) dtype))))
+      (is (eq array (nb:eval-graph graph array))))))
+
+(test eval/bf16-f16-reshape-eqn-succeeds
+  "bf16 / f16 の invar に %TEST-RESHAPE の eqn をかけた graph の評価が成功し、
+raw なビット列がそのまま出力に写る（%TEST-RESHAPE の EAGER は要素型に依らず
+コピーするだけ）。post-eqn の aval 不変量チェック（(ARRAY-AVAL RESULT
+(AVAL-DTYPE OUT-AVAL))）も u16 の出力配列に対して成功することを確かめる。"
+  (dolist (dtype '(:bf16 :f16))
+    (let* ((a (nb::make-var (nb:make-aval '(2 3) dtype)))
+           (eqn (nb::make-eqn :%test-reshape (list a) :shape '(3 2)))
+           (graph (nb::make-graph (list a) (list eqn) (nb:eqn-outvars eqn)))
+           (array (make-random-array (make-array-spec '(2 3) dtype))))
+      (let ((result (nb:eval-graph graph array)))
+        (is (equal '(3 2) (array-dimensions result)))
+        (is (equalp (row-major-aref array 0) (row-major-aref result 0)))
+        (is (equalp (row-major-aref array 5) (row-major-aref result 5)))))))
