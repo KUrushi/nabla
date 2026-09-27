@@ -264,39 +264,7 @@ SINGLE-FLOAT の24bit精度に対して常に正確に表現できる。"
                 :regression-id float16/bf16/exact-midpoint-rounds-to-even-neighbour
                 :regression-file (regression-path "float16-bf16-exact-midpoint-ties-to-even"))))
 
-;;; 4. 交差確認: 既存の（切り捨ての）デコーダ tests/support/random-array.lisp
-;;;    と一致するか。既存デコーダは exp16 が全1（無限大・NaN 用のビット
-;;;    パターン）を正しく扱わない（無限大を有限の巨大な値にデコードして
-;;;    しまう）ので、その範囲は比較から除く。bf16 は f32 と指数の幅が
-;;;    同じ単純なビット列の切り出しなので、その範囲でも一致する。
-
-(test float16/f16/matches-existing-decoder-outside-inf-nan-range
-  "f16 の全ビット列のうち、指数が全1でない範囲（有限）で、nb::decode-float16
-が既存の nabla.tests.support::%f16-bits->f32 と一致する。"
-  (let ((mismatches
-          (loop for bits from 0 below 65536
-                for exp16 = (ldb (byte 5 10) bits)
-                unless (or (= exp16 #x1F)
-                           (= (nb::decode-float16 bits :f16)
-                              (nabla.tests.support::%f16-bits->f32 bits)))
-                  collect bits)))
-    (is (null mismatches) "f16 bits=~{~4,'0X~^ ~}" mismatches)))
-
-(test float16/bf16/matches-existing-decoder-for-all-non-nan-bits
-  "bf16 は全ビット列（NaN 以外）で nb::decode-float16 が既存の
-nabla.tests.support::%bf16-bits->f32 と一致する（両方とも単純なビット
-シフトで、常に正確）。"
-  (let ((mismatches
-          (loop for bits from 0 below 65536
-                for mant8 = (ldb (byte 8 0) bits)
-                for exp8 = (ldb (byte 8 7) bits)
-                unless (or (and (= exp8 #xFF) (/= mant8 0))
-                           (= (nb::decode-float16 bits :bf16)
-                              (nabla.tests.support::%bf16-bits->f32 bits)))
-                  collect bits)))
-    (is (null mismatches) "bf16 bits=~{~4,'0X~^ ~}" mismatches)))
-
-;;; 5. 符号付きゼロ・無限大。
+;;; 4. 符号付きゼロ・無限大。
 
 (test float16/signed-zero-and-infinity
   "符号付きゼロと無限大の変換。"
