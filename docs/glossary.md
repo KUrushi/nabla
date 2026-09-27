@@ -80,6 +80,9 @@ pretty form を出力する。
 **最近接偶数丸め（RNE, round to nearest, ties to even）**
 : 浮動小数点の丸め方式の1つ。表現できる2つの値のうち近い方に丸め、ちょうど中間（等距離）のときは仮数の最下位ビットが0になる方（偶数）に丸める。IEEE 754 の既定の丸めモードで、nabla では bf16 / f16 と single-float の変換（`src/float16.lisp`）に使う。単純な切り捨てと違い、丸め誤差が特定の方向に偏らない。
 
+**float trap（浮動小数点例外トラップ）**
+: CPU が0除算・オーバーフロー・不正な演算（0/0 や sqrt(-1) など）を検出したときに、実行を止めてコンディションを signal する仕組み。SBCL は既定で `:overflow` `:invalid` `:divide-by-zero` の3つのトラップを有効にしているため、`(/ 1.0 0.0)` のような計算はそのままだと `division-by-zero` を signal してしまう。StableHLO / IREE は IEEE 754 どおり無限大・NaN を返す（signal しない）ので、nabla のプリミティブの eager 実装は `sb-int:with-float-traps-masked` でこの3つのトラップをマスクしてから計算し、両者の挙動を揃える（`src/primitives/common.lisp` の `with-ieee-arithmetic`）。マスクは要素ごとではなく、eager 呼び出し全体を1回だけ包む（速度のため）。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**
