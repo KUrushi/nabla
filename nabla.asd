@@ -101,4 +101,6 @@
                (:file "tests/iree/runtime-cuda-test")
                (:file "tests/iree/device-array-test")
                (:file "tests/iree/execute-test")
-               (:file "tests/iree/example-test")))
+               (:file "tests/iree/example-test")
+               ;; StableHLO op 対応表（issue #30、u2）
+               (:file "tests/iree/ops-test")))
