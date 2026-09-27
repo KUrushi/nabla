@@ -22,6 +22,8 @@
                ;; IR と defprimitive（issue #29、u1a）
                (:file "src/primitive")
                (:file "src/ir")
+               ;; graph の印字と読み込み（issue #29、u1b）
+               (:file "src/ir-print")
                (:file "src/backend")
                (:file "src/compile-cache"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
@@ -58,6 +60,8 @@
                (:file "tests/graph-recipes")
                (:file "tests/primitive-test")
                (:file "tests/ir-test")
+               ;; graph の印字と読み込み（issue #29、u1b）
+               (:file "tests/ir-print-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))

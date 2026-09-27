@@ -54,3 +54,9 @@
 
 (nb:defprimitive %test-two-params (:a :b)
   :abstract-eval (lambda (in-avals &key a b) (declare (ignore a b)) (first in-avals)))
+
+;; ir-print.lisp の READ-GRAPH が params 中の T を CL:T に正規化することを
+;; 確かめるための、フラグ（真偽値）パラメタを持つテスト専用プリミティブ
+;; （issue #29、u1b）。
+(nb:defprimitive %test-flag (:keep)
+  :abstract-eval (lambda (in-avals &key keep) (declare (ignore keep)) (first in-avals)))
