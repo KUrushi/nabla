@@ -1,0 +1,115 @@
+;;;; primitive: 演算（プリミティブ）の宣言と登録（issue #29 前半）。
+;;;;
+;;;; プリミティブは形状推論（abstract-eval）・StableHLO 出力（emit）・
+;;;; eager 用の CPU 実装（eager）の3つを束ねた PRIMITIVE 構造体として
+;;;; DEFPRIMITIVE で登録する。jvp / transpose / batch のルールはフェーズ2
+;;;; 以降に、この lambda list を拡張して足す（CLAUDE.md「設計上の約束」）。
+
+(in-package #:nabla)
+
+(defstruct (primitive (:constructor %make-primitive) (:copier nil) (:predicate primitive-p))
+  "1つの演算（プリミティブ）を表す。NAME は :ADD のようなキーワード、
+PARAMS は宣言順に並んだパラメタ名（キーワード）のリスト。ABSTRACT-EVAL /
+EMIT / EAGER の呼び出し規約は DEFPRIMITIVE の docstring を見る。"
+  (name nil :type keyword :read-only t)
+  (params nil :type list :read-only t)
+  (abstract-eval nil :type function :read-only t)
+  (emit nil :type (or null function) :read-only t)
+  (eager nil :type (or null function) :read-only t))
+
+(defvar *primitives* (make-hash-table :test 'eq)
+  "プリミティブ名（キーワード）から PRIMITIVE への表。DEFPRIMITIVE の
+再評価は既存のエントリを新しい PRIMITIVE で置き換える。")
+
+(defun register-primitive (primitive)
+  "PRIMITIVE を *PRIMITIVES* に（既存の同名エントリを上書きして）登録し、
+PRIMITIVE をそのまま返す。"
+  (setf (gethash (primitive-name primitive) *primitives*) primitive))
+
+(defun find-primitive (name)
+  "NAME（キーワード）に対応する PRIMITIVE を返す。登録が無ければ NIL。"
+  (gethash name *primitives*))
+
+(define-condition unknown-primitive (error)
+  ((name :initarg :name :reader unknown-primitive-name))
+  (:report
+   (lambda (condition stream)
+     (format stream "未登録のプリミティブ: ~S" (unknown-primitive-name condition))))
+  (:documentation
+   "MAKE-EQN に、登録されていない名前を渡したときに signal される。NAME は
+渡された名前（キーワード）。"))
+
+(define-condition primitive-error (error)
+  ((name :initarg :name :reader primitive-error-name)
+   (in-avals :initarg :in-avals :initform nil :reader primitive-error-in-avals)
+   (format-control :initarg :format-control :reader primitive-error-format-control)
+   (format-arguments :initarg :format-arguments :initform nil :reader primitive-error-format-arguments))
+  (:report
+   (lambda (condition stream)
+     (format stream "プリミティブ ~S: ~?"
+             (primitive-error-name condition)
+             (primitive-error-format-control condition)
+             (primitive-error-format-arguments condition))))
+  (:documentation
+   "プリミティブの abstract-eval が入力の shape / dtype の不一致を検出した
+とき、または MAKE-EQN が渡された params の不正（未知キー・欠落・余分）を
+検出したときに signal される。NAME はプリミティブ名、IN-AVALS は入力の
+AVAL のリスト（分からなければ NIL）。"))
+
+(defun %check-param-keywords (name param-keywords)
+  (dolist (k param-keywords)
+    (unless (keywordp k)
+      (error "DEFPRIMITIVE ~S: パラメタ ~S はキーワードでなければならない" name k))))
+
+(defmacro defprimitive (name (&rest param-keywords) &key abstract-eval emit eager)
+  "NAME（シンボル）を名前に持つプリミティブを宣言し、
+*PRIMITIVES* に登録する。登録名は (INTERN (SYMBOL-NAME NAME) :KEYWORD)。
+
+PARAM-KEYWORDS はこのプリミティブが受け取るパラメタ名を宣言順に並べた
+キーワードのリスト（キーワード以外を渡すとマクロ展開時にエラーになる）。
+
+:ABSTRACT-EVAL は必須で、
+  (lambda (in-avals &key <params>) ...) → aval
+という形の関数。入力 AVAL のリストとパラメタから出力 AVAL を計算する
+（形状・dtype の不一致は PRIMITIVE-ERROR を signal する）。
+
+:EMIT は省略でき、
+  (lambda (in-names in-avals out-name out-aval &key <params>) ...) → string
+という形の関数。1つの MLIR 演算を表す文字列（複数行でもよい）を返す。
+`loc(...)` は付けない。
+
+:EAGER は省略でき、
+  (lambda (arrays in-avals &key <params>) ...) → simple-array
+という形の関数。CPU 上で即時に評価する。
+
+このマクロは NAME のキーワードを評価値として返す。再評価は登録を
+新しい PRIMITIVE 構造体で置き換える（EQ ではなくなる）。"
+  (%check-param-keywords name param-keywords)
+  (unless abstract-eval
+    (error "DEFPRIMITIVE ~S: :ABSTRACT-EVAL は必須" name))
+  (let ((keyword (intern (symbol-name name) :keyword)))
+    `(progn
+       (register-primitive
+        (%make-primitive :name ,keyword
+                          :params ',param-keywords
+                          :abstract-eval ,abstract-eval
+                          :emit ,emit
+                          :eager ,eager))
+       ,keyword)))
+
+(defun dtype-mlir-name (dtype)
+  "DTYPE に対応する StableHLO/MLIR の要素型の綴りを返す
+（\"f32\" \"f64\" \"bf16\" \"f16\" \"i1\"）。"
+  (ecase dtype
+    (:f32 "f32")
+    (:f64 "f64")
+    (:bf16 "bf16")
+    (:f16 "f16")
+    (:i1 "i1")))
+
+(defun tensor-type-string (aval)
+  "AVAL を表す MLIR のテンソル型の文字列を返す（\"tensor<2x3xf32>\"）。
+rank 0 は \"tensor<f32>\"。"
+  (let ((shape (aval-shape aval)))
+    (format nil "tensor<~{~D~^x~}~:[~;x~]~A>"
+            shape (not (null shape)) (dtype-mlir-name (aval-dtype aval)))))

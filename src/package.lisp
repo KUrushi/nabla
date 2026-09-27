@@ -45,7 +45,22 @@
    #:unsupported-dtype
    #:unsupported-dtype-dtype
    ;; vmfb ディスクキャッシュ（issue #10）
-   #:*compile-cache-directory*)
+   #:*compile-cache-directory*
+   ;; IR と defprimitive（issue #29、u1a）
+   #:defprimitive
+   #:primitive-name
+   #:var-aval
+   #:eqn-prim
+   #:eqn-params
+   #:eqn-invars
+   #:eqn-outvars
+   #:graph-invars
+   #:graph-eqns
+   #:graph-outvars
+   #:graph-constants
+   #:unknown-primitive
+   #:unknown-primitive-name
+   #:primitive-error)
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
 ニックネームは NB。フェーズ0時点の公開シンボルは dtype・aval・backend

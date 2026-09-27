@@ -140,6 +140,8 @@ sbcl --non-interactive --load examples/add.lisp
 
 **vmfb ディスクキャッシュ**（`src/compile-cache.lisp`、issue #10）: `*compile-cache-directory*`
 
+**IR と defprimitive**（`src/primitive.lisp`、`src/ir.lisp`、issue #29）: `defprimitive`, `primitive-name`, `var-aval`, `eqn-prim`, `eqn-params`, `eqn-invars`, `eqn-outvars`, `graph-invars`, `graph-eqns`, `graph-outvars`, `graph-constants`, `unknown-primitive`, `unknown-primitive-name`, `primitive-error`
+
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
 
 - `iree-backend`（`(nb:make-backend :iree :target :local | :cuda :cuda-arch "sm_80")`）
@@ -149,7 +151,7 @@ sbcl --non-interactive --load examples/add.lisp
 ## プロジェクト構成
 
 ```
-src/                 core（nabla パッケージ）: package, dtype, aval, backend, compile-cache
+src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
