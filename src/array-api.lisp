@@ -42,10 +42,10 @@ rank 0 の場合も TRACING-ERROR にする）。"
    "A の最後の軸と B の最初の軸を縮約する（バッチ次元は無い）
 dot-general。A・B は rank 1 以上でなければならない（rank 0 は
 TRACING-ERROR）。A が rank 1（ベクタ）なら結果は B の残りの軸だけになる
-（1次元どうしなら rank 0 のスカラー）。既知の制約: A・B は両方配列か
-両方トレーサでなければならない（+ 等の算術演算子と違い、配列とトレーサを
-混ぜたメソッドは無い）。トレース中に定数の配列と DOT したいときは、呼び
-出し側が明示的にリフトすること。"))
+（1次元どうしなら rank 0 のスカラー）。A・B の片方が配列、もう片方が
+トレーサなら、配列をトレーサと同じ dtype の定数としてリフトしてから
+トレースする（+ 等の算術演算子と同じ規約。dtype が食い違えば
+DTYPE-MISMATCH）。"))
 
 (defmethod dot ((a array) (b array))
   (%dot-check-ranks (array-rank a) (array-rank b))
@@ -55,6 +55,12 @@ TRACING-ERROR）。A が rank 1（ベクタ）なら結果は B の残りの軸�
 (defmethod dot ((a tracer) (b tracer))
   (%dot-check-ranks (aval-rank (tracer-aval a)) (aval-rank (tracer-aval b)))
   (apply #'%trace-eqn :dot-general (list a b) (%dot-params (aval-rank (tracer-aval a)))))
+
+(defmethod dot ((a array) (b tracer))
+  (dot (%lift-array a b) b))
+
+(defmethod dot ((a tracer) (b array))
+  (dot a (%lift-array b a)))
 
 ;;; --- reshape ---
 
@@ -172,10 +178,12 @@ eqn も足さない）。"))
 (defgeneric where (pred a b)
   (:documentation
    "PRED（:I1 の値）が真の要素は A、偽の要素は B を選ぶ（%T-SELECT と同じ。
-trace-ops.lisp の SELECT/WHERE の分岐に関するドキュメントを参照）。"))
+trace-ops.lisp の SELECT/WHERE の分岐に関するドキュメントを参照）。
+PRED が rank 0 で A・B が rank 1 以上なら、PRED を A・B の shape に
+ブロードキャストする。PRED が Lisp のブール値（T／NIL）なら、ふつうの IF
+と同じく片方の分岐を静的に選び、SELECT をトレースしない（結果の shape・
+dtype は同じ真偽の rank 0 の PRED を渡したときと同じ）。PRED がそれ以外
+（数値など）なら TRACING-ERROR。"))
 
-(defmethod where ((pred array) a b)
-  (%t-select pred a b))
-
-(defmethod where ((pred tracer) a b)
+(defmethod where (pred a b)
   (%t-select pred a b))

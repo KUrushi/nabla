@@ -242,3 +242,24 @@ TRACING-ERROR になる（%T-SELECT の仕様どおり）ため、THEN／ELSE �
                       (approx= direct plain :dtype :f32))))
                 :regression-id trace-if/expr-tree-with-if-direct-call-matches-plain-cl-eval-on-scalars
                 :regression-file (regression-path "trace-if-expr-tree-matches-plain-eval"))))
+
+;;; --- issue #74: rank 0 の条件と rank 1 以上の分岐 ---
+
+(test trace-if/rank0-test-broadcasts-to-branch-shape
+  "(IF (> (REDUCE-SUM S) 0.0) X Y) のように条件が rank 0（:I1）で分岐が
+rank 1 以上なら、条件を分岐の shape にブロードキャストして SELECT する。
+EVAL-GRAPH・直接呼び出しのどちらも、S の総和の符号で X か Y 全体を選ぶ。"
+  (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64) :max-rank 3)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (spec seed) args
+                    (let* ((s (make-random-array spec :seed seed))
+                           (x (make-random-array spec :seed (+ seed 1)))
+                           (y (make-random-array spec :seed (+ seed 2)))
+                           (f (nb:with-tracing (s x y) (if (> (nb:reduce-sum s) 0.0) x y)))
+                           (graph (nb:trace-to-graph f (mapcar #'nb:array-aval (list s x y))))
+                           (expected (if (plusp (aref (nb:reduce-sum s))) x y)))
+                      (and (equalp expected (funcall f s x y))
+                           (equalp expected (nb:eval-graph graph s x y))))))
+                :regression-id trace-if/rank0-test-broadcasts-to-branch-shape
+                :regression-file (regression-path "trace-if-rank0-test-broadcasts"))))
