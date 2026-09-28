@@ -193,4 +193,6 @@
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "tests/iree/stablehlo-test")
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
-               (:file "tests/iree/jit-test")))
+               (:file "tests/iree/jit-test")
+               ;; f64 と :i1 の to-device / to-host / invoke を jit で通す（issue #72）
+               (:file "tests/iree/jit-dtype-test")))
