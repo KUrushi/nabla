@@ -1,7 +1,6 @@
 ;;;; dot-general の medium テスト（issue #31 p5）。
 ;;;;
-;;;; p4 の shape-one-op-module-text / with-shape-one-op-module を再利用する
-;;;; （契約のガイダンス: p5 は p4 のヘルパーを使う）。各 op につき f32・
+;;;; tests/iree/primitive-support.lisp の WITH-ONE-OP-MODULE を再利用する。各 op につき f32・
 ;;;; bf16 でそれぞれ1回だけコンパイルし（契約 §4 テスト点5）、その中で
 ;;;; check-it が複数の seed を試す。期待値は dot-general の eager 実装
 ;;;; （host）をそのまま呼んだ結果にする。
@@ -20,10 +19,11 @@ bf16 それぞれの許容誤差で一致する。"
     (let ((lhs-aval (nb:make-aval '(2 3) dtype))
           (rhs-aval (nb:make-aval '(3 4) dtype))
           (out-aval (nb:make-aval '(2 4) dtype)))
-      (with-shape-one-op-module (backend module) (list lhs-aval rhs-aval) out-aval
-          (list (format nil "%0 = stablehlo.dot_general %a0, %a1, contracting_dims = [1] x [0] : (~A, ~A) -> ~A"
-                        (nb::tensor-type-string lhs-aval) (nb::tensor-type-string rhs-aval)
-                        (nb::tensor-type-string out-aval)))
+      (with-one-op-module
+          ((backend module) (list lhs-aval rhs-aval) out-aval
+           (list (format nil "%0 = stablehlo.dot_general %a0, %a1, contracting_dims = [1] x [0] : (~A, ~A) -> ~A"
+                         (nb::tensor-type-string lhs-aval) (nb::tensor-type-string rhs-aval)
+                         (nb::tensor-type-string out-aval))))
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let* ((a (make-random-array (make-array-spec '(2 3) dtype) :seed seed))
@@ -51,10 +51,11 @@ eager 実装（host）の結果と f32・bf16 それぞれの許容誤差で一�
     (let ((lhs-aval (nb:make-aval '(2 3 4) dtype))
           (rhs-aval (nb:make-aval '(2 4 5) dtype))
           (out-aval (nb:make-aval '(2 3 5) dtype)))
-      (with-shape-one-op-module (backend module) (list lhs-aval rhs-aval) out-aval
-          (list (format nil "%0 = stablehlo.dot_general %a0, %a1, batching_dims = [0] x [0], contracting_dims = [2] x [1] : (~A, ~A) -> ~A"
-                        (nb::tensor-type-string lhs-aval) (nb::tensor-type-string rhs-aval)
-                        (nb::tensor-type-string out-aval)))
+      (with-one-op-module
+          ((backend module) (list lhs-aval rhs-aval) out-aval
+           (list (format nil "%0 = stablehlo.dot_general %a0, %a1, batching_dims = [0] x [0], contracting_dims = [2] x [1] : (~A, ~A) -> ~A"
+                         (nb::tensor-type-string lhs-aval) (nb::tensor-type-string rhs-aval)
+                         (nb::tensor-type-string out-aval))))
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let* ((a (make-random-array (make-array-spec '(2 3 4) dtype) :seed seed))
@@ -91,7 +92,8 @@ main では IREE が入力 dtype のまま累積するため半分近くの seed
                                :lhs-contracting '(1) :rhs-contracting '(0)
                                :lhs-batch '() :rhs-batch '()))
            (body-lines (uiop:split-string emit-text :separator '(#\Newline))))
-      (with-shape-one-op-module (backend module) (list lhs-aval rhs-aval) out-aval body-lines
+      (with-one-op-module
+          ((backend module) (list lhs-aval rhs-aval) out-aval body-lines)
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let* ((a (make-random-array (make-array-spec '(4 64) dtype) :seed seed))
