@@ -1,9 +1,7 @@
 ;;;; reduce-sum / reduce-max の medium テスト（issue #31 p6）。
 ;;;;
-;;;; p4 の SHAPE-ONE-OP-MODULE-TEXT / WITH-SHAPE-ONE-OP-MODULE /
-;;;; SHAPE-PRIMITIVE-EAGER（tests/iree/shape-primitive-support.lisp）を
-;;;; そのまま再利用する（チェーンBの中、同じテストシステムなので DAMP の
-;;;; 重複を作らない）。モジュール本体（%init_0 の宣言 + stablehlo.reduce の
+;;;; WITH-ONE-OP-MODULE / PRIMITIVE-EAGER-ORACLE
+;;;; （tests/iree/primitive-support.lisp）をそのまま再利用する。モジュール本体（%init_0 の宣言 + stablehlo.reduce の
 ;;;; 2行）は、テスト自身でもう一度書き下すのではなく nb::primitive-emit を
 ;;;; 呼んで組み立てる（:emit が生成した StableHLO そのものが IREE で
 ;;;; コンパイル・実行できることを確かめるのが、このテストの目的）。
@@ -23,7 +21,7 @@
 
 (defun %reduce-body-lines (name in-aval out-aval axes)
   "NAME（:REDUCE-SUM / :REDUCE-MAX）の :EMIT が返す複数行のテキストを、
-SHAPE-ONE-OP-MODULE-TEXT に渡せる行のリストに分割する。"
+ONE-OP-MODULE-TEXT に渡せる行のリストに分割する。"
   (uiop:split-string
    (funcall (nb::primitive-emit (nb::find-primitive name)) (list "%a0") (list in-aval) "%0" out-aval :axes axes)
    :separator '(#\Newline)))
@@ -36,8 +34,9 @@ SHAPE-ONE-OP-MODULE-TEXT に渡せる行のリストに分割する。"
   (dolist (dtype '(:f32 :bf16))
     (let ((in-aval (nb:make-aval '(4 8) dtype))
           (out-aval (nb:make-aval '(4) dtype)))
-      (with-shape-one-op-module (backend module) (list in-aval) out-aval
-          (%reduce-body-lines :reduce-sum in-aval out-aval '(1))
+      (with-one-op-module
+          ((backend module) (list in-aval) out-aval
+           (%reduce-body-lines :reduce-sum in-aval out-aval '(1)))
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let ((a (make-random-array (make-array-spec '(4 8) dtype) :seed seed)))
@@ -47,7 +46,7 @@ SHAPE-ONE-OP-MODULE-TEXT に渡せる行のリストに分割する。"
                                    (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
                                      (allclose (decode-array (to-host result) dtype)
                                                (decode-array
-                                                (shape-primitive-eager :reduce-sum (list a) (list (nb:array-aval a dtype)) :axes '(1))
+                                                (primitive-eager-oracle :reduce-sum (list a) (list (nb:array-aval a dtype)) :axes '(1))
                                                 dtype)
                                                :rtol rtol :atol atol)))))))
                       :regression-id reduce-sum/one-axis-iree-matches-eager
@@ -61,8 +60,9 @@ reduce-sum を IREE local backend で実行した結果は、eager 実装（host
   (dolist (dtype '(:f32 :bf16))
     (let ((in-aval (nb:make-aval '(4 8) dtype))
           (out-aval (nb:make-aval '() dtype)))
-      (with-shape-one-op-module (backend module) (list in-aval) out-aval
-          (%reduce-body-lines :reduce-sum in-aval out-aval '(0 1))
+      (with-one-op-module
+          ((backend module) (list in-aval) out-aval
+           (%reduce-body-lines :reduce-sum in-aval out-aval '(0 1)))
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let ((a (make-random-array (make-array-spec '(4 8) dtype) :seed seed)))
@@ -72,7 +72,7 @@ reduce-sum を IREE local backend で実行した結果は、eager 実装（host
                                    (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
                                      (allclose (decode-array (to-host result) dtype)
                                                (decode-array
-                                                (shape-primitive-eager :reduce-sum (list a) (list (nb:array-aval a dtype)) :axes '(0 1))
+                                                (primitive-eager-oracle :reduce-sum (list a) (list (nb:array-aval a dtype)) :axes '(0 1))
                                                 dtype)
                                                :rtol rtol :atol atol)))))))
                       :regression-id reduce-sum/all-axes-iree-matches-eager
@@ -86,8 +86,9 @@ reduce-sum を IREE local backend で実行した結果は、eager 実装（host
   (dolist (dtype '(:f32 :bf16))
     (let ((in-aval (nb:make-aval '(4 8) dtype))
           (out-aval (nb:make-aval '(4) dtype)))
-      (with-shape-one-op-module (backend module) (list in-aval) out-aval
-          (%reduce-body-lines :reduce-max in-aval out-aval '(1))
+      (with-one-op-module
+          ((backend module) (list in-aval) out-aval
+           (%reduce-body-lines :reduce-max in-aval out-aval '(1)))
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let ((a (make-random-array (make-array-spec '(4 8) dtype) :seed seed)))
@@ -97,7 +98,7 @@ reduce-sum を IREE local backend で実行した結果は、eager 実装（host
                                    (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
                                      (allclose (decode-array (to-host result) dtype)
                                                (decode-array
-                                                (shape-primitive-eager :reduce-max (list a) (list (nb:array-aval a dtype)) :axes '(1))
+                                                (primitive-eager-oracle :reduce-max (list a) (list (nb:array-aval a dtype)) :axes '(1))
                                                 dtype)
                                                :rtol rtol :atol atol)))))))
                       :regression-id reduce-max/one-axis-iree-matches-eager
@@ -111,8 +112,9 @@ reduce-max を IREE local backend で実行した結果は、eager 実装（host
   (dolist (dtype '(:f32 :bf16))
     (let ((in-aval (nb:make-aval '(4 8) dtype))
           (out-aval (nb:make-aval '() dtype)))
-      (with-shape-one-op-module (backend module) (list in-aval) out-aval
-          (%reduce-body-lines :reduce-max in-aval out-aval '(0 1))
+      (with-one-op-module
+          ((backend module) (list in-aval) out-aval
+           (%reduce-body-lines :reduce-max in-aval out-aval '(0 1)))
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let ((a (make-random-array (make-array-spec '(4 8) dtype) :seed seed)))
@@ -122,7 +124,7 @@ reduce-max を IREE local backend で実行した結果は、eager 実装（host
                                    (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
                                      (allclose (decode-array (to-host result) dtype)
                                                (decode-array
-                                                (shape-primitive-eager :reduce-max (list a) (list (nb:array-aval a dtype)) :axes '(0 1))
+                                                (primitive-eager-oracle :reduce-max (list a) (list (nb:array-aval a dtype)) :axes '(0 1))
                                                 dtype)
                                                :rtol rtol :atol atol)))))))
                       :regression-id reduce-max/all-axes-iree-matches-eager
@@ -140,8 +142,9 @@ main では IREE（llvm-cpu）が入力 dtype のまま累積するため一部�
   (dolist (dtype '(:bf16 :f16))
     (let ((in-aval (nb:make-aval '(1024) dtype))
           (out-aval (nb:make-aval '() dtype)))
-      (with-shape-one-op-module (backend module) (list in-aval) out-aval
-          (%reduce-body-lines :reduce-sum in-aval out-aval '(0))
+      (with-one-op-module
+          ((backend module) (list in-aval) out-aval
+           (%reduce-body-lines :reduce-sum in-aval out-aval '(0)))
         (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                       (lambda (seed)
                         (let ((a (make-random-array (make-array-spec '(1024) dtype) :seed seed)))
@@ -151,7 +154,7 @@ main では IREE（llvm-cpu）が入力 dtype のまま累積するため一部�
                                    (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
                                      (allclose (decode-array (to-host result) dtype)
                                                (decode-array
-                                                (shape-primitive-eager :reduce-sum (list a) (list (nb:array-aval a dtype)) :axes '(0))
+                                                (primitive-eager-oracle :reduce-sum (list a) (list (nb:array-aval a dtype)) :axes '(0))
                                                 dtype)
                                                :rtol rtol :atol atol)))))))
                       :regression-id reduce-sum/bf16-f16-axis1024-iree-matches-eager
