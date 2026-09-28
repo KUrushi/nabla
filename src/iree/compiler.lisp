@@ -117,6 +117,15 @@ signal する。呼び出しごとに新しいリストを作るが、内容は�
 ので、これが無いと f64 の関数の ABI が f32 になり、TO-DEVICE した f64 の
 buffer view を渡せない・精度も f32 になる（issue #72）。
 
+:local には --iree-llvmcpu-link-embedded=false も付ける。llvm-cpu は f64 の
+exp / log / tanh を多項式近似せず（MathTransformPass.cpp の近似は f32 以下
+だけが対象）libm の呼び出しとして残す。既定の embedded ELF は -nostdlib で
+リンクするので undefined symbol になりコンパイルできない。system library
+（ランタイムが dlopen で読み込む共有ライブラリ）にすると、読み込み時に
+プロセスの libm に解決される。代わりにコンパイル時にシステムのリンカ
+（ld.lld、無ければ ld）が要る。生成物は target-cpu=host で元々マシンに依存
+しているので、可搬性は失わない。
+
 注意（将来 jit キャッシュを作るとき向け）: :local のフラグは
 NABLA_IREE_HOME/bin/iree-lld の有無というファイルシステムの状態に依存する。
 CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引数 +
@@ -128,7 +137,8 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
                            "--iree-input-demote-f64-to-f32=false"
                            "--iree-hal-target-device=local"
                            "--iree-hal-local-target-device-backends=llvm-cpu"
-                           "--iree-llvmcpu-target-cpu=host")
+                           "--iree-llvmcpu-target-cpu=host"
+                           "--iree-llvmcpu-link-embedded=false")
                      (%embedded-linker-flags)))
     (:cuda (append (list "--iree-input-type=stablehlo"
                           "--iree-input-demote-f64-to-f32=false"

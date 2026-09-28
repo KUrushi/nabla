@@ -25,8 +25,7 @@ F を eager に直接呼んだ結果を COMPARE（2引数の述語: jit の結�
 allclose :dtype :f64（rtol = atol = 1e-12）で一致する（issue #72）。
 IREE は既定で f64 を f32 に落とす（--iree-input-demote-f64-to-f32）ので、
 その落とし込みが効いていればこの許容誤差では一致しない。exp / log / tanh
-は llvm-cpu では f64 のまま libm の呼び出しになり、embedded linker で
-リンクできない（docs/stablehlo-ops.md）ので、ここでは使わない。"
+は jit-dtype/f64-transcendentals-match-eager で別に確かめる。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
         (*num-trials* 8)
@@ -49,6 +48,34 @@ IREE は既定で f64 を f32 に落とす（--iree-input-demote-f64-to-f32）�
                               (allclose actual expected :dtype :f64))))))
                   :regression-id jit-dtype/f64-elementwise-dot-reduce-matches-eager
                   :regression-file (regression-path "iree-jit-dtype-f64" :package "NABLA.IREE.TESTS")))
+    (gc-and-run-finalizers)))
+
+(define-iree-test jit-dtype/f64-transcendentals-match-eager
+    "f64 の exp / log / tanh を IREE 上で jit した結果（多値の3つすべて）は、
+eager 実装の結果と allclose :dtype :f64（rtol = atol = 1e-12）で一致する。
+llvm-cpu はこれらの f64 版を多項式近似せず libm の呼び出しとして残すので、
+embedded linker（-nostdlib）ではリンクできない。COMPILE-FLAGS が
+--iree-llvmcpu-link-embedded=false で system library（dlopen で読み込む
+共有ライブラリ）を作り、プロセスの libm に解決させることを確かめる。
+log の引数は定義域内（:positive）に限る。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (*num-trials* 8)
+        (nb:*compile-cache-directory* nil))
+    (is (check-it (generator (tuple (array-spec :dtypes '(:f64) :max-rank 3 :max-dim 5)
+                                     (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                  (lambda (args)
+                    (destructuring-bind (spec seed) args
+                      (let ((f (nb:with-tracing (a p) (values (exp a) (log p) (tanh a))))
+                            (a (make-random-array spec :seed seed))
+                            (p (make-random-array spec :seed (+ seed 1) :domain :positive)))
+                        (unwind-protect
+                             (every (lambda (actual expected) (allclose actual expected :dtype :f64))
+                                    (multiple-value-list (funcall (nb:jit f :backend backend) a p))
+                                    (multiple-value-list (funcall f a p)))
+                          (nb::%jit-cache-forget f)))))
+                  :regression-id jit-dtype/f64-transcendentals-match-eager
+                  :regression-file (regression-path "iree-jit-dtype-f64-transcendental" :package "NABLA.IREE.TESTS")))
     (gc-and-run-finalizers)))
 
 (define-iree-test jit-dtype/comparison-result-matches-eager-as-bit-array

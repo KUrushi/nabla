@@ -16,7 +16,8 @@
   （`--iree-input-type=stablehlo --iree-input-demote-f64-to-f32=false
   --iree-hal-target-device=local
   --iree-hal-local-target-device-backends=llvm-cpu
-  --iree-llvmcpu-target-cpu=host`、embedded linker があれば追加）
+  --iree-llvmcpu-target-cpu=host --iree-llvmcpu-link-embedded=false`、
+  embedded linker があれば追加）
 - 確認方法: `nabla.iree::compile-stablehlo` に各フィクスチャを渡し、例外なく
   vmfb（先頭4バイトが ZIP local-file-header `PK\3\4`）が返ることを確認した
   （本 PR の `tests/iree/ops-test.lisp` と同じ経路）
@@ -57,12 +58,15 @@ f16 / f64 は上記すべての op で advisor が確認済み（フィクスチ
 未収録）。f64 は issue #72 で `to-device` / `to-host` が対応し、`jit` で
 実行できる。IREE は既定で f64 を f32 に落とす（`demoteF64ToF32 = true`、
 `compiler/src/iree/compiler/Pipelines/Options.h`）ので、`compile-flags` は
-`--iree-input-demote-f64-to-f32=false` を付ける。ただし llvm-cpu では
+`--iree-input-demote-f64-to-f32=false` を付ける。llvm-cpu では
 exponential / log / tanh の f64 版が多項式近似されず（`MathTransformPass.cpp`
 の近似・f32 展開は f32 以下の型だけが対象）libm の `exp` / `log` / `tanh`
-の呼び出しとして残り、embedded linker（`-nostdlib -static`）でリンクできずに
-コンパイルが失敗する（`iree-lld: error: undefined symbol: tanh`）。f64 の
-この3つは `jit` できない（eager では動く）。
+の呼び出しとして残る。既定の embedded ELF（`-nostdlib -static`）ではこれが
+リンクできずにコンパイルが失敗する（`iree-lld: error: undefined symbol:
+tanh`）ので、`compile-flags` は `:local` に `--iree-llvmcpu-link-embedded=false`
+も付け、ランタイムが dlopen で読み込む system library を作る。読み込み時に
+プロセスの libm に解決されるので、f64 のこの3つも `jit` できる。代わりに
+コンパイル時にシステムのリンカ（`ld.lld`、無ければ `ld`）が要る。
 
 ## IREE 未対応・要注意の op（代替・備考）
 
