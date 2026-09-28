@@ -121,14 +121,10 @@ SINGLE-FLOAT にキャストした結果を1つの FAKE-ARRAY にして多値で
 (defmethod nabla:to-device (array (backend fake-backend) &key dtype)
   "ARRAY をコピーして FAKE-ARRAY に包む（IREE 版の TO-DEVICE のフェイク）。
 
-フェイクは f32 だけをサポートするので、:i1 の配列を渡すと（本物の IREE
-backend が :i1 を拒否するのに合わせて）NABLA:UNSUPPORTED-DTYPE を signal
-する（issue #37）。"
+本物の IREE backend と同じく、どの dtype（:f64 と :i1 を含む。issue #72）
+の配列もそのまま受け取る。"
   (declare (ignore backend))
-  (let* ((aval (nabla:array-aval array dtype))
-         (element-dtype (nabla:aval-dtype aval)))
-    (when (eq element-dtype :i1)
-      (error 'nabla:unsupported-dtype :dtype element-dtype))
+  (let ((aval (nabla:array-aval array dtype)))
     (let ((copy (make-array (array-dimensions array) :element-type (array-element-type array))))
       (dotimes (i (array-total-size array))
         (setf (row-major-aref copy i) (row-major-aref array i)))

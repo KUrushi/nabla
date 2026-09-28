@@ -175,11 +175,12 @@
                (:file "tests/iree/example-test")
                ;; StableHLO op 対応表（issue #30、u2）
                (:file "tests/iree/ops-test")
-               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               ;; 1つの op だけを持つモジュールのビルダー（全プリミティブの medium
+               ;; テストが共有する。issue #31 p1、#74 で p4 の複製を統合）
                (:file "tests/iree/primitive-support")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/iree/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
-               (:file "tests/iree/shape-primitive-support")
                (:file "tests/iree/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/iree/unary-test")
@@ -196,4 +197,6 @@
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
                (:file "tests/iree/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
-               (:file "tests/iree/jit-cache-test")))
+               (:file "tests/iree/jit-cache-test")
+               ;; f64 と :i1 の to-device / to-host / invoke を jit で通す（issue #72）
+               (:file "tests/iree/jit-dtype-test")))

@@ -13,7 +13,8 @@
 
 - IREE: `third_party/iree.lock` のコミット `e4a3b0405d7d23554da26403658d0e8c3c5ecf25`（v3.11.0）
 - コンパイルフラグ: `src/iree/compiler.lisp` の `(compile-flags :local)` と同じ
-  （`--iree-input-type=stablehlo --iree-hal-target-device=local
+  （`--iree-input-type=stablehlo --iree-input-demote-f64-to-f32=false
+  --iree-hal-target-device=local
   --iree-hal-local-target-device-backends=llvm-cpu
   --iree-llvmcpu-target-cpu=host`、embedded linker があれば追加）
 - 確認方法: `nabla.iree::compile-stablehlo` に各フィクスチャを渡し、例外なく
@@ -41,7 +42,7 @@
 | exponential | `%0 = stablehlo.exponential %a : tensor<4xf32>`（pretty、単項） | `exp` | ○ | ○ | |
 | log | `%0 = stablehlo.log %a : tensor<4xf32>`（pretty、単項） | `log` | ○ | ○ | |
 | tanh | `%0 = stablehlo.tanh %a : tensor<4xf32>`（pretty、単項） | `tanh` | ○ | ○ | |
-| compare | `%0 = stablehlo.compare LT, %a, %b : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>`（pretty。方向は LT LE GT GE EQ NE、`, FLOAT` の compare_type 付きも可。generic form† `"stablehlo.compare"(%a, %b) {comparison_direction = #stablehlo<comparison_direction LT>}` も通る） | `compare` | ○ | ○ | 出力 dtype は nabla の `:i1`（issue #37）。IREE の `iree-run-module` は `4xi1=1,0,...` 形式の入力を受け付けないため、`:i1` は関数の内部値としてのみ使う（to-device は `:i1` を拒否する。issue #37） |
+| compare | `%0 = stablehlo.compare LT, %a, %b : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>`（pretty。方向は LT LE GT GE EQ NE、`, FLOAT` の compare_type 付きも可。generic form† `"stablehlo.compare"(%a, %b) {comparison_direction = #stablehlo<comparison_direction LT>}` も通る） | `compare` | ○ | ○ | 出力 dtype は nabla の `:i1`（issue #37）。`:i1` は IREE 側では1要素1バイトの `IREE_HAL_ELEMENT_TYPE_BOOL_8` になり、`to-device` / `to-host` が BIT 配列との間で詰め直す（issue #72）。関数の引数・返り値にも使える |
 | select | `%1 = stablehlo.select %pred, %a, %b : tensor<4xi1>, tensor<4xf32>`（pretty） | `select` | ○ | ○ | |
 | convert | `%0 = stablehlo.convert %a : (tensor<4xf32>) -> tensor<4xbf16>`（pretty） | `convert` | ○ | ○ | |
 | constant | `%c = stablehlo.constant dense<[1.0, 2.5]> : tensor<2xf32>`（rank 0 は `dense<3.0> : tensor<f32>`）。bf16/f16 は16進ビット列: `dense<[0x3F80, 0x4020]> : tensor<2xbf16>`（実行結果も正しい: 1, 2.5）。max の初期値のような単一値も同じ書き方: `dense<0xFC00> : tensor<f16>`、`dense<0xFF800000> : tensor<f32>` | プリミティブではなく `graph-constants` | ○ | ○ | |
@@ -53,8 +54,15 @@
 | reduce（max） | reduce（add）と同じ pretty form で `applies stablehlo.maximum`。init は `-inf` を16進で: f32 `0xFF800000`、bf16 `0xFF80`、f16 `0xFC00`、f64 `0xFFF0000000000000`（`dense<-inf>` は書かない） | `reduce-max` | ○ | ○ | |
 
 f16 / f64 は上記すべての op で advisor が確認済み（フィクスチャは
-未収録）。ただし f64 は `to-device` が未対応（`unsupported-dtype`、issue
-#37）のままなので、実行系連携のフィクスチャには使わない。
+未収録）。f64 は issue #72 で `to-device` / `to-host` が対応し、`jit` で
+実行できる。IREE は既定で f64 を f32 に落とす（`demoteF64ToF32 = true`、
+`compiler/src/iree/compiler/Pipelines/Options.h`）ので、`compile-flags` は
+`--iree-input-demote-f64-to-f32=false` を付ける。ただし llvm-cpu では
+exponential / log / tanh の f64 版が多項式近似されず（`MathTransformPass.cpp`
+の近似・f32 展開は f32 以下の型だけが対象）libm の `exp` / `log` / `tanh`
+の呼び出しとして残り、embedded linker（`-nostdlib -static`）でリンクできずに
+コンパイルが失敗する（`iree-lld: error: undefined symbol: tanh`）。f64 の
+この3つは `jit` できない（eager では動く）。
 
 ## IREE 未対応・要注意の op（代替・備考）
 
@@ -69,9 +77,13 @@ f16 / f64 は上記すべての op で advisor が確認済み（フィクスチ
 - 多値返し `func.return %0, %1 : tensor<4xf32>, tensor<4xf32>` は可
 - `module { ... }` で包んでも包まなくても可（`backend-invoke` の
   `"module.main"` 前提は無名モジュールで満たされる）
-- `iree-run-module` は `4xi1=1,0,1,0` 形式の i1 入力を受け付けない
-  （"binary hex element count mismatch"）。そのため `:i1` は関数の内部値
-  としてのみ使い、`to-device` は `:i1` を拒否する（issue #37 側の対応）
+- `iree-run-module` は `4xi1=1,0,1,0`（`4xi1=1 0 1 0` も）形式の i1 入力を
+  受け付けない（`string_util.c:506: binary hex element count mismatch`）。
+  これは iree-run-module のテキスト入力の解析だけの制限で、ランタイムの
+  C API で `IREE_HAL_ELEMENT_TYPE_BOOL_8` の buffer view を渡せば i1 の
+  引数として使える（issue #72 の `to-device`）。iree-run-module では
+  `4xi8=1,0,1,0` と書けば通り、i1 の返り値は `4xi8=1 0 1 0` と表示される
+  （issue #72 で確認）
 
 ## フィクスチャとテスト
 

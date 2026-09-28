@@ -74,21 +74,21 @@ reference-reduce-sum の期待値と allclose :dtype :f32 で一致する。"
                 :regression-id backend/fake/round-trip-reduce-sum-matches-reference
                 :regression-file (regression-path "backend-fake-round-trip-reduce-sum"))))
 
-(test backend/fake/to-device-i1-signals-unsupported-dtype
-  "フェイク backend の to-device に BIT 配列 + :i1 を渡すと
-NB:UNSUPPORTED-DTYPE が signal され、その dtype が :i1 で読み出せる
-（issue #37。フェイクは配管の参照実装なので、本物の IREE backend と
-同じ条件を signal するように揃える）。handler-case の節が実際に実行
-されたことも確かめる。"
-  (let ((backend (nb:make-backend :fake))
-        (array (make-array '(2 3) :element-type 'bit :initial-element 0))
-        (entered-handler nil))
-    (handler-case
-        (nb:to-device array backend :dtype :i1)
-      (nb:unsupported-dtype (condition)
-        (setf entered-handler t)
-        (is (eq :i1 (nb:unsupported-dtype-dtype condition)))))
-    (is (eq t entered-handler) "to-device が unsupported-dtype を signal しなかった")))
+(test backend/fake/to-host-round-trips-every-dtype
+  "フェイク backend の to-device → to-host は、どの dtype（:f64・:i1 を
+含む）の配列も同じ shape・要素型・値の配列に戻す（issue #72。フェイクは
+配管の参照実装なので、f64 / i1 を受け付けるようになった本物の IREE
+backend と揃える）。"
+  (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64 :i1))
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (spec-and-seed)
+                  (destructuring-bind (spec seed) spec-and-seed
+                    (let* ((x (make-random-array spec :seed seed))
+                           (roundtripped (nb:to-host (nb:to-device x (nb:make-backend :fake)))))
+                      (and (equal (array-element-type roundtripped) (array-element-type x))
+                           (equalp roundtripped x)))))
+                :regression-id backend/fake/to-host-round-trips-every-dtype
+                :regression-file (regression-path "backend-fake-round-trip-every-dtype"))))
 
 (test backend/backend-compile/unsupported-text-signals-backend-error
   "add / dot_general / reduce のどれも含まない TEXT を backend-compile に

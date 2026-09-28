@@ -111,6 +111,12 @@ IREE 自身のリンカ探索に任せる（%embedded-linker-flags 参照。llvm
 --iree-cuda-target=CUDA-ARCH を追加する。TARGET がこれ以外なら型エラーを
 signal する。呼び出しごとに新しいリストを作るが、内容は決定的。
 
+どちらの TARGET にも --iree-input-demote-f64-to-f32=false を付ける。IREE は
+既定で f64 の演算と関数の引数・返り値をすべて f32 に落とす
+（compiler/src/iree/compiler/Pipelines/Options.h の demoteF64ToF32 = true）
+ので、これが無いと f64 の関数の ABI が f32 になり、TO-DEVICE した f64 の
+buffer view を渡せない・精度も f32 になる（issue #72）。
+
 注意（将来 jit キャッシュを作るとき向け）: :local のフラグは
 NABLA_IREE_HOME/bin/iree-lld の有無というファイルシステムの状態に依存する。
 CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引数 +
@@ -119,11 +125,13 @@ CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引�
 jit の実装側でこれをキーに含めるか、プロセス起動時に固定するかを決めること。"
   (ecase target
     (:local (append (list "--iree-input-type=stablehlo"
+                           "--iree-input-demote-f64-to-f32=false"
                            "--iree-hal-target-device=local"
                            "--iree-hal-local-target-device-backends=llvm-cpu"
                            "--iree-llvmcpu-target-cpu=host")
                      (%embedded-linker-flags)))
     (:cuda (append (list "--iree-input-type=stablehlo"
+                          "--iree-input-demote-f64-to-f32=false"
                           "--iree-hal-target-device=cuda")
                     (when cuda-arch
                       (list (format nil "--iree-cuda-target=~A" cuda-arch)))))))

@@ -451,10 +451,19 @@ buffer-view-release で解放すること（call.h:115-117）。"
 ;;   (numerical_type << 24) | bit_count （buffer_view.h:65-66）で計算する。
 ;;   IREE_HAL_NUMERICAL_TYPE_FLOAT_IEEE  = FLOAT(0x20) | 0x01 = #x21 (buffer_view.h:44,46)
 ;;   IREE_HAL_NUMERICAL_TYPE_FLOAT_BRAIN = FLOAT(0x20) | 0x02 = #x22 (buffer_view.h:44,48)
+;;   IREE_HAL_NUMERICAL_TYPE_BOOLEAN     = INTEGER(0x10) | 0x03 = #x13 (buffer_view.h:33,41)
+;; :f64 は IREE_HAL_ELEMENT_TYPE_FLOAT_64（FLOAT_IEEE, 64。buffer_view.h:158）、
+;; :i1 は IREE_HAL_ELEMENT_TYPE_BOOL_8（BOOLEAN, 8。buffer_view.h:140）。
+;; コンパイラは関数境界の i1 を BOOLEAN の 8 ビットにする
+;; （compiler/src/iree/compiler/Dialect/HAL/IR/HALOps.cpp:1169-1170）ので、:i1 は
+;; デバイス上では1要素1バイトになる（ホストの BIT 配列との詰め直しは
+;; device-array.lisp の TO-DEVICE / TO-HOST が行う。issue #72）。
 (defparameter *element-types*
   (list (cons :f32 (logior (ash #x21 24) 32))
+        (cons :f64 (logior (ash #x21 24) 64))
         (cons :bf16 (logior (ash #x22 24) 16))
-        (cons :f16 (logior (ash #x21 24) 16)))
+        (cons :f16 (logior (ash #x21 24) 16))
+        (cons :i1 (logior (ash #x13 24) 8)))
   "nabla.iree で扱う dtype キーワードと iree_hal_element_type_t の整数値の対応表。")
 
 (defun %element-type-code (keyword)
