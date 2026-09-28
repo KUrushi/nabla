@@ -4,6 +4,7 @@
 # 使い方:
 #   tools/mutate/run.sh [--system NAME] [--base REF] [--trials N] [--timeout SEC]
 #                        [--test-system SYSTEM] [--test-form FORM]
+#                        [--max-per-def N] [--dry-run]
 #                        [FILE[:START-END]...]
 #
 # 引数を何も渡さなければ、--base（既定 main）から HEAD までの git diff で
@@ -16,9 +17,12 @@
 # --test-form を渡すと、それを eval した結果（関数）をテスト実行関数として使う。
 # 渡さなければ NABLA.TESTS.SUPPORT:RUN-TESTS を実行時に探す
 # （nabla-mutate.asd の DEFAULT-TEST-FUNCTION を見よ）。
+# --max-per-def を渡すと、1つの定義あたりの変異体をその数まで等間隔に間引く
+# （既定は間引かない）。--dry-run を渡すと、テストを走らせずに作る予定の
+# 変異体の一覧と数だけを出す。
 #
 # 終了コード:
-#   0: mutation score が 0.8 以上
+#   0: mutation score が 0.8 以上（--dry-run では、変異体が1つ以上ある）
 #   1: mutation score が 0.8 未満
 #   2: FILE[:START-END] に存在しないファイルを指定した
 #   3: 変異させられる定義が1つも見つからなかった（total=0）。
@@ -45,6 +49,8 @@ TRIALS="20"
 TIMEOUT="300"
 TEST_SYSTEM=""
 TEST_FORM=""
+MAX_PER_DEF="nil"
+DRY_RUN="nil"
 declare -a RANGE_ARGS=()
 
 while [ "$#" -gt 0 ]; do
@@ -55,12 +61,19 @@ while [ "$#" -gt 0 ]; do
     --timeout) TIMEOUT="$2"; shift 2 ;;
     --test-system) TEST_SYSTEM="$2"; shift 2 ;;
     --test-form) TEST_FORM="$2"; shift 2 ;;
+    --max-per-def) MAX_PER_DEF="$2"; shift 2 ;;
+    --dry-run) DRY_RUN="t"; shift ;;
     --) shift; break ;;
     -*) echo "unknown option: $1" >&2; exit 2 ;;
     *) RANGE_ARGS+=("$1"); shift ;;
   esac
 done
 RANGE_ARGS+=("$@")
+
+if [ "$MAX_PER_DEF" != "nil" ] && ! [[ "$MAX_PER_DEF" =~ ^[1-9][0-9]*$ ]]; then
+  echo "tools/mutate/run.sh: --max-per-def には正の整数を渡す: $MAX_PER_DEF" >&2
+  exit 2
+fi
 
 # FILE を Lisp の文字列リテラルの中身として安全に埋め込めるようにする
 # （\ と " をエスケープする）。パスにこの2文字を含む環境は稀だが、
@@ -119,9 +132,12 @@ run_form="(handler-case
                               :ranges ${ranges_lisp}
                               :base-ref \"$(lisp_escape_string "$BASE_REF")\"
                               :timeout-seconds ${TIMEOUT}
-                              :trials ${TRIALS})))
+                              :trials ${TRIALS}
+                              :max-mutants-per-definition ${MAX_PER_DEF}
+                              :dry-run ${DRY_RUN})))
                 (cond
                   ((zerop (length (nabla.mutate:report-mutants report))) (uiop:quit 3))
+                  (${DRY_RUN} (uiop:quit 0))
                   ((>= (nabla.mutate:mutation-score report) 4/5) (uiop:quit 0))
                   (t (uiop:quit 1))))
             (file-error (e)

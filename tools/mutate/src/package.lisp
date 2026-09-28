@@ -6,6 +6,7 @@
   (:export
    ;; runner
    #:run
+   #:plan-mutants
    #:report
    #:report-mutants
    #:mutation-score
@@ -32,6 +33,7 @@
    #:mutable-definition-p
    ;; mutate
    #:mutate-form
+   #:mutation-sites
    #:arid-node-p
    #:*mutation-operators*
    ;; diff

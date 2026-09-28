@@ -24,7 +24,7 @@
                (:file "reader-tests" :depends-on ("package"))
                (:file "mutate-tests" :depends-on ("package"))
                (:file "diff-tests" :depends-on ("package"))
-               (:file "runner-tests" :depends-on ("package")))
+               (:file "runner-tests" :depends-on ("package" "mutate-tests")))
   :perform (test-op (op c)
              (unless (uiop:symbol-call "NABLA.MUTATE.TESTS" "RUN-TESTS")
                (error "nabla-mutate/tests failed"))))

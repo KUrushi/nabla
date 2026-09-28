@@ -3,8 +3,10 @@
 (in-package #:nabla.mutate)
 
 (defstruct mutant
-  "1つの変異体の記録。STATUS は :killed / :survived / :excluded / :timeout。"
-  file line original-form mutated-form operator status)
+  "1つの変異体の記録。STATUS は :killed / :survived / :excluded / :timeout、
+まだ判定していない（PLAN-MUTANTS や RUN の :DRY-RUN）なら NIL。
+PACKAGE は定義を読んだときの *PACKAGE*（評価に使う。export しない）。"
+  file line original-form mutated-form operator status package)
 
 (setf (documentation 'mutant-file 'function) "その変異体があるファイルのパス。")
 (setf (documentation 'mutant-line 'function) "その変異体の定義が始まる行番号（1始まり）。")
@@ -12,7 +14,7 @@
 (setf (documentation 'mutant-mutated-form 'function) "変異させた後の、トップレベルの定義。")
 (setf (documentation 'mutant-operator 'function) "適用した変異演算子（*MUTATION-OPERATORS* のいずれか）。")
 (setf (documentation 'mutant-status 'function)
-      "判定結果。:killed / :survived / :excluded / :timeout のいずれか。")
+      "判定結果。:killed / :survived / :excluded / :timeout のいずれか。未判定なら NIL。")
 
 (defstruct report
   "RUN の結果。MUTANTS は MUTANT のリスト。"
@@ -262,12 +264,47 @@ DEFAULT-TEST-FUNCTION が探すパッケージが存在しないなど）であ�
       (error "mutation testing を始める前に、既定のテストスイートが落ちている。~
 まずテストを通してから mutation testing をかけること。"))))
 
-(defun %print-report (report stream)
-  (format stream "~&mutation testing 結果~%")
-  (dolist (m (report-mutants report))
-    (format stream "~&  [~A] ~A:~D~%    ~S~%    -> ~S~%"
-            (mutant-status m) (namestring (mutant-file m)) (mutant-line m)
-            (mutant-original-form m) (mutant-mutated-form m)))
+(defun %minimal-difference (original mutated)
+  "ORIGINAL と MUTATED の違いを含む、いちばん内側の部分フォームの組を
+(values before after) で返す。同じ長さのリストで違う要素がちょうど
+1つで、その要素どうしがどちらもリストなら、その中へ降りる（atom の
+違いは、それを含むフォームごと示したほうが読みやすいので降りない）。"
+  (let ((length-a (and (consp original) (ignore-errors (list-length original))))
+        (length-b (and (consp mutated) (ignore-errors (list-length mutated)))))
+    (if (and length-a (eql length-a length-b))
+        (let ((diffs (loop for a in original
+                           for b in mutated
+                           for index from 0
+                           unless (equal a b) collect index)))
+          (if (and (= 1 (length diffs))
+                   (consp (nth (first diffs) original))
+                   (consp (nth (first diffs) mutated)))
+              (%minimal-difference (nth (first diffs) original) (nth (first diffs) mutated))
+              (values original mutated)))
+        (values original mutated))))
+
+(defun %print-mutant (m stream)
+  "変異体1つを、変わった部分だけの短い形で印字する。生き残った変異体は、
+除外リストの :mutation にそのまま写せるよう、定義全体の組も印字する。"
+  (multiple-value-bind (before after)
+      (%minimal-difference (mutant-original-form m) (mutant-mutated-form m))
+    (let ((*print-pretty* nil) (*print-length* 8) (*print-level* 4)
+          (*package* (or (mutant-package m) *package*)))
+      (format stream "~&  [~A] ~A:~D ~(~A~)~%"
+              (or (mutant-status m) "PLANNED") (namestring (mutant-file m)) (mutant-line m)
+              (mutant-operator m))
+      (if (eq (mutant-operator m) :delete-form)
+          ;; 消したフォームが *PRINT-LENGTH* より後ろにあると、前後の
+          ;; フォームが同じに印字されてしまうので、消したものだけを示す。
+          (format stream "    削除: ~S~%"
+                  (nth (or (mismatch before after :test #'equal) 0) before))
+          (format stream "    ~S -> ~S~%" before after))))
+  (when (eq (mutant-status m) :survived)
+    (format stream "    :mutation ~S~%"
+            (%mutation-string (mutant-original-form m) (mutant-mutated-form m))))
+  (finish-output stream))
+
+(defun %print-summary (report stream)
   (let* ((mutants (report-mutants report))
          (total (length mutants))
          (excluded (count :excluded mutants :key #'mutant-status))
@@ -286,6 +323,41 @@ DEFAULT-TEST-FUNCTION が探すパッケージが存在しないなど）であ�
 mutation score = 1 はこの場合「良い結果」ではない。~%"))
     (format stream "~&mutation score = ~A~%" (mutation-score report))))
 
+(defun %sample-evenly (list cap)
+  "LIST から CAP 個を、先頭から末尾まで等間隔に選ぶ（決定的）。
+CAP が NIL か LIST の長さ以下なら LIST をそのまま返す。"
+  (let ((length (length list)))
+    (if (or (null cap) (<= length cap))
+        list
+        (loop for i below cap
+              collect (nth (floor (* i length) cap) list)))))
+
+(defun %mutants-for-definition (path def cap)
+  "定義 DEF の変異体を、*MUTATION-OPERATORS* の順・演算子ごとに前順で
+すべて作る。変異後のフォームが同じもの（:constant と :off-by-one が
+同じ値を選んだときなど）は1つにまとめ、CAP があれば等間隔に間引く。"
+  (let ((original (source-form-form def))
+        (seen (make-hash-table :test #'equal))
+        (mutants nil))
+    (dolist (operator *mutation-operators*)
+      (dolist (mutated (mutation-sites original operator))
+        (unless (gethash mutated seen)
+          (setf (gethash mutated seen) t)
+          (push (make-mutant :file path :line (source-form-start-line def)
+                             :original-form original :mutated-form mutated
+                             :operator operator :package (source-form-package def))
+                mutants))))
+    (%sample-evenly (nreverse mutants) cap)))
+
+(defun plan-mutants (&key files ranges (base-ref "main") max-mutants-per-definition)
+  "テストを走らせずに、RUN が作る変異体（STATUS は NIL）のリストを
+返す。FILES / RANGES / BASE-REF は RUN と同じ意味。
+MAX-MUTANTS-PER-DEFINITION が正の整数なら、1つの定義あたりの変異体を
+その数まで等間隔に間引く（NIL なら間引かない）。同じ入力には常に
+同じ順の同じ変異体を返す。"
+  (loop for (path . def) in (%collect-candidates (%ranges-for-run files ranges base-ref))
+        nconc (%mutants-for-definition path def max-mutants-per-definition)))
+
 (defun run (&key (system "nabla")
                  (test-system nil)
                  (test-function #'default-test-function)
@@ -295,43 +367,59 @@ mutation score = 1 はこの場合「良い結果」ではない。~%"))
                  (exclusions (default-exclusions-path))
                  (timeout-seconds 300)
                  (trials 20)
+                 max-mutants-per-definition
+                 dry-run
                  (regression-directories *regression-directories*)
                  (stream *standard-output*))
-  "対象のファイル・行範囲（既定は BASE-REF から HEAD への git diff）に
-含まれる定義に、演算子（*MUTATION-OPERATORS* の順）を1つずつ試し、
-最初に適用できたものを1つの変異体として TEST-FUNCTION で判定する。
-戻り値は REPORT。SYSTEM / TEST-SYSTEM は現時点では記録用で、
-既定の TEST-FUNCTION の選択には使わない（DEFAULT-TEST-FUNCTION を見よ）。
+  "対象のファイル・行範囲（既定は BASE-REF から HEAD までの差分で
+変わった行）に含まれる定義について、*MUTATION-OPERATORS* の各演算子を
+適用できるすべての箇所に1つずつ変異体を作り（PLAN-MUTANTS）、
+TEST-FUNCTION で判定する。戻り値は REPORT。
+MAX-MUTANTS-PER-DEFINITION は PLAN-MUTANTS と同じ。DRY-RUN が真なら
+baseline もテストも走らせず、作る予定の変異体（STATUS は NIL）を
+印字してそのまま REPORT にして返す（変異体の数だけを安く数えたいとき）。
+SYSTEM / TEST-SYSTEM は現時点では記録用で、既定の TEST-FUNCTION の
+選択には使わない（DEFAULT-TEST-FUNCTION を見よ）。
 REGRESSION-DIRECTORIES は check-it の :regression-file が書き込みうる
 ディレクトリのリスト（既定 *REGRESSION-DIRECTORIES*）。各変異体（と
 baseline チェック）の評価の前後で、この中身と check-it の
 regression-cases plist をまるごと退避・復元し、評価どうしで副作用が
 混ざらないようにする。"
   (declare (ignore system test-system))
-  (let ((*regression-directories* regression-directories))
-    (%run-mutation-loop test-function files ranges base-ref exclusions timeout-seconds trials stream)))
+  (let ((*regression-directories* regression-directories)
+        (plan (plan-mutants :files files :ranges ranges :base-ref base-ref
+                            :max-mutants-per-definition max-mutants-per-definition)))
+    (if dry-run
+        (%print-plan plan stream)
+        (%run-mutation-loop plan test-function exclusions timeout-seconds trials stream))))
 
-(defun %run-mutation-loop (test-function files ranges base-ref exclusions timeout-seconds trials stream)
+(defun %print-plan (plan stream)
+  (dolist (m plan)
+    (%print-mutant m stream))
+  (format stream "~&mutated-definitions=~D mutants=~D~%"
+          (length (remove-duplicates (mapcar (lambda (m)
+                                               (cons (namestring (mutant-file m)) (mutant-line m)))
+                                             plan)
+                                     :test #'equal))
+          (length plan))
+  (make-report :mutants plan))
+
+(defun %run-mutation-loop (plan test-function exclusions timeout-seconds trials stream)
   (%check-baseline test-function)
-  (let ((exclusion-list (%normalize-exclusions exclusions))
-        (candidates (%collect-candidates (%ranges-for-run files ranges base-ref)))
-        (mutants nil))
-    (dolist (candidate candidates)
-      (destructuring-bind (path . def) candidate
-        (let ((original (source-form-form def)))
-          (dolist (operator *mutation-operators*)
-            (multiple-value-bind (mutated applied) (mutate-form original operator)
-              (when applied
-                (let* ((excluded-entry (excluded-p exclusion-list path operator original mutated))
-                       (status (if excluded-entry
-                                   :excluded
-                                   (%status-for original mutated (source-form-package def)
-                                                test-function timeout-seconds trials))))
-                  (push (make-mutant :file path :line (source-form-start-line def)
-                                      :original-form original :mutated-form mutated
-                                      :operator operator :status status)
-                        mutants))
-                (return)))))))
-    (let ((report (make-report :mutants (nreverse mutants))))
-      (%print-report report stream)
+  ;; 結果は1体ずつ、判定したそばから印字する。変異体が SBCL ごと落とす
+  ;; （pseudo-atomic 中の制御スタック枯渇など、Lisp から捕まえられない
+  ;; 致命的エラー）と最後の一覧は出ないので、どこまで進んだか
+  ;; （次の変異体が落とした犯人であること）をこれで分かるようにする。
+  (format stream "~&mutation testing 結果（~D 体）~%" (length plan))
+  (let ((exclusion-list (%normalize-exclusions exclusions)))
+    (dolist (m plan)
+      (setf (mutant-status m)
+            (if (excluded-p exclusion-list (mutant-file m) (mutant-operator m)
+                            (mutant-original-form m) (mutant-mutated-form m))
+                :excluded
+                (%status-for (mutant-original-form m) (mutant-mutated-form m)
+                             (mutant-package m) test-function timeout-seconds trials)))
+      (%print-mutant m stream))
+    (let ((report (make-report :mutants plan)))
+      (%print-summary report stream)
       report)))
