@@ -296,8 +296,8 @@ TRACING-ERROR になる（%T-SELECT の仕様）。"
 ;;; 形状は M・K・N（すべて 1〜4）で決まる: A・B は (M K)、W は (K N)。
 ;;;   X = (IF (> A 0.0) (+ A B) (- A B))     ; 算術 + IF/SELECT（要素ごとの
 ;;;                                            PRED なので分岐と shape が
-;;;                                            一致し、rank-0 PRED の既知の
-;;;                                            制約に触れない）
+;;;                                            一致する。rank 0 の PRED は
+;;;                                            trace-if-test で別に確かめる）
 ;;;   Y = (DOT X W)                          ; (M N)、縮約軸は K（≤ 4）
 ;;;   Z = (TRANSPOSE Y)                      ; (N M)
 ;;;   FLAT = (RESHAPE Z (N*M))               ; reshape で flatten
@@ -342,3 +342,147 @@ IF/SELECT・DOT/TRANSPOSE/RESHAPE/REDUCE-SUM を混ぜた WITH-TRACING の
                       (%array-bits-equal-p direct traced))))
                 :regression-id array-api/mixed-arithmetic-if-select-and-array-api-eval-graph-matches-direct-call
                 :regression-file (regression-path "array-api-mixed-matches-eval-graph"))))
+
+;;; --- issue #74: DOT で配列とトレーサを混ぜる、rank 0 の PRED の
+;;; ブロードキャスト、Lisp のブール値の PRED ---
+;;;
+;;; dtype は :f32 / :f64 だけを使う。bf16 / f16 は生の (UNSIGNED-BYTE 16)
+;;; 配列から ARRAY-AVAL が dtype を推論できず、トレース中に定数として
+;;; リフトできないため（性質そのものは dtype に依らない）。
+
+(defparameter *array-api-float-dtypes* '(:f32 :f64))
+
+(test array-api/dot-mixing-array-and-tracer-matches-array-dot
+  "DOT の片方が定数の配列、もう片方がトレーサでも（両方の順序で）
+トレースでき、EVAL-GRAPH の結果は配列どうしの DOT とビット単位で一致
+する（issue #74）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 4)
+                                   (uniform-integer :lo 1 :hi 4)
+                                   (uniform-integer :lo 1 :hi 4)
+                                   (uniform-integer :lo 0 :hi 1)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (m k n dtype-index seed) args
+                    (let* ((dtype (nth dtype-index *array-api-float-dtypes*))
+                           (c (make-random-array (make-array-spec (list m k) dtype) :seed seed))
+                           (x (make-random-array (make-array-spec (list k n) dtype) :seed (+ seed 1)))
+                           (y (make-random-array (make-array-spec (list n m) dtype) :seed (+ seed 2)))
+                           (const-lhs (nb:with-tracing (x) (nb:dot c x)))
+                           (const-rhs (nb:with-tracing (y) (nb:dot y c))))
+                      (and (equalp (nb:dot c x)
+                                   (nb:eval-graph (nb:trace-to-graph const-lhs (list (nb:array-aval x))) x))
+                           (equalp (nb:dot y c)
+                                   (nb:eval-graph (nb:trace-to-graph const-rhs (list (nb:array-aval y))) y))))))
+                :regression-id array-api/dot-mixing-array-and-tracer-matches-array-dot
+                :regression-file (regression-path "array-api-dot-mixing-array-and-tracer"))))
+
+(test array-api/dot-mixing-rank0-operand-signals-tracing-error
+  "配列とトレーサを混ぜた DOT でも、どちらかが rank 0 なら TRACING-ERROR
+になる（配列どうし・トレーサどうしと同じ規約）。"
+  (let ((scalar (make-array '() :element-type 'single-float :initial-element 2.0))
+        (vector (make-array 3 :element-type 'single-float :initial-contents '(1.0 2.0 3.0))))
+    (signals nb:tracing-error
+      (nb:trace-to-graph (nb:with-tracing (x) (nb:dot scalar x)) (list (nb:make-aval '(3) :f32))))
+    (signals nb:tracing-error
+      (nb:trace-to-graph (nb:with-tracing (x) (nb:dot x scalar)) (list (nb:make-aval '(3) :f32))))
+    (signals nb:tracing-error
+      (nb:trace-to-graph (nb:with-tracing (x) (nb:dot vector x)) (list (nb:make-aval '() :f32))))))
+
+(test array-api/where-rank0-pred-broadcasts-to-branch-shape
+  "PRED が rank 0 で A・B が rank 1 以上なら、PRED を A・B の shape に
+ブロードキャストする（JAX の where と同じ）。結果は PRED のビットに応じて
+A か B のどちらか全体になる。eager・トレーサの PRED・eager な PRED と
+トレーサの分岐、のどれでも同じ（issue #74）。"
+  (is (check-it (generator (tuple (array-spec :dtypes *array-api-float-dtypes* :max-rank 3)
+                                   (uniform-integer :lo 0 :hi 1)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (spec bit seed) args
+                    (let* ((pred (make-array '() :element-type 'bit :initial-element bit))
+                           (a (make-random-array spec :seed seed))
+                           (b (make-random-array spec :seed (+ seed 1)))
+                           (expected (if (= bit 1) a b))
+                           (traced-pred (nb:trace-to-graph (nb:with-tracing (p x y) (nb:where p x y))
+                                                           (list (nb:make-aval '() :i1) (nb:array-aval a) (nb:array-aval b))))
+                           (traced-branches (nb:trace-to-graph (nb:with-tracing (x y) (nb:where pred x y))
+                                                               (list (nb:array-aval a) (nb:array-aval b)))))
+                      (and (equalp expected (nb:where pred a b))
+                           (equalp expected (nb:eval-graph traced-pred pred a b))
+                           (equalp expected (nb:eval-graph traced-branches a b))))))
+                :regression-id array-api/where-rank0-pred-broadcasts-to-branch-shape
+                :regression-file (regression-path "array-api-where-rank0-pred-broadcasts"))))
+
+(test array-api/where-rank0-pred-with-number-branch-uses-array-branch-shape
+  "PRED が rank 0 で片方の分岐が数値なら、shape はもう一方（配列／
+トレーサ）の分岐から決まる。"
+  (let* ((pred (make-array '() :element-type 'bit :initial-element 0))
+         (a (make-array 3 :element-type 'single-float :initial-contents '(1.0 2.0 3.0)))
+         (f (nb:with-tracing (p x) (nb:where p x 0.0)))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '() :i1) (nb:array-aval a)))))
+    (is (equalp #(0.0 0.0 0.0) (nb:where pred a 0.0)))
+    (is (equalp #(0.0 0.0 0.0) (nb:eval-graph graph pred a)))))
+
+(test array-api/where-lisp-boolean-pred-chooses-branch-statically
+  "PRED が Lisp のブール値（T / NIL）なら、ふつうの IF と同じく片方の
+分岐を静的に選ぶ。SELECT の EQN を足さず、配列・トレーサの分岐は
+そのまま返る（issue #74）。"
+  (is (check-it (generator (tuple (array-spec :dtypes *array-api-float-dtypes* :max-rank 3)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (spec seed) args
+                    (let* ((a (make-random-array spec :seed seed))
+                           (b (make-random-array spec :seed (+ seed 1)))
+                           (avals (list (nb:array-aval a) (nb:array-aval b)))
+                           (graph-t (nb:trace-to-graph (nb:with-tracing (x y) (nb:where t x y)) avals))
+                           (graph-nil (nb:trace-to-graph (nb:with-tracing (x y) (nb:where nil x y)) avals)))
+                      (and (eq a (nb:where t a b))
+                           (eq b (nb:where nil a b))
+                           (null (nb:graph-eqns graph-t))
+                           (eq (first (nb:graph-invars graph-t)) (first (nb:graph-outvars graph-t)))
+                           (null (nb:graph-eqns graph-nil))
+                           (eq (second (nb:graph-invars graph-nil)) (first (nb:graph-outvars graph-nil)))))))
+                :regression-id array-api/where-lisp-boolean-pred-chooses-branch-statically
+                :regression-file (regression-path "array-api-where-lisp-boolean-pred"))))
+
+(test array-api/where-lisp-boolean-pred-broadcasts-chosen-branch-like-rank0-pred
+  "PRED が T / NIL のときの結果の shape・dtype は、同じ真偽の rank 0 の
+PRED を渡したときと同じ: 選んだ分岐が数値・rank 0 なら、もう一方の分岐の
+shape・dtype に合わせてブロードキャストする。"
+  (let* ((a (make-array 3 :element-type 'single-float :initial-contents '(1.0 2.0 3.0)))
+         (s (make-array '() :element-type 'single-float :initial-element 5.0))
+         (f (nb:with-tracing (x) (nb:where nil x 7.0)))
+         (graph (nb:trace-to-graph f (list (nb:array-aval a)))))
+    (is (equalp #(0.0 0.0 0.0) (nb:where t 0.0 a)))
+    (is (equalp #(5.0 5.0 5.0) (nb:where nil a s)))
+    (is (equalp #(7.0 7.0 7.0) (nb:eval-graph graph a)))
+    (is (equalp #(7.0 7.0 7.0) (funcall f a)))))
+
+(test array-api/where-lisp-boolean-pred-keeps-branch-checks
+  "PRED が T / NIL でも、分岐の検査（両方数値・:I1 の分岐は TRACING-ERROR）
+は rank 0 の PRED と同じ。選ばれない側の分岐も検査する。"
+  (let ((a (make-array 2 :element-type 'single-float :initial-contents '(1.0 2.0)))
+        (bits (make-array 2 :element-type 'bit :initial-contents '(1 0))))
+    (signals nb:tracing-error (nb:where t 1.0 2.0))
+    (signals nb:tracing-error (nb:where t a bits))
+    (signals nb:tracing-error (nb:where nil bits a))))
+
+(test array-api/where-non-boolean-plain-pred-signals-tracing-error
+  "PRED が配列・トレーサ・T・NIL のどれでもない（数値など）なら
+NO-APPLICABLE-METHOD ではなく TRACING-ERROR になる。"
+  (let ((a (make-array 2 :element-type 'single-float :initial-contents '(1.0 2.0))))
+    (signals nb:tracing-error (nb:where 1 a a))
+    (signals nb:tracing-error (nb:where :yes a a))))
+
+(test array-api/where-lisp-boolean-pred-checks-unchosen-branch-shape-and-dtype
+  "PRED が T / NIL でも、選ばれない側の分岐と shape・dtype が食い違えば
+（rank 0 の PRED を渡したときと同じく）エラーになる。真偽値によって
+エラーになったりならなかったりしない。"
+  (let ((a3 (make-array 3 :element-type 'single-float :initial-element 1.0))
+        (a4 (make-array 4 :element-type 'single-float :initial-element 2.0))
+        (d3 (make-array 3 :element-type 'double-float :initial-element 3d0)))
+    (signals nb:primitive-error (nb:where t a3 a4))
+    (signals nb:primitive-error (nb:where nil a3 a4))
+    (signals nb:dtype-mismatch
+      (nb:trace-to-graph (nb:with-tracing (x) (nb:where t x d3)) (list (nb:make-aval '(3) :f32))))
+    (signals nb:dtype-mismatch
+      (nb:trace-to-graph (nb:with-tracing (x) (nb:where nil x d3)) (list (nb:make-aval '(3) :f32))))))
