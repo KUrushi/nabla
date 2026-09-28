@@ -1,21 +1,26 @@
 ;;;; mutate.lisp -- 変異演算子と arid node の判定
 ;;;;
-;;;; フォームを深さ優先・前順（pre-order）で走査し、演算子ごとに
-;;;; 最初に見つかった適用可能なノードを1つだけ書き換える。
-;;;; MUTATE-FORM は同じ構造には常に同じ順で辿り着くので、
-;;;; :arith-swap / :boundary / :branch-swap は対合（2回適用すると元に戻る）。
+;;;; フォームを深さ優先・前順（pre-order）で走査し、演算子を適用できる
+;;;; 箇所ごとに1つずつ変異体を作る（MUTATION-SITES）。同じ構造には常に
+;;;; 同じ順で辿り着くので、変異体の並びは決定的になる。
+;;;; :arith-swap / :boundary / :branch-swap / :negate-condition は、
+;;;; 最初の箇所に2回適用すると元に戻る（対合）。
 
 (in-package #:nabla.mutate)
 
 (defparameter *mutation-operators*
-  '(:arith-swap :boundary :constant :branch-swap)
-  "runner が定義ごとに試す順序。1つの定義につき、最初に適用できた
-演算子だけを使う。")
+  '(:arith-swap :boundary :constant :off-by-one :negate-condition
+    :delete-form :equality-swap :member-drop :string-constant)
+  "runner が定義ごとに試す演算子と、その順序。各演算子を適用できる
+すべての箇所に1つずつ変異体を作る。:branch-swap は実装しているが
+既定では使わない（4引数の `if` では :negate-condition と意味が同じ
+変異体になり、テストの実行時間を倍にするだけのため）。")
 
 (defparameter *arid-heads*
-  '("FORMAT" "ERROR" "WARN" "CERROR" "ASSERT" "DECLARE" "DECLAIM" "CHECK-TYPE")
+  '("FORMAT" "ERROR" "WARN" "CERROR" "ASSERT" "DECLARE" "DECLAIM" "CHECK-TYPE" "GENSYM")
   "変異させないフォームの先頭シンボル名。ログ出力・エラーメッセージ・
-型宣言はここに変異を入れてもテストの抜けを教えてくれないので、
+型宣言・gensym の名前（印字にしか効かない）はここに変異を入れても
+テストの抜けを教えてくれないので、
 サブフォームごと走査から除外する。")
 
 (defun arid-node-p (form)
@@ -76,31 +81,160 @@
       (return-from constant-candidate candidate)))
   nil)
 
-(defun %try-node (form operator)
-  "FORM 自体（子には降りない）に OPERATOR を適用できれば
-(values mutated-form t)、できなければ (values form nil) を返す。"
-  (ecase operator
-    (:arith-swap
-     (if (and (consp form) (symbolp (car form)) (%symbol-swap (car form) *arith-swap-table*))
-         (values (cons (%symbol-swap (car form) *arith-swap-table*) (cdr form)) t)
-         (values form nil)))
-    (:boundary
-     (if (and (consp form) (symbolp (car form)) (%symbol-swap (car form) *boundary-swap-table*))
-         (values (cons (%symbol-swap (car form) *boundary-swap-table*) (cdr form)) t)
-         (values form nil)))
-    (:constant
-     (if (and (numberp form) (constant-candidate form))
-         (values (constant-candidate form) t)
-         (values form nil)))
-    (:branch-swap
-     (if (%if-form-p form)
-         (values (list (first form) (second form) (fourth form) (third form)) t)
-         (values form nil)))))
 
-(defun mutate-form (form operator)
-  "FORM の中で OPERATOR を適用できる最初のノード（前順・深さ優先、
-arid node の内側は探さない）を1つだけ書き換える。
-戻り値は (values mutated-form applied-p)。適用できるノードが
+(defparameter *equality-swap-table*
+  '((equal . eq) (equalp . equal))
+  "等価述語を「より厳しい」ものへ置き換える表。`equal` → `eq` は新しく
+作ったリスト（形状など）の比較を壊す。逆向き（`eq` → `equal`）は
+keyword やシンボルの比較では常に等価変異体になるだけなので入れない。")
+
+(defparameter *body-start-table*
+  '(("PROGN" 1) ("WHEN" 2) ("UNLESS" 2) ("LET" 2) ("LET*" 2) ("FLET" 2)
+    ("LABELS" 2) ("DOLIST" 2) ("DOTIMES" 2) ("LAMBDA" 2) ("HANDLER-BIND" 2)
+    ("MULTIPLE-VALUE-BIND" 3) ("DESTRUCTURING-BIND" 3) ("DEFUN" 3) ("DEFMACRO" 3)
+    ("UNWIND-PROTECT" 2 t))
+  ":delete-form が本体とみなす位置。(先頭シンボル名 本体の開始位置
+[最後のフォームも消してよいか])。最後のフォームは返り値なので、
+既定では消さない（`unwind-protect` の後始末フォームは返り値にならない
+ので、最後のものも消す）。")
+
+(defun %head-p (form name)
+  (and (consp form) (symbolp (car form)) (string= (symbol-name (car form)) name)))
+
+(defun %replace-nth (list index new)
+  (let ((copy (copy-list list)))
+    (setf (nth index copy) new)
+    copy))
+
+(defun %negate (test)
+  "TEST を反転させた式。すでに (not x) なら x に戻す（対合にするため）。"
+  (if (and (%head-p test "NOT") (consp (cdr test)) (null (cddr test)))
+      (second test)
+      (list 'not test)))
+
+(defun %negate-condition-sites (form)
+  (cond
+    ((and (%head-p form "IF") (<= 3 (length form) 4))
+     (list (%replace-nth form 1 (%negate (second form)))))
+    ((and (%head-p form "WHEN") (consp (cdr form)))
+     (list (cons 'unless (cdr form))))
+    ((and (%head-p form "UNLESS") (consp (cdr form)))
+     (list (cons 'when (cdr form))))
+    ((%head-p form "COND")
+     (loop for clause in (cdr form)
+           for index from 1
+           when (and (consp clause)
+                     (not (and (symbolp (car clause))
+                               (member (symbol-name (car clause)) '("T" "OTHERWISE")
+                                       :test #'string=))))
+             collect (%replace-nth form index (cons (%negate (car clause)) (cdr clause)))))))
+
+(defun %body-start (form)
+  "FORM の本体が始まる位置と、最後のフォームも消してよいかを返す。
+本体を持つ形式でなければ NIL。"
+  (cond
+    ((%defmethod-form-p form)
+     (let ((index (%defmethod-lambda-list-index form)))
+       (and index (values (1+ index) nil))))
+    ((and (consp form) (symbolp (car form)))
+     (let ((entry (assoc (symbol-name (car form)) *body-start-table* :test #'string=)))
+       (and entry (values (second entry) (third entry)))))))
+
+(defun %delete-form-sites (form)
+  (multiple-value-bind (start allow-last) (%body-start form)
+    (when (and start (ignore-errors (list-length form)))
+      (let ((last-index (1- (length form))))
+        (loop for elt in (nthcdr start form)
+              for index from start
+              when (and (consp elt)
+                        (not (arid-node-p elt))
+                        (or allow-last (< index last-index)))
+                collect (append (subseq form 0 index) (nthcdr (1+ index) form)))))))
+
+(defun %member-drop-sites (form)
+  (let ((items (and (%head-p form "MEMBER")
+                    (<= 3 (length form))
+                    (%head-p (third form) "QUOTE")
+                    (second (third form)))))
+    (when (and (consp items) (ignore-errors (list-length items)) (<= 2 (length items)))
+      (loop for index below (length items)
+            collect (%replace-nth form 2 (list 'quote (append (subseq items 0 index)
+                                                               (nthcdr (1+ index) items))))))))
+
+(defun %swap-head-sites (form table)
+  (let ((to (and (consp form) (%symbol-swap (car form) table))))
+    (and to (list (cons to (cdr form))))))
+
+(defun %node-sites (form operator)
+  "FORM 自体（子には降りない）に OPERATOR をかけた変異体のリスト。"
+  (ecase operator
+    (:arith-swap (%swap-head-sites form *arith-swap-table*))
+    (:boundary (%swap-head-sites form *boundary-swap-table*))
+    (:equality-swap (%swap-head-sites form *equality-swap-table*))
+    (:constant (and (numberp form) (constant-candidate form)
+                    (list (constant-candidate form))))
+    (:off-by-one (and (integerp form) (list (1+ form) (1- form))))
+    (:branch-swap (and (%if-form-p form)
+                       (list (list (first form) (second form) (fourth form) (third form)))))
+    (:negate-condition (%negate-condition-sites form))
+    (:delete-form (%delete-form-sites form))
+    (:member-drop (%member-drop-sites form))
+    (:string-constant (and (%token-string-p form) (list "")))))
+
+(defun %token-string-p (object)
+  "OBJECT が、出力するトークン（StableHLO の演算名 \"add\" など）らしい
+文字列なら T。空白・非 ASCII・~ を含む文字列は、自前のエラー関数に
+渡すメッセージや format の制御文字列であることがほとんどで、変異させても
+テストの抜けを教えないので対象にしない。"
+  (and (stringp object)
+       (plusp (length object))
+       (every (lambda (c) (and (graphic-char-p c) (char/= c #\Space) (char/= c #\~)
+                               (< (char-code c) 128)))
+              object)))
+
+(defun %docstring-index (form)
+  "FORM が本体を持つ形式（%BODY-START）で、本体の先頭が docstring なら
+その位置。本体の先頭の文字列は、後ろにまだフォームがあるときだけ
+docstring になる（最後なら返り値）。"
+  (let ((start (%body-start form)))
+    (and start
+         (ignore-errors (list-length form))
+         (stringp (nth start form))
+         (nthcdr (1+ start) form)
+         start)))
+
+(defun %report-string-p (previous element)
+  "ELEMENT が :report / :documentation の直後の文字列（restart-case の
+説明など、利用者向けの文言）なら T。docstring と同じく変異させない。"
+  (and (stringp element)
+       (keywordp previous)
+       (member (symbol-name previous) '("REPORT" "DOCUMENTATION") :test #'string=)
+       t))
+
+(defun mutation-sites (form operator)
+  "FORM の中で OPERATOR をかけられるすべての箇所について、1箇所だけを
+変えた FORM のリストを返す。順序は前順・深さ優先で決まっている
+（同じ FORM には常に同じ順）。arid node の内側と、defmethod の
+specialized lambda list の中には降りない（MUTATE-FORM を見よ）。"
+  (unless (arid-node-p form)
+    (append (%node-sites form operator)
+            (when (consp form)
+              (let ((skip-index (and (%defmethod-form-p form)
+                                     (%defmethod-lambda-list-index form)))
+                    (docstring-index (%docstring-index form)))
+                (loop for tail on form
+                      for previous = nil then element
+                      for element = (car tail)
+                      for index from 0
+                      unless (or (eql index skip-index) (eql index docstring-index)
+                                 (%report-string-p previous element))
+                        nconc (loop for mutated in (mutation-sites (car tail) operator)
+                                    collect (%replace-nth form index mutated))))))))
+
+(defun mutate-form (form operator &optional (site 0))
+  "FORM の中で OPERATOR を適用できる SITE 番目（0始まり、前順・深さ優先、
+arid node の内側は探さない）の箇所だけを書き換える。
+戻り値は (values mutated-form applied-p)。SITE 番目の箇所が
 なければ (values form nil) を返す。
 
 defmethod の specialized lambda list（`((x (eql 0)) ...)` のような
@@ -110,27 +244,7 @@ specializer を含むもの）は、この中の値を変異させても再評�
 直す）でも消えずに残ってしまう。そのため specialized lambda list は
 まるごと arid として扱い、中には決して降りない
 （qualifier はリストでない atom なのでもともと変異の対象にならない）。"
-  (if (arid-node-p form)
-      (values form nil)
-      (multiple-value-bind (mutated applied) (%try-node form operator)
-        (if applied
-            (values mutated t)
-            (if (consp form)
-                (let ((applied-anywhere nil)
-                      (skip-index (and (%defmethod-form-p form)
-                                        (%defmethod-lambda-list-index form))))
-                  (labels ((walk (tail index)
-                             (cond
-                               ((or applied-anywhere (not (consp tail))) tail)
-                               ((eql index skip-index)
-                                (cons (car tail) (walk (cdr tail) (1+ index))))
-                               (t
-                                (multiple-value-bind (new-elt elt-applied)
-                                    (mutate-form (car tail) operator)
-                                  (if elt-applied
-                                      (progn (setf applied-anywhere t)
-                                             (cons new-elt (cdr tail)))
-                                      (cons (car tail) (walk (cdr tail) (1+ index)))))))))
-                    (let ((new-form (walk form 0)))
-                      (values new-form applied-anywhere))))
-                (values form nil))))))
+  (let ((sites (mutation-sites form operator)))
+    (if (< site (length sites))
+        (values (nth site sites) t)
+        (values form nil))))

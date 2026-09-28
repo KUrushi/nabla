@@ -29,6 +29,10 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
   を読み込む（テストの対象になるコードや、テスト実行関数を含むシステム）。
   省略すると既定で `<--system>/tests`（`--system` の既定は `nabla` なので
   通常は `nabla/tests`）を読み込む
+- `--max-per-def N`: 1つの定義あたりの変異体を N 個まで等間隔に間引く
+  （既定は間引かない。「変異演算子」を見よ）
+- `--dry-run`: テストを走らせず、作る予定の変異体の一覧と
+  `mutated-definitions=… mutants=…` だけを出す（変異体があれば終了コード 0）
 - `--test-form FORM`: これを `eval` した結果をテスト実行関数として使う
   （渡さなければ `nabla.mutate:default-test-function` を使う。これは
   `NABLA.TESTS.SUPPORT:RUN-TESTS` を実行時に探すので、`nabla/tests` が
@@ -56,13 +60,41 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
 
 ## 変異演算子
 
-`.claude/skills/nabla-testing/references/mutation.md` の「2. 変異演算子」
-にある表のうち、最初の4つ（算術演算子の入れ替え・比較の境界・定数の置き換え・
-`if` の分岐の入れ替え）を実装している。残りはフェーズ1以降で追加する。
+既定では次の演算子を、この順で使う（`nabla.mutate:*mutation-operators*`）。
 
-この最小版では、1つの変異可能な定義（`defun` / `defmethod` / `defmacro` /
-`defprimitive`）につき、演算子を上の順で試して最初に適用できたものを
-1つだけ使う。将来、行ごとの粒度に細かくする余地がある。
+| 演算子 | 変更の例 |
+| --- | --- |
+| `:arith-swap` | `+`↔`-`、`*`↔`/` |
+| `:boundary` | `<`↔`<=`、`>`↔`>=` |
+| `:constant` | 数値 `n` → `0`（`n` が 0 なら `1`） |
+| `:off-by-one` | 整数 `n` → `n+1`、`n-1`（2つの変異体） |
+| `:negate-condition` | `(if c a b)` → `(if (not c) a b)`、`when`↔`unless`、`cond` の各節の条件 `c` → `(not c)`（`t` / `otherwise` の節は除く） |
+| `:delete-form` | 本体の最後以外のフォームを1つ消す（`(progn a b c)` → `(progn a c)`。`let` / `when` / `dolist` / `defun` などの本体も同じ。docstring と `declare` は消さない。`unwind-protect` の後始末は最後のフォームも消す） |
+| `:equality-swap` | `equal` → `eq`、`equalp` → `equal` |
+| `:member-drop` | `(member x '(a b c))` のリテラルのリストから要素を1つ消す |
+| `:string-constant` | トークンらしい文字列リテラル（StableHLO の演算名 `"add"` など）→ `""`。docstring、`:report` / `:documentation` の直後の文字列、空白・非 ASCII・`~` を含む文字列（自前のエラー関数に渡すメッセージや format の制御文字列）は除く |
+
+`:branch-swap`（`(if c a b)` → `(if c b a)`）も実装しているが、既定では
+使わない。4引数の `if` では `:negate-condition` と意味が同じ変異体になり、
+実行時間を倍にするだけのため。`eq` → `eql` / `equal` の向きの入れ替えは、
+keyword やシンボルの比較では常に等価変異体になるので入れていない。
+
+1つの変異可能な定義（`defun` / `defmethod` / `defmacro` / `defprimitive`）
+について、各演算子を適用できる**すべての箇所**に1つずつ変異体を作る
+（issue #70）。並びは演算子の順、同じ演算子の中ではフォームの前順
+（深さ優先）で、同じ入力には常に同じ並びになる。変異後の定義が同じに
+なるもの（`0` に `:constant` と `:off-by-one` をかけて両方 `1` になる
+場合など）は1つにまとめる。
+
+変異体が多すぎるときは `--max-per-def N`（`nabla.mutate:run` の
+`:max-mutants-per-definition`）で、1つの定義あたり N 個まで、並びの
+先頭から末尾まで等間隔に間引ける。`--dry-run`（`:dry-run t`）はテストを
+走らせずに作る予定の変異体の一覧と数だけを出すので、実行時間の見積もりに
+使う（`nabla.mutate:plan-mutants` が同じ一覧を Lisp のリストで返す）。
+
+結果の一覧では、各変異体を変わった部分を含むいちばん内側のフォームだけで
+短く示す。生き残った変異体には、除外リストの `:mutation` にそのまま写せる
+定義全体の文字列も併せて出す。
 
 `defmethod` の specialized lambda list（`((x (eql 0)) ...)` のように
 specializer を含むもの）は、演算子を問わずまるごと arid† として扱い、
@@ -139,8 +171,8 @@ mutation testing 中はほぼ確実にどこかの変異体でテストを失敗
   こと。手がかり用で、無くても照合できる
 - `:reason`: 記録のためだけで、照合には使わない
 
-`tools/mutate/exclusions.lisp` には、サンプル（下記）の `clamp` の下限
-チェックで実際に見つかった等価変異体が1件、例として入っている。
+`tools/mutate/exclusions.lisp` には、サンプル（下記）の `clamp` の下限・
+上限チェックで実際に見つかった等価変異体が2件、例として入っている。
 
 ## サンプル（`tools/mutate/sample/`）
 
@@ -190,8 +222,23 @@ CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-de
   束縛する（変異対象のソースを読み込むだけの目的で `#.` を実際に
   評価したくないため）。そのため `#.`（read-eval）を含むファイルは、
   そこで読み込みを打ち切る（そこより前の定義は対象になる）
-- 変異は1つの定義につき1つだけ。同じ定義の中に複数の変異可能な箇所が
-  あっても、演算子ごとに最初の1箇所しか試さない
+- 粒度は「行」ではなく「箇所」（変異をかけられるノード）。reader は
+  トップレベルの定義の開始・終了行しか記録しないので、`FILE:START-END`
+  や git diff の行範囲は「その範囲に掛かる定義」を選ぶのに使い、選んだ
+  定義の中では範囲外の行にも変異をかける。1行に1つに絞る Google の運用
+  （mutation.md の「2. 変異演算子」）の代わりに `--max-per-def` で数を抑える
+- 変異体は runner と同じ SBCL プロセスの中で評価する。暴走再帰がたまたま
+  SBCL の pseudo-atomic 区間で制御スタックを使い切ると、Lisp から捕まえ
+  られない fatal error でプロセスごと落ち、そこまでの結果しか残らない
+  （結果は1体ずつ判定したそばから印字するので、最後に印字された次の
+  変異体が原因）。issue #70 の測定では、コンパイルが毎回失敗する変異体に
+  対してテストが `recompile` リスタートを無条件に invoke し続け、
+  `%jit-call` が暴走再帰してこれが起きた（テストを1回だけ invoke する
+  ように直した）。テストのハンドラがリスタートを invoke するときは、
+  回数に上限を付けること
+- `format` は arid node なので、`format` で StableHLO のテキストを書き出す
+  箇所（`src/stablehlo.lisp` など）の中には変異がかからない。StableHLO
+  出力の検査を強めたいときは、この制限に注意すること
 - CFFI のバインディング（`nabla/iree`、`nabla/pjrt` の foreign 関数定義）
   は対象外（`.claude/skills/nabla-testing/references/mutation.md` の
   「3. 対象と除外」を見よ）。ファイルを絞ることで対象から外すこと

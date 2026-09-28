@@ -287,8 +287,17 @@ BACKEND-COMPILE は成功してキャッシュされる（BACKEND-COMPILE の呼
            (jf (nb:jit f :backend backend))
            (a (make-random-array (make-array-spec '(2 3) :f32) :seed 34))
            (b (make-random-array (make-array-spec '(2 3) :f32) :seed 35))
-           (result nil))
-      (handler-bind ((nb:jit-compile-error (lambda (c) (declare (ignore c)) (invoke-restart 'nb:recompile))))
+           (result nil)
+           (retries 0))
+      ;; RECOMPILE は1回だけ invoke する。コンパイルが毎回失敗する壊れ方
+      ;; （mutation testing の変異体など）で無条件に invoke し続けると、
+      ;; %JIT-CALL が際限なく再帰して SBCL ごと落ちる（issue #70）。2回目の
+      ;; 失敗はハンドラが辞退して、そのまま JIT-COMPILE-ERROR にする。
+      (handler-bind ((nb:jit-compile-error
+                       (lambda (c)
+                         (declare (ignore c))
+                         (when (= 1 (incf retries))
+                           (invoke-restart 'nb:recompile)))))
         (setf result (funcall jf a b)))
       (is (allclose result (funcall f a b) :dtype :f32))
       (is (= 2 (fake-backend-compile-count backend)))

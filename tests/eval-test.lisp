@@ -141,12 +141,21 @@ eqn を持つ graph を評価すると MALFORMED-GRAPH。"
 
 (test eval/eqn-with-wrong-outvar-count-signals-error
   "eqn の outvars がちょうど1つでない graph（フェーズ1では起こらないはず
-だが、手で組み立てれば作れる）を評価すると ERROR を signal する。"
+だが、手で組み立てれば作れる）を評価すると ERROR を signal する。
+0個の場合だけだと、個数の検査を消しても (FIRST '()) の先で別の ERROR に
+なって気づけないので、どちらも正しい aval を持つ2個の場合も確かめる
+（issue #70 の :delete-form が見つけた抜け）。"
   (let* ((a (nb::make-var (nb:make-aval '(2) :f32)))
          (prim (nb::find-primitive :%test-neg))
-         (eqn (nb::%make-eqn prim '() (list a) '()))
-         (graph (nb::make-graph (list a) (list eqn) '())))
-    (signals error (nb:eval-graph graph (make-random-array (make-array-spec '(2) :f32))))))
+         (array (make-random-array (make-array-spec '(2) :f32))))
+    (let* ((eqn (nb::%make-eqn prim '() (list a) '()))
+           (graph (nb::make-graph (list a) (list eqn) '())))
+      (signals error (nb:eval-graph graph array)))
+    (let* ((outs (list (nb::make-var (nb:make-aval '(2) :f32))
+                       (nb::make-var (nb:make-aval '(2) :f32))))
+           (eqn (nb::%make-eqn prim '() (list a) outs))
+           (graph (nb::make-graph (list a) (list eqn) (list (first outs)))))
+      (signals error (nb:eval-graph graph array)))))
 
 (test eval/outvar-that-is-an-invar-returns-same-array
   "出力 var がそのまま invar である graph は、渡した配列そのもの（EQ）を

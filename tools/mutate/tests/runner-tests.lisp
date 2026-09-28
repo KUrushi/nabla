@@ -183,3 +183,30 @@ plist にも痕跡が残らない（%evaluate-mutant から戻ったあとに元
                    :key #'nabla.mutate:mutant-status)
            0)
         "clamp の下限チェックの等価変異体は除外リストで除外されるはず")))
+
+(test plan-mutants-is-deterministic-distinct-and-finer-than-definitions
+  "PLAN-MUTANTS（テストを走らせない数え上げ）は、同じ入力に同じ順の
+変異体を返し、1つの定義の中で変異後のフォームが重複せず、サンプルの
+定義の数（2）よりはっきり多くの変異体を作る。"
+  (%load-sample)
+  (let* ((files (list (%sample-path "sample/src/sample.lisp")))
+         (plan1 (nabla.mutate:plan-mutants :files files))
+         (plan2 (nabla.mutate:plan-mutants :files files)))
+    (is (equal (mapcar #'nabla.mutate:mutant-mutated-form plan1)
+               (mapcar #'nabla.mutate:mutant-mutated-form plan2)))
+    (is (> (length plan1) (* 2 2)))
+    (dolist (line (remove-duplicates (mapcar #'nabla.mutate:mutant-line plan1)))
+      (let ((forms (mapcar #'nabla.mutate:mutant-mutated-form
+                           (remove line plan1 :key #'nabla.mutate:mutant-line :test #'/=))))
+        (is (%distinct-p forms))))))
+
+(test plan-mutants-respects-per-definition-cap
+  (is (check-it
+       (generator (integer 1 4))
+       (lambda (cap)
+         (let ((plan (nabla.mutate:plan-mutants
+                      :files (list (%sample-path "sample/src/sample.lisp"))
+                      :max-mutants-per-definition cap)))
+           (every (lambda (line)
+                    (<= (count line plan :key #'nabla.mutate:mutant-line) cap))
+                  (mapcar #'nabla.mutate:mutant-line plan)))))))
