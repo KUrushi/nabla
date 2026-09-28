@@ -68,11 +68,13 @@ session のリストだけを返す（FN・jit した関数への参照は残さ
          (a (make-random-array (make-array-spec '(2 3) :f32) :seed 2))
          (w (make-random-array (make-array-spec '(3 4) :f32) :seed 3))
          (threads (list (sb-thread:make-thread
-                         (lambda () (let ((nb:*compile-cache-directory* nil))
-                                      (funcall (nb:jit f1 :backend backend) a a))))
+                         (lambda () (handler-case (let ((nb:*compile-cache-directory* nil))
+                                                    (funcall (nb:jit f1 :backend backend) a a))
+                                      (error (condition) condition))))
                         (sb-thread:make-thread
-                         (lambda () (let ((nb:*compile-cache-directory* nil))
-                                      (funcall (nb:jit f2 :backend backend) a w))))))
+                         (lambda () (handler-case (let ((nb:*compile-cache-directory* nil))
+                                                    (funcall (nb:jit f2 :backend backend) a w))
+                                      (error (condition) condition))))))
          (results (mapcar (lambda (thread) (sb-thread:join-thread thread :timeout 120 :default :timeout))
                           threads)))
     (is (allclose (first results) (funcall f1 a a) :dtype :f32))

@@ -213,9 +213,13 @@ compile-count はその前に確かめる）。"
 (defun %make-jit-thread (function)
   "FUNCTION を新しいスレッドで呼ぶ。新しいスレッドは呼び出し元の動的束縛を
 引き継がないので、スレッドの中で NB:*COMPILE-CACHE-DIRECTORY* を NIL に
-束縛し直す（ディスクキャッシュがコンパイルを隠さないように）。"
+束縛し直す（ディスクキャッシュがコンパイルを隠さないように）。FUNCTION が
+ERROR を signal したら、プロセスごと落とさずにそのコンディションを
+スレッドの戻り値にする（テストの比較が失敗として報告する）。"
   (sb-thread:make-thread
-   (lambda () (let ((nb:*compile-cache-directory* nil)) (funcall function)))))
+   (lambda ()
+     (handler-case (let ((nb:*compile-cache-directory* nil)) (funcall function))
+       (error (condition) condition)))))
 
 (defclass %rendezvous-fake-backend (fake-backend)
   ((inside :initform (list 0) :reader %rendezvous-inside
