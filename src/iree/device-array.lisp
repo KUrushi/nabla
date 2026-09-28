@@ -93,6 +93,24 @@ release-device-array 済みなら、解放済みの NULL ポインタを C へ�
     (error 'iree-object-released :kind :device-array :context context))
   (%device-array-pointer device-array))
 
+;; :i1 のホスト表現（BIT 配列。SBCL は実体をビット詰めで持つ）と IREE の
+;; 表現（IREE_HAL_ELEMENT_TYPE_BOOL_8、1要素1バイト。buffer_view.h:140）が
+;; 違うので、:i1 だけは sb-ext:array-storage-vector を直接渡せず、行優先の
+;; 順に1要素1バイトへ展開・圧縮する（issue #72）。
+
+(defun %i1-octets (array)
+  "BIT の配列 ARRAY の要素を行優先の順に並べた (unsigned-byte 8) のベクタ
+（1要素1バイト、値は 0 か 1）を新しく作って返す。"
+  (let ((octets (make-array (array-total-size array) :element-type '(unsigned-byte 8))))
+    (dotimes (i (length octets) octets)
+      (setf (aref octets i) (row-major-aref array i)))))
+
+(defun %unpack-i1-octets (octets array)
+  "OCTETS（IREE から読み出した1要素1バイトの :i1）の各バイトの最下位ビットを、
+BIT の配列 ARRAY に行優先の順で書き込む。"
+  (dotimes (i (length octets) array)
+    (setf (row-major-aref array i) (logand (aref octets i) 1))))
+
 (defmethod to-device (array (device device) &key dtype)
   "ARRAY（simple-array、rank は任意）を DEVICE 上にコピーし、DEVICE-ARRAY を
 返す。コピーは1回だけ行う: sb-ext:array-storage-vector で ARRAY の1次元の
@@ -102,18 +120,23 @@ array-storage-vector で1次元ビューにできる。displaced な配列は
 array-storage-vector が simple-error を出すので、その前に check-type で
 分かりやすい TYPE-ERROR にする）。
 
+:i1 だけは例外で、BIT 配列の実体はビット詰めなのに対して IREE の
+IREE_HAL_ELEMENT_TYPE_BOOL_8 は1要素1バイトなので、%I1-OCTETS で
+(unsigned-byte 8) のベクタに展開してからそれを渡す（issue #72）。
+
 ARRAY が simple-array でなければ（adjustable / displaced）TYPE-ERROR、
 ARRAY の要素型と DTYPE が矛盾すれば NABLA:DTYPE-MISMATCH（NABLA:ARRAY-AVAL
-経由）が signal される。v1 でデバイスに送れる dtype は :f32 / :bf16 / :f16
-だけで、それ以外（:f64、:i1。*element-types* に無い dtype）を指定・推論
-すると NABLA:UNSUPPORTED-DTYPE が signal される（issue #37。以前 :f64 は
-buffer-view-allocate-copy の中の plain error だったが、決まった条件に
-なった）。DEVICE が release-device 済みなら IREE-OBJECT-RELEASED
+経由）が signal される。デバイスに送れる dtype は *element-types* にある
+もの（:f32 / :f64 / :bf16 / :f16 / :i1。issue #72 で :f64 と :i1 を
+足した）で、それ以外の dtype には NABLA:UNSUPPORTED-DTYPE を signal する
+（issue #37）。DEVICE が release-device 済みなら IREE-OBJECT-RELEASED
 （kind :device）が signal される。"
   (check-type array simple-array)
   (let* ((aval (nabla:array-aval array dtype))
          (element-dtype (nabla:aval-dtype aval))
-         (storage (sb-ext:array-storage-vector array)))
+         (storage (if (eq element-dtype :i1)
+                      (%i1-octets array)
+                      (sb-ext:array-storage-vector array))))
     (unless (assoc element-dtype *element-types*)
       (error 'nabla:unsupported-dtype :dtype element-dtype))
     (sb-sys:with-pinned-objects (storage)
@@ -128,7 +151,10 @@ buffer-view-allocate-copy の中の plain error だったが、決まった条�
 新しい多次元 simple-array にコピーして返す（コピーは1回。
 sb-ext:array-storage-vector で結果配列の1次元ビューを取り、そこへ直接
 読み出す。1次元 vector + shape の組ではなく、多次元配列そのものを返すので
-(to-device (to-host x)) がそのまま使える）。
+(to-device (to-host x)) がそのまま使える）。:i1 は IREE 側が1要素1バイト
+なので、いったん (unsigned-byte 8) のベクタに読み出してから、各バイトの
+最下位ビットを BIT 配列に詰める（buffer_view.h の BOOLEAN は「整数として
+格納し、1ビットだけが有効」。issue #72）。
 
 DEVICE-ARRAY が release-device-array 済みなら IREE-OBJECT-RELEASED
 （kind :device-array）が signal される。読み出しに使う device pointer は
@@ -140,12 +166,16 @@ device-array がまだ生きている限り to-host は動き続ける（ファ�
          (aval (device-array-aval device-array))
          (array (make-array (nabla:aval-shape aval)
                              :element-type (nabla:dtype-element-type (nabla:aval-dtype aval))))
-         (storage (sb-ext:array-storage-vector array)))
+         (storage (if (eq (nabla:aval-dtype aval) :i1)
+                      (make-array (array-total-size array) :element-type '(unsigned-byte 8))
+                      (sb-ext:array-storage-vector array))))
     (sb-sys:with-pinned-objects (storage)
       (%buffer-view-read-into-sap (%device-array-device-pointer device-array)
                                    buffer-view
                                    (sb-sys:vector-sap storage)
                                    (nabla:aval-byte-length aval)))
+    (when (eq (nabla:aval-dtype aval) :i1)
+      (%unpack-i1-octets storage array))
     array))
 
 (defun release-device-array (device-array)

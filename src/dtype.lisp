@@ -11,9 +11,9 @@
 (deftype dtype ()
   "nabla が扱う要素型のタグ。:f32 / :f64 / :bf16 / :f16 / :i1 のいずれか。
 :i1 は真偽値（1ビット）で、compare の出力・select の条件に使う
-（issue #37）。フェーズ1では :i1 の配列を TO-DEVICE に渡すと
-UNSUPPORTED-DTYPE が signal される（実行系との要素型の対応は各実行系の
-実装が決める。core はその対応を知らない）。"
+（issue #37）。実行系がデバイス上の表現を持たない dtype を TO-DEVICE に
+渡すと UNSUPPORTED-DTYPE が signal される（実行系との要素型の対応は各実行系
+の実装が決める。core はその対応を知らない）。"
   '(member :f32 :f64 :bf16 :f16 :i1))
 
 (define-condition dtype-mismatch (error)

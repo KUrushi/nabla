@@ -2,14 +2,15 @@
 ;;;; 実際にコンパイル・実行し、eager 実装と一致することを確かめる medium
 ;;;; テスト（issue #31 p3）。
 ;;;;
-;;;; :i1 は to-device で拒否される（docs/stablehlo-ops.md）ため、compare
-;;;; 単体は device 上を経由できない。そのため compare + select を1つの
-;;;; モジュールにまとめ（select(compare(a, b, direction), a, b)）、f32/bf16
+;;;; このファイルを書いた時点（issue #31）では :i1 が to-device で拒否されて
+;;;; いた（issue #72 で対応済み。:i1 の入出力は tests/iree/jit-dtype-test.lisp
+;;;; が確かめる）ため、compare + select を1つのモジュールにまとめ（select(compare(a, b, direction), a, b)）、f32/bf16
 ;;;; の入出力だけを device に渡す。direction が :LT のときはこれが
 ;;;; min(a, b) に等しい（tests/primitives/compare-test.lisp と同じ性質）。
 ;;;;
-;;;; convert は f64 が to-device を通らないため、f32/bf16/f16 の組だけを
-;;;; 対象にする（契約 §4 の pitfall #6）。
+;;;; convert は、書いた時点で f64 が to-device を通らなかったため、
+;;;; f32/bf16/f16 の組だけを対象にする（契約 §4 の pitfall #6。f64 の
+;;;; to-device は issue #72 で対応済み）。
 
 (in-package #:nabla.iree.tests)
 
@@ -70,8 +71,8 @@ eager 実装を通した結果と allclose :dtype ~(~A~) で一致する。" dir
 (def-iree-compare-select-test iree/compare-select/ne/bf16/matches-eager :bf16 :ne)
 
 (defmacro def-iree-convert-test (test-name from-dtype to-dtype)
-  "shape (4)・FROM-DTYPE → TO-DTYPE（:F32/:BF16/:F16 の組。f64 は to-device
-を通らないため対象外）の convert を1演算モジュールとして IREE の local
+  "shape (4)・FROM-DTYPE → TO-DTYPE（:F32/:BF16/:F16 の組。f64 はファイル
+冒頭のコメントの理由で対象外）の convert を1演算モジュールとして IREE の local
 backend でコンパイル・実行し、convert の eager 実装の結果と allclose
 :dtype ~A で一致することを確かめる DEFINE-IREE-TEST を作る。"
   `(define-iree-test ,test-name
