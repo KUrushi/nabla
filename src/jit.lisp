@@ -177,33 +177,56 @@ device array にしてから渡すよう案内する JIT-ERROR に変換する�
     (values-list (mapcar #'to-host results))))
 
 ;;; --- キャッシュ ---
+;;;
+;;; 2段の表にする（issue #71）。外側の *JIT-CACHE* は TRACEABLE-FUNCTION から
+;;; その関数専用の %JIT-FUNCTION-CACHE への弱参照の表で、*JIT-CACHE-LOCK* は
+;;; この外側の表の読み書きだけを守る（トレースやコンパイルの間は持たない）。
+;;; 関数ごとのキャッシュは自分のロックを持ち、コンパイル中のキーを PENDING に
+;;; 記録する。同じキーを後から引いたスレッドはその完了を待ち、別のキー・別の
+;;; 関数のコンパイルは並行して進む。
+;;;
+;;; module の解放: 関数ごとのキャッシュを作るとき、FN に finalizer を登録する。
+;;; finalizer は %JIT-FUNCTION-CACHE だけを捕まえ（FN を捕まえると FN が永遠に
+;;; 回収されない）、FN が GC されたらキャッシュ中の module をすべて
+;;; BACKEND-UNLOAD する。%JIT-CACHE-FORGET（DEFJIT の再定義を含む）は、その場で
+;;; 同じことをする。
 
 (defvar *jit-cache* (make-hash-table :test 'eq :weakness :key)
-  "TRACEABLE-FUNCTION（jit に渡した FN そのもの）から、その関数のキャッシュ
-エントリを持つ内側の EQUAL ハッシュ表への表。:WEAKNESS :KEY なので、FN が
-どこからも参照されなくなれば GC がこのエントリごと回収する（ただし
-BACKEND-UNLOAD は呼ばれない。既知の制約、follow-up は J1.5 のコメント参照）。")
+  "TRACEABLE-FUNCTION（jit に渡した FN そのもの）から、その関数の
+%JIT-FUNCTION-CACHE への表。:WEAKNESS :KEY なので、FN がどこからも参照
+されなくなれば GC がこのエントリごと回収し、FN の finalizer が module を
+BACKEND-UNLOAD する。")
 
 (defvar *jit-cache-lock* (sb-thread:make-mutex :name "nabla-jit-cache")
-  "*JIT-CACHE* の読み書きと、キャッシュミス時のコンパイルを保護する粗い
-ロック。コンパイルはこのロックを持ったまま行う（同じ関数への同時呼び出しが
-二重にコンパイルしないようにするための単純な選択。詳しい並行性が要る
-ようになったら、より細かいロックに分けるのを follow-up にする）。")
+  "*JIT-CACHE*（外側の表）の読み書きと *JIT-MISS-COUNT* の更新だけを守る
+ロック。トレース・コンパイルの間は持たない（関数ごとのロックは
+%JIT-FUNCTION-CACHE-LOCK）。")
 
 (defvar *jit-miss-count* 0
   "キャッシュミスして実際にトレース・コンパイルした回数（内部の統計。
 テストが nb::*jit-miss-count* で読む）。")
 
 (defstruct (%jit-entry (:constructor %make-jit-entry (graph text module)))
-  "*JIT-CACHE* の内側の表に入るエントリ。GRAPH は phase 2 の grad や
-use-eager リスタート、診断が必要とするので保持する。"
+  "%JIT-FUNCTION-CACHE の ENTRIES に入るエントリ。GRAPH は phase 2 の grad や
+診断が必要とするので保持する。"
   graph
   text
   module)
 
+(defstruct (%jit-function-cache (:constructor %make-jit-function-cache ()))
+  "1つの TRACEABLE-FUNCTION のキャッシュ。ENTRIES はキー（%JIT-CACHE-KEY）から
+%JIT-ENTRY への EQUAL の表、PENDING はコンパイル中のキーから、それを
+コンパイルしているスレッドへの表。LOCK が ENTRIES と PENDING を守り、
+READY はコンパイルが終わる（成功・失敗を問わない）たびに通知される。
+FN への参照は持たない（FN の finalizer がこの構造体を捕まえるため）。"
+  (lock (sb-thread:make-mutex :name "nabla-jit-function-cache"))
+  (ready (sb-thread:make-waitqueue))
+  (entries (make-hash-table :test 'equal))
+  (pending (make-hash-table :test 'equal)))
+
 (defun %jit-cache-key (backend avals static-values)
-  "*JIT-CACHE* の内側（EQUAL）の表に使うキーを返す。AVALS は AVAL のリスト
-（構造体は EQUAL が EQ 相当になってしまうため、(shape dtype) のリストに
+  "%JIT-FUNCTION-CACHE の ENTRIES（EQUAL）に使うキーを返す。AVALS は AVAL の
+リスト（構造体は EQUAL が EQ 相当になってしまうため、(shape dtype) のリストに
 正規化する）。BACKEND インスタンス自体は EQUAL の中で EQ 比較される。
 BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでもコンパイル
 フラグ等が呼び出しごとに変わりうるため（design tab の「ターゲット（GPU
@@ -213,26 +236,51 @@ BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでも
         (mapcar (lambda (aval) (list (aval-shape aval) (aval-dtype aval))) avals)
         static-values))
 
+(defun %jit-unload-entries (cache)
+  "CACHE（%JIT-FUNCTION-CACHE）の全エントリの MODULE を、キーに含まれる
+BACKEND で BACKEND-UNLOAD してから ENTRIES を空にし、捨てた数を返す。
+CACHE のロックを持って呼ぶこと。"
+  (let ((entries (%jit-function-cache-entries cache)))
+    (prog1 (hash-table-count entries)
+      (maphash (lambda (key entry) (backend-unload (first key) (%jit-entry-module entry)))
+               entries)
+      (clrhash entries))))
+
+(defun %jit-function-cache (fn &key (create t))
+  "FN の %JIT-FUNCTION-CACHE を返す。無ければ、CREATE が真なら作って
+*JIT-CACHE* に登録し、FN が GC されたときに module を解放する finalizer を
+FN に登録する。CREATE が偽なら NIL を返す。"
+  (sb-thread:with-mutex (*jit-cache-lock*)
+    (or (gethash fn *jit-cache*)
+        (when create
+          (let ((cache (%make-jit-function-cache)))
+            ;; CACHE だけを捕まえる（FN を捕まえない）。finalizer thread で
+            ;; 走るので、BACKEND-UNLOAD のエラーでそのスレッドを止めない。
+            (trivial-garbage:finalize
+             fn (lambda ()
+                  (ignore-errors
+                   (sb-thread:with-mutex ((%jit-function-cache-lock cache))
+                     (%jit-unload-entries cache)))))
+            (setf (gethash fn *jit-cache*) cache))))))
+
 (defun %jit-cache-entry-count (fn)
   "FN（jit に渡した TRACEABLE-FUNCTION）が *JIT-CACHE* に持つエントリの数を
 返す（無ければ0）。内部テスト用。"
-  (let ((table (gethash fn *jit-cache*)))
-    (if table (hash-table-count table) 0)))
+  (let ((cache (%jit-function-cache fn :create nil)))
+    (if cache
+        (sb-thread:with-mutex ((%jit-function-cache-lock cache))
+          (hash-table-count (%jit-function-cache-entries cache)))
+        0)))
 
 (defun %jit-cache-forget (fn)
-  "FN の *JIT-CACHE* エントリをすべて捨てる。各エントリの MODULE を、その
-キーに含まれる BACKEND で BACKEND-UNLOAD してから REMHASH する。捨てた
-エントリの数を返す。"
-  (sb-thread:with-mutex (*jit-cache-lock*)
-    (let ((table (gethash fn *jit-cache*)))
-      (if (null table)
-          0
-          (let ((count (hash-table-count table)))
-            (maphash (lambda (key entry)
-                       (backend-unload (first key) (%jit-entry-module entry)))
-                     table)
-            (remhash fn *jit-cache*)
-            count)))))
+  "FN のキャッシュエントリをすべて捨てる。各エントリの MODULE を、その
+キーに含まれる BACKEND で BACKEND-UNLOAD する。捨てたエントリの数を返す。
+その時点でコンパイル中のキーは捨てない（コンパイルが終われば普通に載る）。"
+  (let ((cache (%jit-function-cache fn :create nil)))
+    (if cache
+        (sb-thread:with-mutex ((%jit-function-cache-lock cache))
+          (%jit-unload-entries cache))
+        0)))
 
 ;;; --- jit-compile-error（issue #34、wave 4 j2） ---
 ;;;
@@ -277,23 +325,64 @@ NIL・NIL）、JIT-COMPILE-ERROR に変換して signal し直す。"
       (multiple-value-bind (eqn index) (graph-eqn-for-diagnostic graph (princ-to-string c))
         (error 'jit-compile-error :condition c :graph graph :eqn eqn :eqn-index index)))))
 
+(defun %jit-claim-or-wait (cache key)
+  "CACHE（%JIT-FUNCTION-CACHE）で KEY のエントリがあればそれを返す。無ければ、
+KEY をコンパイル中の別スレッドがいればその完了を待って引き直し、誰も
+コンパイルしていなければ KEY を自分のスレッドのコンパイル中として登録して
+NIL を返す（呼び出し元がコンパイルする）。自分のスレッドが同じ KEY を
+コンパイル中なら（トレース中の本体がその関数自身を同じ引数の形で呼んだ）、
+待つと永遠に終わらないので JIT-ERROR を signal する。
+
+既知の制約: 2つのスレッドが互いのトレース中に相手の関数を呼ぶ（F の
+トレースが G を、G のトレースが F を、どちらも具体的な配列で呼ぶ）と、
+互いの完了を待ち続ける。このような相互再帰は1スレッドなら上の
+JIT-ERROR になる誤りなので、スレッドをまたぐ待ちの循環までは検出しない。"
+  (let ((entries (%jit-function-cache-entries cache))
+        (pending (%jit-function-cache-pending cache))
+        (self sb-thread:*current-thread*))
+    (sb-thread:with-mutex ((%jit-function-cache-lock cache))
+      (loop
+        (let ((entry (gethash key entries)))
+          (when entry (return entry)))
+        (let ((owner (gethash key pending)))
+          (cond ((null owner)
+                 (setf (gethash key pending) self)
+                 (return nil))
+                ((eq owner self)
+                 (%jit-error "関数のトレース・コンパイル中に、その関数自身を同じ引数の形で呼んだ"))
+                (t
+                 (sb-thread:condition-wait (%jit-function-cache-ready cache)
+                                           (%jit-function-cache-lock cache)))))))))
+
 (defun %jit-cache-lookup-or-compile (fn key backend graph-thunk)
-  "*JIT-CACHE* から FN・KEY に対応するエントリを引く。無ければ GRAPH-THUNK
+  "FN のキャッシュから KEY に対応するエントリを引く。無ければ GRAPH-THUNK
 （引数無しの関数で、GRAPH を返す）を呼んでトレースし、EMIT-STABLEHLO ->
 %JIT-COMPILE-AND-LOAD（BACKEND 上に、GRAPH 付きで診断できる形で）した
-結果を新しいエントリとして書き込む。呼び出し全体を *JIT-CACHE-LOCK* で
-保護する（コンパイルが JIT-COMPILE-ERROR を signal して非局所脱出しても、
-WITH-MUTEX の UNWIND-PROTECT がロックを必ず解放する）。"
-  (sb-thread:with-mutex (*jit-cache-lock*)
-    (let ((table (or (gethash fn *jit-cache*)
-                      (setf (gethash fn *jit-cache*) (make-hash-table :test 'equal)))))
-      (or (gethash key table)
-          (progn
-            (incf *jit-miss-count*)
-            (let* ((graph (funcall graph-thunk))
-                   (text (emit-stablehlo graph))
-                   (module (%jit-compile-and-load backend text graph)))
-              (setf (gethash key table) (%make-jit-entry graph text module))))))))
+結果を新しいエントリとして書き込む。
+
+トレース・コンパイルの間はどのロックも持たない（%JIT-CLAIM-OR-WAIT で
+KEY をコンパイル中として登録するだけ）ので、別の関数や別のキーの jit は
+並行して進み、トレース中の本体から別の jit した関数を呼べる。コンパイルが
+JIT-COMPILE-ERROR などで非局所脱出しても、UNWIND-PROTECT が KEY の登録を
+外して待っているスレッドを起こす（起きたスレッドは自分でコンパイルを
+やり直す）。"
+  (let ((cache (%jit-function-cache fn)))
+    (or (%jit-claim-or-wait cache key)
+        (let ((entry nil))
+          (unwind-protect
+               (progn
+                 (sb-thread:with-mutex (*jit-cache-lock*)
+                   (incf *jit-miss-count*))
+                 (let* ((graph (funcall graph-thunk))
+                        (text (emit-stablehlo graph))
+                        (module (%jit-compile-and-load backend text graph)))
+                   (setf entry (%make-jit-entry graph text module))))
+            (sb-thread:with-mutex ((%jit-function-cache-lock cache))
+              (remhash key (%jit-function-cache-pending cache))
+              (when entry
+                (setf (gethash key (%jit-function-cache-entries cache)) entry))
+              (sb-thread:condition-broadcast (%jit-function-cache-ready cache))))
+          entry))))
 
 (defun %jit-eager-fallback (graph dynamic-values)
   "GRAPH を DYNAMIC-VALUES（配列または device array のリスト）に対して
@@ -302,38 +391,35 @@ EVAL-GRAPH で評価し、多値で返す（USE-EAGER リスタートの本体�
   (apply #'eval-graph graph (mapcar (lambda (value) (if (arrayp value) value (to-host value))) dynamic-values)))
 
 (defun %jit-call (jitted args)
-  "JITTED（JITTED-FUNCTION）の呼び出しの糸口。引数の個数を確かめ、backend を
-解決し、静的引数を切り出し、動的引数から aval を求め、キャッシュを引いて
+  "JITTED（JITTED-FUNCTION）の呼び出しの糸口。引数の個数を確かめ、静的引数を
+切り出し、動的引数から aval を求め、backend を解決し、キャッシュを引いて
 （無ければコンパイルして）%JIT-EXECUTE する。
 
+動的引数のどれかが TRACER なら（別の関数のトレース中に呼ばれたなら）、
+コンパイルせずに FN の本体をそのトレースの中で呼ぶ（呼び出し元の graph に
+展開する。JAX の jit の入れ子と同じ）。
+
 キャッシュミスのコンパイルが JIT-COMPILE-ERROR を signal したときのために
-2つのリスタートを提供する: USE-EAGER はこの呼び出しだけ GRAPH を
-EVAL-GRAPH で評価して返す（何もキャッシュしないので、次の呼び出しは
-また同じコンパイルを試みる）。RECOMPILE はもう一度 %JIT-CALL 自体を
-やり直す（コンパイルが直っていれば今度はキャッシュに載る）。
+2つのリスタートを提供する: USE-EAGER はこの呼び出しだけ、コンパイルに
+失敗した GRAPH（この呼び出しが最後にトレースしたもの）を EVAL-GRAPH で評価して返す
+（トレースし直さない。何もキャッシュしないので、次の呼び出しはまた同じ
+コンパイルを試みる）。RECOMPILE はキャッシュの引き直しからやり直す
+（コンパイルが直っていれば今度はキャッシュに載る）。やり直しはループで
+行うので、ハンドラが何度 RECOMPILE を選んでもスタックは深く
+ならない。
 
 この2つのリスタートは %JIT-CACHE-LOOKUP-OR-COMPILE（キャッシュミスの
 トレース・コンパイル経路。JIT-COMPILE-ERROR が起こりうる場所）だけを
 囲む。%JIT-EXECUTE（キャッシュヒット後の TO-DEVICE / BACKEND-INVOKE /
 TO-HOST）はこの restart-case の外にあるので、実行時のエラーには
 USE-EAGER・RECOMPILE のどちらも提供されない（実行時エラーを
-EVAL-GRAPH で読み替えたり、実行をやり直したりする意味が無いため）。
-
-follow-up（振る舞いは変えない。仕様通りだが、次に触るときのための
-メモ）: RECOMPILE は %JIT-COMPILE-AND-LOAD だけをやり直すのではなく
-%JIT-CALL を再帰的に呼び直すので、引数の検証・backend の解決・
-GRAPH-THUNK によるトレースをすべてやり直す（無害だが無駄があり、かつ
-ハンドラが毎回 RECOMPILE し続ければ再帰の深さに上限が無い）。同様に
-USE-EAGER は GRAPH-THUNK を呼び直して本体を2回目のトレースにかけている
-（コンパイルに失敗した GRAPH をそのまま JIT-COMPILE-ERROR の条件に
-運んで再利用すれば、この2回目のトレースは要らない）。"
+EVAL-GRAPH で読み替えたり、実行をやり直したりする意味が無いため）。"
   (let* ((fn (%jitted-function-fn jitted))
          (static-positions (%jitted-function-static-positions jitted))
          (arity (length (traceable-function-lambda-list fn))))
     (unless (= (length args) arity)
       (%jit-error "引数の個数 ~D が関数の引数の個数 ~D と一致しない" (length args) arity))
-    (let ((backend (%jit-resolve-backend jitted))
-          (static-values nil)
+    (let ((static-values nil)
           (dynamic-values nil))
       (loop for position from 0
             for arg in args
@@ -342,43 +428,64 @@ USE-EAGER は GRAPH-THUNK を呼び直して本体を2回目のトレースに�
                    (push arg dynamic-values)))
       (setf static-values (nreverse static-values)
             dynamic-values (nreverse dynamic-values))
-      (let* ((avals (mapcar #'%jit-argument-aval dynamic-values))
+      (when (some (lambda (value) (typep value 'tracer)) dynamic-values)
+        (return-from %jit-call
+          (apply (%traceable-function-function fn)
+                 (%jit-merge-args arity static-positions static-values dynamic-values))))
+      (let* ((backend (%jit-resolve-backend jitted))
+             (avals (mapcar #'%jit-argument-aval dynamic-values))
              (key (%jit-cache-key backend avals static-values))
-             (graph-thunk (lambda () (%jit-trace fn avals static-positions static-values)))
-             (entry (restart-case
-                        (%jit-cache-lookup-or-compile fn key backend graph-thunk)
-                      (use-eager ()
-                        :report "この呼び出しだけ eager（eval-graph）で実行する"
-                        (return-from %jit-call (%jit-eager-fallback (funcall graph-thunk) dynamic-values)))
-                      (recompile ()
-                        :report "もう一度コンパイルする"
-                        (return-from %jit-call (%jit-call jitted args))))))
-        (%jit-execute backend (%jit-entry-module entry) dynamic-values avals)))))
+             ;; 最後にトレースした graph。コンパイルに失敗したら、それが
+             ;; USE-EAGER で評価する graph になる（トレースし直さない）。
+             (traced-graph nil)
+             (graph-thunk (lambda ()
+                            (setf traced-graph (%jit-trace fn avals static-positions static-values))))
+             (entry (loop
+                      (restart-case
+                          (return (%jit-cache-lookup-or-compile fn key backend graph-thunk))
+                        (use-eager ()
+                          :report "この呼び出しだけ eager（eval-graph）で実行する"
+                          (return-from %jit-call
+                            (%jit-eager-fallback (or traced-graph (funcall graph-thunk)) dynamic-values)))
+                        (recompile ()
+                          :report "もう一度コンパイルする"
+                          nil)))))
+        ;; 実行が終わるまで FN を生かしておく（FN が GC されると、その
+        ;; finalizer が実行中の module を BACKEND-UNLOAD してしまう）。
+        (sb-sys:with-pinned-objects (fn)
+          (%jit-execute backend (%jit-entry-module entry) dynamic-values avals))))))
 
 ;;; --- defjit（issue #34、wave 4 j2） ---
 
-(defun %defjit-install (name traceable)
-  "NAME（シンボル）の property list の :%DEFJIT-TRACEABLE に TRACEABLE を
-記録し、以前そこに TRACEABLE-FUNCTION があれば %JIT-CACHE-FORGET でその
-キャッシュエントリを先に捨て（DEFJIT の再定義のたびに、古いキャッシュを
-使い続けないようにする。design tab の「Lisp らしさ」）、NAME の
-FDEFINITION を (JIT TRACEABLE) にする。"
-  (let ((old (get name '%defjit-traceable)))
-    (when old (%jit-cache-forget old)))
-  (setf (get name '%defjit-traceable) traceable)
-  (setf (fdefinition name) (jit traceable)))
+(defun %defjit-install (name traceable static-args)
+  "TRACEABLE を STATIC-ARGS 付きで JIT し（STATIC-ARGS が不正ならここで
+JIT-ERROR になり、以前の定義はそのまま残る）、NAME（シンボル）の property
+list の :%DEFJIT-TRACEABLE に TRACEABLE を記録し、以前そこに
+TRACEABLE-FUNCTION があれば %JIT-CACHE-FORGET でその module を先に解放し
+（DEFJIT の再定義のたびに、古いキャッシュを使い続けない。design tab の
+「Lisp らしさ」）、NAME の FDEFINITION を JIT の結果にする。"
+  (let ((jitted (jit traceable :static-args static-args))
+        (old (get name '%defjit-traceable)))
+    (when old (%jit-cache-forget old))
+    (setf (get name '%defjit-traceable) traceable)
+    (setf (fdefinition name) jitted)))
 
-(defmacro defjit (name (&rest lambda-list) &body body)
+(defmacro defjit (name-and-options (&rest lambda-list) &body body)
   "NAME を、BODY を WITH-TRACING でトレース対象にしてから JIT した関数として
 定義する（呼び出しのたびに必要なら1回だけコンパイルする通常の関数として
 FUNCALL・(NAME ...) の両方で呼べる）。
 
+NAME-AND-OPTIONS は NAME（シンボル）か (NAME &KEY STATIC-ARGS)。
+STATIC-ARGS は評価され、JIT の :STATIC-ARGS と同じ意味（LAMBDA-LIST への
+0始まりの位置のリスト）になる。例: (defjit (f :static-args '(1)) (a axis) ...)。
+
 DEFJIT を再評価するたびに新しい TRACEABLE-FUNCTION が作られるので、以前の
-評価が作ったキャッシュエントリは再利用されず、その場で捨てられる
-（%DEFJIT-INSTALL 参照）。v1 では :STATIC-ARGS やドキュメント文字列は
-サポートしない（後方互換に拡張できるので follow-up）。使う BACKEND は
-呼び出し時の *DEFAULT-BACKEND*。"
-  `(progn
-     (declaim (ftype function ,name))
-     (%defjit-install ',name (with-tracing ,lambda-list ,@body))
-     ',name))
+評価が作ったキャッシュエントリは再利用されず、その module はその場で
+解放される（%DEFJIT-INSTALL 参照）。ドキュメント文字列はサポートしない。
+使う BACKEND は呼び出し時の *DEFAULT-BACKEND*。"
+  (destructuring-bind (name &key static-args)
+      (if (listp name-and-options) name-and-options (list name-and-options))
+    `(progn
+       (declaim (ftype function ,name))
+       (%defjit-install ',name (with-tracing ,lambda-list ,@body) ,static-args)
+       ',name)))
