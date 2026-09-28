@@ -1,9 +1,15 @@
 ;;;; ONE-OP-MODULE-TEXT / WITH-ONE-OP-MODULE: 1つの StableHLO 演算だけを
 ;;;; 含む @main 関数を組み立て、IREE でコンパイル・ロードするヘルパー
-;;;; （issue #31 p1）。
+;;;; （issue #31 p1）。PRIMITIVE-EAGER-ORACLE: 期待値に使う eager 実装の
+;;;; 呼び出し。
 ;;;;
-;;;; add/sub/mul/div 以外の二項・単項プリミティブ（p2/p3）もこのファイルを
-;;;; 使う想定（契約 §4「p1 が tests/iree/primitive-support.lisp を持つ」）。
+;;;; すべてのプリミティブの medium テスト（arith / unary / compare / shape /
+;;;; dot / reduce / float-traps）がこのファイルを使う。p4 が並行開発の都合で
+;;;; 持っていた SHAPE- 接頭辞の複製（shape-primitive-support.lisp）は
+;;;; issue #74 でここに統合した。StableHLO テキスト emitter（EMIT-STABLEHLO、
+;;;; #56 以降）があっても、ここでは本体の行を graph ではなく直接受け取る:
+;;;; IREE がその op を受け付けるかをテストごとに書いた行そのもので確かめる
+;;;; ため（reduce-test のように :EMIT の出力を行に分けて渡すこともできる）。
 ;;;; 1回のコンパイルは約350msかかる（tests/iree/backend-test.lisp のコメント
 ;;;; 参照）ので、WITH-ONE-OP-MODULE は本体の外でコンパイル・ロードを1回だけ
 ;;;; 行い、check-it の各試行はロード済みの module を使い回す。
@@ -40,3 +46,8 @@ BODY を評価してから backend-unload する。"
      (unwind-protect
           (progn ,@body)
        (nabla:backend-unload ,backend ,module))))
+
+(defun primitive-eager-oracle (name arrays in-avals &rest params)
+  "NAME（プリミティブ名のキーワード）の eager 実装を、device 実行の期待値
+（オラクル）として呼ぶ。"
+  (apply (nb::primitive-eager (nb::find-primitive name)) arrays in-avals params))

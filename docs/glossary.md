@@ -32,10 +32,10 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 : `jit` に `:static-args` で渡す、トレース時に固定する引数の位置。静的引数はトレース対象の本体へ普通の Lisp の値として渡り（クロージャに閉じ込められる）、`aval`（形状・dtype）を持つ動的引数とは別に、jit キャッシュのキーの一部になる。値が違えば別のコンパイル結果になる（`1` と `1.0` は異なる静的引数として扱う）ので、EQUAL で比較できる値（数値・シンボル・文字列・そのリストなど）にする。JAX の `static_argnums` に相当する。
 
 **インメモリのコンパイルキャッシュ（jit キャッシュ）**
-: `jit` が持つ、プロセス内・メモリ上だけのキャッシュ（`src/jit.lisp`）。キーは「関数の同一性（EQ）・aval・静的引数・実行系（ターゲット）」で、同じキーの2回目の呼び出しはトレース・コンパイルをせずコンパイル済みの module をそのまま使う。プロセスをまたいで効く vmfb のディスクキャッシュ（`src/compile-cache.lisp`、issue #10。`BACKEND-COMPILE` の `:AROUND` メソッドとして実装され、実行系がコンパイルした結果そのものをファイルに残す）とは別の層で、両方が独立に効く（jit キャッシュがヒットすればディスクキャッシュまで届かないし、jit キャッシュがミスしてもディスクキャッシュがヒットすれば実際のコンパイラは呼ばれない）。関数を再定義する（`WITH-TRACING` を再評価する、`defjit` を再評価する）と、新しい `TRACEABLE-FUNCTION` オブジェクトになるため、古いキャッシュは（EQ で一致しないので）使われない。
+: `jit` が持つ、プロセス内・メモリ上だけのキャッシュ（`src/jit.lisp`）。キーは「関数の同一性（EQ）・aval・静的引数・実行系（ターゲット）」で、同じキーの2回目の呼び出しはトレース・コンパイルをせずコンパイル済みの module をそのまま使う。プロセスをまたいで効く vmfb のディスクキャッシュ（`src/compile-cache.lisp`、issue #10。`BACKEND-COMPILE` の `:AROUND` メソッドとして実装され、実行系がコンパイルした結果そのものをファイルに残す）とは別の層で、両方が独立に効く（jit キャッシュがヒットすればディスクキャッシュまで届かないし、jit キャッシュがミスしてもディスクキャッシュがヒットすれば実際のコンパイラは呼ばれない）。関数を再定義する（`WITH-TRACING` を再評価する、`defjit` を再評価する）と、新しい `TRACEABLE-FUNCTION` オブジェクトになるため、古いキャッシュは（EQ で一致しないので）使われない。古い関数のエントリが消えるとき（`defjit` の再定義、GC による回収）は、読み込んだ module を `BACKEND-UNLOAD` で解放する（GC のときは関数に登録した finalizer が行う。issue #71）。
 
 **defjit**
-: `(defjit name (&rest lambda-list) &body body)`。`body` を `with-tracing` でトレース対象にしてから `jit` した通常の関数を `name` に定義するマクロ（`src/jit.lisp`、issue #34）。CL の `defun` と同じ感覚で「関数を定義したら、その名前で呼べる」ようにする糖衣で、内部では毎回新しい `traceable-function` を作って `(setf (fdefinition name) ...)` する。再評価すると古いキャッシュエントリを捨てるので、関数を再定義したら次の呼び出しは必ず再コンパイルする。
+: `(defjit name-or-(name :static-args positions) (&rest lambda-list) &body body)`。`body` を `with-tracing` でトレース対象にしてから `jit` した通常の関数を `name` に定義するマクロ（`src/jit.lisp`、issue #34）。CL の `defun` と同じ感覚で「関数を定義したら、その名前で呼べる」ようにする糖衣で、内部では毎回新しい `traceable-function` を作って `(setf (fdefinition name) ...)` する。再評価すると古いキャッシュエントリを捨てて module を解放するので、関数を再定義したら次の呼び出しは必ず再コンパイルする。`:static-args` は `jit` と同じ意味。
 
 **リスタート（restart）**
 : Common Lisp の条件システムが提供する「コンディションが signal された地点から、あらかじめ用意した別の処理を選んで再開する」仕組み。`error` と違い、呼び出し元（`handler-bind` を書いた側）が `invoke-restart` でどう続けるかを選べる（スタックを一度も巻き戻さずに選べるのが `handler-case` との違い）。nabla の `jit` は、キャッシュミスのコンパイルが `jit-compile-error` を signal したとき2つのリスタートを提供する: `use-eager`（この呼び出しだけ `eval-graph` で eager に評価して返す。何もキャッシュしない）と `recompile`（もう一度コンパイルをやり直す）。

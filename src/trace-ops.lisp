@@ -470,7 +470,8 @@ A・B が両方トレーサなら :I1 のトレーサ、両方配列なら BIT �
 
 ;;; --- %t-select: PRED（:I1 のトレーサ／ビット配列）の真偽で A・B のどちら
 ;;; かを選ぶ（issue #32、t2）。数値・rank 0 のトレーサ／配列は PRED の
-;;; shape に合わせてブロードキャストし、dtype はもう一方の分岐から決める
+;;; shape に（rank 0 の PRED は分岐の shape に。issue #74）合わせて
+;;; ブロードキャストし、dtype はもう一方の分岐から決める
 ;;; （両方数値なら dtype が決まらず TRACING-ERROR）。A・B のどちらかが :I1
 ;;; の値（トレーサ／ビット配列）なら TRACING-ERROR にする。これは AND/OR を
 ;;; トレーサの条件に使ったとき、SB-CLTL2:MACROEXPAND-ALL が
@@ -535,17 +536,37 @@ TRACING-ERROR にする（(WHEN tracer-test x) がトレーサの条件で失敗
     (array (%broadcast-tracer-if-rank0 (%lift-array-to branch dtype) shape))
     (t (%lift-number-to branch dtype shape))))
 
-(defun %trace-select-tracer (pred a b)
-  "PRED（:I1 のトレーサ）による %T-SELECT の本体。"
+(defun %select-check-branches (a b)
+  "A・B それぞれに %SELECT-CHECK-BRANCH-TYPE と %SELECT-CHECK-BRANCH-NOT-I1
+をかける（PRED の種類に依らない、分岐の共通の検査）。"
   (%select-check-branch-type a)
   (%select-check-branch-type b)
   (%select-check-branch-not-i1 a)
-  (%select-check-branch-not-i1 b)
+  (%select-check-branch-not-i1 b))
+
+(defun %select-branch-shape (branch)
+  "BRANCH（トレーサ・配列・実数）の shape を返す。実数なら ()。"
+  (cond
+    ((typep branch 'tracer) (aval-shape (tracer-aval branch)))
+    ((arrayp branch) (array-dimensions branch))
+    (t '())))
+
+(defun %select-target-shape (pred-shape a b)
+  "SELECT の結果の shape を決める。PRED-SHAPE が rank 0 でなければ
+PRED-SHAPE、rank 0 なら A・B のうち rank 0 でない最初の分岐の shape
+（両方 rank 0 か数値なら ()）。rank 0 の PRED を分岐の shape へ
+ブロードキャストするため（JAX の where と同じ。issue #74）。"
+  (or pred-shape (%select-branch-shape a) (%select-branch-shape b)))
+
+(defun %trace-select-tracer (pred a b)
+  "PRED（:I1 のトレーサ）による %T-SELECT の本体。"
+  (%select-check-branches a b)
   (let* ((dtype (%select-resolve-dtype a b))
-         (shape (aval-shape (tracer-aval pred)))
+         (shape (%select-target-shape (aval-shape (tracer-aval pred)) a b))
+         (pred* (%broadcast-tracer-if-rank0 pred shape))
          (a* (%select-lift-branch-to-tracer a dtype shape))
          (b* (%select-lift-branch-to-tracer b dtype shape)))
-    (%trace-eqn :select (list pred a* b*))))
+    (%trace-eqn :select (list pred* a* b*))))
 
 (defun %select-lift-branch-to-array (branch dtype shape)
   "BRANCH（配列・実数）を、DTYPE・SHAPE の配列にする（%SELECT-LIFT-BRANCH-
@@ -556,16 +577,14 @@ TO-TRACER の eager 版）。"
 
 (defun %eager-select-array (pred a b)
   "PRED（:I1 のビット配列）による %T-SELECT の本体。"
-  (%select-check-branch-type a)
-  (%select-check-branch-type b)
-  (%select-check-branch-not-i1 a)
-  (%select-check-branch-not-i1 b)
+  (%select-check-branches a b)
   (let* ((dtype (%select-resolve-dtype a b))
-         (shape (array-dimensions pred))
+         (shape (%select-target-shape (array-dimensions pred) a b))
+         (pred* (%array-broadcast-if-rank0 pred shape))
          (a* (%select-lift-branch-to-array a dtype shape))
          (b* (%select-lift-branch-to-array b dtype shape)))
-    (apply (primitive-eager (find-primitive :select)) (list pred a* b*)
-           (list (array-aval pred) (array-aval a*) (array-aval b*)) nil)))
+    (apply (primitive-eager (find-primitive :select)) (list pred* a* b*)
+           (list (array-aval pred*) (array-aval a*) (array-aval b*)) nil)))
 
 (defun %select-branch-tracer-p (branch)
   "BRANCH がトレーサなら真を返す。PRED が配列（eager）でも、A・B の
@@ -580,20 +599,62 @@ TO-TRACER の eager 版）。"
 して扱う、という他の演算子（%T-ADD 等）と同じ規約）。"
   (%trace-select-tracer (%lift-array-to pred :i1) a b))
 
+(defun %select-branch-aval (branch dtype shape)
+  "BRANCH を SHAPE・DTYPE の SELECT の分岐としてリフト／ブロードキャスト
+したときの AVAL を、値を作らずに返す（配列は ARRAY-AVAL に DTYPE を渡す
+ので、食い違えば DTYPE-MISMATCH）。"
+  (let ((aval (typecase branch
+                (tracer (tracer-aval branch))
+                (array (array-aval branch dtype))
+                (t (make-aval '() dtype)))))
+    (if (aval-shape aval) aval (make-aval shape (aval-dtype aval)))))
+
+(defun %static-select-check-avals (a b dtype shape)
+  "PRED が Lisp のブール値のときに、選ばれない側も含めた A・B の AVAL を
+:SELECT の abstract-eval にかける（SELECT の EQN は足さない）。rank 0 の
+PRED を渡したときと同じく、分岐どうしの shape・dtype の食い違いを
+PRIMITIVE-ERROR（配列の dtype なら DTYPE-MISMATCH）にし、真偽値によって
+エラーになったりならなかったりしないようにする。"
+  (funcall (primitive-abstract-eval (find-primitive :select))
+           (list (make-aval shape :i1)
+                 (%select-branch-aval a dtype shape)
+                 (%select-branch-aval b dtype shape))))
+
+(defun %static-select (chosen a b)
+  "PRED が Lisp のブール値のときの %T-SELECT の本体。CHOSEN（A か B）を、
+SELECT の EQN を足さずにそのまま使う。分岐の検査・結果の dtype と shape は
+同じ真偽の rank 0 の PRED を渡したときと同じにする（数値・rank 0 の
+CHOSEN は、もう一方の分岐の dtype・shape に合わせてリフト／ブロード
+キャストする）。A・B のどちらかがトレーサならトレーサを、そうでなければ
+配列を返す。"
+  (%select-check-branches a b)
+  (let ((dtype (%select-resolve-dtype a b))
+        (shape (%select-target-shape '() a b)))
+    (%static-select-check-avals a b dtype shape)
+    (if (or (%select-branch-tracer-p a) (%select-branch-tracer-p b))
+        (%select-lift-branch-to-tracer chosen dtype shape)
+        (%select-lift-branch-to-array chosen dtype shape))))
+
 (defgeneric %t-select (pred a b)
   (:documentation
    "PRED（:I1 のトレーサまたはビット配列）の真偽で A・B のどちらかを選ぶ。
 A・B はトレーサ・配列・実数を任意に組み合わせられる。数値・rank 0 の
 トレーサ／配列は PRED の shape に合わせてブロードキャストし、dtype は
-もう一方の分岐から決める。両方とも数値、またはどちらかが :I1 の値だと
+もう一方の分岐から決める。PRED が rank 0 で A・B が rank 1 以上なら、
+PRED を A・B（rank 0 でない最初の分岐）の shape にブロードキャストする
+（JAX の where と同じ）。両方とも数値、またはどちらかが :I1 の値だと
 TRACING-ERROR になる。PRED が配列（eager）でも、A・B の少なくとも一方が
 トレーサなら PRED を定数としてリフトしてトレースする（他の演算子で配列と
-トレーサを混ぜたときと同じ規約）。既知の制約: PRED が rank 0 で A・B が
-rank 1 以上のときは、A・B の shape に自動でブロードキャストしない（数値・
-rank 0 の A・B 自身はブロードキャストするが、PRED はしない）ので
-PRIMITIVE-ERROR になる。JAX の WHERE のように rank 0 の PRED を
-ブロードキャストしたいときは、呼び出し側が明示的に
-（BROADCAST-IN-DIM pred shape '()) すること。"))
+トレーサを混ぜたときと同じ規約）。
+
+PRED が Lisp のブール値（T／NIL）なら、T は A、NIL は B を静的に選び、
+SELECT をトレースしない（%STATIC-SELECT）。理由: T／NIL はトレース時に
+値が決まっている（JAX でいう Python の bool と同じ静的な値）ので、両方の
+分岐を計算して要素ごとに選ぶ必要がなく、WITH-TRACING の本体でふつうの
+Lisp の値を条件にした IF（%T-IF の :PLAIN）とも振る舞いがそろう。結果の
+dtype・shape は同じ真偽の rank 0 の PRED を渡したときと同じ。PRED が
+それ以外のふつうの Lisp の値（数値・T 以外のシンボルなど）なら、
+:I1 の値のつもりで渡した取り違えの可能性が高いので TRACING-ERROR にする。"))
 
 (defmethod %t-select ((pred tracer) a b)
   (%trace-select-tracer pred a b))
@@ -602,6 +663,18 @@ PRIMITIVE-ERROR になる。JAX の WHERE のように rank 0 の PRED を
   (if (or (%select-branch-tracer-p a) (%select-branch-tracer-p b))
       (%eager-select-with-tracer-branch pred a b)
       (%eager-select-array pred a b)))
+
+(defmethod %t-select ((pred (eql t)) a b)
+  (%static-select a a b))
+
+(defmethod %t-select ((pred null) a b)
+  (%static-select b a b))
+
+(defmethod %t-select (pred a b)
+  (declare (ignore a b))
+  (error 'tracing-error
+         :format-control "SELECT/WHERE の条件は :i1 のトレーサ・ビット配列・T・NIL のいずれかでなければならない: ~S"
+         :format-arguments (list pred)))
 
 ;;; --- %t-if: TEST の種類で分岐する（issue #32、t1 の暫定版を t2 が
 ;;; 置き換える）。TEST が :I1 のトレーサ／ビット配列なら THEN-THUNK と

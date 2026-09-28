@@ -13,7 +13,7 @@
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
   :license "Apache-2.0"
-  :depends-on ("ironclad" (:require "sb-cltl2"))
+  :depends-on ("ironclad" "trivial-garbage" (:require "sb-cltl2"))
   :components ((:file "src/package")
                (:file "src/dtype")
                ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
@@ -117,6 +117,8 @@
                (:file "tests/stablehlo-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
+               ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
+               (:file "tests/jit-cache-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -173,11 +175,12 @@
                (:file "tests/iree/example-test")
                ;; StableHLO op 対応表（issue #30、u2）
                (:file "tests/iree/ops-test")
-               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
+               ;; 1つの op だけを持つモジュールのビルダー（全プリミティブの medium
+               ;; テストが共有する。issue #31 p1、#74 で p4 の複製を統合）
                (:file "tests/iree/primitive-support")
+               ;; 二項算術プリミティブ add / sub / mul / div（issue #31 p1）
                (:file "tests/iree/arith-test")
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
-               (:file "tests/iree/shape-primitive-support")
                (:file "tests/iree/shape-test")
                ;; 単項プリミティブ neg / exp / log / tanh、max / min（issue #31 p2）
                (:file "tests/iree/unary-test")
@@ -192,4 +195,8 @@
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "tests/iree/stablehlo-test")
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
-               (:file "tests/iree/jit-test")))
+               (:file "tests/iree/jit-test")
+               ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
+               (:file "tests/iree/jit-cache-test")
+               ;; f64 と :i1 の to-device / to-host / invoke を jit で通す（issue #72）
+               (:file "tests/iree/jit-dtype-test")))
