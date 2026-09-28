@@ -13,7 +13,7 @@
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
   :license "Apache-2.0"
-  :depends-on ("ironclad" (:require "sb-cltl2"))
+  :depends-on ("ironclad" "trivial-garbage" (:require "sb-cltl2"))
   :components ((:file "src/package")
                (:file "src/dtype")
                ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
@@ -117,6 +117,8 @@
                (:file "tests/stablehlo-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
+               ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
+               (:file "tests/jit-cache-test")
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -194,5 +196,7 @@
                (:file "tests/iree/stablehlo-test")
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
                (:file "tests/iree/jit-test")
+               ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
+               (:file "tests/iree/jit-cache-test")
                ;; f64 と :i1 の to-device / to-host / invoke を jit で通す（issue #72）
                (:file "tests/iree/jit-dtype-test")))
