@@ -67,6 +67,19 @@ reference-reduce-sum と一致する。"
                   :regression-file (regression-path "pjrt-executable-reduce-sum"
                                                     :package "NABLA.PJRT.TESTS")))))
 
+(defun %sequential-bf16-row-sums (a)
+  "bf16 の (unsigned-byte 16) 配列 A（2次元）の各行を、左から1回の加算ごとに
+bf16 へ丸めて累積した和を、double-float のベクタで返す。"
+  (let* ((rows (array-dimension a 0)) (cols (array-dimension a 1))
+         (result (make-array rows :element-type 'double-float)))
+    (dotimes (i rows result)
+      (let ((acc 0.0))
+        (dotimes (j cols)
+          (setf acc (nabla::bf16-bits->single-float
+                     (nabla::single-float->bf16-bits
+                      (+ acc (nabla::bf16-bits->single-float (aref a i j)))))))
+        (setf (aref result i) (float acc 1d0))))))
+
 (define-pjrt-test executable/fixtures/bf16-match-reference
   "add_bf16 / matmul_bf16 / reduce_sum_bf16 を PJRT で実行した結果は、
 decode-array で戻した reference-* と bf16 の許容誤差で一致する。"
@@ -85,12 +98,11 @@ decode-array で戻した reference-* と bf16 の許容誤差で一致する。
           (is (allclose (run-bf16 "matmul_bf16" a b) (reference-matmul (dec a) (dec b))
                         :rtol rtol :atol atol)))
         (let ((a (make-random-array (make-array-spec '(4 8) :bf16) :seed 104)))
-          ;; XLA CPU は bf16 の総和を要素ごとに bf16 へ丸めながら累積する
-          ;; （IREE は f32 で累積して最後に1回丸める）。8要素の累積なので、
-          ;; 丸めの回数ぶん rtol を (1+ 8) 倍にする（stablehlo-test.lisp の
-          ;; eqn 数で緩める扱いと同じ考え方。実測では相対誤差 1.6% 程度）。
-          (is (allclose (run-bf16 "reduce_sum_bf16" a) (reference-reduce-sum (dec a) 1)
-                        :rtol (* rtol 9) :atol atol)))))))
+          ;; XLA CPU は bf16 の総和を「1回の加算ごとに bf16 へ丸める逐次累積」で
+          ;; 計算する（実測で 30 seed・120 要素すべてが完全一致した。IREE は f32 で
+          ;; 累積して最後に1回丸める）。そのため参照も同じ順序で逐次丸める。
+          (is (allclose (run-bf16 "reduce_sum_bf16" a) (%sequential-bf16-row-sums a)
+                        :rtol rtol :atol atol)))))))
 
 (define-pjrt-test executable/invoke/result-aval-matches-the-program
   "backend-invoke が返す device-array の aval は、プログラムの出力の形と dtype。"
@@ -314,6 +326,9 @@ fingerprint とは異なる。"
         (nabla:backend-compile other text)
         (is (= 2 (module-count)))))))
 
+;; 注意: シリアライズした実行体のバイト列はコンパイルごとに非決定的なので、
+;; 新しくコンパイルした結果同士を比べてはいけない（キャッシュから読んだ
+;; バイト列との一致だけを比べる）。
 (define-pjrt-test fingerprint/disk-cached-bytes-load-and-run
   "ディスクキャッシュから読んだ（2回目の）バイト列も backend-load → invoke
 できて、結果は reference-add と一致する。"
@@ -346,8 +361,8 @@ fingerprint とは異なる。"
 }\")"
     "(let* ((handlers (lambda () (loop for s from 1 below 65
                                       collect (nabla.ffi-support::%signal-handler-address s))))
-           (backend (nabla:make-backend :pjrt))
            (before (funcall handlers))
+           (backend (nabla:make-backend :pjrt))
            (modes-before (sb-int:get-floating-point-modes))
            (stop nil)
            (gc-thread (sb-thread:make-thread
@@ -371,13 +386,14 @@ fingerprint とは異なる。"
       (format t \"MODES-SAME=~S~%\" (equal modes-before (sb-int:get-floating-point-modes)))
       (sb-ext:exit :code 0))"))
 
-(define-pjrt-test compile/leaves-signal-handlers-and-float-modes-alone
-  "真っさらな子プロセスで、最初のコンパイル（XLA が LLVM を動かす）・ロード・
-実行を、別スレッドが GC を回し続ける中で行っても、全シグナルの処分が変わらず、
+(define-pjrt-test client-and-compile/leave-signal-handlers-and-float-modes-alone
+  "真っさらな子プロセスで、プラグインのロード・クライアント作成（PJRT_Plugin_Initialize
+/ PJRT_Client_Create）・to-device / to-host・最初のコンパイル（XLA が LLVM を
+動かす）・ロード・実行を、別スレッドが GC を回し続ける中で行っても、全シグナルの処分が変わらず、
 浮動小数点のモード（トラップのマスク）も元のままで、プロセスが落ちない。
 処分を元に戻す with-lisp-signal-handlers-preserved で包んであるので、この検査が
 通るのは「登録が起きない」か「起きても戻せた」のどちらか。起きていないことは
-src/pjrt/executable.lisp 冒頭と worklog に記録した（コンパイルを素で呼ぶ実験）。"
+docs/pjrt-setup.md の「シグナルハンドラ」に実験を記録した。"
   (skip-unless-pjrt :kind :cpu)
   (let* ((args (list* "--non-interactive" "--disable-debugger"
                       (loop for form in *compile-signal-check-script*

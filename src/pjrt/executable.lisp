@@ -100,16 +100,22 @@
   (dims :pointer) (num-dims :size))
 
 (defparameter *compile-options*
-  (coerce '(#x1a #x04 #x20 #x01 #x28 #x01) '(simple-array (unsigned-byte 8) (*)))
+  (coerce '(#x20 #x01 #x1a #x04 #x20 #x01 #x28 #x01) '(simple-array (unsigned-byte 8) (*)))
   "PJRT_Client_Compile に渡す、シリアライズした xla.CompileOptionsProto の最小形。
 protobuf の手書きエンコードで、中身は
+  compile_portable_executable (field 4, varint: タグ 0x20) = 1
   executable_build_options (field 3, 長さ区切り: タグ 0x1a, 長さ 4) {
-    num_replicas   (ExecutableBuildOptionsProto field 4, varint: タグ 0x20) = 1
-    num_partitions (同 field 5, varint: タグ 0x28) = 1 }
-だけ。field 番号は jaxlib の xla_client.CompileOptions に
-executable_build_options.num_replicas = num_partitions = 1 を設定して
-SerializeAsString した出力（末尾が 0x20 0x01 0x28 0x01）で確かめた。
-他の項目は XLA の既定に任せる。")
+    num_replicas   (ExecutableBuildOptionsProto field 4, タグ 0x20) = 1
+    num_partitions (同 field 5, タグ 0x28) = 1 }
+だけ。field 番号は jaxlib の xla_client.CompileOptions に num_replicas =
+num_partitions = 1 を設定して SerializeAsString した出力で確かめた（確認できたのは
+field 番号だけで、jaxlib の出力にはこの他にも多数のフィールドがある。他の項目は
+XLA の既定に任せる）。空のオプション（0バイト）を渡すと、プラグインが
+PJRT_Client_Compile の CHECK で SIGABRT するので、この値は必須。
+compile_portable_executable=1 にするのは、実行体にデバイス割り当てを焼き込ませない
+ためで、PJRT_LoadedExecutable_Execute の execute_device（backend が選んだデバイス）と
+焼き込みの割り当てが食い違わなくなる（CUDA で device-index が 0 でないとき
+問題になる）。ポータブルな実行体は execute_device を指定して実行する。")
 
 (defun %destroy-executable (api name pointer)
   "NAME（PJRT_Executable_Destroy / PJRT_LoadedExecutable_Destroy）で POINTER を破棄する。"
@@ -239,7 +245,7 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
                                                         'num-dims)))
                     (loop for i below count collect (cffi:mem-aref dims :int64 i)))))
          (dtype (car (rassoc type *buffer-types*))))
-    (unless dtype (error 'nabla:unsupported-dtype :dtype type))
+    (unless dtype (error 'nabla:unsupported-dtype :dtype (list :pjrt-buffer-type type)))
     (nabla:make-aval shape dtype)))
 
 (defun %wrap-output-buffers (client buffers)
@@ -267,7 +273,9 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
 
 (defun %module-invoke (module device arrays)
   "MODULE を、ARRAYS（device-array のリスト）を引数に DEVICE（PJRT_Device*）
-1台で実行し、出力の device-array を多値で返す。実行の完了イベントを待ってから返す。"
+1台で実行し、出力の device-array を多値で返す。実行の完了イベントを待ってから返す。
+同じ MODULE に対する BACKEND-UNLOAD と本関数を並行させてはならない（unload が
+実行中の PJRT_LoadedExecutable を破棄しうる。呼び出し側が直列化する）。"
   (when (pjrt-module-released-p module)
     (error 'pjrt-object-released :kind :module :context "invoke"
                                  :message "the module was already unloaded"))
@@ -278,7 +286,7 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
     (dolist (array arrays)
       (unless (eq (device-array-client array) client)
         (error "the device-array belongs to a different PJRT client"))
-      (%live-device-array-pointer array))
+      (%live-device-array-pointer array "invoke"))
     (cffi:with-foreign-objects ((options '(:struct %execute-options))
                                 (arg-list :pointer (max num-args 1))
                                 (arg-lists :pointer 1)

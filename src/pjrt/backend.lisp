@@ -1,6 +1,6 @@
 ;;;; PJRT-BACKEND: core の backend プロトコル（src/backend.lisp）を実装する、
-;;;; PJRT 向けの NABLA:BACKEND（issue #85。この段階は to-device / to-host まで。
-;;;; backend-compile / backend-load / backend-invoke は #87）。
+;;;; PJRT 向けの NABLA:BACKEND（issue #85: to-device / to-host、issue #87:
+;;;; backend-compile / backend-load / backend-invoke / backend-unload / backend-fingerprint）。
 ;;;;
 ;;;; クライアントは MAKE-BACKEND の時点で作る（IREE と違って遅延しない）。
 ;;;; プラグインが無ければ、PJRT-PLUGIN-NOT-FOUND ではなく
@@ -61,11 +61,12 @@ NABLA:DTYPE-MISMATCH。"
 シリアライズした実行体はプラグインのビルドごとに互換性がないので、
 backend-fingerprint に入れる（ビルドのバージョン文字列ではなく中身で区別する）。"
   (let ((path (namestring (truename (plugin-path kind)))))
-    (sb-thread:with-mutex (*plugin-sha256-lock*)
-      (or (gethash path *plugin-sha256-cache*)
-          (setf (gethash path *plugin-sha256-cache*)
-                (ironclad:byte-array-to-hex-string
-                 (ironclad:digest-file :sha256 path)))))))
+    (or (sb-thread:with-mutex (*plugin-sha256-lock*) (gethash path *plugin-sha256-cache*))
+        ;; 約2.5秒かかるので、ロックの外で計算する（他のスレッドを止めない。
+        ;; 同時に呼ばれたら重複して計算するが、結果は同じなので害はない）。
+        (let ((sha (ironclad:byte-array-to-hex-string (ironclad:digest-file :sha256 path))))
+          (sb-thread:with-mutex (*plugin-sha256-lock*)
+            (setf (gethash path *plugin-sha256-cache*) sha))))))
 
 (defmethod nabla:backend-fingerprint ((backend pjrt-backend))
   "BACKEND-COMPILE の出力（シリアライズした実行体）を左右するもの: キャッシュ

@@ -10,7 +10,7 @@
 ;;;; PJRT_Buffer_ToHostBuffer の前後で、全シグナル（1..64）の処分
 ;;;; （nabla.ffi-support::%signal-handler-address。特に SBCL が GC の
 ;;;; stop-the-world に使う SIGUSR2）が1つも変わらないことを確かめた
-;;;; （tests/pjrt/client-test.lisp が毎回検査する）。つまりこの段階の PJRT
+;;;; （tests/pjrt/executable-test.lisp が毎回検査する）。つまりこの段階の PJRT
 ;;;; には、IREE の ensure-compiler-loaded のような「世界を止めた1点で LLVM の
 ;;;; シグナルハンドラ登録を済ませる」手順は要らない（LLVM の
 ;;;; RegisterHandlers を呼ぶ経路が無い）。
@@ -27,7 +27,7 @@
 ;;;; 固まったように見える。調べた結果、nabla/pjrt のバグでもデッドロックでも
 ;;;; なく、SBCL の GC ロックが公平でないために他のスレッドが進めなくなる
 ;;;; 餓死（src/ffi-support/signals.lisp の「残る課題」3）で、IREE でも同程度に
-;;;; 起きる。GC の間に眠れば問題ない（tests/pjrt/client-test.lisp は 10ms 眠る）。
+;;;; 起きる。GC の間に眠れば問題ない（tests/pjrt/executable-test.lisp は 10ms 眠る）。
 ;;;;
 ;;;; 寿命: クライアントはバッファより先に破棄してはならない。バッファの
 ;;;; finalizer（device-array.lisp）はオブジェクト本体を捕まえられないので、

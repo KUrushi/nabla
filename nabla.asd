@@ -238,6 +238,5 @@
                ;; FFI 定義とヘッダの照合、クライアント・backend・device-array（issue #85）
                (:file "tests/pjrt/ffi-test")
                (:file "tests/pjrt/backend-test")
-               (:file "tests/pjrt/client-test")
                ;; コンパイル・ロード・実行、jit、fingerprint（issue #87）
                (:file "tests/pjrt/executable-test")))

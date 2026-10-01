@@ -41,6 +41,20 @@ scripts/fetch-pjrt.sh --keep-wheels
 - 冪等。展開済みなら何もしない
 - 初回のダウンロードは CPU wheel（約 60 MB）で、プロキシ越しでも1分ほど
 
+## シグナルハンドラ（LLVM）
+
+XLA の CPU はコンパイルで LLVM を動かすが、固定した CPU プラグイン（API 0.81）では
+シグナルハンドラの登録が起きない。`with-lisp-signal-handlers-preserved` を外した素の
+状態で、クライアント作成後に `PJRT_Client_Compile`・`PJRT_Executable_Serialize`・
+`PJRT_Executable_DeserializeAndLoad`・`PJRT_LoadedExecutable_Execute` を呼び、各段階の
+後で全シグナル（1..64）の処分（`nabla.ffi-support::%signal-handler-address`）を最初と
+比べて、1つも変わらないことを確かめた（浮動小数点モードも不変）。そのため IREE の
+ように「世界を止めた1点で最初の登録を済ませる」手順は要らず、compile / load は
+多重防御として `with-lisp-signal-handlers-preserved` と
+`with-all-float-traps-masked` で包むだけにしている。この性質は
+`tests/pjrt/executable-test.lisp` の子プロセス検査が毎回確かめる。登録が起きる
+ビルドに変わったら、初回の Compile を `%call-with-world-stopped` の中で行う。
+
 ## テスト
 
 `scripts/run-tests.sh` が `nabla/pjrt/tests` も実行する。プラグインが無ければ
