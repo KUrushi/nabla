@@ -1,0 +1,1 @@
+Fable レビューの nit 対応: 用語説明・原因未切り分けの明記・#90 の5条件を独立行に・GC 餓死を制限へ・asdf:load-system の失敗を backend ごとの未測定に。既定スイート small 139469 / medium 1163 通過。
