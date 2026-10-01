@@ -91,6 +91,7 @@
    #:reduce-max
    #:convert
    #:where
+   #:stop-gradient
    ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
    #:emit-stablehlo
    #:primitive-not-emittable

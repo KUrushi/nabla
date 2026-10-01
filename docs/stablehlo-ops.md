@@ -52,6 +52,7 @@
 | dot_general | f32/f64: `%0 = stablehlo.dot_general %a, %b, contracting_dims = [1] x [0] : (tensor<2x3xf32>, tensor<3x2xf32>) -> tensor<2x2xf32>`（pretty。バッチ付きは `batching_dims = [0] x [0], contracting_dims = [2] x [1]`、`precision = [DEFAULT, DEFAULT]` 付きも可）。既存 `tests/fixtures/stablehlo/matmul.mlir` の generic form も通る。bf16/f16: IREE（llvm-cpu）は縮約を入力の dtype のまま累積し、K が大きいと eager（single-float 累積）と許容誤差を超えてずれる（issue #54）ので、f32 の結果型を持つ `stablehlo.dot_general` を出してから `stablehlo.convert` で戻す2行にする: `%acc_0 = stablehlo.dot_general %a, %b, contracting_dims = [1] x [0] : (tensor<2x3xbf16>, tensor<3x2xbf16>) -> tensor<2x2xf32>` に続けて `%0 = stablehlo.convert %acc_0 : (tensor<2x2xf32>) -> tensor<2x2xbf16>`（JAX の `preferred_element_type=f32` と同じ考え方）。K=0（contracting 次元のサイズが 0）では IREE 3.11.0 のコンパイラが AnnotateDispatches の整数 0 除算で落ちる（issue #62）ので、dot_general を出さず `%0 = stablehlo.constant dense<0.0> : <出力型>` を1行出す（全 float dtype。bf16/f16 の f32 累積も経由しない。数学的にも空和 = 0 で正しい） | `dot-general` | ○ | ○ | |
 | reduce（add） | f32/f64: `%0 = stablehlo.reduce(%a init: %init) applies stablehlo.add across dimensions = [1] : (tensor<4x8xf32>, tensor<f32>) -> tensor<4xf32>`（pretty。全軸 `dimensions = [0, 1]` → `tensor<f32>` も可）。既存 `tests/fixtures/stablehlo/reduce_sum.mlir` の generic form も通る。bf16/f16: IREE（llvm-cpu）は reduce（add）を入力の dtype のまま累積し、軸長が大きいと eager（single-float 累積）と許容誤差を超えてずれる（issue #63、dot_general の issue #54 と同じ原因）ので、入力を f32 に `stablehlo.convert` → f32 の init で reduce → 結果を元の dtype に `stablehlo.convert` して戻す4行にする: `%in32 = stablehlo.convert %a : (tensor<4x8xbf16>) -> tensor<4x8xf32>` → `%init = stablehlo.constant dense<0.0> : tensor<f32>` → `%acc = stablehlo.reduce(%in32 init: %init) applies stablehlo.add across dimensions = [1] : (tensor<4x8xf32>, tensor<f32>) -> tensor<4xf32>` → `%0 = stablehlo.convert %acc : (tensor<4xf32>) -> tensor<4xbf16>`（dot_general の `preferred_element_type=f32` と同じ考え方） | `reduce-sum` | ○ | ○ | init は `stablehlo.constant dense<0.0>`。bf16/f16 も f32 累積の init として同じ `tensor<f32>` の `0.0` を使う（`dense<0x0000>` は使わなくなった） |
 | reduce（max） | reduce（add）と同じ pretty form で `applies stablehlo.maximum`。init は `-inf` を16進で: f32 `0xFF800000`、bf16 `0xFF80`、f16 `0xFC00`、f64 `0xFFF0000000000000`（`dense<-inf>` は書かない） | `reduce-max` | ○ | ○ | |
+| optimization_barrier | `%0 = stablehlo.optimization_barrier %a : tensor<4xf32>`（pretty、1オペランド） | `stop-gradient` | ○ | ○ | StableHLO には恒等の op が無い（`stablehlo.convert` を同じ dtype でかけると定数畳み込みで消えうる）ので、値を変えず最適化の境界になる optimization_barrier を使う。IREE 3.11.0 がコンパイル・実行できることを確認済み。任意の dtype（`:i1` も）を通す。issue #80 |
 
 f16 / f64 は上記すべての op で advisor が確認済み（フィクスチャは
 未収録）。f64 は issue #72 で `to-device` / `to-host` が対応し、`jit` で
@@ -101,7 +102,7 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
   `reduce` は `reduce_add.mlir` / `reduce_max.mlir` というファイル名にした
   （`reduce-sum` / `reduce-max` という2つのプリミティブに対応するため）
 - `tests/iree/ops-test.lisp`:
-  - 全40フィクスチャ（19 op + constant の20行 × f32/bf16）を `backend-compile` して非空の
+  - 全42フィクスチャ（19 op + constant + optimization_barrier の21行 × f32/bf16）を `backend-compile` して非空の
     vmfb になることを確かめる
   - フィクスチャの個数と `tests/fixtures/stablehlo/ops/` のファイル数が
     一致することを確かめる整合テスト
@@ -110,7 +111,7 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
     確かめる
 
 フィクスチャ46個（既存 add/matmul/reduce_sum の f32/bf16 各3個 = 6個 + 本 PR
-の40個。表の20行（19 op + constant）× f32/bf16。
+の42個。表の21行（19 op + constant + optimization_barrier）× f32/bf16。
 `ls tests/fixtures/stablehlo/*.mlir tests/fixtures/stablehlo/ops/*.mlir | wc -l`
 で数えられる）のコンパイルがスイートに加わる。1フィクスチャあたり約350ms
 （vmfb ディスクキャッシュのヒット時はほぼ0ms）で、既定スイートに約15秒

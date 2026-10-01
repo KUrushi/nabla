@@ -34,6 +34,8 @@
                (:file "src/primitives/unary")
                ;; compare / select / convert（issue #31 p3）
                (:file "src/primitives/compare")
+               ;; stop-gradient（issue #80）
+               (:file "src/primitives/stop-gradient")
                ;; issue #31 p5: dot-general
                (:file "src/primitives/dot")
                ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
@@ -138,6 +140,10 @@
                ;; linearize / transpose / vjp（issue #82）
                (:file "tests/ad/linearize-test")
                (:file "tests/ad/transpose-test")
+
+               ;; 要素演算の jvp ルール（issue #80）
+               (:file "tests/ad/jvp-elementwise-test")
+               (:file "tests/ad/stop-gradient-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
@@ -221,6 +227,9 @@
                (:file "tests/iree/jvp-test")
                ;; vjp 変換した graph の IREE 実行（issue #82）
                (:file "tests/iree/vjp-test")
+
+               ;; 要素演算の jvp ルールの IREE 実行（issue #80）
+               (:file "tests/iree/jvp-elementwise-test")
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
                (:file "tests/iree/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
