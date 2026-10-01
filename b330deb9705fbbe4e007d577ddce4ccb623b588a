@@ -1,0 +1,1 @@
+wheel は CPU 63MB/CUDA 134MB（.so は 260/410MB）。ヘッダは CPU wheel 同梱が 0.81 だったので openxla/xla main の 81ee80d（0.116）を raw で固定。cffi は同じパスを再 load すると前を dlclose して API ポインタが無効になる（SBCL が memory fault）ので load-plugin は kind ごとに1回キャッシュ。GetPjrtApi だけなら LLVM 初期化は走らないが float traps マスクで包んだ。#85 でクライアント作成を with-lisp-signal-handlers-preserved で包む。CUDA wheel は sha256 を実DLで確認、.so 展開は未実行。
