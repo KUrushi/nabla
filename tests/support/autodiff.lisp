@@ -131,3 +131,27 @@ jvp に渡す接線 v に使う。DTYPE の既定が :f64（AVAL の dtype に�
   "vjp に渡す余接線 u を作る。出力の AVAL と同じ形の f64 乱数配列で、
 RANDOM-TANGENT と同じ分布（接線と余接線を区別して読めるようにした別名）。"
   (random-tangent aval :seed seed :dtype dtype))
+
+;;; --- graph をスカラーの損失関数にする（grad のテスト、issue #86） ---
+
+(defun scalar-loss-function (graph)
+  "GRAPH（NB::GRAPH）の最初の出力を NB:REDUCE-SUM で rank 0 に縮約する
+TRACEABLE-FUNCTION を返す。引数は GRAPH の入力と同じ個数。GRAD の対象にする
+ランダムな graph を作るのに使う。トレース中でないと呼べない（本体が
+NB::INLINE-GRAPH でトレースへ流し込むため）ので、eager の期待値は
+SCALAR-LOSS-ORACLE を使う。"
+  (nb::%make-traceable-function
+   (mapcar (lambda (v) (declare (ignore v)) (gensym "X")) (nb:graph-invars graph))
+   (lambda (&rest tracers)
+     (nb:reduce-sum (first (nb::inline-graph graph tracers))))))
+
+(defun scalar-loss-oracle (graph)
+  "SCALAR-LOSS-FUNCTION と同じ関数を、NB:EVAL-GRAPH だけで評価する普通の関数
+（f64 配列を受け取り rank 0 の f64 配列を返す）として返す。CENTRAL-DIFFERENCE-GRADIENT
+に渡すオラクルで、grad・jvp・transpose には依存しない。"
+  (lambda (&rest arrays)
+    (let ((out (apply #'nb:eval-graph graph arrays)))
+      (make-array '() :element-type 'double-float
+                      :initial-element (let ((sum 0d0))
+                                         (dotimes (i (array-total-size out) sum)
+                                           (incf sum (row-major-aref out i))))))))

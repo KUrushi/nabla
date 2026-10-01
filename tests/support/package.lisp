@@ -87,4 +87,6 @@
    #:*autodiff-atol*
    #:inner-product
    #:random-tangent
-   #:random-cotangent))
+   #:random-cotangent
+   #:scalar-loss-function
+   #:scalar-loss-oracle))

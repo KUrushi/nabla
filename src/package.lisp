@@ -82,6 +82,11 @@
    #:no-jvp-rule-name
    #:no-transpose-rule
    #:no-transpose-rule-name
+   ;; grad / value-and-grad（issue #86）
+   #:grad
+   #:value-and-grad
+   #:grad-requires-scalar-output
+   #:grad-requires-scalar-output-aval
    ;; if を select に、配列レベルの公開 API（issue #32、t2）
    #:dot
    #:reshape
