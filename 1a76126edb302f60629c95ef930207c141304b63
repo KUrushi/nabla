@@ -1,0 +1,1 @@
+nabla/ffi-support を新設し signals の汎用部分と with-all-float-traps-masked を移動。nabla.iree は :import-from で同じシンボルを取り込むため既存テストは無変更。IREE 固有の %register-llvm-signal-handlers と +stack-t-size+ は src/iree に残した。テストは nabla/ffi-support/tests を新設し run-tests.sh で nabla/iree/tests の前にロード。nabla/iree 未ロードの確認は、同一プロセスでは iree/tests が先にロードされうるので子 SBCL で行う。src/iree/float-traps.lisp は IREE 実験記録のコメントだけ残した。
