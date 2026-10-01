@@ -398,3 +398,19 @@ central-difference-gradient と一致する（x, y は固定のデータ）。"
          (expected (central-difference-gradient graph primals)))
     (is (%results-close-p (rest result) (nthcdr 2 expected)
                           :rtol *autodiff-rtol* :atol *autodiff-atol*))))
+
+(test transpose-rules/dot-general-adds-only-the-needed-eqns
+  "行列積 A·B の転置: 左が線形なら dot-general 1つだけ（結果の軸が A の軸の順なので
+transpose は要らない）、右が線形なら dot-general のあとに transpose が1つ要る。"
+  (flet ((names (lhs-linear-p)
+           (let* ((graph (%tr-graph (list (nb:make-aval (if lhs-linear-p '(3 2) '(2 3)) :f64)
+                                          (nb:make-aval (if lhs-linear-p '(2 3) '(3 2)) :f64))
+                                    (lambda (p q)
+                                      (let ((a (if lhs-linear-p q p)) (b (if lhs-linear-p p q)))
+                                        (nb::%trace-eqn :dot-general (list a b)
+                                                        :lhs-contracting '(1) :rhs-contracting '(0)
+                                                        :lhs-batch '() :rhs-batch '())))))
+                  (transposed (nb::transpose-graph graph 1)))
+             (mapcar (lambda (e) (nb:primitive-name (nb:eqn-prim e))) (nb:graph-eqns transposed)))))
+    (is (equal '(:dot-general) (names t)))
+    (is (equal '(:dot-general :transpose) (names nil)))))
