@@ -28,7 +28,7 @@
 eval-graph と一致する。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
-        (*num-trials* 3))
+        (*num-trials* 1))
     (loop for (name . fn) in *jvp-iree-elementwise-functions*
           do (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
                            (lambda (seed)

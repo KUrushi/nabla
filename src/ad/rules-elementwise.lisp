@@ -43,16 +43,23 @@
   (lambda (primals out) (declare (ignore out)) (second primals))
   (lambda (primals out) (declare (ignore out)) (first primals)))
 
-;; d(x/y) = tx / y − (x/y / y)·ty。
-(def-jvp-partials div
-  (lambda (primals out) (declare (ignore out)) (%t-div 1 (second primals)))
-  (lambda (primals out) (%t-neg (%t-div out (second primals)))))
+;; d(x/y) = tx / y − (x/y / y)·ty。tx は主値 y で割る（線形）。
+(def-jvp-rule div (primals out tangents)
+  (destructuring-bind (x y) primals
+    (declare (ignore x))
+    (destructuring-bind (tx ty) tangents
+      (add-tangents (if (symbolic-zero-p tx) tx (%t-div tx y))
+                    (if (symbolic-zero-p ty)
+                        ty
+                        (%t-mul (%t-neg (%t-div out y)) ty))))))
 
 (def-jvp-partials exp
   (lambda (primals out) (declare (ignore primals)) out))
 
-(def-jvp-partials log
-  (lambda (primals out) (declare (ignore out)) (%t-div 1 (first primals))))
+;; d log(x) = t / x。
+(def-jvp-rule log (primals out tangents)
+  (declare (ignore out))
+  (%t-div (first tangents) (first primals)))
 
 ;; d tanh(x) = (1 − tanh²(x))·t。
 (def-jvp-partials tanh
@@ -74,8 +81,10 @@
   (lambda (primals out) (%balanced-eq (second primals) out (first primals))))
 
 (def-jvp-rule convert (primals out tangents &key dtype)
+  (declare (ignore primals))
   (let ((tangent (first tangents)))
-    (if (and (%float-dtype-p dtype) (%float-dtype-p (aval-dtype (tracer-aval (first primals)))))
+    ;; 入力は convert の abstract-eval が float に限るので、DTYPE だけ見ればよい。
+    (if (%float-dtype-p dtype)
         (%trace-eqn :convert (list tangent) :dtype dtype)
         (make-symbolic-zero (tracer-aval out)))))
 

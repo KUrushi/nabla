@@ -110,7 +110,7 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
     `backend-invoke` まで通して実際に実行し、期待値と数値が一致することを
     確かめる
 
-フィクスチャ46個（既存 add/matmul/reduce_sum の f32/bf16 各3個 = 6個 + 本 PR
+フィクスチャ48個（既存 add/matmul/reduce_sum の f32/bf16 各3個 = 6個 + 本 PR
 の42個。表の21行（19 op + constant + optimization_barrier）× f32/bf16。
 `ls tests/fixtures/stablehlo/*.mlir tests/fixtures/stablehlo/ops/*.mlir | wc -l`
 で数えられる）のコンパイルがスイートに加わる。1フィクスチャあたり約350ms

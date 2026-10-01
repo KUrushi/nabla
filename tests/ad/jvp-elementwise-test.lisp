@@ -19,34 +19,34 @@
 
 (defparameter *elementwise-jvp-cases*
   (list
-   (list :name :sub :n 2 :domains '(:any :any) :dtypes '(:f32 :f64)
+   (list :name :sub :n 2 :domains '(:any :any) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (- x y)))
-   (list :name :mul :n 2 :domains '(:any :any) :dtypes '(:f32 :f64)
+   (list :name :mul :n 2 :domains '(:any :any) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (* x y)))
-   (list :name :div :n 2 :domains '(:any :positive) :dtypes '(:f32 :f64)
+   (list :name :div :n 2 :domains '(:any :positive) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (/ x y)))
-   (list :name :exp :n 1 :domains '(:any) :dtypes '(:f32 :f64)
+   (list :name :exp :n 1 :domains '(:any) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x) (exp x)))
-   (list :name :log :n 1 :domains '(:positive) :dtypes '(:f32 :f64)
+   (list :name :log :n 1 :domains '(:positive) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x) (log x)))
-   (list :name :tanh :n 1 :domains '(:any) :dtypes '(:f32 :f64)
+   (list :name :tanh :n 1 :domains '(:any) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x) (tanh x)))
-   (list :name :max :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64)
+   (list :name :max :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (max x y)))
-   (list :name :min :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64)
+   (list :name :min :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (min x y)))
-   (list :name :select :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64)
+   (list :name :select :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (nb:where (< x y) (* x y) (exp y))))
-   (list :name :composite :n 2 :domains '(:any :any) :dtypes '(:f32 :f64)
+   (list :name :composite :n 2 :domains '(:any :any) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (tanh (* x (exp y)))))
    ;; 出力が :i1 / 別 dtype のもの: 中心差分の対象外（:cd nil）。
-   (list :name :compare :n 2 :domains '(:any :any) :dtypes '(:f32 :f64) :cd nil
+   (list :name :compare :n 2 :domains '(:any :any) :dtypes '(:f32 :f64 :bf16 :f16) :cd nil
          :fn (nb:with-tracing (x y) (< x y)))
-   (list :name :convert-up :n 1 :domains '(:any) :dtypes '(:f32) :cd nil
+   (list :name :convert-up :n 1 :domains '(:any) :dtypes '(:f32 :bf16 :f16) :cd nil
          :fn (nb:with-tracing (x) (nb:convert x :f64)))
-   (list :name :convert-down :n 1 :domains '(:any) :dtypes '(:f64) :cd nil
+   (list :name :convert-down :n 1 :domains '(:any) :dtypes '(:f64 :f32 :bf16 :f16) :cd nil
          :fn (nb:with-tracing (x) (nb:convert x :f32)))
-   (list :name :convert-bf16 :n 1 :domains '(:any) :dtypes '(:f32) :cd nil
+   (list :name :convert-bf16 :n 1 :domains '(:any) :dtypes '(:f32 :f64 :bf16 :f16) :cd nil
          :fn (nb:with-tracing (x) (nb:convert x :bf16))))
   "jvp ルールのテスト表。各要素は plist: :NAME :N（入力数）:DOMAINS（入力ごとの
 定義域 :ANY / :POSITIVE / :DISTINCT（直前の入力から 0.1 以上離す））:DTYPES
@@ -226,3 +226,36 @@ check-graph を満たす（compare は :i1 の主値に :i1 の接線が付く�
   "sub mul div exp log tanh max min convert compare select neg add に jvp ルールがある。"
   (dolist (name '(:add :neg :sub :mul :div :exp :log :tanh :max :min :convert :compare :select))
     (is (nb::primitive-jvp (nb::find-primitive name)) "~S" name)))
+
+(test jvp-elementwise/max-min-ties-in-half-precision
+  "bf16 / f16 でも max / min の同値は 0.5 ずつ（係数の 0.5 と 1 が値側の dtype で作られる）。
+接線の出力の dtype は主値と同じ。"
+  (dolist (dtype '(:bf16 :f16))
+    (dolist (fn (list (nb:with-tracing (x y) (max x y)) (nb:with-tracing (x y) (min x y))))
+      (let* ((aval (nb:make-aval '(4) dtype))
+             (graph (nb:trace-to-graph fn (list aval aval)))
+             (jvp (nb::jvp-graph graph))
+             (x (make-random-array (make-array-spec '(4) dtype) :seed 5))
+             (tx (make-random-array (make-array-spec '(4) dtype) :seed 6))
+             (ty (make-random-array (make-array-spec '(4) dtype) :seed 7))
+             (result (%ew-eval jvp (list x x tx ty)))
+             (dtx (nb::%decode-array tx dtype))
+             (dty (nb::%decode-array ty dtype))
+             (half (make-array '(4) :element-type 'single-float)))
+        (dotimes (i 4)
+          (setf (aref half i) (* 0.5 (+ (aref dtx i) (aref dty i)))))
+        (is (equalp (list aval aval) (mapcar #'nb:var-aval (nb:graph-outvars jvp))))
+        (is (allclose (second result) (nb::%encode-array half dtype) :dtype dtype))))))
+
+(test jvp-elementwise/max-min-nan-gets-zero-tangent
+  "max / min の入力に NaN があると、出力が NaN なので出力と等しい入力がなく、接線は 0
+（JAX と同じ）。"
+  (let* ((nan (nb::%quiet-nan 'double-float))
+         (x (%f64-vector nan 1))
+         (y (%f64-vector 1 nan))
+         (tx (%f64-vector 10 20))
+         (ty (%f64-vector 100 200)))
+    (is (equalp (%f64-vector 0 0)
+                (%jvp-tangent-of-binary (nb:with-tracing (x y) (max x y)) x y tx ty)))
+    (is (equalp (%f64-vector 0 0)
+                (%jvp-tangent-of-binary (nb:with-tracing (x y) (min x y)) x y tx ty)))))
