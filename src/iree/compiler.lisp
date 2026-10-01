@@ -331,13 +331,13 @@ MLIR の診断（あれば）が DIAGNOSTICS に入る。共有ライブラリ�
 呼び出しごとに新しいセッションと invocation を作るので、複数スレッドから
 並行に呼んでよい。
 
-本体は WITH-ALL-FLOAT-TRAPS-MASKED（float-traps.lisp）で包む（issue #53）。
+本体は WITH-ALL-FLOAT-TRAPS-MASKED（src/ffi-support/float-traps.lisp）で包む（issue #53）。
 LLVM のコード生成は、Pipeline を呼んだこの Lisp スレッドの上で直接走ることが
 あり、かつ初回コンパイル時に LLVM が内部で作るスレッドプールもこの時点の
 呼び出し元スレッドの MXCSR を引き継ぐ（ガイダンス(3)）。
 
 ただし、ゼロサイズの contracting 次元を持つ dot_general が起こす
-DIVISION-BY-ZERO はこのマスクでは防げない（float-traps.lisp 冒頭の
+DIVISION-BY-ZERO はこのマスクでは防げない（docs/float-traps-experiments.mdの
 コメント参照。x86 の整数除算命令による #DE で、マスクビットが無いため）。
 その対策は %compile-stablehlo の Pipeline 呼び出しのすぐ側にある
 ARITHMETIC-ERROR のハンドリング（IREE-COMPILE-ERROR への変換）だが、この

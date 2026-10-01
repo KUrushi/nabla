@@ -81,7 +81,7 @@ pretty form を出力する。
 : IREE デバイス上の buffer view を包む、JAX の `jax.Array` に相当するクラス（`nabla.iree:device-array`）。実データ（buffer view の foreign pointer）と `aval`（形状と dtype）、そのデバイスへの参照を持つ。生成時に自分のデバイス（`iree_hal_device_t`）を retain するので、呼び出し側がデバイス自身を解放した後でも、生きている device-array から値を読み出せる。
 
 **PJRT**
-: XLA（JAX の標準の実行系）を外部から呼ぶための C API。nabla では IREE の次の候補として、`backend` プロトコルの裏に置く。
+: XLA（JAX の標準の実行系）を外部から呼ぶための C API。nabla では IREE の次の候補として、`backend` プロトコルの裏に置く。バックエンドごとに「プラグイン」（`.so`）があり、`GetPjrtApi` という1つの関数が `PJRT_Api` 構造体（関数ポインタの表。先頭に API の版 major / minor を持つ）を返す。nabla は `third_party/pjrt.lock` で固定した CPU / CUDA のプラグインを `scripts/fetch-pjrt.sh` で取得する（`docs/pjrt-setup.md`）。PJRT の関数はどれも `*_Args` 構造体（先頭に `struct_size` を持つ）へのポインタを1つ受け取り、失敗すると `PJRT_Error*` を返す（成功なら NULL）。主なオブジェクトは、プラグインの計算資源を持つ `PJRT_Client`、そのデバイス `PJRT_Device`、デバイス上の配列 `PJRT_Buffer`（nabla では `nabla.pjrt:device-array` が包む）、非同期処理の完了を表す `PJRT_Event`（転送の完了などを `PJRT_Event_Await` で待ち、`PJRT_Event_Destroy` で解放する）。
 
 **埋め込み C API（embedding API）**
 : IREE がコンパイラ・ランタイムの機能を、別プロセスを起動せずに自分のプロセス内から呼べるように提供している C の関数群。ヘッダは `iree/compiler/embedding_api.h`（コンパイラ）と `iree/runtime/api.h`（ランタイム）。nabla はこれを CFFI で直接 `dlopen` して呼び、`iree-compile` / `iree-run-module` をサブプロセスとして起動しない。
@@ -108,7 +108,7 @@ pretty form を出力する。
 : 浮動小数点の丸め方式の1つ。表現できる2つの値のうち近い方に丸め、ちょうど中間（等距離）のときは仮数の最下位ビットが0になる方（偶数）に丸める。IEEE 754 の既定の丸めモードで、nabla では bf16 / f16 と single-float の変換（`src/float16.lisp`）に使う。単純な切り捨てと違い、丸め誤差が特定の方向に偏らない。
 
 **float trap（浮動小数点例外トラップ）**
-: CPU が0除算・オーバーフロー・不正な演算（0/0 や sqrt(-1) など）を検出したときに、実行を止めてコンディションを signal する仕組み。SBCL は既定で `:overflow` `:invalid` `:divide-by-zero` の3つのトラップを有効にしているため、`(/ 1.0 0.0)` のような計算はそのままだと `division-by-zero` を signal してしまう。StableHLO / IREE は IEEE 754 どおり無限大・NaN を返す（signal しない）ので、nabla のプリミティブの eager 実装は `sb-int:with-float-traps-masked` でこの3つのトラップをマスクしてから計算し、両者の挙動を揃える（`src/primitives/common.lisp` の `with-ieee-arithmetic`）。マスクは要素ごとではなく、eager 呼び出し全体を1回だけ包む（速度のため）。`nabla/iree` では、これに加えて MXCSR（SSE の浮動小数点制御・ステータスレジスタ）の性質に注意が要る：Linux はスレッド生成（`clone(2)`）時に生成元スレッドの MXCSR をそのままコピーするため、IREE のワーカースレッドや LLVM コード生成を生成・実行する瞬間に呼び出し元スレッドがマスクされていないと、生成された側は未マスクのまま動き続ける（issue #53）。`nabla.iree::with-all-float-traps-masked`（`src/iree/float-traps.lisp`）は SBCL（x86-64）が制御できる5種類すべて（`:underflow` `:overflow` `:inexact` `:invalid` `:divide-by-zero`。6つ目の `:denormalized-operand` は SBCL では 32bit x86 専用で x86-64 には存在しない）をマスクし、`make-device` / `make-session` / `session-append-module` / `invoke` / `compile-stablehlo` などの生成・呼び出し点を包む。
+: CPU が0除算・オーバーフロー・不正な演算（0/0 や sqrt(-1) など）を検出したときに、実行を止めてコンディションを signal する仕組み。SBCL は既定で `:overflow` `:invalid` `:divide-by-zero` の3つのトラップを有効にしているため、`(/ 1.0 0.0)` のような計算はそのままだと `division-by-zero` を signal してしまう。StableHLO / IREE は IEEE 754 どおり無限大・NaN を返す（signal しない）ので、nabla のプリミティブの eager 実装は `sb-int:with-float-traps-masked` でこの3つのトラップをマスクしてから計算し、両者の挙動を揃える（`src/primitives/common.lisp` の `with-ieee-arithmetic`）。マスクは要素ごとではなく、eager 呼び出し全体を1回だけ包む（速度のため）。`nabla/iree` では、これに加えて MXCSR（SSE の浮動小数点制御・ステータスレジスタ）の性質に注意が要る：Linux はスレッド生成（`clone(2)`）時に生成元スレッドの MXCSR をそのままコピーするため、IREE のワーカースレッドや LLVM コード生成を生成・実行する瞬間に呼び出し元スレッドがマスクされていないと、生成された側は未マスクのまま動き続ける（issue #53）。`nabla.ffi-support:with-all-float-traps-masked`（`src/ffi-support/float-traps.lisp`。実験の記録は `docs/float-traps-experiments.md`）は SBCL（x86-64）が制御できる5種類すべて（`:underflow` `:overflow` `:inexact` `:invalid` `:divide-by-zero`。6つ目の `:denormalized-operand` は SBCL では 32bit x86 専用で x86-64 には存在しない）をマスクし、`make-device` / `make-session` / `session-append-module` / `invoke` / `compile-stablehlo` などの生成・呼び出し点を包む。
 
 ## 自動微分と変換
 

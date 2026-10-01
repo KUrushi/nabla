@@ -19,11 +19,11 @@
 ;;;;      引き継ぎ、compile-stablehlo 自身をマスクしていないとここで
 ;;;;      SIGFPE によりプロセスごと落ちる——これが issue #53 の実際の
 ;;;;      トリガーで、compile-stablehlo へのマスク追加が本 PR の
-;;;;      load-bearing な修正そのもの（float-traps.lisp 冒頭のコメント
+;;;;      load-bearing な修正そのもの（docs/float-traps-experiments.md
 ;;;;      参照）。
 ;;;;   2. ゼロサイズの contracting 次元を持つ dot_general の COMPILE-STABLEHLO
 ;;;;      は、生の DIVISION-BY-ZERO（Lisp コンディション）を漏らさない。
-;;;;      float-traps.lisp 冒頭のコメントのとおり、この特定のケースは
+;;;;      docs/float-traps-experiments.mdのとおり、この特定のケースは
 ;;;;      x86 の整数 0 除算（#DE）が原因で、浮動小数点トラップのマスクでは
 ;;;;      防げない既知の IREE/LLVM 側の制約なので、compiler.lisp 側で
 ;;;;      IREE-COMPILE-ERROR に変換している。
@@ -152,7 +152,7 @@ eager ~(~A~) 実装と NaN の位置・値が一致する（issue #53）。" mli
 ;;;
 ;;; 上の性質1（引数として渡す NaN）は、修正前でもクラッシュを再現できな
 ;;; かった（:local-task の worker スレッドは make-device の時点ですでに
-;;; 3トラップぶんマスクされていたため。float-traps.lisp 冒頭のコメント
+;;; 3トラップぶんマスクされていたため。docs/float-traps-experiments.md
 ;;; 参照）。実際に issue #53 のクラッシュを起こすのは、NaN を引数ではなく
 ;;; モジュールの stablehlo.constant に埋め込み、コンパイル時定数畳み込み
 ;;; （IREE の JitGlobalsPass。実行時ではなくコンパイル中の Lisp スレッド上
@@ -276,7 +276,7 @@ func.return %0 : ~A~%}"
 contracting 次元を持つ dot_general
 （tensor<2x0xf32> x tensor<0x3xf32> -> tensor<2x3xf32>）の生 MLIR を
 compile-stablehlo に通すと、x86 の整数0除算（#DE、マスクできない。
-float-traps.lisp 冒頭のコメント参照）が起き、生の DIVISION-BY-ZERO
+docs/float-traps-experiments.md参照）が起き、生の DIVISION-BY-ZERO
 （Lisp コンディション）は漏れず、IREE-COMPILE-ERROR として報告される
 （issue #53）。
 

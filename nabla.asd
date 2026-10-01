@@ -2,9 +2,10 @@
 ;;;;
 ;;;; nabla: Common Lisp × IREE の深層学習ライブラリ。
 ;;;;
-;;;; フェーズ0（IREE 疎通）の骨格。システムは nabla / nabla/test-support /
-;;;; nabla/tests / nabla/iree / nabla/iree/tests の5つ。nabla/pjrt / nabla/nn /
-;;;; nabla/data はまだ作らない。
+;;;; システムは nabla / nabla/test-support / nabla/tests / nabla/ffi-support /
+;;;; nabla/ffi-support/tests / nabla/iree / nabla/iree/tests / nabla/pjrt /
+;;;; nabla/pjrt/tests（と nabla/nn / nabla/data の予定）。nabla/ffi-support は IREE と PJRT が
+;;;; 共有する FFI 保護（issue #79）で、nabla/iree 無しでロードできる。
 ;;;;
 ;;;; 1つの defsystem に1つの :components エントリを1行、で揃えている。
 ;;;; 後続のフェーズでファイルを足すときは、この形を崩さない。
@@ -86,6 +87,7 @@
                (:file "tests/support/reference")
                (:file "tests/support/fake-backend")
                (:file "tests/support/temporary-directory")
+               (:file "tests/support/child-sbcl")
                (:file "tests/support/regression")
                ;; StableHLO emitter の medium PBT が使うレシピ生成器（issue #33、s1）
                (:file "tests/support/primitive-recipes")
@@ -166,10 +168,8 @@
 
 (defsystem "nabla/iree"
   :description "IREE 連携（コンパイラとランタイムの埋め込み C API のバインディング）"
-  :depends-on ("nabla" "cffi" "cffi-libffi" "trivial-garbage")
+  :depends-on ("nabla" "nabla/ffi-support" "cffi" "cffi-libffi" "trivial-garbage")
   :components ((:file "src/iree/package")
-               ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
-               (:file "src/iree/float-traps")
                (:file "src/iree/conditions")
                (:file "src/iree/compiler-ffi")
                (:file "src/iree/signals")
@@ -181,6 +181,20 @@
                (:file "src/iree/device-array")
                (:file "src/iree/execute")
                (:file "src/iree/backend")))
+
+(defsystem "nabla/ffi-support"
+  :description "C ライブラリ呼び出しの共有の保護（シグナルハンドラと浮動小数点トラップ。IREE / 将来の PJRT が使う）"
+  :depends-on ("cffi")
+  :components ((:file "src/ffi-support/package")
+               (:file "src/ffi-support/float-traps")
+               (:file "src/ffi-support/signals")))
+
+;; nabla/ffi-support/tests は nabla/iree をロードせずに通る（issue #79）。
+(defsystem "nabla/ffi-support/tests"
+  :description "nabla/ffi-support のテスト（nabla/iree 無しで動くことも確かめる）"
+  :depends-on ("nabla/ffi-support" "nabla/test-support")
+  :components ((:file "tests/ffi-support/package")
+               (:file "tests/ffi-support/ffi-support-test")))
 
 ;; nabla/iree/tests は nabla/tests から独立したシステム（システム構成は
 ;; 契約 §2 のとおり）。そのため (asdf:test-system "nabla") はこのシステムを
@@ -253,3 +267,29 @@
                (:file "tests/iree/grad-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
                (:file "tests/iree/mlp-train-test")))
+
+(defsystem "nabla/pjrt"
+  :description "PJRT 連携（プラグインの .so を dlopen し、クライアント・デバイス・device-array を扱う。コンパイルと実行は後続の issue）"
+  :depends-on ("nabla" "nabla/ffi-support" "cffi" "trivial-garbage" "ironclad")
+  :components ((:file "src/pjrt/package")
+               (:file "src/pjrt/library")
+               (:file "src/pjrt/ffi")
+               (:file "src/pjrt/client")
+               (:file "src/pjrt/device-array")
+               (:file "src/pjrt/executable")
+               (:file "src/pjrt/backend")))
+
+;; nabla/pjrt/tests も nabla/iree/tests と同じく nabla/tests から独立している。
+(defsystem "nabla/pjrt/tests"
+  :description "nabla/pjrt のテスト（プラグインが無ければスキップ。NABLA_REQUIRE_PJRT が空でなければ失敗）"
+  :depends-on ("nabla/pjrt" "nabla/test-support" (:require "sb-posix"))
+  :components ((:file "tests/pjrt/package")
+               (:file "tests/pjrt/support")
+               (:file "tests/pjrt/support-test")
+               ;; CPU プラグインの dlopen と PJRT API の版（issue #78）
+               (:file "tests/pjrt/smoke-test")
+               ;; FFI 定義とヘッダの照合、クライアント・backend・device-array（issue #85）
+               (:file "tests/pjrt/ffi-test")
+               (:file "tests/pjrt/backend-test")
+               ;; コンパイル・ロード・実行、jit、fingerprint（issue #87）
+               (:file "tests/pjrt/executable-test")))
