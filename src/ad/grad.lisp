@@ -16,11 +16,6 @@
 
 (define-condition grad-requires-scalar-output (autodiff-error)
   ((aval :initarg :aval :initform nil :reader grad-requires-scalar-output-aval))
-  (:report
-   (lambda (condition stream)
-     (format stream "自動微分エラー: ~?"
-             (autodiff-error-format-control condition)
-             (autodiff-error-format-arguments condition))))
   (:documentation
    "GRAD / VALUE-AND-GRAD の対象の関数が、スカラー（rank 0）の浮動小数点を
 ちょうど1つ返さなかったときに signal する。AVAL は問題の出力の aval
@@ -58,6 +53,7 @@
   (typecase arg
     (tracer arg)
     (real (%scalar-array arg (if (typep arg 'double-float) :f64 :f32)))
+    (string (%grad-signal-autodiff "grad した関数の引数に文字列は渡せない: ~S" arg))
     (array arg)
     (t (%grad-signal-autodiff "grad した関数の引数は配列・実数・トレーサでなければならない: ~S" arg))))
 
@@ -138,6 +134,10 @@ ARGNUMS が範囲外・重複などで不正なら、ここで AUTODIFF-ERROR �
 
 既知の制限: F が外側のトレースのトレーサを閉包で捕まえていると TRACING-ERROR になる。
 外側の値は F の引数として渡すこと。
+
+jit した関数（JITTED-FUNCTION）を F に渡すと、中の TRACEABLE-FUNCTION だけを使う。
+その JIT の :BACKEND は無視される。backend 上で動かすには、外側を
+(JIT (GRAD ...) :BACKEND b) にする。
 
 注意: (GRAD F) は呼ぶたびに新しい関数オブジェクトを作る。JIT キャッシュは関数の同一性が
 キーなので、ループの中で (JIT (GRAD F)) を作ると毎回コンパイルされる（JAX と同じ）。

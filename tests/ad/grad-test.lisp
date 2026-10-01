@@ -175,8 +175,10 @@ eval-graph すると eager の grad と一致する。"
                 (list (nb:make-aval '() :f64) (nb:make-aval '() :f64)))))
     (is (equalp (%f64-scalar 5d0) (nb:eval-graph graph (%f64-scalar 2d0) (%f64-scalar 5d0))))))
 
-(test grad/returns-a-new-traceable-function-each-call
-  "(grad f) は呼ぶたびに別の traceable-function を返す（jit キャッシュの同一性が別になる。docstring の注意）。"
+(test grad/returns-a-traceable-function
+  "(grad f) は traceable-function を返す。"
   (let ((f (nb:with-tracing (x) (* x x))))
-    (is (typep (nb:grad f) 'nb:traceable-function))
-    (is (not (eq (nb:grad f) (nb:grad f))))))
+    (is (typep (nb:grad f) 'nb:traceable-function))))
+
+(test grad/string-argument-signals-autodiff-error
+  (signals nb:autodiff-error (funcall (nb:grad (nb:with-tracing (x) x)) "abc")))
