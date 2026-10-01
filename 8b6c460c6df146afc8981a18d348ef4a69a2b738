@@ -1,0 +1,1 @@
+レビュー対応: 多出力テスト、random-tangent の dtype キー、docstring 修正。mutation 7/8（生き残りは gradient 側の f64 検査の重複と、エラー文言の文字列定数で等価）。f64 レシピの eqn 出力は compare の pred が :i1 なので :f64/:i1 を許容。
