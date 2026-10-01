@@ -28,7 +28,7 @@ for arg in "$@"; do
   case "$arg" in
     --cuda) want_cuda=1 ;;
     --keep-wheels) keep_wheels=1 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -/{/^set -/!p}' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "fetch-pjrt.sh: 不明な引数: $arg" >&2; exit 2 ;;
   esac
 done
@@ -64,7 +64,7 @@ fetch_one() {
   else
     echo "fetch-pjrt.sh: ${kind}: ダウンロード: $url"
     tmp="${wheel}.part"
-    curl -fsSL --retry 3 -o "$tmp" "$url"
+    curl -fsSL --proto '=https' --retry 3 --retry-all-errors -o "$tmp" "$url"
     mv -f "$tmp" "$wheel"
   fi
 

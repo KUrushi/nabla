@@ -136,6 +136,16 @@ DEPENDS-ON には (:REQUIRE \"sb-cltl2\") のような文字列でないエン�
             (when (search "iree" (string-downcase (subseq text 0 count)))
               (push path offending))))))
     (is (null offending) "iree が現れる core ファイル: ~S" offending)
+    ;; core は PJRT の名前も知らない（CLAUDE.md、issue #78）。nabla/ffi-support は
+    ;; PJRT との共有が目的なので、ここでは src/*.lisp だけを見る。
+    (let ((pjrt-offending nil))
+      (dolist (path (directory (merge-pathnames "*.lisp" (asdf:system-relative-pathname "nabla" "src/"))))
+        (with-open-file (stream path :direction :input)
+          (let* ((text (make-string (file-length stream)))
+                 (count (read-sequence text stream)))
+            (when (search "pjrt" (string-downcase (subseq text 0 count)))
+              (push path pjrt-offending)))))
+      (is (null pjrt-offending) "pjrt が現れる core ファイル: ~S" pjrt-offending))
     (let ((asd-path (asdf:system-relative-pathname "nabla" "nabla.asd")))
       (with-open-file (stream asd-path :direction :input)
         (let* ((text (make-string (file-length stream)))
@@ -144,4 +154,5 @@ DEPENDS-ON には (:REQUIRE \"sb-cltl2\") のような文字列でないエン�
                (nabla-start (search "(defsystem \"nabla\"" text))
                (nabla-end (search "(defsystem \"nabla/test-support\"" text)))
           (is (and nabla-start nabla-end (< nabla-start nabla-end)))
-          (is (not (search "iree" (string-downcase (subseq text nabla-start nabla-end))))))))))
+          (is (not (search "iree" (string-downcase (subseq text nabla-start nabla-end)))))
+          (is (not (search "pjrt" (string-downcase (subseq text nabla-start nabla-end))))))))))

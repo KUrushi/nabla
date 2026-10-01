@@ -18,7 +18,8 @@
 (in-package #:nabla.pjrt)
 
 (defparameter *default-pjrt-home-name* ".local/share/nabla/pjrt-0.0.1/"
-  "NABLA_PJRT_HOME が未設定のときに使う、$HOME からの相対パス。")
+  "NABLA_PJRT_HOME が未設定のときに使う、$HOME からの相対パス。
+third_party/pjrt.lock の cpu_version と揃える（small テストが一致を検査する）。")
 
 (define-condition pjrt-plugin-not-found (error)
   ((path :initarg :path :reader pjrt-plugin-not-found-path))
@@ -89,7 +90,7 @@ PJRT-PLUGIN-NOT-FOUND を通知する。"
                   (let* ((library (cffi:load-foreign-library path))
                          (get-api (cffi:foreign-symbol-pointer
                                    "GetPjrtApi"
-                                   :library (cffi::foreign-library-name library))))
+                                   :library (cffi:foreign-library-name library))))
                     (unless get-api
                       (error "~A does not export GetPjrtApi" path))
                     (cffi:foreign-funcall-pointer get-api () :pointer))))))))

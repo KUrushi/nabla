@@ -4,7 +4,7 @@
 ;;;;
 ;;;; システムは nabla / nabla/test-support / nabla/tests / nabla/ffi-support /
 ;;;; nabla/ffi-support/tests / nabla/iree / nabla/iree/tests / nabla/pjrt /
-;;;; nabla/pjrt/tests（と nabla/nn / nabla/data の予定）。nabla/ffi-support は IREE と将来の PJRT が
+;;;; nabla/pjrt/tests（と nabla/nn / nabla/data の予定）。nabla/ffi-support は IREE と PJRT が
 ;;;; 共有する FFI 保護（issue #79）で、nabla/iree 無しでロードできる。
 ;;;;
 ;;;; 1つの defsystem に1つの :components エントリを1行、で揃えている。
