@@ -1,0 +1,1 @@
+レビュー対応: K=160（3000 seed の最悪比 0.11）、seed 1349 を固定の回帰例に、パラメータ許容誤差を既定に戻した、make-mlp-train-step は (values step jitted) で :backend を受ける。
