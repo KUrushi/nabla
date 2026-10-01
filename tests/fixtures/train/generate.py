@@ -5,7 +5,7 @@ nabla のライブラリ本体・テストの実行時は Python / JAX に依存
 これはフィクスチャを作るときにだけ使う開発用スクリプトで、生成した
 mlp-sgd.lisp をコミットする。
 
-nabla 側の定義（examples/mlp.lisp の MLP-LOSS）と同じ式を JAX で書く:
+nabla 側の定義（examples/mlp.lisp の MAKE-MLP-LOSS）と同じ式を JAX で書く:
 
     h      = tanh(x w1 + b1)                         (N H)
     logits = h w2 + b2                               (N C)

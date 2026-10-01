@@ -31,18 +31,24 @@ multiple-value-bind を扱えないので、普通の関数に切り出してあ
   (multiple-value-bind (loss grads) (apply vg args)
     (values-list (cons loss grads))))
 
-(defun make-mlp-train-step (&key (lr 0.5) (n 16) (h 8) (c 2))
+(defun make-mlp-train-step (&key (lr 0.5) (n 16) (h 8) (c 2) backend)
   "学習ステップ (lambda (params x y)) を返す。PARAMS は (w1 b1 w2 b2) の f32 配列のリスト。
-戻り値は多値の (更新前の損失 SGD で更新した PARAMS)。(jit (value-and-grad loss)) は
+戻り値は2つ: その関数と、jit した関数そのもの（(w1 b1 w2 b2 x y) を取り、
+(損失 w1の勾配 b1の勾配 w2の勾配 b2の勾配) を多値で返す。コンパイル時間と
+ステップ時間を分けて測るときに使う）。関数は多値の (更新前の損失 SGD で更新した PARAMS) を返す。
+BACKEND は jit の :backend（NIL なら既定）。(jit (value-and-grad loss)) は
 ここで1回だけ作り、呼び出しごとにはコンパイルしない（2回目以降はキャッシュを使う）。
 argnums がリストのとき勾配のリストは jit の出力にできないので、多値に直す。"
   (let* ((vg (nb:value-and-grad (make-mlp-loss n h c) :argnums '(0 1 2 3)))
          (jitted (nb:jit (nb:with-tracing (w1 b1 w2 b2 x y)
-                           (value-and-grads-values vg w1 b1 w2 b2 x y)))))
-    (lambda (params x y)
-      (destructuring-bind (loss &rest grads) (multiple-value-list (apply jitted (append params (list x y))))
-        (values (aref loss)
-                (mapcar (lambda (p g) (sgd-update p g lr)) params grads))))))
+                           (value-and-grads-values vg w1 b1 w2 b2 x y))
+                         :backend backend)))
+    (values
+     (lambda (params x y)
+       (destructuring-bind (loss &rest grads) (multiple-value-list (apply jitted (append params (list x y))))
+         (values (aref loss)
+                 (mapcar (lambda (p g) (sgd-update p g lr)) params grads))))
+     jitted)))
 
 (defun make-blobs (n seed)
   "XOR 風の2次元2クラス分類データ。(±1, ±1) を中心にノイズを足した N 点と、

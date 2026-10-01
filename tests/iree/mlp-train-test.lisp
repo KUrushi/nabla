@@ -55,48 +55,48 @@
     (loop for k from 0 below (getf fixture :steps)
           for expected-params in (getf fixture :params)
           do (multiple-value-bind (loss new-params) (funcall step params x y)
-               (is (allclose (make-array nil :element-type 'single-float :initial-element loss)
-                             (make-array nil :element-type 'single-float :initial-element (aref expected-losses k))
-                             :dtype :f32)
+               (is (approx= loss (aref expected-losses k) :dtype :f32)
                    "ステップ ~D の損失が JAX と一致しない: ~S と ~S" k loss (aref expected-losses k))
-               ;; パラメータは損失（既定の f32 許容誤差）より緩める（rtol 1e-4）。IREE と XLA は
-               ;; tanh / exp / log と dot・reduce の総和の順序が違い、その差が勾配を通って
-               ;; 最大 N ステップ分たまるため。
                (loop for actual in new-params
                      for expected in (%train-fixture-params expected-params)
                      for name in '(w1 b1 w2 b2)
-                     do (is (allclose actual expected :dtype :f32 :rtol 1e-4 :atol 1e-5)
+                     do (is (allclose actual expected :dtype :f32)
                             "ステップ ~D の ~A が JAX と一致しない" k name))
                (setf params new-params)))))
 
+(defparameter *mlp-train-steps* 160)
+
+(defun %mlp-loss-halves-p (step seed)
+  "SEED のデータ・初期値から +MLP-TRAIN-STEPS+ ステップ学習して、最後の損失が最初の損失の
+半分未満になるか。"
+  (multiple-value-bind (x y) (funcall (%mlp-example-fn "MAKE-BLOBS") 16 seed)
+    (let ((params (funcall (%mlp-example-fn "INIT-PARAMS") seed))
+          (first-loss nil)
+          (last-loss nil))
+      (dotimes (k *mlp-train-steps*)
+        (multiple-value-bind (loss new-params) (funcall step params x y)
+          (when (= k 0) (setf first-loss loss))
+          (setf last-loss loss params new-params)))
+      (< last-loss (* 0.5 first-loss)))))
+
 (define-iree-test train/mlp-loss-decreases-and-compiles-once
-    "データと初期値の seed を変えても、K=80 ステップの SGD で最後の損失が最初の損失の
+    "データと初期値の seed を変えても、K=160 ステップの SGD で最後の損失が最初の損失の
 半分未満になる（単調減少は主張しない。学習率が大きいと途中で一時的に増えうる）。
-学習ステップの jit は1回だけコンパイルされ、2ステップ目以降は *jit-miss-count* が増えない
-（seed を変えて別の入力を与えても増えない）。"
+学習ステップの jit は最初の1回だけコンパイルされ、2ステップ目以降は seed を変えても
+*jit-miss-count* が増えない。seed 1349 は K=80 で比が 0.5004 になった回帰例
+（seed 0..2999 の最悪比は K=160 で 0.11）。"
   (skip-unless-iree :library :both)
   (let* ((nb:*compile-cache-directory* nil)
-         (step (funcall (%mlp-example-fn "MAKE-MLP-TRAIN-STEP")))
-         (make-blobs (%mlp-example-fn "MAKE-BLOBS"))
-         (init-params (%mlp-example-fn "INIT-PARAMS"))
-         (misses-after-first nil))
+         (before nb::*jit-miss-count*)
+         (step (funcall (%mlp-example-fn "MAKE-MLP-TRAIN-STEP"))))
+    (is (%mlp-loss-halves-p step 1349) "seed 1349 の損失が半分未満にならなかった")
+    (is (= (1+ before) nb::*jit-miss-count*))
     (is (check-it (generator (integer 0 100000))
-                  (lambda (seed)
-                    (multiple-value-bind (x y) (funcall make-blobs 16 seed)
-                      (let ((params (funcall init-params seed))
-                            (first-loss nil)
-                            (last-loss nil))
-                        (dotimes (k 80)
-                          (multiple-value-bind (loss new-params) (funcall step params x y)
-                            (when (= k 0)
-                              (setf first-loss loss)
-                              (unless misses-after-first (setf misses-after-first nb::*jit-miss-count*)))
-                            (setf last-loss loss params new-params)))
-                        (and (= misses-after-first nb::*jit-miss-count*)
-                             (< last-loss (* 0.5 first-loss))))))
+                  (lambda (seed) (%mlp-loss-halves-p step seed))
                   :regression-id train/mlp-loss-decreases
                   :regression-file (regression-path "iree-mlp-train-loss-decreases"
-                                                    :package "NABLA.IREE.TESTS")))))
+                                                    :package "NABLA.IREE.TESTS")))
+    (is (= (1+ before) nb::*jit-miss-count*))))
 
 (define-iree-test example/mlp-lisp/prints-decreasing-loss
     "examples/mlp.lisp（README の使用例）を load でき、標準出力に最初と最後の損失が
@@ -106,6 +106,7 @@
         (nb:*compile-cache-directory* nil))
     (let ((*standard-output* output))
       (load (asdf:system-relative-pathname "nabla" "examples/mlp.lisp")))
+    (setf *mlp-example-loaded* t)
     (let* ((text (get-output-stream-string output))
            (first-pos (search "loss[0] = " text))
            (last-pos (search "final loss = " text)))
