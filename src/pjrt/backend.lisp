@@ -33,6 +33,8 @@ addressable なデバイスの DEVICE-INDEX 番目を送り先にする PJRT-BAC
   (let* ((client (make-pjrt-client target))
          (devices (%pjrt-client-devices client)))
     (unless (< -1 device-index (length devices))
+      ;; 作ったばかりのクライアントは finalizer 任せにせず、すぐ手放す。
+      (%client-state-owner-gone (%pjrt-client-state client))
       (error "device-index ~D is out of range: the client has ~D addressable device~:P"
              device-index (length devices)))
     (make-instance 'pjrt-backend :target target :client client

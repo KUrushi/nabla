@@ -22,6 +22,13 @@
 ;;;; スレッド生成の瞬間の MXCSR を継承させないため、作成を
 ;;;; with-all-float-traps-masked で包む（docs/float-traps-experiments.md）。
 ;;;;
+;;;; 既知の制限: 別スレッドが sleep なしの tight loop で (sb-ext:gc :full t) を
+;;;; 回し続けると、PJRT の呼び出し（Client_Create や転送）が極端に遅くなり、
+;;;; 固まったように見える。調べた結果、nabla/pjrt のバグでもデッドロックでも
+;;;; なく、SBCL の GC ロックが公平でないために他のスレッドが進めなくなる
+;;;; 餓死（src/ffi-support/signals.lisp の「残る課題」3）で、IREE でも同程度に
+;;;; 起きる。GC の間に眠れば問題ない（tests/pjrt/client-test.lisp は 10ms 眠る）。
+;;;;
 ;;;; 寿命: クライアントはバッファより先に破棄してはならない。バッファの
 ;;;; finalizer（device-array.lisp）はオブジェクト本体を捕まえられないので、
 ;;;; クライアントの foreign 側の状態を CLIENT-STATE（device-array とは別の
@@ -127,8 +134,9 @@ destroyed-p を CAS で立てた1つのスレッドだけが実行する（所�
 自前のロックで1回だけにする。"
   (sb-thread:with-mutex (*plugin-lock*)
     (unless (gethash kind *plugin-initialized*)
-      (with-all-float-traps-masked
-        (%pjrt-call (api "PJRT_Plugin_Initialize" args (:struct %plugin-initialize-args))))
+      (with-lisp-signal-handlers-preserved
+        (with-all-float-traps-masked
+          (%pjrt-call (api "PJRT_Plugin_Initialize" args (:struct %plugin-initialize-args)))))
       (setf (gethash kind *plugin-initialized*) t))))
 
 (defun make-pjrt-client (kind)

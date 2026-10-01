@@ -111,11 +111,18 @@ PJRT_Error_Message が返した文字列、CONTEXT は呼んだ関数の名前�
   "PJRT_Api の最初の関数ポインタの位置: struct_size (8) + extension_start (8) +
 PJRT_Api_Version (struct_size 8 + extension_start 8 + major 4 + minor 4 = 24)。")
 
+(defparameter *api-function-indices*
+  (let ((table (make-hash-table :test 'equal)))
+    (loop for name in *api-function-names* for i from 0 do (setf (gethash name table) i))
+    table)
+  "関数名 -> *api-function-names* の中の位置。%api-function が呼ぶたびに
+138 個の文字列を線形探索しないよう、ロード時に作る。")
+
 (defun %api-function (api name)
   "API（PJRT_Api*）の関数表から、NAME（\"PJRT_Client_Create\" のような文字列）の
 関数ポインタを返す。プラグインの表が古くて NAME を持たない（struct_size が
 足りない、またはポインタが NULL）ときは PJRT-ERROR。"
-  (let* ((index (or (position name *api-function-names* :test #'string=)
+  (let* ((index (or (gethash name *api-function-indices*)
                     (error "unknown PJRT API function ~A" name)))
          (offset (+ +api-functions-offset+ (* 8 index)))
          (struct-size (cffi:foreign-slot-value api '(:struct %api-head) 'struct-size)))

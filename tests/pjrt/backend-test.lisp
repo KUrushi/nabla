@@ -149,6 +149,7 @@ PJRT_Buffer_ToHostBuffer を呼んで、実際にエラーを起こす（メッ�
               (fail "a too small dst_size should have been rejected"))
           (nabla:backend-error (condition)
             (is (typep condition 'pjrt-error))
+            ;; 固定したプラグインのエラー文言に依存（"must be >= 16"）。
             (is (search "16" (pjrt-error-message condition)))
             (is (string= "PJRT_Buffer_ToHostBuffer" (pjrt-error-context condition)))))))))
 

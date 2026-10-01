@@ -12,6 +12,7 @@
     ;; 少し眠る。眠らない tight loop だと、SBCL の GC ロックが公平でないため
     ;; 他のスレッドが進めなくなる餓死が起きうる。src/ffi-support/signals.lisp
     ;; の「残る課題」3）。
+    "(defvar *t0* (get-internal-real-time))"
     "(let* ((handlers (lambda () (loop for s from 1 below 65
                                       collect (nabla.ffi-support::%signal-handler-address s))))
            (before (funcall handlers))
@@ -28,6 +29,8 @@
       (setf stop t)
       (sb-thread:join-thread gc-thread)
       (dotimes (i 5) (sb-ext:gc :full t))
+      (format t \"ELAPSED-MS=~D~%\" (round (* 1000 (- (get-internal-real-time) *t0*))
+                                           internal-time-units-per-second))
       (format t \"CHANGED=~S~%\"
               (loop for b in before for a in (funcall handlers) for s from 1
                     unless (eql a b) collect s))
@@ -55,6 +58,6 @@ IREE の ensure-compiler-loaded のような「世界を止めた1点での登�
 （src/pjrt/client.lisp 冒頭）。コンパイル（#87）を足したら、この検査を拡げること。"
   (skip-unless-pjrt :kind :cpu)
   (multiple-value-bind (exit-code output) (%run-signal-check-child)
-    (is (= 0 exit-code) "child exited ~D, output:~%~A" exit-code output)
+    (is (= 0 exit-code) "child exited ~D (124 = timeout), output:~%~A" exit-code output)
     (is (search "CHANGED=NIL" output)
         "signal dispositions changed, output:~%~A" output)))
