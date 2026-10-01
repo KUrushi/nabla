@@ -55,7 +55,7 @@ sb-ext:gc :full t を回し続ける中で行っても、(1) 全シグナルの�
 \"no SP known for thread\" で落ちる）、(2) プロセスが落ちずに終了する。
 CPU プラグインのこの範囲では登録が起きないことを実地に確かめたので、
 IREE の ensure-compiler-loaded のような「世界を止めた1点での登録」は要らない
-（src/pjrt/client.lisp 冒頭）。コンパイル（#87）を足したら、この検査を拡げること。"
+（src/pjrt/client.lisp 冒頭）。コンパイル・ロード・実行を含む検査は tests/pjrt/executable-test.lisp。"
   (skip-unless-pjrt :kind :cpu)
   (multiple-value-bind (exit-code output) (%run-signal-check-child)
     (is (= 0 exit-code) "child exited ~D (124 = timeout), output:~%~A" exit-code output)

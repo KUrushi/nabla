@@ -14,9 +14,9 @@
 ;;;; には、IREE の ensure-compiler-loaded のような「世界を止めた1点で LLVM の
 ;;;; シグナルハンドラ登録を済ませる」手順は要らない（LLVM の
 ;;;; RegisterHandlers を呼ぶ経路が無い）。
-;;;; ただし XLA の CPU はコンパイル（PJRT_Client_Compile、#87）で LLVM を
-;;;; 動かすので、そこで登録が起きるかは #87 でもう一度調べる必要がある。
-;;;; それまでの保険として、クライアントの作成は
+;;;; XLA の CPU はコンパイル（PJRT_Client_Compile、#87）でも LLVM を動かすが、
+;;;; そこでも処分は変わらないことを確かめた（src/pjrt/executable.lisp 冒頭）。
+;;;; 保険として、クライアントの作成は
 ;;;; with-lisp-signal-handlers-preserved で包む（処分が変わっていたら元に戻す。
 ;;;; 多重防御）。また XLA の CPU は Eigen のスレッドプールを作るので、
 ;;;; スレッド生成の瞬間の MXCSR を継承させないため、作成を

@@ -52,3 +52,12 @@ release-device-array する（非局所脱出でも、束縛済みの分は解�
               ,@body)
          ,@(mapcar (lambda (var) `(when ,var (release-device-array ,var)))
                    (reverse vars))))))
+
+(defun stablehlo-fixture (name)
+  "tests/fixtures/stablehlo/NAME.mlir の内容を文字列として返す。"
+  (let ((path (asdf:system-relative-pathname
+               "nabla" (format nil "tests/fixtures/stablehlo/~A.mlir" name))))
+    (with-open-file (stream path :direction :input)
+      (let* ((text (make-string (file-length stream)))
+             (count (read-sequence text stream)))
+        (subseq text 0 count)))))

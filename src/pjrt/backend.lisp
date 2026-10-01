@@ -47,3 +47,57 @@ ARRAY が simple-array でなければ TYPE-ERROR、要素型と DTYPE が矛盾
 NABLA:DTYPE-MISMATCH。"
   (%client-to-device (%pjrt-backend-client backend) (%pjrt-backend-device backend)
                      array dtype))
+
+;;; --- コンパイル・ロード・実行（issue #87） ---
+
+(defvar *plugin-sha256-cache* (make-hash-table :test 'equal)
+  "プラグインの絶対パス（文字列） -> sha256 の16進文字列。")
+
+(defvar *plugin-sha256-lock* (sb-thread:make-mutex :name "nabla-pjrt-plugin-sha256"))
+
+(defun %plugin-sha256 (kind)
+  "KIND のプラグインの .so のファイルの中身の SHA-256（16進、小文字）。
+数十 MB を読むので、パスごとにプロセスにつき1回だけ計算してキャッシュする。
+シリアライズした実行体はプラグインのビルドごとに互換性がないので、
+backend-fingerprint に入れる（ビルドのバージョン文字列ではなく中身で区別する）。"
+  (let ((path (namestring (truename (plugin-path kind)))))
+    (sb-thread:with-mutex (*plugin-sha256-lock*)
+      (or (gethash path *plugin-sha256-cache*)
+          (setf (gethash path *plugin-sha256-cache*)
+                (ironclad:byte-array-to-hex-string
+                 (ironclad:digest-file :sha256 path)))))))
+
+(defmethod nabla:backend-fingerprint ((backend pjrt-backend))
+  "BACKEND-COMPILE の出力（シリアライズした実行体）を左右するもの: キャッシュ
+キーの版、実装名 \"pjrt\"、プラグインの target・プラットフォーム名、PJRT API の版、
+プラグインの .so の sha256。IREE の fingerprint とは先頭の実装名で必ず異なる。"
+  (let ((target (nabla:backend-target backend)))
+    (multiple-value-bind (major minor) (plugin-api-version (load-plugin target))
+      (list "nabla-module-cache-v1" "pjrt"
+            (format nil "target=~(~A~)" target)
+            (format nil "platform=~A" (pjrt-backend-platform-name backend))
+            (format nil "pjrt-api=~D.~D" major minor)
+            (format nil "plugin-sha256=~A" (%plugin-sha256 target))))))
+
+(defmethod nabla:backend-compile ((backend pjrt-backend) text)
+  "TEXT（StableHLO）を PJRT_Client_Compile でコンパイルし、
+PJRT_Executable_Serialize したバイト列を返す。失敗は PJRT-ERROR。"
+  (%client-compile (%pjrt-backend-client backend) text))
+
+(defmethod nabla:backend-load ((backend pjrt-backend) octets)
+  "OCTETS（BACKEND-COMPILE の戻り値）を PJRT_Executable_DeserializeAndLoad で
+ロードし、不透明な PJRT-MODULE を返す。"
+  (%client-load (%pjrt-backend-client backend) octets))
+
+(defmethod nabla:backend-unload ((backend pjrt-backend) module)
+  "MODULE の PJRT_LoadedExecutable を破棄する。2回目以降は何もしない（冪等）。"
+  (declare (ignore backend))
+  (%module-unload module))
+
+(defmethod nabla:backend-invoke ((backend pjrt-backend) module function-name &rest arrays)
+  "MODULE を ARRAYS（BACKEND の device-array）に適用し、出力の device-array を
+多値で返す。PJRT の実行体はエントリ関数を1つだけ持つので、FUNCTION-NAME は
+\"main\" でなければ ERROR。"
+  (unless (equal function-name "main")
+    (error "a PJRT module has only the entry function \"main\", not ~S" function-name))
+  (%module-invoke module (%pjrt-backend-device backend) arrays))
