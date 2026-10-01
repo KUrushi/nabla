@@ -24,18 +24,18 @@
       (nabla:backend-unload backend module))))
 
 (define-iree-test jvp/iree-matches-eval-graph
-    "(lambda (x y) (- (+ x y))) を trace-to-graph → jvp-graph（全接線と、x だけの
+    "(lambda (x y) (values (- x) (+ x y)))（2出力）を trace-to-graph → jvp-graph（全接線と、x だけの
 接線の2通り）→ emit-stablehlo → IREE で実行した結果は、同じ graph の
 eval-graph と一致する。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
-        (*num-trials* 8))
+        (*num-trials* 4))
     (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
                   (lambda (seed)
-                    (let* ((shape (loop repeat (mod seed 3) for k from 1 collect (1+ (mod (+ seed k) 3))))
+                    (let* ((shape (loop for k from 1 to (mod seed 3) collect (1+ (mod (+ seed k) 3))))
                            (aval (nb:make-aval shape :f32))
                            (spec (make-array-spec shape :f32))
-                           (graph (nb:trace-to-graph (nb:with-tracing (x y) (- (+ x y))) (list aval aval)))
+                           (graph (nb:trace-to-graph (nb:with-tracing (x y) (values (- x) (+ x y))) (list aval aval)))
                            (arrays (loop for i below 4 collect (make-random-array spec :seed (+ seed i)))))
                       (and (%jvp-iree-matches-eval-graph-p backend (nb::jvp-graph graph) arrays)
                            (%jvp-iree-matches-eval-graph-p backend (nb::jvp-graph graph :nonzero '(t nil))

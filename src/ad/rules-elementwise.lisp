@@ -16,4 +16,4 @@
 
 (def-jvp-rule neg (primals out tangents)
   (declare (ignore primals out))
-  (%trace-eqn :neg (list (first tangents))))
+  (%t-neg (first tangents)))

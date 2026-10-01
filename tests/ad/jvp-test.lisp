@@ -64,17 +64,26 @@ RTOL / ATOL で上書き）。"
     (dotimes (i (array-total-size a) result)
       (setf (row-major-aref result i) (+ (row-major-aref a i) (row-major-aref b i))))))
 
+(defun %three-output-graph (graph)
+  "GRAPH の出力を (out, 最初の invar そのもの, out) に作り直す（複数出力・重複した
+outvar・invar をそのまま出力する場合を同時に覆う）。"
+  (let ((out (first (last (nb:graph-outvars graph)))))
+    (nb::make-graph (nb:graph-invars graph) (nb:graph-eqns graph)
+                    (list out (first (nb:graph-invars graph)) out)
+                    (nb:graph-constants graph))))
+
 (test jvp/primal-and-tangent-match-original-and-linear-part
   "jvp-graph した graph を eval-graph すると、前半は元の graph の値と一致し、
 後半は元の graph の線形部分に接線を適用した値と一致する。"
   (is (check-it (generator (graph-recipe :dtypes '(:f32 :f64)))
                 (lambda (recipe)
-                  (let* ((graph (build-graph recipe))
+                  (let* ((graph (%three-output-graph (build-graph recipe)))
                          (n-out (length (nb:graph-outvars graph)))
                          (primals (%jvp-arrays graph))
                          (tangents (%jvp-arrays graph :tangent t))
                          (result (%jvp-eval (nb::jvp-graph graph) (append primals tangents))))
-                    (and (= (length result) (* 2 n-out))
+                    (and (= n-out 3)
+                         (= (length result) (* 2 n-out))
                          (equalp (subseq result 0 n-out) (%jvp-eval graph primals))
                          (%results-close-p (subseq result n-out)
                                            (%jvp-eval (%linear-part graph) tangents)))))
@@ -82,8 +91,9 @@ RTOL / ATOL で上書き）。"
                 :regression-file (regression-path "jvp-matches-linear-part"))))
 
 (test jvp/tangent-matches-central-difference-f64
-  "f64 の graph では、jvp の接線が central-difference-jvp と許容誤差で一致する。"
-  (is (check-it (generator (graph-recipe :dtypes '(:f64) :max-ops 5))
+  "f64 の graph では、jvp の接線が central-difference-jvp と許容誤差で一致する。
+中心差分のテストが、ルールにも線形部分のオラクルにも依存しない唯一のオラクル。"
+  (is (check-it (generator (graph-recipe :dtypes '(:f64)))
                 (lambda (recipe)
                   (let* ((graph (build-graph recipe))
                          (n-out (length (nb:graph-outvars graph)))
@@ -214,7 +224,7 @@ autodiff-error（no-jvp-rule ではない）。"
                      (list (nb:make-aval shape :f64) (nb:make-aval shape :f64))))
 
 (defun %shape-of-seed (seed)
-  (loop repeat (mod seed 3) for k from 1 collect (1+ (mod (+ seed k) 3))))
+  (loop for k from 1 to (mod seed 3) collect (1+ (mod (+ seed k) 3))))
 
 (test jvp/real-add-neg-values-and-tangents
   "実プリミティブ add / neg の graph (- (+ x y)): 値は元の graph と一致し、
@@ -275,3 +285,48 @@ graph に外側の演算（neg）を重ねて評価すると、jvp の結果の 
     (is (%jvp-round-trips-p outer))
     (is (%results-close-p (%jvp-eval outer arrays)
                           (mapcar (lambda (a) (%scale-array a -1)) (%jvp-eval jvp arrays))))))
+
+(test jvp/multi-output-order-is-primals-then-tangents
+  "固定例: (values (- x) (+ x y)) の出力は (-x, x+y, -vx, vx+vy) の順（vx ≠ vy）。"
+  (let* ((aval (nb:make-aval '(3) :f64))
+         (graph (nb:trace-to-graph (nb:with-tracing (x y) (values (- x) (+ x y))) (list aval aval)))
+         (spec (make-array-spec '(3) :f64))
+         (x (make-random-array spec :seed 1)) (y (make-random-array spec :seed 2))
+         (vx (make-random-array spec :seed 3)) (vy (make-random-array spec :seed 4))
+         (result (%jvp-eval (nb::jvp-graph graph) (list x y vx vy))))
+    (is (= 4 (length result)))
+    (is (not (equalp vx vy)))
+    (is (%results-close-p result (list (%scale-array x -1) (%sum-array x y)
+                                       (%scale-array vx -1) (%sum-array vx vy))))))
+
+;;; --- :i1（接線空間は自明: 接線は常に全 false） ---
+
+(defun %i1-output-graph ()
+  ":i1 の定数を出力に持つ graph:
+入力 x（f64 (2)）、定数 c（:i1 (2)）、出力 (x, c)。"
+  (let* ((x (nb::make-var (nb:make-aval '(2) :f64)))
+         (c (nb::make-var (nb:make-aval '(2) :i1)))
+         (const (make-array '(2) :element-type 'bit :initial-element 1)))
+    (nb::make-graph (list x) '() (list x c) (list (cons c const)))))
+
+(test jvp/i1-output-gets-all-false-i1-tangent
+  ":i1 の出力の接線は、同じ shape の全 false の :i1 配列（主値 ++ 接線の個数は保つ）。
+emit-stablehlo も通る。"
+  (let* ((graph (%i1-output-graph))
+         (jvp (nb::jvp-graph graph))
+         (result (%jvp-eval jvp (list (make-random-array (make-array-spec '(2) :f64) :seed 1)
+                                      (make-random-array (make-array-spec '(2) :f64) :seed 2)))))
+    (is (= 4 (length result)))
+    (is (%jvp-round-trips-p jvp))
+    (is (equalp (nb:aval-dtype (nb:var-aval (fourth (nb:graph-outvars jvp)))) :i1))
+    (is (equalp (nb:aval-shape (nb:var-aval (fourth (nb:graph-outvars jvp)))) '(2)))
+    (is (equalp (fourth result) (make-array '(2) :element-type 'bit :initial-element 0)))
+    (is (search "i1" (nb:emit-stablehlo jvp)))))
+
+(test jvp/nonzero-default-excludes-non-float-inputs
+  ":i1 の入力は既定では接線の入力にならず、nonzero に T を渡すと autodiff-error。"
+  (let* ((x (nb::make-var (nb:make-aval '(2) :f64)))
+         (b (nb::make-var (nb:make-aval '(2) :i1)))
+         (graph (nb::make-graph (list x b) '() (list x b) '())))
+    (is (= 3 (length (nb:graph-invars (nb::jvp-graph graph)))))
+    (signals nb:autodiff-error (nb::jvp-graph graph :nonzero '(t t)))))

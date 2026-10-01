@@ -19,29 +19,41 @@
                                      (tangent-aval tangent) (tracer-aval out))))
     tangent))
 
-(defun jvp-graph (graph &key (nonzero (make-list (length (graph-invars graph)) :initial-element t)))
+(defun %float-dtype-p (dtype)
+  (member dtype '(:f32 :f64 :bf16 :f16)))
+
+(defun jvp-graph (graph &key (nonzero (mapcar (lambda (v) (and (%float-dtype-p (aval-dtype (var-aval v))) t))
+                                              (graph-invars graph))))
   "GRAPH を jvp 変換した新しい GRAPH を CHECK-GRAPH して返す。GRAPH 自体は
 書き換えない。
 
 新しい graph の入力は、GRAPH の入力の主値に続けて、NONZERO が真の入力の
 接線（その入力と同じ aval）。NONZERO は GRAPH-INVARS と同じ長さの真偽値の
 リストで、偽の入力の接線は SYMBOLIC-ZERO として扱われ、graph の入力には
-ならない。既定はすべて T。出力は GRAPH の出力の主値に続けて、その接線
-（ゼロと分かっていれば INSTANTIATE-ZERO でゼロの配列を作る）。
+ならない。既定は、浮動小数点の入力なら T、:I1 など浮動小数点でない入力は
+NIL（その接線空間は自明で、接線は常に SYMBOLIC-ZERO）。非浮動小数点の入力に
+T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて、その接線
+（ゼロと分かっていれば INSTANTIATE-ZERO でゼロの配列を作る）。出力は常に「主値 ++ 接線、同じ個数」で、:I1 の出力の
+接線も全 false の :I1 配列になる。
+
+この関数の中では DCE しない（結果は「元と同じ主値の eqn + 接線の eqn」）。
+接線だけを取り出す linearize（#82）が、接線の部分に DCE-GRAPH をかける。
 
 各 eqn は主値を %TRACE-EQN で再発行する。全入力の接線がゼロなら出力の接線も
 ゼロ（ルールを呼ばない）。そうでなければ REQUIRE-JVP-RULE のルールを
   (apply rule primals out tangents (eqn-params eqn))
-で呼ぶ（無ければ NO-JVP-RULE）。定数の接線はゼロ。
-
-制限: :I1 など浮動小数点でない dtype の値にも接線の出力を作るので、:I1 の
-出力があるとゼロの実体化（INSTANTIATE-ZERO）が TRACING-ERROR になる。
-compare / select を扱う #80 以降で、整数・真偽値の接線の扱いを決める。"
+で呼ぶ（無ければ NO-JVP-RULE）。定数の接線はゼロ。"
   (let ((invars (graph-invars graph)))
     (unless (= (length nonzero) (length invars))
       (error 'autodiff-error
              :format-control "NONZERO の長さ ~D が graph の入力の個数 ~D と一致しない"
              :format-arguments (list (length nonzero) (length invars))))
+    (loop for invar in invars
+          for flag in nonzero
+          when (and flag (not (%float-dtype-p (aval-dtype (var-aval invar)))))
+            do (error 'autodiff-error
+                      :format-control "浮動小数点でない入力 ~S には接線を渡せない（nonzero は NIL にする）"
+                      :format-arguments (list invar)))
     (%call-with-fresh-trace
      (append (mapcar #'var-aval invars)
              (loop for invar in invars for flag in nonzero
@@ -61,6 +73,8 @@ compare / select を扱う #80 以降で、整数・真偽値の接線の扱い�
                         (cons (%lift-constant array (var-aval var) *current-trace*)
                               (make-symbolic-zero (var-aval var)))))
          (dolist (eqn (graph-eqns graph))
+           ;; フェーズ1では eqn の outvars は常に1つ（src/ir.lisp の EQN を参照）。
+           (assert (= 1 (length (eqn-outvars eqn))))
            (let* ((entries (mapcar (lambda (v) (gethash v env)) (eqn-invars eqn)))
                   (primals (mapcar #'car entries))
                   (tangents (mapcar #'cdr entries))
@@ -69,8 +83,6 @@ compare / select を扱う #80 以降で、整数・真偽値の接線の扱い�
                                (make-symbolic-zero (tracer-aval out))
                                (%jvp-rule-tangent eqn (require-jvp-rule (eqn-prim eqn))
                                                   primals out tangents))))
-             ;; フェーズ1では eqn の outvars は常に1つ（src/ir.lisp の EQN を参照）。
-             (assert (= 1 (length (eqn-outvars eqn))))
              (setf (gethash (first (eqn-outvars eqn)) env) (cons out tangent))))
          (let ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph))))
            (values-list (append (mapcar #'car entries)
