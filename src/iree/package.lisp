@@ -18,6 +18,19 @@
   ;; 呼び出し側や過去のテストが無変更で動くように）。nabla.iree は
   ;; 引き続き #:nabla を :use しない（コアの名前空間を汚さないため）。
   (:import-from #:nabla #:to-device #:to-host #:device-array-aval)
+  ;; シグナルハンドラと浮動小数点トラップの保護は nabla/ffi-support に
+  ;; ある（issue #79）。呼び出し箇所とテスト（nabla.iree::%signal-handler-address
+  ;; など）が無変更で解決するよう、同じシンボルのまま import-from する。
+  (:import-from #:nabla.ffi-support
+                #:with-lisp-signal-handlers-preserved
+                #:with-all-float-traps-masked
+                #:%save-signal-dispositions
+                #:%restore-signal-dispositions
+                #:%warn-on-failed-signal-restore
+                #:%signal-handler-address
+                #:%call-with-world-stopped
+                #:+sigaction-size+
+                #:+nsig+)
   (:export
    ;; コンパイラ
    #:compile-stablehlo

@@ -93,28 +93,6 @@
 ;;; （x86-64 Linux）における「SBCL が signal しうる浮動小数点例外」を
 ;;; すべて覆える。
 
-(in-package #:nabla.iree)
-
-(defmacro with-all-float-traps-masked (&body body)
-  "BODY を、SBCL（x86-64）が制御できる5種類の浮動小数点例外トラップすべて
-（:underflow :overflow :inexact :invalid :divide-by-zero）をマスクした状態で
-評価する。
-
-IREE のワーカースレッド生成点（make-device・make-session・
-session-append-module・iree-instance の初回生成）と、LLVM を呼ぶ
-コンパイラのエントリポイント（compile-stablehlo・%warm-up-compiler・
-ensure-compiler-loaded の LLVM シグナルハンドラ登録点）は、必ずこのマクロで
-本体を包むこと（ファイル冒頭のコメント参照。新しいスレッドは生成元スレッドの
-MXCSR をそのまま引き継ぐので、生成元スレッドを生成の瞬間にマスクしておく
-必要がある）。
-
-呼び出し側では WITH-LISP-SIGNAL-HANDLERS-PRESERVED（signals.lisp）の内側に
-このマクロを置いている（外側ではない）が、これは意図的な選択ではなく
-どちらでもよい。MXCSR のマスク（このマクロが書き換える、スレッドローカルな
-浮動小数点例外の設定）と、sigaction によるプロセス全体のシグナルハンドラの
-保存・復元（signals.lisp が対象にする、LLVM が上書きしうる SIGUSR2 など）は
-互いに独立したオペレーティングシステムの状態なので、入れ子の順序は
-どちらでも機能上の違いは無い。"
-  `(sb-int:with-float-traps-masked
-       (:underflow :overflow :inexact :invalid :divide-by-zero)
-     ,@body))
+;;;; （マクロ本体 with-all-float-traps-masked は issue #79 で
+;;;; nabla/ffi-support（src/ffi-support/float-traps.lisp）へ移した。
+;;;; このファイルは IREE での実験の記録として、コメントだけを残している。）
