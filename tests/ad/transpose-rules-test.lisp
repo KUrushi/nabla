@@ -7,8 +7,8 @@
 ;;;;   1. 随伴性: <T(u), v> = <u, L(v)>（L は元の graph を eval-graph したもの）
 ;;;;   2. T の線形性: T(a·u + b·w) = a·T(u) + b·T(w)
 ;;;;   3. 内積テスト: 実プリミティブのランダムな f64 の graph（非線形の
-;;;;      exp / tanh / max / min / reduce-max / compare+select も含む。dot-general は
-;;;;      #84 まで除く）について <vjp(u), v> = <u, jvp(v)>
+;;;;      exp / tanh / max / min / reduce-max / compare+select と dot-general も含む）
+;;;;      について <vjp(u), v> = <u, jvp(v)>
 ;;;; 加えて、固定の例（broadcast-in-dim のサイズ1の広がりなど）と、線形でない
 ;;;; 使い方・stop-gradient の扱いを確かめる。
 
