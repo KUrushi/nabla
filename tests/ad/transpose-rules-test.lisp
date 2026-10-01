@@ -21,11 +21,28 @@
 
 (defun %f64-avals (n shape) (loop repeat n collect (nb:make-aval shape :f64)))
 
+(defun %broadcast-case-graph-maybe-unsorted (seed)
+  "%BROADCAST-CASE-GRAPH。SEED が奇数なら、オペランドの軸と dims を同じ置換で並べ替えて、
+dims が昇順でない broadcast-in-dim にする（同じ関数を表す）。"
+  (let* ((graph (%broadcast-case-graph seed))
+         (eqn (first (nb:graph-eqns graph)))
+         (params (nb:eqn-params eqn))
+         (dims (getf params :dims))
+         (in-shape (nb:aval-shape (nb:var-aval (first (nb:graph-invars graph))))))
+    (if (and (oddp seed) (> (length dims) 1))
+        (let* ((perm (%shuffle-by-seed (loop for i below (length dims) collect i) seed))
+               (new-shape (mapcar (lambda (i) (nth i in-shape)) perm))
+               (new-dims (mapcar (lambda (i) (nth i dims)) perm)))
+          (%tr-graph (list (nb:make-aval new-shape :f64))
+                     (lambda (a) (nb::%trace-eqn :broadcast-in-dim (list a)
+                                                 :shape (getf params :shape) :dims new-dims))))
+        graph)))
+
 (defun %tr-case (seed)
   "SEED から、(VALUES graph n-known 近似) を作る。graph の入力は既知の N-KNOWN 個に
 線形入力が続く。近似が真なら f32 を通る（許容誤差を緩める）。"
-  (let* ((kind (mod seed 11))
-         (rest (floor seed 11))
+  (let* ((kind (mod seed 13))
+         (rest (floor seed 13))
          (rank (mod rest 4))
          (shape (%seed-shape (floor rest 4) rank))
          (aval (nb:make-aval shape :f64))
@@ -46,7 +63,7 @@
       (3 (let ((perm (%shuffle-by-seed (loop for i below rank collect i) rest)))
            (values (%tr-graph (list aval) (lambda (a) (nb::%trace-eqn :transpose (list a) :perm perm)))
                    0 nil)))
-      (4 (values (%broadcast-case-graph rest) 0 nil))
+      (4 (values (%broadcast-case-graph-maybe-unsorted rest) 0 nil))
       (5 (let* ((rank (max 1 rank))
                 (aval (nb:make-aval (%seed-shape (floor rest 4) rank) :f64))
                 (axes (%seed-subset rest rank)))
@@ -66,6 +83,13 @@
                                                     (nb::%trace-eqn :sub (list p p))
                                                     b))))
                  2 nil))
+      ;; sub: 片側が既知（既知側は 0 = p - p にして L を線形に保つ）。
+      (11 (values (%tr-graph (%f64-avals 2 shape)
+                             (lambda (p x) (nb::%trace-eqn :sub (list (nb::%trace-eqn :sub (list p p)) x))))
+                  1 nil))
+      (12 (values (%tr-graph (%f64-avals 2 shape)
+                             (lambda (p x) (nb::%trace-eqn :sub (list x (nb::%trace-eqn :sub (list p p))))))
+                  1 nil))
       ;; mul: 既知の係数が左、右。
       (8 (values (%tr-graph (%f64-avals 2 shape) (lambda (y x) (nb::%trace-eqn :mul (list y x)))) 1 nil))
       (9 (values (%tr-graph (%f64-avals 2 shape) (lambda (y x) (nb::%trace-eqn :mul (list x y)))) 1 nil))
@@ -74,7 +98,7 @@
                              (lambda (p x) (nb::%trace-eqn :div (list x (nb::%trace-eqn :exp (list p))))))
                   1 nil)))))
 
-(defun %tr-tolerance (approximate) (if approximate 1d-5 1d-9))
+(defun %tr-tolerance (approximate) (if approximate 1d-5 1d-12))
 
 (defun %tr-random-cotangents (graph seed)
   (loop for outvar in (nb:graph-outvars graph) for i from 0
@@ -141,7 +165,7 @@ dims・サイズ1・rank 0）/ reduce-sum（ランダムな axes）/ select / mu
   "内積テスト: 実プリミティブ（add sub mul max min neg tanh exp compare+select convert
 reshape transpose broadcast-in-dim reduce-sum reduce-max。dot-general は #84 まで除く）の
 ランダムな f64 の graph について <vjp(u), v> = <u, jvp(v)>。主値の出力も一致する。
-非有限の値が出た graph（exp の連鎖）は対象外。"
+jvp 側が非有限の値になった graph（exp の連鎖）は対象外（vjp 側だけが非有限なら失敗）。"
   (let ((*primitive-recipe-dtypes* '(:f64))
         (*primitive-recipe-dot-p* nil))
     (is (check-it (generator (primitive-graph-recipe :max-ops 6))
@@ -156,8 +180,10 @@ reshape transpose broadcast-in-dim reduce-sum reduce-max。dot-general は #84 �
                            (vjp-result (%jvp-eval (nb::vjp-graph graph) (append primals u)))
                            (lhs (%sum-inner-products (nthcdr m vjp-result) v))
                            (rhs (%sum-inner-products u (nthcdr m jvp-result))))
-                      (if (and (%finite-number-p lhs) (%finite-number-p rhs))
-                          (and (%results-close-p (subseq vjp-result 0 m) (subseq jvp-result 0 m)
+                      ;; 参照側（jvp）が非有限の graph だけ対象外。vjp 側だけが非有限なら失敗。
+                      (if (%finite-number-p rhs)
+                          (and (%finite-number-p lhs)
+                                (%results-close-p (subseq vjp-result 0 m) (subseq jvp-result 0 m)
                                                  :rtol 1d-12 :atol 1d-12)
                                (%scalar-close-p lhs rhs))
                           t)))
@@ -196,12 +222,14 @@ ARRAYS は入力の主値 ++ 出力の余接線。"
                                      (%f64 '(2 3) '(1d0 2d0 3d0) '(4d0 5d0 6d0)))))))
 
 (test transpose-rules/convert-restores-the-input-dtype
-  "convert の転置の余接線は元の入力の dtype（f32 → f64 の転置は f32）。"
-  (let* ((x (nb::make-var (nb:make-aval '(2) :f32)))
-         (eqn (nb::make-eqn :convert (list x) :dtype :f64))
-         (graph (nb::make-graph (list x) (list eqn) (nb:eqn-outvars eqn) '()))
-         (vjp (nb::vjp-graph graph)))
-    (is (equalp (nb:make-aval '(2) :f32) (nb:var-aval (second (nb:graph-outvars vjp)))))))
+  "convert の転置の余接線は、f32 / f64 / bf16 / f16 のすべての組で元の入力の dtype に戻る。"
+  (dolist (from '(:f32 :f64 :bf16 :f16))
+    (dolist (to '(:f32 :f64 :bf16 :f16))
+      (let* ((x (nb::make-var (nb:make-aval '(2) from)))
+             (eqn (nb::make-eqn :convert (list x) :dtype to))
+             (graph (nb::make-graph (list x) (list eqn) (nb:eqn-outvars eqn) '()))
+             (vjp (nb::vjp-graph graph)))
+        (is (equalp (nb:make-aval '(2) from) (nb:var-aval (second (nb:graph-outvars vjp)))))))))
 
 (test transpose-rules/mul-and-div-with-linear-factors-signal-autodiff-error
   "mul で両方が線形、div で除数が線形な graph の転置は autodiff-error。"
