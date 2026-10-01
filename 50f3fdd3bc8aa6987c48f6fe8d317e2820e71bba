@@ -1,0 +1,1 @@
+レビュー対応: #79 に rebase（衝突なし）、load-plugin テストを空キャッシュで束縛、既定 home と lock の版の一致テスト、core の pjrt 非言及テスト、curl に --proto/--retry-all-errors、--help 修正、docs にディスク使用量。
