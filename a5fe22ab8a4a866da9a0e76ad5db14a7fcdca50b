@@ -1,0 +1,1 @@
+def-jvp-rule/def-transpose-rule/def-jvp-partials を頭部リストに追加、body-start 3。declare は arid なので消えない。def-jvp-partials は lambda 経由で delete-form/arith 等がかかる。E2E: wt-81 で rules-shape.lisp total=6 killed=5 survived=1（reduce-max の ind 1->2 はスケール不変の等価変異）。code-review スキルは未実施。
