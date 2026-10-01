@@ -183,3 +183,119 @@
   (declare (ignore primals))
   (nb::%trace-eqn :%test-convert (list (first tangents))
                   :dtype (if (eq (nb:aval-dtype (nb::tracer-aval out)) :f64) :f32 :f64)))
+
+;;; --- %test-mul（issue #82）。 ---
+;;;
+;;; 要素ごとの積。jvp / transpose ルールを持つ唯一の「片側が定数」の線形
+;;; プリミティブ: ルールは、接線を片方の被演算子にだけ流し、もう片方は主値の
+;;; ままにする（接線どうしの積は作らない）。transpose はどちらが
+;;; UNDEFINED-PRIMAL かで係数を選ぶ。グラフ全体としては非線形（x * y）になる
+;;; ので、graph-recipe の :binary-prims に明示したときだけ生成される。
+
+(nb:defprimitive %test-mul ()
+  :abstract-eval
+  (lambda (in-avals)
+    (destructuring-bind (a b) in-avals
+      (unless (equalp a b)
+        (error 'nb:primitive-error :name :%test-mul :in-avals in-avals
+               :format-control "aval が一致しない: ~S / ~S" :format-arguments (list a b)))
+      a))
+  :eager
+  (lambda (arrays in-avals)
+    (declare (ignore in-avals))
+    (destructuring-bind (a b) arrays
+      (let ((result (make-array (array-dimensions a) :element-type (array-element-type a))))
+        (dotimes (i (array-total-size a) result)
+          (setf (row-major-aref result i) (* (row-major-aref a i) (row-major-aref b i))))))))
+
+(nb::def-jvp-rule %test-mul (primals out tangents)
+  (declare (ignore out))
+  (destructuring-bind (a b) primals
+    (destructuring-bind (ta tb) tangents
+      (nb::add-tangents
+       (if (nb::symbolic-zero-p ta)
+           ta
+           (nb::%trace-eqn :%test-mul (list ta b)))
+       (if (nb::symbolic-zero-p tb)
+           tb
+           (nb::%trace-eqn :%test-mul (list a tb)))))))
+
+;; jvp ルールはあるが transpose ルールの無いプリミティブ（NO-TRANSPOSE-RULE の
+;; テスト用）。接線は同じプリミティブにそのまま流す。
+(nb:defprimitive %test-no-transpose ()
+  :abstract-eval (lambda (in-avals) (first in-avals))
+  :eager
+  (lambda (arrays in-avals)
+    (declare (ignore in-avals))
+    (first arrays)))
+
+(nb::def-jvp-rule %test-no-transpose (primals out tangents)
+  (declare (ignore primals out))
+  (nb::%trace-eqn :%test-no-transpose (list (first tangents))))
+
+;;; --- transpose ルール（issue #82）。 ---
+;;;
+;;; neg / add / reshape / convert / reduce は線形なので、transpose は
+;;; 「出力の余接線を入力の形に戻す」演算になる。
+
+(defun %test-undefined-aval (invar)
+  (nb::undefined-primal-aval invar))
+
+(nb::def-transpose-rule %test-neg (ct invars)
+  (declare (ignore invars))
+  (list (nb::%trace-eqn :%test-neg (list ct))))
+
+(nb::def-transpose-rule %test-add (ct invars)
+  (unless (every #'nb::undefined-primal-p invars)
+    (error 'nb:autodiff-error :format-control "%test-add は両方の入力が線形のときだけ転置できる"))
+  (list ct ct))
+
+(nb::def-transpose-rule %test-reshape (ct invars &key shape)
+  (declare (ignore shape))
+  (list (nb::%trace-eqn :%test-reshape (list ct) :shape (nb:aval-shape (%test-undefined-aval (first invars))))))
+
+(nb::def-transpose-rule %test-convert (ct invars &key dtype)
+  (declare (ignore dtype))
+  (list (nb::%trace-eqn :%test-convert (list ct) :dtype (nb:aval-dtype (%test-undefined-aval (first invars))))))
+
+(nb::def-transpose-rule %test-reduce (ct invars &key axis)
+  ;; 縮約した軸に沿って余接線を複製する（broadcast-in-dim の dims は
+  ;; 縮約された軸以外の出力の軸）。
+  (let* ((shape (nb:aval-shape (%test-undefined-aval (first invars))))
+         (dims (loop for i below (length shape) unless (= i axis) collect i)))
+    (list (nb::%trace-eqn :broadcast-in-dim (list ct) :shape shape :dims dims))))
+
+(nb::def-transpose-rule %test-mul (ct invars)
+  (destructuring-bind (a b) invars
+    (cond ((and (nb::undefined-primal-p a) (nb::undefined-primal-p b))
+           (error 'nb:autodiff-error :format-control "%test-mul の両方の入力が線形（非線形な使い方）"))
+          ((nb::undefined-primal-p a) (list (nb::%trace-eqn :%test-mul (list ct b)) nil))
+          ((nb::undefined-primal-p b) (list nil (nb::%trace-eqn :%test-mul (list ct a))))
+          (t (error 'nb:autodiff-error :format-control "%test-mul に線形な入力が無い")))))
+
+;; jvp の接線の加算（ADD-TANGENTS）と transpose の余接線の加算は実プリミティブの
+;; add を使うので、%test- の graph を転置するには add の transpose ルールも要る。
+;; 実プリミティブの線形ルールは #83 が src/ad/ に書く。それまでのつなぎ（#83 が
+;; 同じ意味のルールで上書きする）。
+(nb::def-transpose-rule add (ct invars)
+  (unless (every #'nb::undefined-primal-p invars)
+    (error 'nb:autodiff-error :format-control "add は両方の入力が線形のときだけ転置できる"))
+  (list ct ct))
+
+;; わざと規約に反する transpose ルールを返すプリミティブ（transpose 変換の検査の
+;; テスト用）。MODE: :short = 長さの違うリスト、:missing = 線形入力の余接線が NIL、
+;; :wrong-aval = 入力と aval の違う余接線（dtype を変える）。
+(nb:defprimitive %test-bad-transpose (:mode)
+  :abstract-eval (lambda (in-avals &key mode) (declare (ignore mode)) (first in-avals))
+  :eager (lambda (arrays in-avals &key mode) (declare (ignore in-avals mode)) (first arrays)))
+
+(nb::def-jvp-rule %test-bad-transpose (primals out tangents &key mode)
+  (declare (ignore primals out))
+  (nb::%trace-eqn :%test-bad-transpose (list (first tangents)) :mode mode))
+
+(nb::def-transpose-rule %test-bad-transpose (ct invars &key mode)
+  (declare (ignore invars))
+  (ecase mode
+    (:short '())
+    (:missing (list nil))
+    (:wrong-aval (list (nb::%trace-eqn :%test-convert (list ct) :dtype :f32)))))
