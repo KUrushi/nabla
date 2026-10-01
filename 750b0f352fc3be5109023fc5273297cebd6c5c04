@@ -1,0 +1,1 @@
+registry: 微分可能20個に jvp、線形12個に transpose があることを検査。transpose-rules-test の古いコメントを削除（coordinator 指示）。
