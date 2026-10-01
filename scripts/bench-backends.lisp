@@ -361,12 +361,13 @@ NABLA_BENCH_WARMUP（既定 20）、NABLA_BENCH_REPS（コンパイル時間の�
     (when (and (search "cuda" name) (not (probe-file "/dev/nvidiactl")))
       (emit (unmeasured-record name "no NVIDIA GPU on this machine (issue #12)"))
       (return-from main))
-    (asdf:load-system (if (eq kind :iree) "nabla/iree" "nabla/pjrt"))
     (progn
-      ;; ディスクキャッシュを無効にする（プロセスの最後まで）。
-      (setf (symbol-value (find-symbol "*COMPILE-CACHE-DIRECTORY*" "NABLA")) nil)
       (handler-case
           (progn
+            ;; system の読み込み失敗もこの backend の「未測定」にする。
+            (asdf:load-system (if (eq kind :iree) "nabla/iree" "nabla/pjrt"))
+            ;; ディスクキャッシュを無効にする（プロセスの最後まで）。
+            (setf (symbol-value (find-symbol "*COMPILE-CACHE-DIRECTORY*" "NABLA")) nil)
             (let ((backend (measure-init name kind)))
               (emit-env name kind)
               (load-mlp-definitions)

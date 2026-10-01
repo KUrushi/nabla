@@ -273,7 +273,7 @@
                (:file "tests/iree/bench-test")))
 
 (defsystem "nabla/pjrt"
-  :description "PJRT 連携（プラグインの .so を dlopen し、クライアント・デバイス・device-array を扱う。コンパイルと実行は後続の issue）"
+  :description "PJRT 連携（プラグインの .so を dlopen し、クライアント・デバイス・device-array を扱い、StableHLO のコンパイル・ロード・実行を行う）"
   :depends-on ("nabla" "nabla/ffi-support" "cffi" "trivial-garbage" "ironclad")
   :components ((:file "src/pjrt/package")
                (:file "src/pjrt/library")

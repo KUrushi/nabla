@@ -13,7 +13,8 @@
 | PJRT (XLA CPU) バックエンドで同じ StableHLO をコンパイル・実行できる | 達成 | `tests/pjrt/executable-test.lisp`（compile / load / invoke、`(jit f :backend :pjrt)`、fingerprint に sha256 と API 版、ディスクキャッシュ、フェーズ0フィクスチャ） |
 | 同じ StableHLO を PJRT にも流し、コンパイル時間と学習ステップ時間を IREE と実測比較した表がある | 達成（CPU のみ。CUDA は未測定） | 本書 §4。`scripts/bench-backends.sh`。出力の読み書きは `tests/bench-test.lisp`（small）、スクリプトを小さな設定で1回走らせるのは `tests/iree/bench-test.lisp` / `tests/pjrt/bench-test.lisp`（medium） |
 | core は PJRT の名前を知らない | 達成 | `tests/backend-test.lisp` の `backend/core-sources/do-not-mention-iree`（`src/` を再帰して "iree" と "pjrt" を検査。#99 の再帰化と #100 の "pjrt" 検索の両方を残した） |
-| 既定スイート（small + medium）が通る | 達成 | `NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_PJRT=1 scripts/run-tests.sh` |
+| 既定スイート（small + medium）が CI で通る | 達成（ローカル） | PR #97〜#112 の CI がすべて green。このブランチの CI は PR 作成後。ローカルでは `NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_PJRT=1 scripts/run-tests.sh` が通る |
+| 微分できる各プリミティブに jvp ルールが、線形な各プリミティブに transpose ルールが揃っている | 達成 | `tests/primitives/registry-test.lisp`（全微分可能プリミティブの jvp、線形プリミティブの transpose の存在を検査） |
 | GPU（CUDA）での数値一致と計測 | 未測定 | このマシンに GPU が無い（#12 から引き続き）。ベンチは `--cuda` で測れる形にしてあり、GPU が無ければ「未測定」と出す |
 
 結論: CPU 上の完了条件はすべて達成した。GPU に関する項目だけが未測定のまま残る。
@@ -58,7 +59,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 - **PJRT のシグナル調査**: CPU プラグインの dlopen / Plugin_Initialize / Client_Create / BufferFromHost / ToHost、および Compile / Serialize / Load / Execute の前後で、全シグナル（1..64）の処分を比較したところ変化は無かった（XLA は LLVM のシグナル登録をしない）。IREE のような「世界を止めた1点での登録」は不要。`with-lisp-signal-handlers-preserved` と浮動小数点トラップのマスクは多重防御として残してあり、子プロセスのテストが GC スレッド並走下での処分と FP モードの不変を毎回検査する。実験の記録は `docs/pjrt-setup.md`。
 - **空の CompileOptions は SIGABRT**: `PJRT_Client_Compile` に空のオプションを渡すとプラグインが CHECK で落ちる。`num_replicas = num_partitions = 1` と `compile_portable_executable = 1` だけの最小の protobuf を手書きで渡す（`src/pjrt/executable.lisp`）。
 - **`PJRT_Buffer_Type_INVALID` でのバッファ作成も abort する**: エラー変換のテストは小さい dst_size の ToHostBuffer で行う。
-- **SBCL の GC ロック餓死**: 別スレッドが sleep 無しの tight loop で `(gc :full t)` を回すと、main スレッドが進めず固まる（`src/iree/signals.lisp` 冒頭の餓死リスク3）。PJRT のクライアント寿命管理は、Lisp の mutex を finalizer スレッドが GC 停止中に保持しうることを避けるため、バッファの finalizer が整数と構造体だけを捕まえてアトミックに数える方式にし、子プロセステストは GC の間に sleep を入れる。
+- **SBCL の GC ロック餓死**: 別スレッドが sleep 無しの tight loop で `(gc :full t)` を回すと、main スレッドが進めず固まる（`src/ffi-support/signals.lisp` 冒頭の餓死リスク3）。PJRT のクライアント寿命管理は、Lisp の mutex を finalizer スレッドが GC 停止中に保持しうることを避けるため、バッファの finalizer が整数と構造体だけを捕まえてアトミックに数える方式にし、子プロセステストは GC の間に sleep を入れる。
 - **プラグインの sha256 は約2.4秒**: 260 MB のファイルを読む。プロセスにつき1回だけ計算してキャッシュする（§4 の「初期化」の行）。
 
 ### 3.3 mutation runner の対象拡張
@@ -79,7 +80,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 
 ### 4.2 結果
 
-セルはミリ秒。n > 1 の項目は「中央値 [p10-p90]」（ステップは n = 200、コンパイルの各段は n = 3）。`stage/*` は jit パイプラインの各段を単独で測ったもの、`jit/first-call` は新しい jit した関数の初回呼び出し全体（trace + emit + compile + load + to-device + invoke + to-host）、`step/full` は SGD の更新込みの1ステップ、`step/jitted-call` は jit した関数の呼び出しだけ（to-device / to-host を含む）。CUDA（iree-cuda / pjrt-cuda）はこのマシンに GPU が無く**未測定**（表からは省いた。`scripts/bench-backends.sh --cuda` は GPU が無いと「未測定」と出す）。
+セルはミリ秒。n > 1 の項目は「中央値 [p10-p90]」（ステップは n = 200、コンパイルの各段は n = 3）。`stage/*` は jit パイプラインの各段を単独で測ったもの、`jit/first-call` は新しい jit した関数の初回呼び出し全体（trace + emit + compile + load + to-device + invoke + to-host）、`stage/backend-compile` は IREE ではコンパイラ（MLIR → vmfb）、PJRT では `PJRT_Client_Compile` + `PJRT_Executable_Serialize`、`stage/backend-load` は IREE では vmfb のロード、PJRT では `PJRT_Executable_DeserializeAndLoad`。`step/full` は SGD の更新込みの1ステップ、`step/jitted-call` は jit した関数の呼び出しだけ（to-device / to-host を含む）。CUDA（iree-cuda / pjrt-cuda）はこのマシンに GPU が無く**未測定**（表からは省いた。`scripts/bench-backends.sh --cuda` は GPU が無いと「未測定」と出す）。
 
 #### 初期化（プロセスにつき1回。ms）
 
@@ -138,8 +139,8 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 
 ### 4.3 読み取れること
 
-- **コンパイル時間は XLA（PJRT）の方が約 6〜10 倍短い**: `stage/backend-compile` は IREE が約 1.0〜1.6 秒、PJRT が約 0.14〜0.2 秒。IREE の `llvm-cpu` は MLIR の変換に加えて LLVM でコードを生成し、実行可能な ELF をリンクするためと考えられる（要因の切り分けまではしていない）。ロード（`backend-load`）は逆に IREE の方が速い（約 0.6 ms 対 4〜7 ms）。初回の `jit` 呼び出し全体は、IREE が約 1.1〜1.6 秒、PJRT が約 0.13〜0.19 秒。
-- **PJRT にはプロセスにつき1回の初期化がある**: プラグインの sha256（約 2.4 秒、fingerprint 用）が支配的で、dlopen とクライアント作成は数十 ms。ディスクキャッシュを使う場合の初回の `backend-fingerprint` で一度だけ払う。
+- **コンパイル時間は XLA（PJRT）の方が約 6〜10 倍短い**: `stage/backend-compile` は IREE が約 1.0〜1.6 秒、PJRT が約 0.14〜0.2 秒。原因は切り分けていない（候補: IREE の既定の最適化パイプラインとフラグ、ELF リンク。XLA:CPU も LLVM で JIT するので「LLVM を使うから」は差の説明にならない）。ロード（`backend-load`）は逆に IREE の方が速い（約 0.6 ms 対 4〜7 ms）。初回の `jit` 呼び出し全体は、IREE が約 1.1〜1.6 秒、PJRT が約 0.13〜0.19 秒。
+- **PJRT にはプロセスにつき1回の初期化がある**: プラグインの sha256（約 2.4 秒、fingerprint 用。**プロセスにつき1回だけのコストで、2回目以降はキャッシュされる**）が支配的で、dlopen とクライアント作成は数十 ms。ディスクキャッシュを使う場合の初回の `backend-fingerprint` で一度だけ払う。
 - **学習ステップは小さいモデルでは同程度、大きいと XLA が速い**: small / medium では `step/full` が IREE 0.5 / 1.8 ms、PJRT 0.26 / 1.7 ms でほぼ同じ（to-device / to-host と SGD の更新といったホスト側の仕事が効く）。large（N1024 H512）では IREE 約 27 ms、PJRT 約 11 ms と XLA が約 2.4 倍速い。IREE の `llvm-cpu` のスレッド・タイリングの設定は既定のまま（nabla は何も設定していない）なので、調整で縮まる可能性はあるが、今回は調べていない。
 - **「どちらが優れている」とは言えない**: 1台の共有マシン、1つのモデル、既定の設定での比較。結論を出すには、コンパイルフラグ（IREE の `--iree-opt-level` など）とスレッド設定を揃えた測り直しが要る。
 
@@ -152,6 +153,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 - **PJRT で `:i1` は未対応**（`unsupported-dtype`）。複数デバイス・replica、CUDA プラグインでの動作も未検証。
 - **GPU が無く未測定**: #12（local/cuda の数値一致）と、§4 の CUDA の計測。GPU のある環境で `scripts/bench-backends.sh --cuda` と `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh` を実行する。
 - **計測のノイズ**: §4.1 のとおり共有マシンでの1回の測定。フラグ・スレッド数を揃えた比較や、定期的な計測は積み残し。
+- **SBCL の GC ロック餓死**: 別スレッドが sleep 無しの tight loop で `(gc :full t)` を回すと main スレッドが進まない（§3.2）。対策は子プロセステストの GC 間の sleep だけで、`src/ffi-support/signals.lisp` のリスク3は残っている。
 - **#68 / #73**: フェーズ1から引き続き（in-process コンパイラのメモリ破壊の根本原因、IREE 上流への報告）。
 
 ## 6. フェーズ3（vmap と制御構造）への引き継ぎ

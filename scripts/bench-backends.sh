@@ -44,7 +44,8 @@ for backend in "${list[@]}"; do
   NABLA_BENCH_BACKEND="$backend" sbcl --noinform --non-interactive \
     --eval '(require :asdf)' \
     --load "${REPO_ROOT}/scripts/bench-backends.lisp" \
-    --eval '(nabla-bench:main)' >> "$out"
+    --eval '(nabla-bench:main)' >> "$out" \
+    || echo "(:kind :result :backend \"$backend\" :config \"-\" :metric \"-\" :status :unmeasured :reason \"measuring process failed\")" >> "$out"
 done
 
 sbcl --noinform --non-interactive \
