@@ -1,0 +1,1 @@
+Fable レビュー対応: 多出力テスト、:i1 接線は常に symbolic zero(instantiate-zero が bit 配列を登録)、nonzero 既定は float のみ、DCE は linearize 側。mutation 26/26。
