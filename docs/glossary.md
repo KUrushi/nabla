@@ -81,7 +81,7 @@ pretty form を出力する。
 : IREE デバイス上の buffer view を包む、JAX の `jax.Array` に相当するクラス（`nabla.iree:device-array`）。実データ（buffer view の foreign pointer）と `aval`（形状と dtype）、そのデバイスへの参照を持つ。生成時に自分のデバイス（`iree_hal_device_t`）を retain するので、呼び出し側がデバイス自身を解放した後でも、生きている device-array から値を読み出せる。
 
 **PJRT**
-: XLA（JAX の標準の実行系）を外部から呼ぶための C API。nabla では IREE の次の候補として、`backend` プロトコルの裏に置く。
+: XLA（JAX の標準の実行系）を外部から呼ぶための C API。nabla では IREE の次の候補として、`backend` プロトコルの裏に置く。バックエンドごとに「プラグイン」（`.so`）があり、`GetPjrtApi` という1つの関数が `PJRT_Api` 構造体（関数ポインタの表。先頭に API の版 major / minor を持つ）を返す。nabla は `third_party/pjrt.lock` で固定した CPU / CUDA のプラグインを `scripts/fetch-pjrt.sh` で取得する（`docs/pjrt-setup.md`）。
 
 **埋め込み C API（embedding API）**
 : IREE がコンパイラ・ランタイムの機能を、別プロセスを起動せずに自分のプロセス内から呼べるように提供している C の関数群。ヘッダは `iree/compiler/embedding_api.h`（コンパイラ）と `iree/runtime/api.h`（ランタイム）。nabla はこれを CFFI で直接 `dlopen` して呼び、`iree-compile` / `iree-run-module` をサブプロセスとして起動しない。

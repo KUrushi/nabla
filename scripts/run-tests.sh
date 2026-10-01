@@ -29,4 +29,5 @@ exec sbcl --non-interactive \
   --eval '(asdf:load-system "nabla/tests")' \
   --eval '(asdf:load-system "nabla/ffi-support/tests")' \
   --eval '(asdf:load-system "nabla/iree/tests")' \
+  --eval '(asdf:load-system "nabla/pjrt/tests")' \
   --eval '(uiop:quit (if (nabla.tests.support:run-tests) 0 1))'
