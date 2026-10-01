@@ -9,7 +9,7 @@
 ;;;; LLVM 初期化（シグナルハンドラの登録）は走らないことを CPU プラグインで
 ;;;; 確かめた。ただし念のため、dlopen（プラグインの静的初期化子が動く）と
 ;;;; GetPjrtApi は with-all-float-traps-masked で包む。クライアント作成など
-;;;; LLVM / XLA を実際に動かす入口は、後続の issue（#85）で
+;;;; LLVM / XLA を実際に動かす入口（PJRT_Client_Create）は、client.lisp で
 ;;;; with-lisp-signal-handlers-preserved も使って包む。
 ;;;;
 ;;;; ヘッダは third_party/pjrt/pjrt_c_api.h。構造体の配置は PJRT_Api の先頭
