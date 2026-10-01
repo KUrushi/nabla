@@ -1,0 +1,1 @@
+jvp-graph は %call-with-fresh-trace 内で eqn ごとに主値を %trace-eqn で再発行しルールを呼ぶ。テスト用プリミティブ(neg/add/reshape/convert/reduce)にも線形な jvp ルールを付け、ランダム graph で検証。期待値は jvp を使わない独立オラクル(定数0の線形部分の eval、f64 は中心差分)。残課題: :i1 出力のゼロ実体化は #80 以降で扱う(docstring に記載)。mutation 10/10 killed。
