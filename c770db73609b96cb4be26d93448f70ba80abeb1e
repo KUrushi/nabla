@@ -1,0 +1,1 @@
+レビュー対応: api 関数名をハッシュ表化、Plugin_Initialize も signal 保護で包む、device-index 範囲外で作成済みクライアントを即 owner-gone、子プロセステストに経過時間ログ、GC 餓死の既知の制限を client.lisp 冒頭に記載。既定スイート EXIT=0 (139003 + 1036 checks)。
