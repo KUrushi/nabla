@@ -1,0 +1,1 @@
+レビュー nits 対応: 参照先コメント修正、reduce を rank2-4、broadcast を dims/サイズ1/rank0 でランダム化（:dims kept→axes が small で kill されることを確認）、bf16/f16 の reduce-max jvp-graph の well-formed テスト、非縮約軸をまたぐ tie の固定例。
