@@ -48,6 +48,9 @@
                (:file "src/walk")
                ;; if を select に、配列レベルの公開 API（issue #32、t2）
                (:file "src/array-api")
+               ;; 自動微分の骨格: symbolic zero とルール種別（issue #77、77a）
+               (:file "src/ad/zero")
+               (:file "src/ad/rules")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -117,6 +120,9 @@
                (:file "tests/array-api-test")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "tests/stablehlo-test")
+               ;; 自動微分の骨格: symbolic zero とルール種別（issue #77、77a）
+               (:file "tests/ad/zero-test")
+               (:file "tests/ad/rules-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）

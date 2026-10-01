@@ -2,20 +2,27 @@
 ;;;;
 ;;;; プリミティブは形状推論（abstract-eval）・StableHLO 出力（emit）・
 ;;;; eager 用の CPU 実装（eager）の3つを束ねた PRIMITIVE 構造体として
-;;;; DEFPRIMITIVE で登録する。jvp / transpose / batch のルールはフェーズ2
-;;;; 以降に、この lambda list を拡張して足す（CLAUDE.md「設計上の約束」）。
+;;;; DEFPRIMITIVE で登録する。jvp / transpose のルールは可変スロットで、
+;;;; DEFPRIMITIVE の任意キー :JVP / :TRANSPOSE か、後から DEF-JVP-RULE /
+;;;; DEF-TRANSPOSE-RULE（src/ad/rules.lisp）で設定する。batch のルールは
+;;;; フェーズ3 以降に足す（CLAUDE.md「設計上の約束」）。
 
 (in-package #:nabla)
 
 (defstruct (primitive (:constructor %make-primitive) (:copier nil) (:predicate primitive-p))
   "1つの演算（プリミティブ）を表す。NAME は :ADD のようなキーワード、
 PARAMS は宣言順に並んだパラメタ名（キーワード）のリスト。ABSTRACT-EVAL /
-EMIT / EAGER の呼び出し規約は DEFPRIMITIVE の docstring を見る。"
+EMIT / EAGER の呼び出し規約は DEFPRIMITIVE の docstring を見る。JVP と
+TRANSPOSE は自動微分のルール（無ければ NIL）で、他のスロットと違って後から
+設定できる。呼び出し規約は src/ad/rules.lisp の DEF-JVP-RULE /
+DEF-TRANSPOSE-RULE を見る。"
   (name nil :type keyword :read-only t)
   (params nil :type list :read-only t)
   (abstract-eval nil :type function :read-only t)
   (emit nil :type (or null function) :read-only t)
-  (eager nil :type (or null function) :read-only t))
+  (eager nil :type (or null function) :read-only t)
+  (jvp nil :type (or null function))
+  (transpose nil :type (or null function)))
 
 (defvar *primitives* (make-hash-table :test 'eq)
   "プリミティブ名（キーワード）から PRIMITIVE への表。DEFPRIMITIVE の
@@ -61,7 +68,7 @@ AVAL のリスト（分からなければ NIL）。"))
     (unless (keywordp k)
       (error "DEFPRIMITIVE ~S: パラメタ ~S はキーワードでなければならない" name k))))
 
-(defmacro defprimitive (name (&rest param-keywords) &key abstract-eval emit eager)
+(defmacro defprimitive (name (&rest param-keywords) &key abstract-eval emit eager jvp transpose)
   "NAME（シンボル）を名前に持つプリミティブを宣言し、
 *PRIMITIVES* に登録する。登録名は (INTERN (SYMBOL-NAME NAME) :KEYWORD)。
 
@@ -82,8 +89,15 @@ PARAM-KEYWORDS はこのプリミティブが受け取るパラメタ名を宣�
   (lambda (arrays in-avals &key <params>) ...) → simple-array
 という形の関数。CPU 上で即時に評価する。
 
+:JVP / :TRANSPOSE は省略でき、自動微分のルール関数（呼び出し規約は
+DEF-JVP-RULE / DEF-TRANSPOSE-RULE の docstring）。省略すると NIL で、後から
+DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。
+
 このマクロは NAME のキーワードを評価値として返す。再評価は登録を
-新しい PRIMITIVE 構造体で置き換える（EQ ではなくなる）。"
+新しい PRIMITIVE 構造体で置き換える（EQ ではなくなる）。ルールは構造体に
+載っているので、DEFPRIMITIVE を再評価すると、DEF-JVP-RULE などで後から
+設定したルールも消える（:JVP / :TRANSPOSE を渡し直すか、ルールの定義を
+再評価する）。"
   (%check-param-keywords name param-keywords)
   (unless abstract-eval
     (error "DEFPRIMITIVE ~S: :ABSTRACT-EVAL は必須" name))
@@ -94,7 +108,9 @@ PARAM-KEYWORDS はこのプリミティブが受け取るパラメタ名を宣�
                           :params ',param-keywords
                           :abstract-eval ,abstract-eval
                           :emit ,emit
-                          :eager ,eager))
+                          :eager ,eager
+                          :jvp ,jvp
+                          :transpose ,transpose))
        ,keyword)))
 
 (defun dtype-mlir-name (dtype)

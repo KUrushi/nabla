@@ -76,6 +76,12 @@
    #:unsupported-form-form
    #:unsupported-form-path
    #:tracing-error
+   ;; 自動微分のコンディション（issue #77、77a）
+   #:autodiff-error
+   #:no-jvp-rule
+   #:no-jvp-rule-name
+   #:no-transpose-rule
+   #:no-transpose-rule-name
    ;; if を select に、配列レベルの公開 API（issue #32、t2）
    #:dot
    #:reshape
