@@ -16,8 +16,7 @@
   （`--iree-input-type=stablehlo --iree-input-demote-f64-to-f32=false
   --iree-hal-target-device=local
   --iree-hal-local-target-device-backends=llvm-cpu
-  --iree-llvmcpu-target-cpu=host --iree-llvmcpu-link-embedded=false`、
-  embedded linker があれば追加）
+  --iree-llvmcpu-target-cpu=host`、embedded linker があれば追加）
 - 確認方法: `nabla.iree::compile-stablehlo` に各フィクスチャを渡し、例外なく
   vmfb（先頭4バイトが ZIP local-file-header `PK\3\4`）が返ることを確認した
   （本 PR の `tests/iree/ops-test.lisp` と同じ経路）
@@ -63,10 +62,17 @@ exponential / log / tanh の f64 版が多項式近似されず（`MathTransform
 の近似・f32 展開は f32 以下の型だけが対象）libm の `exp` / `log` / `tanh`
 の呼び出しとして残る。既定の embedded ELF（`-nostdlib -static`）ではこれが
 リンクできずにコンパイルが失敗する（`iree-lld: error: undefined symbol:
-tanh`）ので、`compile-flags` は `:local` に `--iree-llvmcpu-link-embedded=false`
-も付け、ランタイムが dlopen で読み込む system library を作る。読み込み時に
-プロセスの libm に解決されるので、f64 のこの3つも `jit` できる。代わりに
-コンパイル時にシステムのリンカ（`ld.lld`、無ければ `ld`）が要る。
+tanh`）。そこで `backend-compile` は、StableHLO のテキストに f64 の
+この3つがあるとき（`nabla.iree::%needs-libm-p`）だけ
+`--iree-llvmcpu-link-embedded=false` を付け、ランタイムが dlopen で読み込む
+system library を作る。読み込み時にプロセスの libm に解決されるので、f64 の
+この3つも `jit` できる。代わりにそのモジュールのコンパイルには `ld.lld` が
+要る（IREE は system linker を `-nostdlib -static -shared` で呼び、これを
+共有ライブラリとして扱えるのは `ld.lld` だけ。`ld.bfd` / `ld.gold` では
+失敗する。固定コミットの `iree-lld` は `-flavor` を要求するので使えない）。
+PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えられる。
+それ以外のモジュールは従来どおり固定コミットの `iree-lld` で embedded ELF
+にリンクする。
 
 ## IREE 未対応・要注意の op（代替・備考）
 

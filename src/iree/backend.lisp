@@ -80,7 +80,8 @@ IREE-BACKEND 経由の呼び出しだけをここで包まない）。"
 target、cuda-arch、解決済みのコンパイルフラグ、:local なら CPU の
 model name）を文字列のリストにして返す。COMPILE-FLAGS は毎回呼び直す
 （iree-lld の有無のような、実行するマシンによって動的に変わりうる部分を
-反映するため）。"
+反映するため）。BACKEND-COMPILE が TEXT から決める :system-library は
+含めない（ディスクキャッシュのキーは TEXT も含むので、それで区別される）。"
   (let* ((target (nabla:backend-target backend))
          (cuda-arch (%iree-backend-cuda-arch backend)))
     (list* "nabla-module-cache-v1" "iree" (compiler-revision)
@@ -92,9 +93,13 @@ model name）を文字列のリストにして返す。COMPILE-FLAGS は毎回�
 
 (defmethod nabla:backend-compile ((backend iree-backend) text)
   "TEXT を BACKEND の target / cuda-arch から求めた COMPILE-FLAGS で
-COMPILE-STABLEHLO する。"
-  (compile-stablehlo text :flags (compile-flags (nabla:backend-target backend)
-                                                 :cuda-arch (%iree-backend-cuda-arch backend))))
+COMPILE-STABLEHLO する。:local で TEXT が libm を呼ぶ（%needs-libm-p）ときだけ
+:system-library を立てる。"
+  (let ((target (nabla:backend-target backend)))
+    (compile-stablehlo text :flags (compile-flags target
+                                                  :cuda-arch (%iree-backend-cuda-arch backend)
+                                                  :system-library (and (eq target :local)
+                                                                       (%needs-libm-p text))))))
 
 (defstruct (iree-module (:constructor %make-iree-module (session)))
   "BACKEND-LOAD が返す、IREE-BACKEND にとっての不透明な module。SESSION は

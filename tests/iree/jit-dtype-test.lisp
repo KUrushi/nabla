@@ -54,9 +54,9 @@ IREE は既定で f64 を f32 に落とす（--iree-input-demote-f64-to-f32）�
     "f64 の exp / log / tanh を IREE 上で jit した結果（多値の3つすべて）は、
 eager 実装の結果と allclose :dtype :f64（rtol = atol = 1e-12）で一致する。
 llvm-cpu はこれらの f64 版を多項式近似せず libm の呼び出しとして残すので、
-embedded linker（-nostdlib）ではリンクできない。COMPILE-FLAGS が
---iree-llvmcpu-link-embedded=false で system library（dlopen で読み込む
-共有ライブラリ）を作り、プロセスの libm に解決させることを確かめる。
+embedded linker（-nostdlib）ではリンクできない。BACKEND-COMPILE が
+%needs-libm-p でそれを見つけて system library（dlopen で読み込む共有
+ライブラリ）を作らせ、プロセスの libm に解決させることを確かめる。
 log の引数は定義域内（:positive）に限る。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
