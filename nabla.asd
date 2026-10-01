@@ -53,6 +53,9 @@
                (:file "src/ad/rules")
                ;; graph のインライン化と不要 eqn の削除（issue #77、77b）
                (:file "src/ad/inline")
+               ;; jvp 変換と、要素ごとのプリミティブの jvp ルール（issue #77、77c）
+               (:file "src/ad/jvp")
+               (:file "src/ad/rules-elementwise")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -127,6 +130,8 @@
                ;; 自動微分の骨格: symbolic zero とルール種別（issue #77、77a）
                (:file "tests/ad/zero-test")
                (:file "tests/ad/rules-test")
+               ;; jvp 変換（issue #77、77c）
+               (:file "tests/ad/jvp-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
@@ -206,6 +211,8 @@
                (:file "tests/iree/float-traps-test")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "tests/iree/stablehlo-test")
+               ;; jvp 変換した graph の IREE 実行（issue #77、77c）
+               (:file "tests/iree/jvp-test")
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
                (:file "tests/iree/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
