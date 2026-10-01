@@ -1,0 +1,1 @@
+マージ: nabla.asd（iree/tests 末尾と nabla/pjrt システム群を両方残す）と tests/backend-test.lisp（#99 の src/ 再帰 + #100 の pjrt 検索。pjrt 検査も再帰にして src/iree, ffi-support, pjrt を除外）を手で解消。マージ直後に既定スイート通過（small 139446、medium 1134）。
