@@ -1,0 +1,1 @@
+*primitive-recipe-dtypes* は既に defparameter だったので export するだけで f64 graph を作れた（束縛して使う）。ヘルパーは eval-graph/関数どちらも受ける。mutation は tests/support のため未実施。
