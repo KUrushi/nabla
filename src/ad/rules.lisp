@@ -74,7 +74,8 @@ signal する。"
 ルールは次の規約の関数になる:
   (lambda (primals out tangents &key <params>) ...) → 出力の接線
 PARAM-LAMBDA-LIST はその &key 以降をそのまま書く（例: (primals out tangents
-&key shape dims)。パラメタの無いプリミティブは何も書かない）。呼び出し側は
+&key shape dims)。パラメタの無いプリミティブは何も書かない。&ALLOW-OTHER-KEYS
+は書かない: 知らないパラメタが渡されたらエラーにして気づけるようにする）。呼び出し側は
   (apply rule primals out tangents (eqn-params eqn))
 の形で呼ぶ。
 
@@ -90,8 +91,8 @@ PARAM-LAMBDA-LIST はその &key 以降をそのまま書く（例: (primals out
 接線への exp / log / tanh / max / min / compare / reduce-max は禁止（mul / div
 / dot-general は片側だけが接線）。transpose が通せなくなるため。
 
-ルールはプリミティブ構造体に載っているので、DEFPRIMITIVE を再評価すると
-消える。"
+ルールはプリミティブ構造体に載っているが、DEFPRIMITIVE を再評価しても
+（:JVP を明示しない限り）引き継がれる。"
   `(set-jvp-rule ,(intern (symbol-name name) :keyword)
                  (lambda (,primals ,out ,tangents ,@param-lambda-list)
                    ,@body)))
@@ -116,10 +117,15 @@ PARAM-LAMBDA-LIST は &key 以降。呼び出し側は
                          ,@body)))
 
 (defun make-jvp-from-partials (partials)
-  "偏微分関数のリスト PARTIALS から jvp ルール（DEF-JVP-RULE と同じ規約の
+  "要素ごと（入出力の shape・dtype が同じ）のプリミティブ専用。convert・形状
+演算・縮約・dot は DEF-JVP-RULE で書くこと。
+
+偏微分関数のリスト PARTIALS から jvp ルール（DEF-JVP-RULE と同じ規約の
 関数）を作る。i 番目の偏微分関数は
   (lambda (primals out &key <params>) ...) → 係数のトレーサ
-で、i 番目の入力についての偏微分（出力と同じ shape・dtype の配列）を返す。
+で、i 番目の入力についての偏微分を返す。戻り値はトレーサ・実数・SYMBOLIC-ZERO
+のどれか。rank 0 のトレーサ（や実数）は %T-MUL が接線の shape へ自動で
+ブロードキャストする。SYMBOLIC-ZERO ならその項を飛ばす。
 ルールは、非ゼロの接線 t_i だけについて項 (%T-MUL 係数 t_i) を作り、
 ADD-TANGENTS で足す（ゼロの接線の項は偏微分関数も呼ばない）。全部ゼロなら
 OUT の aval の SYMBOLIC-ZERO を返す。係数は接線について線形にしか使わない
@@ -129,13 +135,14 @@ OUT の aval の SYMBOLIC-ZERO を返す。係数は接線について線形に�
       (loop for partial in partials
             for tangent in tangents
             unless (symbolic-zero-p tangent)
-              do (setf sum (add-tangents
-                            sum
-                            (%t-mul (apply partial primals out params) tangent))))
+              do (let ((coefficient (apply partial primals out params)))
+                   (unless (symbolic-zero-p coefficient)
+                     (setf sum (add-tangents sum (%t-mul coefficient tangent))))))
       sum)))
 
 (defmacro def-jvp-partials (name &rest partials)
-  "NAME のプリミティブの jvp ルールを、入力ごとの偏微分関数 PARTIALS（式。
+  "要素ごとのプリミティブ専用（MAKE-JVP-FROM-PARTIALS 参照）。
+NAME のプリミティブの jvp ルールを、入力ごとの偏微分関数 PARTIALS（式。
 評価すると MAKE-JVP-FROM-PARTIALS が受け取る関数になる）から作って設定する。
 たとえば二項演算 f(a, b) なら (def-jvp-partials mul (lambda (primals out)
 (second primals)) (lambda (primals out) (first primals)))。"

@@ -22,27 +22,37 @@
 (nb:defprimitive %test-ad-prod ()
   :abstract-eval #'%test-ad-same-aval)
 
+(defun %reset-rules (name)
+  "NAME のプリミティブの jvp / transpose スロットを NIL に戻す（各テストが
+自分でフィクスチャを整えるため。順序や再実行に依存させない）。"
+  (let ((prim (nb::find-primitive name)))
+    (setf (nb::primitive-jvp prim) nil
+          (nb::primitive-transpose prim) nil)
+    prim))
+
 (test ad-rules/def-jvp-rule-sets-slot
   "def-jvp-rule は primitive-jvp に関数を入れ、その関数は
 (primals out tangents &key params) の規約で呼べる。"
-  (is (null (nb::primitive-jvp (nb::find-primitive :%test-ad-scale))))
-  (nb::def-jvp-rule %test-ad-scale (primals out tangents &key factor)
-    (list :jvp primals out tangents factor))
-  (let ((rule (nb::primitive-jvp (nb::find-primitive :%test-ad-scale))))
-    (is (functionp rule))
-    (is (equal '(:jvp (p) o (tg) 3)
-               (apply rule '(p) 'o '(tg) '(:factor 3))))))
+  (let ((prim (%reset-rules :%test-ad-scale)))
+    (is (null (nb::primitive-jvp prim)))
+    (nb::def-jvp-rule %test-ad-scale (primals out tangents &key factor)
+      (list :jvp primals out tangents factor))
+    (let ((rule (nb::primitive-jvp prim)))
+      (is (functionp rule))
+      (is (equal '(:jvp (p) o (tg) 3)
+                 (apply rule '(p) 'o '(tg) '(:factor 3)))))))
 
 (test ad-rules/def-transpose-rule-sets-slot
   "def-transpose-rule は primitive-transpose に関数を入れ、その関数は
 (ct invars &key params) の規約で呼べる。jvp スロットには触らない。"
-  (let ((before (nb::primitive-jvp (nb::find-primitive :%test-ad-scale))))
+  (let ((prim (%reset-rules :%test-ad-scale))
+        (jvp (lambda (primals out tangents) (declare (ignore primals out tangents)) nil)))
+    (setf (nb::primitive-jvp prim) jvp)
     (nb::def-transpose-rule %test-ad-scale (ct invars &key factor)
       (list :transpose ct invars factor))
-    (let ((prim (nb::find-primitive :%test-ad-scale)))
-      (is (equal '(:transpose c (i) 5)
-                 (apply (nb::primitive-transpose prim) 'c '(i) '(:factor 5))))
-      (is (eq before (nb::primitive-jvp prim))))))
+    (is (equal '(:transpose c (i) 5)
+               (apply (nb::primitive-transpose prim) 'c '(i) '(:factor 5))))
+    (is (eq jvp (nb::primitive-jvp prim)))))
 
 (test ad-rules/unregistered-name-is-an-error
   "未登録のプリミティブ名への def-jvp-rule / def-transpose-rule は、ルールを
@@ -85,16 +95,27 @@ autodiff-error）を、name つきで signal する。ルールがあればそ�
     (is (eq (nb::primitive-jvp prim) (nb::require-jvp-rule prim)))
     (is (eq (nb::primitive-transpose prim) (nb::require-transpose-rule prim)))))
 
-(test ad-rules/defprimitive-redefinition-drops-rules
-  "defprimitive を再評価すると、後から def-jvp-rule で付けたルールは消える
-（docstring のとおり。再評価したらルールの定義も再評価する）。"
+(test ad-rules/defprimitive-redefinition-keeps-rules
+  "defprimitive を再評価しても、後から付けたルールは引き継がれる。:jvp /
+:transpose を明示すればそちらで上書きする。"
   (nb:defprimitive %test-ad-redefine ()
     :abstract-eval #'%test-ad-same-aval)
-  (nb::def-jvp-rule %test-ad-redefine (primals out tangents) (declare (ignore primals out tangents)) nil)
-  (is (functionp (nb::primitive-jvp (nb::find-primitive :%test-ad-redefine))))
-  (nb:defprimitive %test-ad-redefine ()
-    :abstract-eval #'%test-ad-same-aval)
-  (is (null (nb::primitive-jvp (nb::find-primitive :%test-ad-redefine)))))
+  (%reset-rules :%test-ad-redefine)
+  (nb::def-jvp-rule %test-ad-redefine (primals out tangents) (declare (ignore primals out tangents)) :old-jvp)
+  (nb::def-transpose-rule %test-ad-redefine (ct invars) (declare (ignore ct invars)) :old-transpose)
+  (let ((old-jvp (nb::primitive-jvp (nb::find-primitive :%test-ad-redefine))))
+    (nb:defprimitive %test-ad-redefine ()
+      :abstract-eval #'%test-ad-same-aval)
+    (let ((prim (nb::find-primitive :%test-ad-redefine)))
+      (is (eq old-jvp (nb::primitive-jvp prim)))
+      (is (functionp (nb::primitive-transpose prim))))
+    (let ((new (lambda (primals out tangents) (declare (ignore primals out tangents)) :new)))
+      (nb:defprimitive %test-ad-redefine ()
+        :abstract-eval #'%test-ad-same-aval
+        :jvp new)
+      (let ((prim (nb::find-primitive :%test-ad-redefine)))
+        (is (eq new (nb::primitive-jvp prim)))
+        (is (functionp (nb::primitive-transpose prim)))))))
 
 ;;; --- def-jvp-partials ---
 
@@ -201,3 +222,42 @@ graph を返す。TA-ZERO-P / TB-ZERO-P が真ならその接線は symbolic zer
          (tb (make-array 3 :element-type 'double-float :initial-contents '(2d0 0d0 -1d0))))
     ;; b*ta + a*tb
     (is (equalp #(6d0 5d0 3d0) (nb:eval-graph graph a b ta tb)))))
+
+(test ad-rules/partials-rank0-coefficient-broadcasts
+  "偏微分が rank 0 のトレーサ（や実数）でも、%t-mul が接線の shape へ
+ブロードキャストするので、出力の接線は out と同じ aval を持ち、値は 係数 * 接線。"
+  (let* ((aval (nb:make-aval '(2 3) :f32))
+         (rule (nb::make-jvp-from-partials
+                (list (lambda (primals out)
+                        (declare (ignore primals out))
+                        (nb::%lift-number-to 2.0 :f32 '())))))
+         (graph (nb:trace-to-graph
+                 (nb:with-tracing (a ta) (funcall rule (list a) a (list ta)))
+                 (list aval aval)))
+         (ta (make-array '(2 3) :element-type 'single-float :initial-element 1.5)))
+    (is (equalp aval (nb:var-aval (first (nb:graph-outvars graph)))))
+    (is (allclose (nb:eval-graph graph ta ta)
+                  (make-array '(2 3) :element-type 'single-float :initial-element 3.0)
+                  :dtype :f32))))
+
+(test ad-rules/partials-are-not-called-for-zero-tangents-and-zero-partials-skip
+  "ゼロ接線の入力の偏微分関数は呼ばれない。偏微分が symbolic-zero を返したら
+その項は飛ばす。"
+  (let* ((aval (nb:make-aval '(2) :f32))
+         (zero (nb::make-symbolic-zero aval))
+         (calls (list 0 0))
+         (rule (nb::make-jvp-from-partials
+                (list (lambda (primals out) (declare (ignore out))
+                        (incf (first calls)) (first primals))
+                      (lambda (primals out) (declare (ignore primals))
+                        (incf (second calls)) (nb::make-symbolic-zero (nb::tracer-aval out))))))
+         (result nil)
+         (recorder (lambda (r) (setf result r) nil)))
+    (nb:trace-to-graph
+     (nb:with-tracing (a ta tb)
+       (funcall recorder (funcall rule (list a a) a (list ta zero)))
+       (funcall recorder (funcall rule (list a a) a (list zero tb)))
+       a)
+     (list aval aval aval))
+    (is (equal '(1 1) calls))
+    (is (nb::symbolic-zero-p result))))

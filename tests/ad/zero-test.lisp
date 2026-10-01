@@ -117,3 +117,14 @@ zero + zero は zero を返す。"
                            (allclose result (nb::%t-add a b) :dtype (array-spec-dtype spec))))))
                 :regression-id ad-zero/add-tangents-nonzero-adds
                 :regression-file (regression-path "ad-zero-add-tangents-add"))))
+
+(test ad-zero/add-tangents-rejects-aval-mismatch
+  "aval（shape または dtype）が違う接線どうしの add-tangents は autodiff-error。
+ゼロとの組み合わせでも検査する。"
+  (let ((a (nb:make-aval '(2) :f32)))
+    (dolist (other (list (nb:make-aval '(3) :f32) (nb:make-aval '(2) :f64)))
+      (signals nb:autodiff-error
+        (nb::add-tangents (nb::make-symbolic-zero a) (nb::make-symbolic-zero other)))
+      (signals nb:autodiff-error
+        (nb:trace-to-graph (nb:with-tracing (x) (nb::add-tangents x (nb::make-symbolic-zero other)))
+                           (list a))))))

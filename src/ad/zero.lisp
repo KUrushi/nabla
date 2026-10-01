@@ -37,18 +37,18 @@ TRACER ならそのまま返す（eqn は足さない）。:I1 の aval は
   (etypecase tangent
     (tracer tangent)
     (symbolic-zero
-     (let* ((aval (symbolic-zero-aval tangent))
-            (dtype (aval-dtype aval))
-            (constant (%lift-constant (%scalar-array 0 dtype) (make-aval '() dtype) *current-trace*)))
-       (if (plusp (aval-rank aval))
-           (%trace-eqn :broadcast-in-dim (list constant) :shape (aval-shape aval) :dims '())
-           constant)))))
+     (let ((aval (symbolic-zero-aval tangent)))
+       (%lift-number-to 0 (aval-dtype aval) (aval-shape aval))))))
 
 (defun add-tangents (a b)
   "接線（余接線）A と B（それぞれ TRACER または SYMBOLIC-ZERO）の和を返す。
 片方が SYMBOLIC-ZERO なら、もう片方をそのまま返す（eqn は足さない。両方
-ゼロなら B）。どちらもトレーサなら現在のトレースに :ADD の eqn を足す
+ゼロなら B）。A と B の aval が一致しなければ AUTODIFF-ERROR。どちらもトレーサなら現在のトレースに :ADD の eqn を足す
 （%T-ADD）。jvp ルールの接線の加算と、transpose の余接線の加算が共用する。"
+  (unless (equalp (tangent-aval a) (tangent-aval b))
+    (error 'autodiff-error
+           :format-control "接線の aval が一致しない: ~S と ~S"
+           :format-arguments (list (tangent-aval a) (tangent-aval b))))
   (cond
     ((symbolic-zero-p a) b)
     ((symbolic-zero-p b) a)

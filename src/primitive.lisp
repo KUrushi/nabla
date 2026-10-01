@@ -63,6 +63,13 @@ PRIMITIVE をそのまま返す。"
 検出したときに signal される。NAME はプリミティブ名、IN-AVALS は入力の
 AVAL のリスト（分からなければ NIL）。"))
 
+(defun %existing-rule (name accessor)
+  "NAME の既に登録されている PRIMITIVE から ACCESSOR（PRIMITIVE-JVP /
+PRIMITIVE-TRANSPOSE）でルールを取り出す。未登録なら NIL。DEFPRIMITIVE の
+再評価がルールを引き継ぐために使う。"
+  (let ((old (find-primitive name)))
+    (and old (funcall accessor old))))
+
 (defun %check-param-keywords (name param-keywords)
   (dolist (k param-keywords)
     (unless (keywordp k)
@@ -94,10 +101,11 @@ DEF-JVP-RULE / DEF-TRANSPOSE-RULE の docstring）。省略すると NIL で、�
 DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。
 
 このマクロは NAME のキーワードを評価値として返す。再評価は登録を
-新しい PRIMITIVE 構造体で置き換える（EQ ではなくなる）。ルールは構造体に
-載っているので、DEFPRIMITIVE を再評価すると、DEF-JVP-RULE などで後から
-設定したルールも消える（:JVP / :TRANSPOSE を渡し直すか、ルールの定義を
-再評価する）。"
+新しい PRIMITIVE 構造体で置き換える（EQ ではなくなる）。ただし jvp /
+transpose のルールは引き継ぐ: :JVP / :TRANSPOSE を明示しなければ、古い
+PRIMITIVE のルール（DEF-JVP-RULE などで後から設定したものを含む）がそのまま
+新しい PRIMITIVE に載る。明示すればそちらで上書きする（NIL で消すことは
+できない）。"
   (%check-param-keywords name param-keywords)
   (unless abstract-eval
     (error "DEFPRIMITIVE ~S: :ABSTRACT-EVAL は必須" name))
@@ -109,8 +117,8 @@ DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。
                           :abstract-eval ,abstract-eval
                           :emit ,emit
                           :eager ,eager
-                          :jvp ,jvp
-                          :transpose ,transpose))
+                          :jvp (or ,jvp (%existing-rule ,keyword #'primitive-jvp))
+                          :transpose (or ,transpose (%existing-rule ,keyword #'primitive-transpose))))
        ,keyword)))
 
 (defun dtype-mlir-name (dtype)
