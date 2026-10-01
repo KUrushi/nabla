@@ -1,0 +1,1 @@
+レビュー対応: テストを順序非依存化(%reset-rules)、defprimitive 再評価でルール引き継ぎ、instantiate-zero を %lift-number-to に、add-tangents に aval 検査、partials docstring/rank0・symbolic-zero 偏微分・呼び出し回数テスト、core iree 禁止テストを再帰化(src/primitives はコメントに IREE を含むため除外)。mutation 18/19、生存は defprimitive のマクロ展開テンプレートの register-primitive 削除(既存テストは再展開しない)。
