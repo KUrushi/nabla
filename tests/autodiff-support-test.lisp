@@ -114,6 +114,38 @@
                 :regression-id support/autodiff/inner-product-is-bilinear
                 :regression-file (regression-path "autodiff-inner-product-bilinear"))))
 
+(test support/autodiff/central-difference-multiple-outputs
+  "多出力 fn = (x*x, 3x): jvp は (2x·v, 3v)、余接線 (u1 u2) の勾配は 2x·u1 + 3·u2。"
+  (let* ((x (make-array 3 :element-type 'double-float :initial-contents '(0.5d0 -1d0 2d0)))
+         (v (make-array 3 :element-type 'double-float :initial-contents '(1d0 2d0 -3d0)))
+         (u1 (make-array 3 :element-type 'double-float :initial-contents '(0.3d0 -0.7d0 1.1d0)))
+         (u2 (make-array 3 :element-type 'double-float :initial-contents '(2d0 0.25d0 -1d0)))
+         (fn (lambda (x)
+               (let ((sq (%f64-array-like '(3) 0d0))
+                     (tr (%f64-array-like '(3) 0d0)))
+                 (dotimes (i 3)
+                   (setf (aref sq i) (* (aref x i) (aref x i))
+                         (aref tr i) (* 3 (aref x i))))
+                 (values sq tr))))
+         (jvps (central-difference-jvp fn (list x) (list v)))
+         (grad (first (central-difference-gradient fn (list x) :cotangents (list u1 u2))))
+         (expected-grad (%f64-array-like '(3) 0d0))
+         (expected-1 (%f64-array-like '(3) 0d0))
+         (expected-2 (%f64-array-like '(3) 0d0)))
+    (dotimes (i 3)
+      (setf (aref expected-1 i) (* 2 (aref x i) (aref v i))
+            (aref expected-2 i) (* 3 (aref v i))
+            (aref expected-grad i) (+ (* 2 (aref x i) (aref u1 i)) (* 3 (aref u2 i)))))
+    (is (= 2 (length jvps)))
+    (is (allclose (first jvps) expected-1 :rtol *autodiff-rtol* :atol *autodiff-atol*))
+    (is (allclose (second jvps) expected-2 :rtol *autodiff-rtol* :atol *autodiff-atol*))
+    (is (allclose grad expected-grad :rtol *autodiff-rtol* :atol *autodiff-atol*))))
+
+(test support/autodiff/inner-product-accepts-f32
+  "single-float の配列も f64 で累積する: <(1 2), (3 4)> = 11。"
+  (is (= 11d0 (inner-product (make-array 2 :element-type 'single-float :initial-contents '(1f0 2f0))
+                             (make-array 2 :element-type 'single-float :initial-contents '(3f0 4f0))))))
+
 (test support/autodiff/inner-product-rejects-shape-mismatch
   "形が違う配列の内積はエラー。"
   (signals error (inner-product (%f64-array-like '(2) 1d0) (%f64-array-like '(3) 1d0))))
@@ -126,7 +158,21 @@
     (is (eq (array-element-type a) 'double-float))
     (is (equalp a (random-tangent aval :seed 7)))
     (is (equalp a (random-cotangent aval :seed 7)))
-    (is (not (equalp a (random-tangent aval :seed 8))))))
+    (is (not (equalp a (random-tangent aval :seed 8))))
+    ;; seed の既定値は 0、dtype を渡すとその element-type になる
+    (is (equalp (random-tangent aval) (random-tangent aval :seed 0)))
+    (is (equalp (random-cotangent aval) (random-cotangent aval :seed 0)))
+    (is (eq (array-element-type (random-tangent aval :dtype :f32)) 'single-float))
+    (is (eq (array-element-type (random-cotangent aval :dtype :f32)) 'single-float))))
+
+(test support/autodiff/central-difference-rejects-non-f64
+  "f64 でない primal / tangent は、黙って丸めずにエラーにする。"
+  (let ((f32 (make-array 2 :element-type 'single-float :initial-element 1f0))
+        (f64 (%f64-array-like '(2) 1d0))
+        (id (lambda (x) x)))
+    (signals error (central-difference-jvp id (list f32) (list f64)))
+    (signals error (central-difference-jvp id (list f64) (list f32)))
+    (signals error (central-difference-gradient id (list f32)))))
 
 (test support/autodiff/f64-recipe-graphs-are-valid
   "*PRIMITIVE-RECIPE-DTYPES* を '(:f64) に束縛すると、f64 だけのランダムな graph を
@@ -135,14 +181,20 @@
     (is (check-it (generator (primitive-graph-recipe :max-ops 4))
                   (lambda (recipe)
                     (let* ((graph (build-primitive-graph recipe))
-                           (args (mapcar (lambda (v)
+                           (args (mapcar (lambda (v i)
                                            (make-random-array
                                             (make-array-spec (nb:aval-shape (nb:var-aval v)) :f64)
-                                            :seed 1))
-                                         (nb:graph-invars graph))))
+                                            :seed (+ 1 i)))
+                                         (nb:graph-invars graph)
+                                         (loop for i below (length (nb:graph-invars graph))
+                                               collect i))))
                       (and (nb::check-graph graph)
                            (every (lambda (v) (eq (nb:aval-dtype (nb:var-aval v)) :f64))
                                   (append (nb:graph-invars graph) (nb:graph-outvars graph)))
+                           ;; compare の pred（:i1）以外の eqn の出力は全て :f64
+                           (every (lambda (v) (member (nb:aval-dtype (nb:var-aval v)) '(:f64 :i1)))
+                                  (mapcan (lambda (e) (copy-list (nb:eqn-outvars e)))
+                                          (nb:graph-eqns graph)))
                            (progn (apply #'nb:eval-graph graph args) t))))
                   :regression-id support/autodiff/f64-recipe-graphs-are-valid
                   :regression-file (regression-path "autodiff-f64-recipe-graphs")))))

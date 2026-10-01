@@ -18,9 +18,14 @@
   "中心差分の既定の刻み幅 h。
 
 f64 の機械イプシロンは約 2.2e-16。中心差分 (f(x+h) - f(x-h)) / 2h の
-誤差は、打ち切り誤差 O(h^2 f''') と丸め誤差 O(eps |f| / h) の和で、
-h = 1e-6 のとき前者は約 1e-12 · f'''、後者は約 1e-10 · |f| になり、
-どちらも rtol 1e-4 より十分小さい。h を 1e-8 まで小さくすると丸め誤差が
+誤差は、打ち切り誤差 O(h^2 f''') と丸め誤差 O(eps |f| / h)（|f| は
+関数値の大きさに比例する、相対的な項）の和で、h = 1e-6 のとき前者は
+約 1e-12 · f'''、後者は約 1e-10 · |f| になり、どちらも rtol 1e-4 より
+十分小さい。前提: 入力は概ね [-1, 1) の乱数、|f| が高々 1e3 程度。そうで
+ないと f' がほぼ 0 の点で、丸め誤差が atol 1e-6 を超えうる。exp を何段も
+連ねると値が inf になり、差分が NaN になる。f64 のランダムな graph
+（*PRIMITIVE-RECIPE-DTYPES*）で使う後続のテストは、:max-ops を小さく
+抑えるか exp の連鎖を避けること。h を 1e-8 まで小さくすると丸め誤差が
 1e-8 付近まで膨らみ、1e-3 まで大きくすると打ち切り誤差が 1e-6 付近まで
 膨らむ。1e-6 はその中間の安全な値。")
 
@@ -81,7 +86,8 @@ H の既定値と許容誤差の根拠は *CENTRAL-DIFFERENCE-STEP* /
 
 COTANGENTS は FN の出力ごとの f64 配列のリスト。省略すると全て 1
 （FN がスカラーを返すなら、これが通常の勾配になる）。入力 i の要素 j の
-結果は <COTANGENTS, d FN / d x_ij>。FN の呼び出しは入力の総要素数の2倍。"
+結果は <COTANGENTS, d FN / d x_ij>。FN の呼び出しは、入力の総要素数を N として 2N 回（COTANGENTS を省略
+すると出力の形を知るために 1 回増えて 2N+1 回）。"
   (mapc (lambda (a) (%require-f64-array a "primal")) primals)
   (let ((cotangents (or cotangents
                         (mapcar (lambda (out)
@@ -113,14 +119,15 @@ rank 0 の配列は要素1つの積。"
       (incf sum (* (coerce (row-major-aref a i) 'double-float)
                    (coerce (row-major-aref b i) 'double-float))))))
 
-(defun random-tangent (aval &key (seed 0))
+(defun random-tangent (aval &key (seed 0) (dtype :f64))
   "AVAL（NB:AVAL。shape だけを使う）と同じ形の、決定的な f64 の乱数配列
 （各要素は概ね [-1, 1)）を返す。SEED が同じなら同じ配列になる。
-jvp に渡す接線 v に使う。AVAL の dtype に関わらず f64 を返すのは、
-中心差分（f64）との比較に使うため。"
-  (make-random-array (make-array-spec (nb:aval-shape aval) :f64) :seed seed))
+jvp に渡す接線 v に使う。DTYPE の既定が :f64（AVAL の dtype には
+従わない）なのは、中心差分（f64）との比較に使うため。f32 などの
+自動微分の結果を作りたいときだけ DTYPE を渡す。"
+  (make-random-array (make-array-spec (nb:aval-shape aval) dtype) :seed seed))
 
-(defun random-cotangent (aval &key (seed 0))
+(defun random-cotangent (aval &key (seed 0) (dtype :f64))
   "vjp に渡す余接線 u を作る。出力の AVAL と同じ形の f64 乱数配列で、
 RANDOM-TANGENT と同じ分布（接線と余接線を区別して読めるようにした別名）。"
-  (random-tangent aval :seed seed))
+  (random-tangent aval :seed seed :dtype dtype))
