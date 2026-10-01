@@ -1,0 +1,1 @@
+inline-graph/dce-graph を src/ad/inline.lisp に追加。変異テスト初回 13/17 で、(1) 入口の *current-trace* 検査 (2) 入口の trace 所属検査（eqn 無しだと出口の %outvar-of が代わりに signal するため同値に見えた）(3) equalp→equal（aval の EQ 比較に退化）(4) trace-to-graph の個数検査（既存テストの穴）が生存。テストを足して 17/17。回帰ファイル（空の自動生成物）はコミットしない。残課題: 77c/jvp-graph は inline-graph/%call-with-fresh-trace を使う。
