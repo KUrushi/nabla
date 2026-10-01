@@ -66,6 +66,10 @@ tools/mutate/run.sh
 tools/mutate/run.sh src/core/foo.lisp:10-40           # ファイル・行範囲を指定する
 tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
 
+# IREE (local) と PJRT (XLA CPU) で 2層 MLP のコンパイル時間と学習ステップ時間を測る
+# （issue #89。結果と測定条件は docs/phase2-report.md。--cuda で CUDA も、GPU が無ければ「未測定」）
+scripts/bench-backends.sh --configs small --steps 50 --reps 1   # 小さな設定。引数なしで small,medium,large
+
 # README の使用例（backend プロトコル経由で StableHLO を実行する）
 export CL_SOURCE_REGISTRY="$PWD/:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}//:"
 sbcl --non-interactive --load examples/add.lisp

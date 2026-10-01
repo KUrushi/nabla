@@ -133,6 +133,8 @@
                (:file "tests/trace-test")
                ;; if を select に、配列レベルの公開 API（issue #32、t2）
                (:file "tests/trace-if-test")
+               ;; ベンチマークスクリプトの出力の読み書き（issue #89）
+               (:file "tests/bench-test")
                (:file "tests/array-api-test")
                ;; graph のインライン化と不要 eqn の削除（issue #77、77b）
                (:file "tests/ad/inline-test")
@@ -266,7 +268,9 @@
                ;; (jit (grad f)) の IREE 実行（issue #86）
                (:file "tests/iree/grad-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
-               (:file "tests/iree/mlp-train-test")))
+               (:file "tests/iree/mlp-train-test")
+               ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
+               (:file "tests/iree/bench-test")))
 
 (defsystem "nabla/pjrt"
   :description "PJRT 連携（プラグインの .so を dlopen し、クライアント・デバイス・device-array を扱う。コンパイルと実行は後続の issue）"
@@ -292,4 +296,6 @@
                (:file "tests/pjrt/ffi-test")
                (:file "tests/pjrt/backend-test")
                ;; コンパイル・ロード・実行、jit、fingerprint（issue #87）
-               (:file "tests/pjrt/executable-test")))
+               (:file "tests/pjrt/executable-test")
+               ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
+               (:file "tests/pjrt/bench-test")))
