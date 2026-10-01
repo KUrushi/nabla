@@ -1,0 +1,1 @@
+77a (rebased onto #76 branch; 旧コミットの作業ログは要約): ルールスロット+symbolic zero+レビュー対応(aval 検査、ルール引き継ぎ、order 非依存テスト、core iree 禁止テストの再帰化と primitives コメントの実装名除去)。mutation 18/19(生存は defprimitive テンプレートの register-primitive 削除)。small+medium 全通過。
