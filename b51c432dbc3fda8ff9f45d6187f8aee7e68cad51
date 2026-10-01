@@ -1,0 +1,1 @@
+Fable レビュー対応: 回帰ファイルをコミット、outvars==1 の assert、端の形の固定例、入れ子トレースのテスト、*current-trace* docstring 修正。
