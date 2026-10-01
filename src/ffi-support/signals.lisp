@@ -36,7 +36,7 @@
 ;;;;       シグナルは送られない。
 ;;;;
 ;;;; 個々のライブラリ固有の登録手順（何を呼べば登録が起きるか）と、その
-;;;; 根拠は各ライブラリのシステムに置く（IREE なら src/iree/signals.lisp）。
+;;;; 根拠は各ライブラリのシステムに置く（例: src/ 以下の各ライブラリのシステムの signals.lisp）。
 ;;;;
 ;;;; %call-with-world-stopped を使うときに残る課題（許容している、または
 ;;;; 解決していないリスク）:
@@ -98,7 +98,7 @@ mask=空・flags=0 になり、少なくとも復元先が壊れたバイト列�
   "%save-signal-dispositions で BUFFER に保存した処分をすべて書き戻し、
 書き戻しに失敗したシグナル番号のリスト（昇順、通常は空）を返す。
 
-ここでは warn しない: %register-llvm-signal-handlers はこれを
+ここでは warn しない: 呼び出し側はこれを
 %call-with-world-stopped の THUNK（世界が止まっている間）から呼ぶことが
 あり、warn は Lisp のロック（*standard-output* のストリームロックなど）を
 取りうるので、そこで呼ぶとデッドロックしうる。失敗を知らせたい呼び出し側は
@@ -116,20 +116,20 @@ mask=空・flags=0 になり、少なくとも復元先が壊れたバイト列�
 
 (defun %warn-on-failed-signal-restore (failed)
   "FAILED（%restore-signal-dispositions の戻り値）が空でなければ、まとめて
-1回 warn する。書き戻しに失敗したまま黙っていると、IREE / LLVM 呼び出し前の
+1回 warn する。書き戻しに失敗したまま黙っていると、外部ライブラリ（LLVM など）の呼び出し前の
 SBCL のシグナルハンドラに戻せていないことに誰も気づけない
 （sigaction(2) 自体の呼び出し失敗は稀だが、*skipped-signals* 以外で起きたら
 偶然ではないはずなので知らせる価値がある）。世界を止めている間には
 絶対に呼ばないこと（%restore-signal-dispositions の docstring 参照）。"
   (when failed
     (warn "sigaction によるシグナル処分の復元が ~D 個のシグナルで失敗した ~
-（番号: ~{~D~^ ~}）。IREE / LLVM を呼ぶ前の SBCL のシグナルハンドラに ~
+（番号: ~{~D~^ ~}）。外部ライブラリ（LLVM など）を呼ぶ前の SBCL のシグナルハンドラに ~
 戻せていない可能性がある"
           (length failed) failed)))
 
 (defmacro with-lisp-signal-handlers-preserved (&body body)
   "BODY を実行し、その前後でプロセスのシグナルハンドラが変わっていたら
-元に戻す。IREE コンパイラ（LLVM）を呼ぶすべての公開関数の本体をこれで
+元に戻す。シグナルハンドラを書き換えうる外部ライブラリ（LLVM など）を呼ぶすべての公開関数の本体をこれで
 包む（ファイル冒頭のコメント参照）。"
   (let ((buffer (gensym "SIGACTIONS")))
     `(cffi:with-foreign-object (,buffer :uint8 (* +nsig+ +sigaction-size+))
@@ -139,7 +139,7 @@ SBCL のシグナルハンドラに戻せていないことに誰も気づけな
 
 (defun %signal-handler-address (signo)
   "SIGNO の現在のハンドラ（sa_handler）のアドレスを整数で返す。テストが
-「IREE を呼んでも SBCL のハンドラが変わらないこと」を確かめるのに使う。"
+「外部ライブラリを呼んでも SBCL のハンドラが変わらないこと」を確かめるのに使う。"
   (cffi:with-foreign-object (buffer :uint8 +sigaction-size+)
     (cffi:foreign-funcall "sigaction" :int signo :pointer (cffi:null-pointer) :pointer buffer :int)
     (cffi:mem-ref buffer :uint64 0)))

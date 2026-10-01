@@ -70,6 +70,7 @@
                (:file "tests/support/reference")
                (:file "tests/support/fake-backend")
                (:file "tests/support/temporary-directory")
+               (:file "tests/support/child-sbcl")
                (:file "tests/support/regression")
                ;; StableHLO emitter の medium PBT が使うレシピ生成器（issue #33、s1）
                (:file "tests/support/primitive-recipes")
@@ -130,8 +131,6 @@
   :description "IREE 連携（コンパイラとランタイムの埋め込み C API のバインディング）"
   :depends-on ("nabla" "nabla/ffi-support" "cffi" "cffi-libffi" "trivial-garbage")
   :components ((:file "src/iree/package")
-               ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
-               (:file "src/iree/float-traps")
                (:file "src/iree/conditions")
                (:file "src/iree/compiler-ffi")
                (:file "src/iree/signals")

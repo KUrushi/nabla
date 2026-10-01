@@ -9,10 +9,10 @@
 (in-package #:nabla.ffi-support.tests)
 
 (test (ffi-support-loads-without-iree :suite :nabla.medium)
-  "真っさらな子 SBCL で nabla/ffi-support だけをロードしても nabla/iree は
-ロードされず、マクロが使える。（このプロセスには nabla/iree/tests が
-nabla/iree をロード済みのことがあるので、子プロセスで確かめる。環境変数
-CL_SOURCE_REGISTRY は run-program が親から引き継ぐ。）"
+  "真っさらな子 SBCL で nabla/ffi-support だけをロードしても、IREE の
+パッケージ（NABLA.IREE）は作られず、マクロが使える。（このプロセスには
+nabla/iree/tests が nabla/iree をロード済みのことがあるので、子プロセスで
+確かめる。環境は %child-source-registry などで明示的に組み立てる。）"
   (let* ((output (make-string-output-stream))
          (process
            (sb-ext:run-program
@@ -20,15 +20,19 @@ CL_SOURCE_REGISTRY は run-program が親から引き継ぐ。）"
             (list "--non-interactive" "--disable-debugger"
                   "--eval" "(require :asdf)"
                   "--eval" "(asdf:load-system \"nabla/ffi-support\")"
-                  "--eval" "(format t \"IREE-LOADED=~A MACRO=~A~%\"
+                  "--eval" "(format t \"IREE-PACKAGE=~A IREE-LOADED=~A MACRO=~A~%\"
+                              (and (find-package \"NABLA.IREE\") t)
                               (asdf:component-loaded-p \"nabla/iree\")
                               (nabla.ffi-support:with-all-float-traps-masked
                                 (nabla.ffi-support:with-lisp-signal-handlers-preserved
                                   :ok)))")
-            :search t :output output :error output))
+            :search t :output output :error output
+            :environment (append (%forward-env-vars *child-sbcl-forwarded-env-vars*)
+                                 (list (format nil "CL_SOURCE_REGISTRY=~A"
+                                               (%child-source-registry))))))
          (text (get-output-stream-string output)))
     (is (eql 0 (sb-ext:process-exit-code process)) "~A" text)
-    (is (search "IREE-LOADED=NIL MACRO=OK" text) "~A" text)))
+    (is (search "IREE-PACKAGE=NIL IREE-LOADED=NIL MACRO=OK" text) "~A" text)))
 
 (defun %opaque (x)
   "コンパイラの定数畳み込みを避けるための恒等関数。"

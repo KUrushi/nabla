@@ -33,7 +33,7 @@ pointer。解放は行わない（プロセスの寿命まで生きる。設計�
 (defun %create-instance ()
   ;; issue #53: instance の生成がドライバの実装によっては（将来的に）
   ;; スレッドを作りうるので、他の生成点と同じく呼び出しスレッドを
-  ;; with-all-float-traps-masked（float-traps.lisp）で包んでおく。
+  ;; with-all-float-traps-masked（docs/float-traps-experiments.md）で包んでおく。
   (with-all-float-traps-masked
     (cffi:with-foreign-object (options '(:struct %runtime-instance-options-t))
       (%runtime-instance-options-initialize options)
@@ -153,7 +153,7 @@ signal される。
 マスクせずに作ると、レーン数の倍数でない形状に対するベクトル化された
 カーネル（例 stablehlo.divide のパディングレーン）が division-by-zero
 などのトラップを起こし、SIGFPE で SBCL プロセスごと落ちる（issue #31 p1
-レビュー）。この関数を WITH-ALL-FLOAT-TRAPS-MASKED（float-traps.lisp、
+レビュー）。この関数を WITH-ALL-FLOAT-TRAPS-MASKED（src/ffi-support/float-traps.lisp、
 issue #53 でトラップの種類を SBCL（x86-64）が制御できる5種類全部に広げた）で包み、
 生成時点のワーカースレッドをマスク済みの状態にする（INVOKE 側だけを
 マスクしても、すでに未マスクの状態で作られたワーカースレッドには効かない
@@ -253,7 +253,7 @@ release-device する。"
 （iree_runtime_session_create_with_device）。
 
 session の作成はモジュールをロードする前段なので、この時点ではまだ
-カーネルは走らない。それでも issue #53 の教訓（float-traps.lisp 冒頭）
+カーネルは走らない。それでも issue #53 の教訓（docs/float-traps-experiments.md）
 どおり、実装によっては session 作成時にもスレッドが生じうるため、他の
 生成点と同じく WITH-ALL-FLOAT-TRAPS-MASKED で包む（多重防御）。"
   (with-all-float-traps-masked
@@ -311,7 +311,7 @@ session.h:150-164 の doc コメントのとおり、失敗時も含めてこの
 
 モジュールの追加（実行可能コードのロード）はここで起き、ドライバによっては
 ここでカーネル実行に使うワーカースレッドを実際に生成・起動する
-（float-traps.lisp 冒頭のコメント参照）。そのため本体全体を
+（docs/float-traps-experiments.md参照）。そのため本体全体を
 WITH-ALL-FLOAT-TRAPS-MASKED で包む。"
   (check-type bytes (simple-array (unsigned-byte 8) (*)))
   (with-all-float-traps-masked

@@ -521,7 +521,8 @@ CPU と GPU では `matmul`（`dot_general` の内積）や `reduce_sum` の総�
   SIGUSR2 を上書きすることが根本原因だった（詳しい仕組みは
   `src/iree/signals.lisp` 冒頭のコメント）。`src/iree/signals.lisp` の
   `%register-llvm-signal-handlers`（LLVM の登録を、他の全 Lisp スレッドを
-  止めた制御された1点で済ませる）と `with-lisp-signal-handlers-preserved`
+  止めた制御された1点で済ませる。`%call-with-world-stopped` は
+  `src/ffi-support/signals.lisp`）と `with-lisp-signal-handlers-preserved`（`nabla/ffi-support`）
   （IREE を呼ぶ公開関数の本体を包み、ハンドラを元に戻す）で修正済み。
   `nabla.asd` で `finalizer-test` を device/session を大量に作るテストより
   前に置いているのは、この修正より前に発生頻度を下げるために採った緩和策の

@@ -1,6 +1,6 @@
 ;;;; 外部ライブラリのワーカースレッド・コンパイラ呼び出しから見える
 ;;;; 浮動小数点例外トラップ（MXCSR）を、常にすべてマスクしておくための
-;;;; 共通マクロ（issue #53、#79 で nabla/iree から移動）。
+;;;; 共通マクロ（issue #53、#79 で FFI 連携の層から移動）。
 ;;;;
 ;;;; 背景: SBCL は既定で :overflow :invalid :divide-by-zero の3つのトラップを
 ;;;; 有効にしている（docs/glossary.md の「float trap」参照）。
@@ -18,8 +18,8 @@
 ;;;; 瞬間）と、コンパイル中に内部のスレッドを作るライブラリ呼び出しを、
 ;;;; このマクロで包む。
 ;;;;
-;;;; IREE での実験の記録（再現手順・経路の詳細）は src/iree/float-traps.lisp
-;;;; のコメントにある。
+;;;; 実験の記録（再現手順・経路の詳細）は docs/float-traps-experiments.md
+;;;; にある。
 ;;;;
 ;;;; マスクするトラップの種類: SBCL 2.2.9.debian（x86-64）が
 ;;;; SB-INT:WITH-FLOAT-TRAPS-MASKED で制御できる5種類すべて

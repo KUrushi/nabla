@@ -122,11 +122,14 @@ DEPENDS-ON には (:REQUIRE \"sb-cltl2\") のような文字列でないエン�
                     :test #'string-equal))))
 
 (test (backend/core-sources/do-not-mention-iree :suite :nabla.medium)
-  "src/*.lisp（src/iree/ 以外、非再帰）と nabla.asd の \"nabla\" defsystem
+  "src/*.lisp と src/ffi-support/*.lisp（src/iree/ 以外、非再帰）と nabla.asd の \"nabla\" defsystem
 フォームには、大文字小文字を問わず \"iree\" という文字列が一度も現れない
 （core は実行系の実装を知らない、という issue #9 の設計の約束）。"
   (let ((offending nil))
-    (dolist (path (directory (merge-pathnames "*.lisp" (asdf:system-relative-pathname "nabla" "src/"))))
+    (dolist (path (append (directory (merge-pathnames "*.lisp" (asdf:system-relative-pathname "nabla" "src/")))
+                          ;; nabla/ffi-support も IREE の名前を知らない（issue #79。
+                          ;; IREE と将来の PJRT の両方から使うため）。
+                          (directory (merge-pathnames "*.lisp" (asdf:system-relative-pathname "nabla" "src/ffi-support/")))))
       (with-open-file (stream path :direction :input)
         (let ((text (make-string (file-length stream))))
           (let ((count (read-sequence text stream)))
