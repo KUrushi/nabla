@@ -236,3 +236,22 @@ ARRAYS は入力の主値 ++ 出力の余接線。"
                                '(:shape (3 2) :dims (1 0))
                                (list (%f64 '(2 3) '(0d0 0d0 0d0) '(0d0 0d0 0d0))
                                      (%f64 '(3 2) '(1d0 2d0) '(3d0 4d0) '(5d0 6d0)))))))
+
+(test transpose-rules/select-with-linear-pred-signals-autodiff-error
+  "select の pred は既知の主値でなければならない。pred が線形入力の graph の転置は autodiff-error。"
+  (let* ((p (nb::make-var (nb:make-aval '(2) :i1)))
+         (a (nb::make-var (nb:make-aval '(2) :f64)))
+         (b (nb::make-var (nb:make-aval '(2) :f64)))
+         (eqn (nb::make-eqn :select (list p a b)))
+         (graph (nb::make-graph (list p a b) (list eqn) (nb:eqn-outvars eqn) '())))
+    (signals nb:autodiff-error (nb::transpose-graph graph 0))))
+
+(test transpose-rules/broadcast-in-dim-adds-only-the-needed-eqns
+  "broadcast-in-dim の転置は、必要な eqn だけを足す: 増えた軸だけなら reduce-sum だけ
+（余計な reshape / transpose を足さない）。"
+  (let* ((x (nb::make-var (nb:make-aval '(3) :f64)))
+         (eqn (nb::make-eqn :broadcast-in-dim (list x) :shape '(2 3) :dims '(1)))
+         (graph (nb::make-graph (list x) (list eqn) (nb:eqn-outvars eqn) '()))
+         (transposed (nb::transpose-graph graph 0)))
+    (is (equal '(:reduce-sum)
+               (mapcar (lambda (e) (nb:primitive-name (nb:eqn-prim e))) (nb:graph-eqns transposed))))))
