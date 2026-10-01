@@ -1,0 +1,1 @@
+学習ステップは examples/mlp.lisp の make-mlp-train-step。with-tracing は multiple-value-bind を扱えないので、value-and-grad の (値 勾配リスト) を多値に直す普通の関数 value-and-grads-values を切り出した。bf16 は f32 のみ（SGD の dtype 丸めは検証対象でないため）。パラメータの許容誤差は rtol 1e-4（XLA と IREE の超越関数・総和順の差がステップで蓄積）。変更にプリミティブ・ルールは無いので mutation は未実施。PBT は seed を変えて80ステップで損失が半分未満、jit は1回だけコンパイル。
