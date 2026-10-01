@@ -54,13 +54,6 @@
            (list nil (nb::%trace-eqn :%iree-vjp-mul (list ct a))))
           (t (error 'nb:autodiff-error :format-control "%iree-vjp-mul は片側だけが線形のときだけ転置できる")))))
 
-;; 接線の足し算は実プリミティブの add になる。その transpose ルールは #83 が書く。
-;; それまで、無ければこのテストの中でだけ補う。
-(unless (nb::primitive-transpose (nb::find-primitive :add))
-  (nb::def-transpose-rule add (ct invars)
-    (declare (ignore invars))
-    (list ct ct)))
-
 (defun %vjp-iree-matches-eval-graph-p (backend graph arrays)
   "GRAPH（f32）を ARRAYS で IREE 実行した全出力が eval-graph の結果と一致するか。"
   (let* ((module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph))))

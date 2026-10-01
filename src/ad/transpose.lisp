@@ -30,13 +30,15 @@ REQUIRE-TRANSPOSE-RULE のルールを
 で呼ぶ（無ければ NO-TRANSPOSE-RULE）。INVARS は既知の入力なら新しい graph の中の
 トレーサ、線形な入力なら UNDEFINED-PRIMAL。ルールが返した余接線は ADD-TANGENTS で
 入力ごとに足し合わせる（同じ var が複数回使われても、複数の出力に使われても和になる）。
-線形な入力に依存しない出力（定数など）の余接線は捨てる。"
+線形な入力に依存しない出力（定数など）の余接線は捨てる。余接線が SYMBOLIC-ZERO の
+var の eqn も飛ばす。使われない定数は持ち上げたあと DCE-GRAPH で落とす。"
   (let* ((invars (graph-invars graph))
          (known-invars (subseq invars 0 n-known))
          (linear-invars (nthcdr n-known invars))
          (known-avals (mapcar #'var-aval known-invars))
          (out-avals (mapcar #'var-aval (graph-outvars graph))))
-    (%call-with-fresh-trace
+    (dce-graph
+     (%call-with-fresh-trace
      (append known-avals out-avals)
      (lambda (&rest tracers)
        (let ((known (make-hash-table :test 'eq))
@@ -68,7 +70,7 @@ REQUIRE-TRANSPOSE-RULE のルールを
            (dolist (eqn linear-eqns)
              (let* ((out (first (eqn-outvars eqn)))
                     (ct (gethash out cts)))
-               (when ct
+               (when (and ct (not (symbolic-zero-p ct)))
                  (let* ((rule (require-transpose-rule (eqn-prim eqn)))
                         (rule-invars (mapcar (lambda (v)
                                                (if (gethash v linear)
@@ -82,19 +84,23 @@ REQUIRE-TRANSPOSE-RULE のルールを
                             :format-arguments (list (primitive-name (eqn-prim eqn)) (length rule-invars) results)))
                    (loop for var in (eqn-invars eqn)
                          for result in results
-                         when (gethash var linear)
-                           do (progn
-                                (unless result
-                                  (error 'autodiff-error
-                                         :format-control "プリミティブ ~S の transpose ルールが、線形な入力 ~S の余接線を返さなかった"
-                                         :format-arguments (list (primitive-name (eqn-prim eqn)) var)))
-                                (%transpose-ct-aval-check eqn result var)
-                                (setf (gethash var cts)
-                                      (add-tangents (gethash var cts (make-symbolic-zero (var-aval var)))
-                                                    result)))))))))
+                         do (cond
+                              ((gethash var linear)
+                               (unless result
+                                 (error 'autodiff-error
+                                        :format-control "プリミティブ ~S の transpose ルールが、線形な入力 ~S の余接線を返さなかった"
+                                        :format-arguments (list (primitive-name (eqn-prim eqn)) var)))
+                               (%transpose-ct-aval-check eqn result var)
+                               (setf (gethash var cts)
+                                     (add-tangents (gethash var cts (make-symbolic-zero (var-aval var)))
+                                                   result)))
+                              (result
+                               (error 'autodiff-error
+                                      :format-control "プリミティブ ~S の transpose ルールが、既知の入力 ~S の位置に NIL でない値を返した"
+                                      :format-arguments (list (primitive-name (eqn-prim eqn)) var))))))))))
          (values-list (mapcar (lambda (var)
                                 (instantiate-zero (gethash var cts (make-symbolic-zero (var-aval var)))))
-                              linear-invars)))))))
+                              linear-invars))))))))
 
 (defun vjp-graph (graph &key (nonzero nil nonzero-p))
   "GRAPH の vjp（reverse モードの微分）を計算する新しい GRAPH を CHECK-GRAPH して返す。

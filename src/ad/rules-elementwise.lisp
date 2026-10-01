@@ -17,3 +17,14 @@
 (def-jvp-rule neg (primals out tangents)
   (declare (ignore primals out))
   (%t-neg (first tangents)))
+
+;;; transpose ルール（issue #82。add-tangents が足す add と、jvp ルールの neg を
+;;; 転置できるようにするため、ここに置く。#83 は add / neg を扱わない）。
+
+(def-transpose-rule add (ct invars)
+  ;; 線形な入力にだけ ct をそのまま流す（既知の入力が混ざってもよい。JAX と同じ）。
+  (mapcar (lambda (v) (and (undefined-primal-p v) ct)) invars))
+
+(def-transpose-rule neg (ct invars)
+  (declare (ignore invars))
+  (list (%t-neg ct)))

@@ -12,6 +12,10 @@
 (defun %sum-inner-products (as bs)
   (reduce #'+ (mapcar #'inner-product as bs)))
 
+(defun %recipe-seed (recipe)
+  "RECIPE から決まる、試行ごとに違う seed（同じレシピなら同じ値）。"
+  (mod (sxhash (format nil "~S" recipe)) 100000))
+
 (defun %outputs-random-cotangents (graph &key (seed 0))
   (loop for outvar in (nb:graph-outvars graph) for i from 0
         collect (random-cotangent (nb:var-aval outvar) :seed (+ seed 500 i))))
@@ -24,11 +28,12 @@
 invar そのもの・定数そのものが出力になる graph を含む。"
   (is (check-it (generator (graph-recipe :dtypes '(:f64) :binary-prims '(:%test-add :%test-mul)))
                 (lambda (recipe)
-                  (let* ((graph (%mixed-output-graph (build-graph recipe)))
+                  (let* ((seed (%recipe-seed recipe))
+                         (graph (%mixed-output-graph (build-graph recipe)))
                          (m (length (nb:graph-outvars graph)))
-                         (primals (%jvp-arrays graph))
-                         (v (%jvp-arrays graph :tangent t))
-                         (u (%outputs-random-cotangents graph))
+                         (primals (%jvp-arrays graph :seed seed))
+                         (v (%jvp-arrays graph :tangent t :seed seed))
+                         (u (%outputs-random-cotangents graph :seed seed))
                          (jvp-result (%jvp-eval (nb::jvp-graph graph) (append primals v)))
                          (vjp-result (%jvp-eval (nb::vjp-graph graph) (append primals u)))
                          (cotangents (nthcdr m vjp-result)))
@@ -44,11 +49,12 @@ invar そのもの・定数そのものが出力になる graph を含む。"
 graph（add x x）も含む。"
   (is (check-it (generator (graph-recipe :dtypes '(:f64) :max-ops 8))
                 (lambda (recipe)
-                  (let* ((graph (%mixed-output-graph (build-graph recipe)))
+                  (let* ((seed (%recipe-seed recipe))
+                         (graph (%mixed-output-graph (build-graph recipe)))
                          (m (length (nb:graph-outvars graph)))
-                         (primals (%jvp-arrays graph))
-                         (v (%jvp-arrays graph :tangent t))
-                         (u (%outputs-random-cotangents graph))
+                         (primals (%jvp-arrays graph :seed seed))
+                         (v (%jvp-arrays graph :tangent t :seed seed))
+                         (u (%outputs-random-cotangents graph :seed seed))
                          (jvp-tangents (nthcdr m (%jvp-eval (nb::jvp-graph graph) (append primals v))))
                          (cotangents (nthcdr m (%jvp-eval (nb::vjp-graph graph) (append primals u)))))
                     (%scalar-close-p (%sum-inner-products cotangents v)
@@ -62,10 +68,11 @@ graph（add x x）も含む。"
   (is (check-it (generator (graph-recipe :dtypes '(:f64) :max-ops 4 :max-dim 3
                                          :binary-prims '(:%test-add :%test-mul)))
                 (lambda (recipe)
-                  (let* ((graph (%mixed-output-graph (build-graph recipe)))
+                  (let* ((seed (%recipe-seed recipe))
+                         (graph (%mixed-output-graph (build-graph recipe)))
                          (m (length (nb:graph-outvars graph)))
-                         (primals (%jvp-arrays graph))
-                         (u (%outputs-random-cotangents graph))
+                         (primals (%jvp-arrays graph :seed seed))
+                         (u (%outputs-random-cotangents graph :seed seed))
                          (cotangents (nthcdr m (%jvp-eval (nb::vjp-graph graph) (append primals u)))))
                     (%results-close-p cotangents (central-difference-gradient graph primals :cotangents u)
                                       :rtol *autodiff-rtol* :atol *autodiff-atol*)))
@@ -94,11 +101,12 @@ graph（add x x）も含む。"
 nonzero 無しの vjp の対応する余接線と一致する。"
   (is (check-it (generator (graph-recipe :dtypes '(:f64) :binary-prims '(:%test-add :%test-mul)))
                 (lambda (recipe)
-                  (let* ((graph (%mixed-output-graph (build-graph recipe)))
+                  (let* ((seed (%recipe-seed recipe))
+                         (graph (%mixed-output-graph (build-graph recipe)))
                          (m (length (nb:graph-outvars graph)))
                          (nonzero (%linearize-nonzero graph recipe))
-                         (primals (%jvp-arrays graph))
-                         (u (%outputs-random-cotangents graph))
+                         (primals (%jvp-arrays graph :seed seed))
+                         (u (%outputs-random-cotangents graph :seed seed))
                          (full (nthcdr m (%jvp-eval (nb::vjp-graph graph) (append primals u))))
                          (partial (nthcdr m (%jvp-eval (nb::vjp-graph graph :nonzero nonzero)
                                                        (append primals u)))))
@@ -170,3 +178,50 @@ aval の違う余接線）を返したら、プリミティブ名の入った au
         (nb:no-transpose-rule () (fail "no-transpose-rule ではなく autodiff-error のはず"))
         (nb:autodiff-error (c)
           (is (search "%TEST-BAD-TRANSPOSE" (princ-to-string c))))))))
+
+(test transpose/zero-cotangent-from-a-rule-is-not-passed-to-the-next-rule
+  "ルールが SYMBOLIC-ZERO の余接線を返したら、その var の余接線はゼロとして扱い、
+手前の eqn のルールには渡さない。x → neg → zero-ct の vjp は、入力の余接線がゼロの配列。"
+  (let* ((x (nb::make-var (%f64-aval 3)))
+         (neg (nb::make-eqn :%test-neg (list x)))
+         (zero (nb::make-eqn :%test-zero-ct (list (first (nb:eqn-outvars neg)))))
+         (graph (nb::make-graph (list x) (list neg zero) (nb:eqn-outvars zero) '()))
+         (vjp (nb::vjp-graph graph)))
+    (is (%jvp-round-trips-p vjp))
+    (is (equalp (list (%f64-array '(3) -1d0 -2d0 -3d0) (%f64-array '(3) 0d0 0d0 0d0))
+                (%jvp-eval vjp (list (%f64-array '(3) 1d0 2d0 3d0) (%f64-array '(3) 4d0 5d0 6d0)))))))
+
+(test transpose/rule-returning-a-cotangent-for-a-known-input-signals-autodiff-error
+  "既知の入力の位置に NIL でない値を返す transpose ルールは autodiff-error。"
+  (let* ((r (nb::make-var (%f64-aval 3)))
+         (tt (nb::make-var (%f64-aval 3)))
+         (eqn (nb::make-eqn :%test-bad-known-ct (list tt r)))
+         (graph (nb::make-graph (list r tt) (list eqn) (nb:eqn-outvars eqn) '())))
+    (signals nb:autodiff-error (nb::transpose-graph graph 1))))
+
+(defun %mul-neg-add-graph ()
+  "(lambda (x y) (values (- (* x y)) (+ (* x x) y)))（f64 の shape (3)）。"
+  (let* ((x (nb::make-var (%f64-aval 3))) (y (nb::make-var (%f64-aval 3)))
+         (m (nb::make-eqn :%test-mul (list x y)))
+         (n (nb::make-eqn :%test-neg (list (first (nb:eqn-outvars m)))))
+         (q (nb::make-eqn :%test-mul (list x x)))
+         (a (nb::make-eqn :%test-add (list (first (nb:eqn-outvars q)) y))))
+    (nb::make-graph (list x y) (list m n q a)
+                    (list (first (nb:eqn-outvars n)) (first (nb:eqn-outvars a))) '())))
+
+(test vjp/second-order-inner-product-identity
+  "二階微分: F = mul / neg / add だけの graph、G = (vjp-graph F) に対しても内積テスト
+<vjp(G)(u), v> = <u, jvp(G)(v)> が成り立つ（vjp-graph の結果をさらに vjp-graph できる）。"
+  (let* ((f (%mul-neg-add-graph))
+         (g (nb::vjp-graph f))
+         (m (length (nb:graph-outvars g))))
+    (is (%jvp-round-trips-p g))
+    (dotimes (trial 5)
+      (let* ((primals (%jvp-arrays g :seed (* 10 trial)))
+             (v (%jvp-arrays g :tangent t :seed (* 10 trial)))
+             (u (%outputs-random-cotangents g :seed (* 10 trial)))
+             (jvp-result (%jvp-eval (nb::jvp-graph g) (append primals v)))
+             (vjp-result (%jvp-eval (nb::vjp-graph g) (append primals u))))
+        (is (every (lambda (a b) (equalp a b)) (subseq jvp-result 0 m) (subseq vjp-result 0 m)))
+        (is (%scalar-close-p (%sum-inner-products (nthcdr m vjp-result) v)
+                             (%sum-inner-products u (nthcdr m jvp-result))))))))

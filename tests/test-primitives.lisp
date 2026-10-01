@@ -273,15 +273,6 @@
           ((nb::undefined-primal-p b) (list nil (nb::%trace-eqn :%test-mul (list ct a))))
           (t (error 'nb:autodiff-error :format-control "%test-mul に線形な入力が無い")))))
 
-;; jvp の接線の加算（ADD-TANGENTS）と transpose の余接線の加算は実プリミティブの
-;; add を使うので、%test- の graph を転置するには add の transpose ルールも要る。
-;; 実プリミティブの線形ルールは #83 が src/ad/ に書く。それまでのつなぎ（#83 が
-;; 同じ意味のルールで上書きする）。
-(nb::def-transpose-rule add (ct invars)
-  (unless (every #'nb::undefined-primal-p invars)
-    (error 'nb:autodiff-error :format-control "add は両方の入力が線形のときだけ転置できる"))
-  (list ct ct))
-
 ;; わざと規約に反する transpose ルールを返すプリミティブ（transpose 変換の検査の
 ;; テスト用）。MODE: :short = 長さの違うリスト、:missing = 線形入力の余接線が NIL、
 ;; :wrong-aval = 入力と aval の違う余接線（dtype を変える）。
@@ -299,3 +290,26 @@
     (:short '())
     (:missing (list nil))
     (:wrong-aval (list (nb::%trace-eqn :%test-convert (list ct) :dtype :f32)))))
+
+;; transpose ルールが線形入力の余接線として SYMBOLIC-ZERO を返すプリミティブ（規約上
+;; 許される。変換側が、ゼロの余接線を次のルールに渡さないことのテスト用）。
+(nb:defprimitive %test-zero-ct ()
+  :abstract-eval (lambda (in-avals) (first in-avals))
+  :eager (lambda (arrays in-avals) (declare (ignore in-avals)) (first arrays)))
+
+(nb::def-jvp-rule %test-zero-ct (primals out tangents)
+  (declare (ignore primals out))
+  (nb::%trace-eqn :%test-zero-ct (list (first tangents))))
+
+(nb::def-transpose-rule %test-zero-ct (ct invars)
+  (declare (ignore ct))
+  (list (nb::make-symbolic-zero (%test-undefined-aval (first invars)))))
+
+;; 既知の入力の位置に NIL でない値を返す（規約違反の）二項プリミティブ。
+(nb:defprimitive %test-bad-known-ct ()
+  :abstract-eval (lambda (in-avals) (first in-avals))
+  :eager (lambda (arrays in-avals) (declare (ignore in-avals)) (first arrays)))
+
+(nb::def-transpose-rule %test-bad-known-ct (ct invars)
+  (declare (ignore invars))
+  (list ct ct))

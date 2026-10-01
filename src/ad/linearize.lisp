@@ -43,7 +43,7 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
   (n-outputs 0 :type (integer 0) :read-only t)
   (n-residuals 0 :type (integer 0) :read-only t))
 
-(defun linearize-graph (graph &rest jvp-args &key nonzero)
+(defun linearize-graph (graph &key (nonzero nil nonzero-p))
   "GRAPH を JVP-GRAPH（NONZERO は同じ意味）で jvp 変換し、PARTITION-EQNS-BY-DEPENDENCE
 で接線の入力に依存する eqn とそれ以外に分けて、LINEARIZATION を返す。GRAPH 自体は
 書き換えない。
@@ -51,8 +51,7 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
 主値 graph と線形 graph を順に評価すると、JVP-GRAPH を評価した結果（主値 ++ 接線）と
 一致する。線形 graph には DCE-GRAPH をかけ、残差は線形 graph が実際に使うものだけに
 絞る（主値 graph にも DCE をかける）。"
-  (declare (ignore nonzero))
-  (let* ((jvp (apply #'jvp-graph graph jvp-args))
+  (let* ((jvp (if nonzero-p (jvp-graph graph :nonzero nonzero) (jvp-graph graph)))
          (n-primals (length (graph-invars graph)))
          (n-outputs (length (graph-outvars graph)))
          (primal-invars (subseq (graph-invars jvp) 0 n-primals))
@@ -62,7 +61,7 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
          (constants (graph-constants jvp))
          (constant-table (make-hash-table :test 'eq))
          (seen (make-hash-table :test 'eq)))
-    (loop for (var) in constants do (setf (gethash var constant-table) t))
+    (loop for (var . nil) in constants do (setf (gethash var constant-table) t))
     (multiple-value-bind (primal-eqns linear-eqns)
         (partition-eqns-by-dependence (graph-eqns jvp) tangent-invars)
       (let ((linear-defined (make-hash-table :test 'eq))
@@ -76,6 +75,9 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
                    (setf (gethash v seen) t)
                    (push v candidates))))
           (dolist (eqn linear-eqns) (mapc #'note (eqn-invars eqn)))
+          ;; ゼロの接線の出力は、jvp-graph が主値側の eqn（定数 + broadcast）で
+          ;; instantiate したもの。線形側には eqn が無いので、その var は残差に
+          ;; なり、線形 graph はそれをそのまま出力する（主値 graph が残差として出す）。
           (mapc #'note tangent-outvars))
         (setf candidates (nreverse candidates))
         (let* ((linear (dce-graph (make-graph (append candidates tangent-invars)
