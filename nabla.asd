@@ -61,6 +61,8 @@
                ;; linearize / transpose / vjp（issue #82）
                (:file "src/ad/linearize")
                (:file "src/ad/transpose")
+               ;; 形状・縮約・dot-general の jvp ルール（issue #81）
+               (:file "src/ad/rules-shape")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -144,6 +146,8 @@
                ;; 要素演算の jvp ルール（issue #80）
                (:file "tests/ad/jvp-elementwise-test")
                (:file "tests/ad/stop-gradient-test")
+               ;; 形状・縮約・dot-general の jvp ルール（issue #81）
+               (:file "tests/ad/jvp-shape-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
@@ -230,6 +234,7 @@
 
                ;; 要素演算の jvp ルールの IREE 実行（issue #80）
                (:file "tests/iree/jvp-elementwise-test")
+               (:file "tests/iree/jvp-shape-test")
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
                (:file "tests/iree/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
