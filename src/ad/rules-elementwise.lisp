@@ -103,3 +103,48 @@
 (def-jvp-rule stop-gradient (primals out tangents)
   (declare (ignore primals tangents))
   (make-symbolic-zero (tracer-aval out)))
+
+;;; --- 以下は issue #83: 線形なプリミティブの transpose ルール。JAX の
+;;; jax._src.lax.lax の _sub_transpose / _convert_element_type_transpose_rule /
+;;; _select_transpose_rule / _mul_transpose / _div_transpose を写す。 ---
+
+(def-transpose-rule sub (ct invars)
+  ;; 線形な入力にだけ流す。b 側は符号が反転する。
+  (destructuring-bind (a b) invars
+    (list (and (undefined-primal-p a) ct)
+          (and (undefined-primal-p b) (%t-neg ct)))))
+
+(def-transpose-rule convert (ct invars &key dtype)
+  ;; 余接線を元の入力の dtype に戻す。
+  (let ((from (aval-dtype (undefined-primal-aval (first invars)))))
+    (list (if (eq from dtype) ct (%trace-eqn :convert (list ct) :dtype from)))))
+
+(def-transpose-rule select (ct invars)
+  ;; pred は既知の主値。線形な値側の入力ごとに、選ばれた側にだけ ct を流す
+  ;; （選ばれなかった側は 0）。
+  (destructuring-bind (pred on-true on-false) invars
+    (when (undefined-primal-p pred)
+      (error 'autodiff-error
+             :format-control "select の pred は既知の主値でなければならない（線形な入力にはできない）"))
+    (let ((zero (instantiate-zero (make-symbolic-zero (tracer-aval ct)))))
+      (list nil
+            (and (undefined-primal-p on-true) (%t-select pred ct zero))
+            (and (undefined-primal-p on-false) (%t-select pred zero ct))))))
+
+(def-transpose-rule mul (ct invars)
+  ;; 片側が既知の係数、もう片側が線形。両方が線形なら非線形なのでエラー。
+  (destructuring-bind (x y) invars
+    (cond ((and (undefined-primal-p x) (undefined-primal-p y))
+           (error 'autodiff-error
+                  :format-control "mul の両方の入力が線形な入力のとき、転置できない（接線どうしの積）"))
+          ((undefined-primal-p x) (list (%t-mul ct y) nil))
+          (t (list nil (%t-mul x ct))))))
+
+(def-transpose-rule div (ct invars)
+  ;; 線形なのは被除数だけ: d(x / y) の x 側は ct / y。除数が線形ならエラー。
+  (destructuring-bind (x y) invars
+    (declare (ignore x))
+    (when (undefined-primal-p y)
+      (error 'autodiff-error
+             :format-control "div の除数が線形な入力のとき、転置できない"))
+    (list (%t-div ct y) nil)))
