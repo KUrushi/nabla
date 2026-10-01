@@ -1,1 +1,1 @@
-Fable レビュー対応: 回帰ファイルをコミット、outvars==1 の assert、端の形の固定例、入れ子トレースのテスト、*current-trace* docstring 修正。
+77a (PR #99) の上に rebase。nabla.asd は src/ad/zero, rules, inline の順に解消。Fable レビュー対応済み（回帰ファイル追跡、端の形・入れ子テスト、docstring）。既定スイート通過。
