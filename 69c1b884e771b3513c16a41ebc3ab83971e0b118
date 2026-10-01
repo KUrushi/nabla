@@ -1,0 +1,1 @@
+backend ごとに別プロセスで測る（LLVM のシグナル・初回コストの相互影響を避ける）。get-internal-real-time は 4ms 刻みで使えず clock_gettime(1)。examples/mlp.lisp は末尾の学習 let と load-system を飛ばして評価。レビュー指摘: 複数行エラーで1行1レコードが壊れる→one-line。測定は共有マシンで他ジョブ並走のためノイズ大。
