@@ -1,0 +1,1 @@
+trace-to-graph の本体を %call-with-fresh-trace (avals fn) に移しただけ。型・個数検査は trace-to-graph に残した。既定スイート通過。
