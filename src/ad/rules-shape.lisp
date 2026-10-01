@@ -2,7 +2,7 @@
 ;;;;
 ;;;; JAX の jax._src.lax.lax の reshape / broadcast_in_dim / transpose、
 ;;;; jax._src.lax.lax の reduce_sum / reduce_max（_reduce_chooser_jvp_rule）、
-;;;; dot_general（_dot_general_transpose_lhs と同じ「積の微分」）に対応する。
+;;;; dot_general（_dot_general_jvp_lhs / _dot_general_jvp_rhs と同じ「積の微分」）に対応する。
 ;;;;
 ;;;; 制約（rules-elementwise.lisp 冒頭と同じ）: 接線は被演算子について線形な
 ;;;; プリミティブにしか流さない。ここでは reshape / broadcast-in-dim /

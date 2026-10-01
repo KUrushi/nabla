@@ -35,6 +35,22 @@
              (rotatef (aref v i) (aref v (mod (floor state 16) (1+ i)))))
     (coerce v 'list)))
 
+(defun %broadcast-case-graph (seed)
+  "SEED から broadcast-in-dim の graph を作る: オペランドは rank 0〜2 でサイズ1の
+次元を含みうる。出力は rank が 1〜2 増え、dims は出力の軸のランダムな部分集合
+（昇順）。サイズ1の次元は任意のサイズに広がる。"
+  (let* ((op-rank (mod seed 3))
+         (out-rank (+ op-rank 1 (mod (floor seed 3) 2)))
+         (dims (sort (subseq (%shuffle-by-seed (loop for i below out-rank collect i) seed) 0 op-rank) #'<))
+         (op-shape (loop for k below op-rank
+                         collect (if (logbitp k (floor seed 7)) 1 (+ 2 (mod (floor seed (+ 11 k)) 3)))))
+         (out-shape (loop for i below out-rank
+                          collect (let ((k (position i dims)))
+                                    (if (and k (> (nth k op-shape) 1))
+                                        (nth k op-shape)
+                                        (+ 2 (mod (floor seed (+ 5 i)) 3)))))))
+    (%prim-graph :broadcast-in-dim (list (nb:make-aval op-shape :f64)) :shape out-shape :dims dims)))
+
 (defun %shape-case-graph (seed)
   "SEED から、(種類 . graph) を選ぶ（f64、dot-general 以外）。"
   (let* ((kind (mod seed 5))
@@ -45,12 +61,12 @@
     (ecase kind
       (0 (%prim-graph :reshape (list aval)
                       :shape (if (evenp rest) (list total) (list (first shape) (/ total (first shape))))))
-      (1 (let* ((n (+ 2 (mod rest 3))))
-           (%prim-graph :broadcast-in-dim (list (nb:make-aval (list (first shape) (second shape)) :f64))
-                        :shape (list n (first shape) 3 (second shape)) :dims '(1 3))))
+      (1 (%broadcast-case-graph rest))
       (2 (%prim-graph :transpose (list aval) :perm (%shuffle-by-seed '(0 1 2) rest)))
-      (3 (%prim-graph :reduce-sum (list aval) :axes (%seed-subset rest 3)))
-      (4 (%prim-graph :reduce-max (list aval) :axes (%seed-subset rest 3))))))
+      ((3 4) (let* ((rank (+ 2 (mod rest 3)))
+                    (aval (nb:make-aval (%seed-shape (floor rest 3) rank) :f64)))
+               (%prim-graph (if (= kind 3) :reduce-sum :reduce-max) (list aval)
+                            :axes (%seed-subset rest rank)))))))
 
 (defun %dot-case-graph (case)
   (destructuring-bind (lhs-shape rhs-shape lc rc lb rb) case
@@ -156,3 +172,21 @@ f64 の中心差分と一致する（ランダムな shape・perm・axes）。"
                                   (%f64-array '(2 3) 1 3 7  9 2 4)))))
     (is (equalp (%f64-vector 2 5) (first result)))
     (is (equalp (%f64-vector 2 3) (second result)))))
+
+(test jvp-shape/reduce-max-ties-across-non-reduced-axes
+  "同値が縮約しない軸をまたいでも、平均は縮約する軸の中だけで取る。
+[[3 3] [3 1]]、axes (1): 行 0 は [3 3] の平均、行 1 は 3 だけ。"
+  (let* ((graph (%prim-graph :reduce-max (list (nb:make-aval '(2 2) :f64)) :axes '(1)))
+         (result (%jvp-eval (nb::jvp-graph graph)
+                            (list (%f64-array '(2 2) 3 3 3 1)
+                                  (%f64-array '(2 2) 2 4 10 100)))))
+    (is (equalp (%f64-vector 3 3) (first result)))
+    (is (equalp (%f64-vector 3 10) (second result)))))
+
+(test jvp-shape/reduce-max-jvp-graph-is-well-formed-for-half-dtypes
+  "bf16 / f16 の reduce-max も jvp-graph が通り、check-graph と往復を満たす（評価はしない）。"
+  (dolist (dtype '(:bf16 :f16))
+    (let ((jvp (nb::jvp-graph (%prim-graph :reduce-max (list (nb:make-aval '(2 3) dtype)) :axes '(1)))))
+      (is (%jvp-round-trips-p jvp))
+      (is (equalp (list (nb:make-aval '(2) dtype) (nb:make-aval '(2) dtype))
+                  (mapcar #'nb:var-aval (nb:graph-outvars jvp)))))))
