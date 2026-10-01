@@ -1,0 +1,1 @@
+Fable レビュー対応: jit した関数の :backend 無視を docstring/README に明記、registry を *primitives* 走査(% 接頭辞のテスト専用は除外)+逆向き検査、nits。
