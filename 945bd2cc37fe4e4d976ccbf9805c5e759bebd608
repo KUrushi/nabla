@@ -1,0 +1,1 @@
+追加: レビュー指摘対応。mutation は 7/8 → 生き残り(%check-arity 削除)に arity テストを追加して 8/8。div/log を t/y 直接形に、convert の入力 dtype 検査を削除。bf16/f16 の aval PBT と tie・NaN テストを追加、IREE e2e は trials=1。
