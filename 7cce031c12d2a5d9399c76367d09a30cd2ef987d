@@ -1,0 +1,1 @@
+レビュー対応: (1) symbolic-zero の ct を転置で飛ばす（テスト先行で NO-APPLICABLE-METHOD を確認）。(2) 実 add / neg の transpose ルールを src/ad/rules-elementwise.lisp へ（JAX 形）。テスト側の暫定ルールは削除。#83 は add/neg を扱わない。(3-7) linearize の &key 転送、既知位置の非 nil 検査、transpose 結果を DCE、ゼロ接線出力のコメント。(8) 二階微分の内積テスト。(9) PBT の seed をレシピ由来に。mutation 42/43（生存は残差順の等価変異）。
