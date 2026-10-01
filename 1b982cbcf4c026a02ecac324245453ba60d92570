@@ -1,0 +1,1 @@
+レビュー対応: 子 SBCL ヘルパーを tests/support/child-sbcl.lisp へ、float-traps 実験記録を docs へ、signals.lisp ヘッダの重複解消、ffi-support から IREE 言及を除去し do-not-mention-iree を拡張、iree 側の重複テストはシンボル同一性のみに。
