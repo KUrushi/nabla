@@ -1,0 +1,1 @@
+レビュー nits 対応: 内積テストは jvp 側が非有限のときだけ skip、f64 許容 1e-12、sub 既知側ケース、broadcast の非昇順 dims を PBT に、convert の dtype 全組。
