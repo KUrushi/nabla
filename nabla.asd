@@ -250,4 +250,6 @@
                ;; f64 と :i1 の to-device / to-host / invoke を jit で通す（issue #72）
                (:file "tests/iree/jit-dtype-test")
                ;; (jit (grad f)) の IREE 実行（issue #86）
-               (:file "tests/iree/grad-test")))
+               (:file "tests/iree/grad-test")
+               ;; 2層 MLP の学習 end-to-end（issue #88）
+               (:file "tests/iree/mlp-train-test")))

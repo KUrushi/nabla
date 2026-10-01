@@ -130,6 +130,24 @@ sbcl --non-interactive --load examples/add.lisp
 
 `tests/iree/example-test.lisp` がこの例を毎回 `load` して出力を確認しているので、この例が壊れたら既定のテストスイートが落ちる（ビヨンセ・ルール）。
 
+## 使ってみる（2層 MLP の学習）
+
+`examples/mlp.lisp` は、XOR 風の2次元2クラス分類データで 2層 MLP（dense → tanh → dense）を softmax 交差エントロピーで学習する。`(jit (with-tracing ... (value-and-grad loss :argnums '(0 1 2 3))))` をループの外で1回だけ作り、SGD の更新は Lisp 側の配列演算で行う（2ステップ目以降はコンパイルしない）。`argnums` がリストだと勾配のリストは `jit` の出力にできないので、`value-and-grads-values` で `(値 勾配...)` の多値に直している。学習ステップは `make-mlp-train-step` として関数で呼べる。
+
+```sh
+export CL_SOURCE_REGISTRY="$PWD/:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}//:"
+sbcl --non-interactive --load examples/mlp.lisp
+```
+
+出力（100ステップの最初と最後の損失）:
+
+```
+loss[0] = 0.6404
+final loss = 0.0745
+```
+
+`tests/iree/mlp-train-test.lisp` が、JAX のフィクスチャ（`tests/fixtures/train/mlp-sgd.lisp`、生成は `generate.py`）との数値一致、損失の減少、コンパイルが1回だけであること、この例の実行を確かめている（issue #88）。
+
 ## 使ってみる（jit）
 
 `examples/jit.lisp`（このコードブロックと同じ内容）:
@@ -206,7 +224,7 @@ tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
 docs/                glossary.md, iree-build.md, phase0-report.md, phase1-report.md
-examples/            add.lisp（この README の使用例）
+examples/            add.lisp, jit.lisp, mlp.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
