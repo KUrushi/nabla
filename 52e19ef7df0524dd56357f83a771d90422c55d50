@@ -1,0 +1,1 @@
+レビュー対応: bf16 reduce は逐次 bf16 丸め参照と比較（rtol 9倍を撤回）、compile_portable_executable=1 採用、sha256 をロック外で計算、子プロセスのシグナル検査を1本に統合（client-test 削除）、docs/pjrt-setup.md にシグナル実験を記録。全スイート 1069 checks pass。
