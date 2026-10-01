@@ -43,6 +43,8 @@ GRAPH-CONSTANTS の配列は（コピーせず）%LIFT-CONSTANT で現在のト�
         (let ((result (apply #'%trace-eqn (primitive-name (eqn-prim eqn))
                              (mapcar (lambda (v) (gethash v env)) (eqn-invars eqn))
                              (eqn-params eqn))))
+          ;; フェーズ1では eqn の outvars は常に1つ（src/ir.lisp の EQN を参照）。
+          (assert (= 1 (length (eqn-outvars eqn))))
           (setf (gethash (first (eqn-outvars eqn)) env) result)))
       (mapcar (lambda (v) (gethash v env)) (graph-outvars graph)))))
 

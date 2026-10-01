@@ -253,3 +253,67 @@ dce-graph した結果と同じ eqn 数・定数数になる。"
                   (%print-read-print-stable-p (nb::dce-graph (build-primitive-graph recipe))))
                 :regression-id dce/result-round-trips
                 :regression-file (regression-path "dce-round-trips"))))
+
+;;; --- 固定例（端の形の graph） ---
+
+(defun %inline-eval-matches-p (graph)
+  (%same-results-p graph (%inlined graph) (%inline-test-arrays graph)))
+
+(test inline/output-is-invar-itself
+  "出力が invar そのもの（eqn ゼロ）の graph をインライン化して評価できる。"
+  (let ((graph (build-graph '((:in :f32 (2)) (:out 0)))))
+    (is (%inline-eval-matches-p graph))
+    (is (null (nb:graph-eqns (%inlined graph))))))
+
+(test inline/output-is-constant-itself
+  "出力が定数そのものの graph をインライン化して評価できる。"
+  (let ((graph (build-graph '((:in :f32 (2)) (:const :f32 (2) 4) (:out 1)))))
+    (is (%inline-eval-matches-p graph))))
+
+(test inline/zero-eqn-graph
+  "入力も eqn も無く定数だけの graph をインライン化して評価できる。"
+  (is (%inline-eval-matches-p (build-graph '((:const :f32 (3) 9) (:out 0))))))
+
+(test inline/duplicate-outvars-give-eq-tracers
+  "同じ var が出力に2回現れる graph では、返る2つのトレーサが EQ。"
+  (let* ((graph (let ((g (build-graph '((:in :f32 (2)) (:unary :%test-neg 0) (:out 1)))))
+                  (nb::make-graph (nb:graph-invars g) (nb:graph-eqns g)
+                                  (list (first (nb:graph-outvars g)) (first (nb:graph-outvars g)))
+                                  (nb:graph-constants g)))))
+    (nb::%call-with-fresh-trace
+     (mapcar #'nb:var-aval (nb:graph-invars graph))
+     (lambda (&rest xs)
+       (let ((ys (nb::inline-graph graph xs)))
+         (is (= 2 (length ys)))
+         (is (eq (first ys) (second ys)))
+         (first xs))))))
+
+;;; --- 入れ子のトレース（設計仕様 §8） ---
+
+(test fresh-trace/restores-outer-current-trace
+  "内側の %call-with-fresh-trace が終わると *current-trace* は外側のトレースに戻る。"
+  (let ((aval (nb:make-aval '(2) :f32)))
+    (nb::%call-with-fresh-trace
+     (list aval)
+     (lambda (x)
+       (let ((outer nb::*current-trace*))
+         (nb::%call-with-fresh-trace
+          (list aval)
+          (lambda (y) (is (not (eq outer nb::*current-trace*))) y))
+         (is (eq outer nb::*current-trace*))
+         ;; 外側のトレーサで引き続き演算できる。
+         (nb::%trace-eqn :%test-neg (list x)))))
+    (is (null nb::*current-trace*))))
+
+(test fresh-trace/inner-use-of-outer-tracer-signals-tracing-error
+  "内側のトレースの中で外側のトレーサに %trace-eqn すると tracing-error。"
+  (let ((aval (nb:make-aval '(2) :f32)))
+    (nb::%call-with-fresh-trace
+     (list aval)
+     (lambda (x)
+       (signals nb:tracing-error
+         (nb::%call-with-fresh-trace
+          (list aval)
+          (lambda (y) (declare (ignore y))
+            (nb::%trace-eqn :%test-neg (list x)))))
+       x))))
