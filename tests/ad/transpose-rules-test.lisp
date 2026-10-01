@@ -1,7 +1,7 @@
 ;;;; 線形プリミティブの transpose ルールの性質（issue #83）。
 ;;;;
 ;;;; 対象: sub convert reshape transpose broadcast-in-dim reduce-sum select
-;;;; と、片側が既知の mul / div（add / neg は #82、dot-general は #84）。
+;;;; と、片側が既知の mul / div と dot-general（#84。add / neg は #82）。
 ;;;; 各ルールを「線形な graph（既知の入力 ++ 線形入力）を1つ作り、
 ;;;; nb::transpose-graph で転置する」形で確かめる。守らせる性質:
 ;;;;   1. 随伴性: <T(u), v> = <u, L(v)>（L は元の graph を eval-graph したもの）
@@ -38,11 +38,55 @@ dims が昇順でない broadcast-in-dim にする（同じ関数を表す）。
                                                  :shape (getf params :shape) :dims new-dims))))
         graph)))
 
+;;; dot-general のランダムなケース（SEED から決定的に作る）。バッチ・縮約・両側の
+;;; 自由次元の rank は 0〜2、軸の位置はシャッフル、サイズはなるべく相異なる。
+
+(defun %dot-seed-case (seed)
+  "(LHS-SHAPE RHS-SHAPE LHS-CONTRACTING RHS-CONTRACTING LHS-BATCH RHS-BATCH)。"
+  (let* ((nb (mod seed 3)) (nc (mod (floor seed 3) 3))
+         (nl (mod (floor seed 9) 3)) (nr (mod (floor seed 27) 3))
+         (rest (floor seed 81))
+         (sizes (%shuffle-by-seed '(1 2 3 4 5 6) rest))
+         (sizes (loop for i below (+ nb nc nl nr) collect (nth (mod i 6) sizes)))
+         (b-sizes (subseq sizes 0 nb))
+         (c-sizes (subseq sizes nb (+ nb nc)))
+         (l-sizes (subseq sizes (+ nb nc) (+ nb nc nl)))
+         (r-sizes (subseq sizes (+ nb nc nl)))
+         (lhs-pos (%shuffle-by-seed (loop for i below (+ nb nc nl) collect i) (+ rest 1)))
+         (rhs-pos (%shuffle-by-seed (loop for i below (+ nb nc nr) collect i) (+ rest 2)))
+         (lhs-batch (subseq lhs-pos 0 nb))
+         (lhs-contracting (subseq lhs-pos nb (+ nb nc)))
+         (lhs-free (sort (subseq lhs-pos (+ nb nc)) #'<))
+         (rhs-batch (subseq rhs-pos 0 nb))
+         (rhs-contracting (subseq rhs-pos nb (+ nb nc)))
+         (rhs-free (sort (subseq rhs-pos (+ nb nc)) #'<))
+         (lhs-shape (make-list (+ nb nc nl)))
+         (rhs-shape (make-list (+ nb nc nr))))
+    (loop for p in lhs-batch for s in b-sizes do (setf (nth p lhs-shape) s))
+    (loop for p in lhs-contracting for s in c-sizes do (setf (nth p lhs-shape) s))
+    (loop for p in lhs-free for s in l-sizes do (setf (nth p lhs-shape) s))
+    (loop for p in rhs-batch for s in b-sizes do (setf (nth p rhs-shape) s))
+    (loop for p in rhs-contracting for s in c-sizes do (setf (nth p rhs-shape) s))
+    (loop for p in rhs-free for s in r-sizes do (setf (nth p rhs-shape) s))
+    (list lhs-shape rhs-shape lhs-contracting rhs-contracting lhs-batch rhs-batch)))
+
+(defun %dot-seed-graph (seed lhs-linear-p)
+  "%DOT-SEED-CASE の dot-general の graph。入力は既知の側、線形な側の順。"
+  (destructuring-bind (ls rs lc rc lb rb) (%dot-seed-case seed)
+    (flet ((dot (x y)
+             (nb::%trace-eqn :dot-general (list x y) :lhs-contracting lc :rhs-contracting rc
+                                                     :lhs-batch lb :rhs-batch rb)))
+      (if lhs-linear-p
+          (%tr-graph (list (nb:make-aval rs :f64) (nb:make-aval ls :f64))
+                     (lambda (y x) (dot x y)))
+          (%tr-graph (list (nb:make-aval ls :f64) (nb:make-aval rs :f64))
+                     (lambda (x y) (dot x y)))))))
+
 (defun %tr-case (seed)
   "SEED から、(VALUES graph n-known 近似) を作る。graph の入力は既知の N-KNOWN 個に
 線形入力が続く。近似が真なら f32 を通る（許容誤差を緩める）。"
-  (let* ((kind (mod seed 13))
-         (rest (floor seed 13))
+  (let* ((kind (mod seed 15))
+         (rest (floor seed 15))
          (rank (mod rest 4))
          (shape (%seed-shape (floor rest 4) rank))
          (aval (nb:make-aval shape :f64))
@@ -96,7 +140,10 @@ dims が昇順でない broadcast-in-dim にする（同じ関数を表す）。
       ;; div: 既知の除数（exp p > 0）で線形な被除数を割る。
       (10 (values (%tr-graph (%f64-avals 2 shape)
                              (lambda (p x) (nb::%trace-eqn :div (list x (nb::%trace-eqn :exp (list p))))))
-                  1 nil)))))
+                  1 nil))
+      ;; dot-general: 右が線形（13）、左が線形（14）。
+      (13 (values (%dot-seed-graph rest nil) 1 nil))
+      (14 (values (%dot-seed-graph rest t) 1 nil)))))
 
 (defun %tr-tolerance (approximate) (if approximate 1d-5 1d-12))
 
@@ -124,7 +171,8 @@ dims が昇順でない broadcast-in-dim にする（同じ関数を表す）。
 (test transpose-rules/adjoint
   "随伴性: <T(u), v> = <u, L(v)>。L は元の線形な graph（既知の入力は固定）、T は
 transpose-graph の結果。sub / convert / reshape / transpose / broadcast-in-dim（ランダムな
-dims・サイズ1・rank 0）/ reduce-sum（ランダムな axes）/ select / mul / div。"
+dims・サイズ1・rank 0）/ reduce-sum（ランダムな axes）/ select / mul / div /
+dot-general（ランダムなバッチ・縮約・自由次元、軸の並べ替え。左が線形・右が線形）。"
   (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
                 (lambda (seed)
                   (multiple-value-bind (graph n-known approximate) (%tr-case seed)
@@ -163,11 +211,10 @@ dims・サイズ1・rank 0）/ reduce-sum（ランダムな axes）/ select / mu
 
 (test transpose-rules/vjp-inner-product-identity-on-primitive-graphs
   "内積テスト: 実プリミティブ（add sub mul max min neg tanh exp compare+select convert
-reshape transpose broadcast-in-dim reduce-sum reduce-max。dot-general は #84 まで除く）の
+reshape transpose broadcast-in-dim reduce-sum reduce-max dot-general）の
 ランダムな f64 の graph について <vjp(u), v> = <u, jvp(v)>。主値の出力も一致する。
 jvp 側が非有限の値になった graph（exp の連鎖）は対象外（vjp 側だけが非有限なら失敗）。"
-  (let ((*primitive-recipe-dtypes* '(:f64))
-        (*primitive-recipe-dot-p* nil))
+  (let ((*primitive-recipe-dtypes* '(:f64)))
     (is (check-it (generator (primitive-graph-recipe :max-ops 6))
                   (lambda (recipe)
                     (let* ((seed (%recipe-seed recipe))
@@ -283,3 +330,71 @@ ARRAYS は入力の主値 ++ 出力の余接線。"
          (transposed (nb::transpose-graph graph 0)))
     (is (equal '(:reduce-sum)
                (mapcar (lambda (e) (nb:primitive-name (nb:eqn-prim e))) (nb:graph-eqns transposed))))))
+
+;;; --- dot-general（issue #84） ---
+
+(defun %dot-adjoint-case-p (seed)
+  "SEED の dot-general について、左が線形・右が線形の両方で随伴性が reference-dot-general と
+一致すれば真。"
+  (destructuring-bind (ls rs lc rc lb rb) (%dot-seed-case seed)
+    (flet ((rnd (shape s) (make-random-array (make-array-spec shape :f64) :seed s)))
+      (let* ((x (rnd ls (+ seed 1))) (y (rnd rs (+ seed 2)))
+             (vx (rnd ls (+ seed 3))) (vy (rnd rs (+ seed 4)))
+             (out-shape (array-dimensions (reference-dot-general x y lc rc lb rb)))
+             (u (random-cotangent (nb:make-aval out-shape :f64) :seed (+ seed 5) :dtype :f64))
+             (t-lhs (first (%jvp-eval (nb::transpose-graph (%dot-seed-graph seed t) 1) (list y u))))
+             (t-rhs (first (%jvp-eval (nb::transpose-graph (%dot-seed-graph seed nil) 1) (list x u)))))
+        (and (%tr-close-p (inner-product t-lhs vx)
+                          (inner-product u (reference-dot-general vx y lc rc lb rb)) 1d-9)
+             (%tr-close-p (inner-product t-rhs vy)
+                          (inner-product u (reference-dot-general x vy lc rc lb rb)) 1d-9))))))
+
+(test transpose-rules/dot-general-adjoint-against-reference
+  "dot-general の随伴性を reference-dot-general で直接確かめる: 左が線形のとき
+<T(u), v> = <u, ref(v, y)>、右が線形のとき <T(u), v> = <u, ref(x, v)>。ランダムな
+バッチ・縮約（0〜2個）・自由次元・軸位置。T は transpose-graph。"
+  (is (check-it (generator (uniform-integer :lo 0 :hi 100000)) #'%dot-adjoint-case-p
+                :regression-id transpose-rules/dot-general-adjoint-against-reference
+                :regression-file (regression-path "transpose-rules-dot-adjoint"))))
+
+(test transpose-rules/dot-general-with-both-operands-linear-signals-autodiff-error
+  "dot-general の両方の入力が線形な graph（接線どうしの積）の転置は autodiff-error。"
+  (let* ((a (nb::make-var (nb:make-aval '(2 3) :f64)))
+         (b (nb::make-var (nb:make-aval '(3 2) :f64)))
+         (eqn (nb::make-eqn :dot-general (list a b) :lhs-contracting '(1) :rhs-contracting '(0)
+                                                    :lhs-batch '() :rhs-batch '()))
+         (graph (nb::make-graph (list a b) (list eqn) (nb:eqn-outvars eqn) '())))
+    (signals nb:autodiff-error (nb::transpose-graph graph 0))))
+
+(test transpose-rules/dot-general-matrix-product-fixed-example
+  "行列積 C = A·B の vjp: dA = G·Bᵀ、dB = Aᵀ·G（A: 2x3、B: 3x2、固定の数値）。"
+  (let* ((a-aval (nb:make-aval '(2 3) :f64)) (b-aval (nb:make-aval '(3 2) :f64))
+         (a (%f64 '(2 3) '(1d0 2d0 3d0) '(4d0 5d0 6d0)))
+         (b (%f64 '(3 2) '(1d0 0d0) '(0d0 1d0) '(1d0 1d0)))
+         (g (%f64 '(2 2) '(1d0 2d0) '(3d0 4d0))))
+    (is (equalp (list (%f64 '(2 3) '(1d0 2d0 3d0) '(3d0 4d0 7d0))
+                      (%f64 '(3 2) '(13d0 18d0) '(17d0 24d0) '(21d0 30d0)))
+                (%vjp-cotangents :dot-general (list a-aval b-aval)
+                                 '(:lhs-contracting (1) :rhs-contracting (0) :lhs-batch () :rhs-batch ())
+                                 (list a b g))))))
+
+(test transpose-rules/two-layer-mlp-vjp-matches-central-difference
+  "2層 MLP の損失 reduce-sum((tanh(x·W1 + b1)·W2 - y)^2) の vjp が、W1 / b1 / W2 について
+central-difference-gradient と一致する（x, y は固定のデータ）。"
+  (let* ((graph (nb:trace-to-graph
+                 (nb:with-tracing (x y w1 b1 w2)
+                   (let* ((h (tanh (+ (nb:dot x w1)
+                                      (nb:broadcast-in-dim b1 '(4 5) '(1)))))
+                          (pred (nb:dot h w2))
+                          (diff (- pred y)))
+                     (nb:reduce-sum (* diff diff) :axes '(0 1))))
+                 (mapcar (lambda (s) (nb:make-aval s :f64))
+                         '((4 3) (4 2) (3 5) (5) (5 2)))))
+         (primals (loop for shape in '((4 3) (4 2) (3 5) (5) (5 2)) for i from 0
+                        collect (make-random-array (make-array-spec shape :f64) :seed (+ 40 i))))
+         (result (%jvp-eval (nb::vjp-graph graph :nonzero '(nil nil t t t))
+                            (append primals (list (make-array '() :element-type 'double-float
+                                                                  :initial-element 1d0)))))
+         (expected (central-difference-gradient graph primals)))
+    (is (%results-close-p (rest result) (nthcdr 2 expected)
+                          :rtol *autodiff-rtol* :atol *autodiff-atol*))))

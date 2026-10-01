@@ -79,7 +79,6 @@
    #:replay-recipe-avals
    ;; レシピが使う dtype（束縛すると f64 だけの graph も作れる。issue #76）
    #:*primitive-recipe-dtypes*
-   #:*primitive-recipe-dot-p*
    ;; 自動微分のテスト支援（issue #76）
    #:central-difference-jvp
    #:central-difference-gradient

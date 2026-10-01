@@ -1,4 +1,4 @@
-;;;; ad/rules-shape: 形状演算・縮約・dot-general の jvp ルール（issue #81）。
+;;;; ad/rules-shape: 形状演算・縮約・dot-general の jvp ルール（issue #81）と、それらの transpose ルール（#83、#84）。
 ;;;;
 ;;;; JAX の jax._src.lax.lax の reshape / broadcast_in_dim / transpose、
 ;;;; jax._src.lax.lax の reduce_sum / reduce_max（_reduce_chooser_jvp_rule）、
@@ -99,3 +99,47 @@
   (let* ((shape (aval-shape (undefined-primal-aval (first invars))))
          (kept (loop for i below (length shape) unless (member i axes) collect i)))
     (list (%trace-eqn :broadcast-in-dim (list ct) :shape shape :dims kept))))
+
+;;; --- 以下は issue #84: dot-general の transpose ルール。JAX の
+;;; _dot_general_transpose_lhs / _dot_general_transpose_rhs を写す。 ---
+
+(defun %dot-transpose-lhs (ct x-aval y x-contract y-contract x-batch y-batch &key swap-ans)
+  "線形な X（aval X-AVAL）の余接線。Y は既知。CT と Y の dot-general（CT の Y 側の
+自由次元と Y の自由次元を縮約し、バッチ次元を揃える）を、X の軸の順に transpose する。
+SWAP-ANS が真のとき、出力の自由次元の並びが（Y の自由次元, X の自由次元）の順（右が線形のとき）。"
+  (let* ((x-rank (length (aval-shape x-aval)))
+         (y-rank (length (aval-shape (tracer-aval y))))
+         (x-kept (loop for i below x-rank unless (or (member i x-contract) (member i x-batch)) collect i))
+         (y-kept (loop for i below y-rank unless (or (member i y-contract) (member i y-batch)) collect i))
+         (n-batch (length x-batch))
+         (ans-batch (loop for i below n-batch collect i))
+         (ans-y (loop for i below (length y-kept)
+                      collect (+ n-batch i (if swap-ans 0 (length x-kept)))))
+         ;; 結果の軸は バッチ ++ X の自由次元 ++ Y の縮約次元（Y の軸の昇順）。
+         ;; Y の縮約次元の昇順に並べた X の縮約次元が、結果の末尾の軸に当たる。
+         (x-contract-sorted-by-y (mapcar #'cdr (sort (mapcar #'cons y-contract x-contract) #'< :key #'car)))
+         (axes-of-result (append x-batch x-kept x-contract-sorted-by-y))
+         (perm (loop for i below x-rank collect (position i axes-of-result)))
+         (product (%trace-eqn :dot-general (list ct y)
+                              :lhs-contracting ans-y :rhs-contracting y-kept
+                              :lhs-batch ans-batch :rhs-batch y-batch)))
+    (if (equal perm (loop for i below x-rank collect i))
+        product
+        (%trace-eqn :transpose (list product) :perm perm))))
+
+(def-transpose-rule dot-general (ct invars &key lhs-contracting rhs-contracting lhs-batch rhs-batch)
+  ;; 片側が既知で、もう片側が線形。両方が線形なら非線形（接線どうしの積）なのでエラー。
+  ;; 右が線形のときは、左右を入れ替えた左の規則（出力の自由次元の並びだけ違う）を使う。
+  (destructuring-bind (lhs rhs) invars
+    (cond ((and (undefined-primal-p lhs) (undefined-primal-p rhs))
+           (error 'autodiff-error
+                  :format-control "dot-general の両方の入力が線形な入力のとき、転置できない（接線どうしの積）"))
+          ((undefined-primal-p lhs)
+           (list (%dot-transpose-lhs ct (undefined-primal-aval lhs) rhs
+                                     lhs-contracting rhs-contracting lhs-batch rhs-batch)
+                 nil))
+          (t
+           (list nil
+                 (%dot-transpose-lhs ct (undefined-primal-aval rhs) lhs
+                                     rhs-contracting lhs-contracting rhs-batch lhs-batch
+                                     :swap-ans t))))))
