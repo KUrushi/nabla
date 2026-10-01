@@ -99,7 +99,7 @@ third_party/iree.lock のホイールに同梱の iree-lld を NABLA_IREE_HOME/b
            (setf *warned-missing-embedded-linker-p* t))
          nil))))
 
-(defun compile-flags (target &key cuda-arch)
+(defun compile-flags (target &key cuda-arch system-library)
   "TARGET（:local または :cuda）向けの iree-compile 相当のフラグをリストで返す。
 :local は CLAUDE.md / verify-iree.sh と同じ CPU 向けのレシピ
 （llvm-cpu、target-cpu=host。生成される vmfb はこのため実行するマシンに
@@ -117,6 +117,11 @@ signal する。呼び出しごとに新しいリストを作るが、内容は�
 ので、これが無いと f64 の関数の ABI が f32 になり、TO-DEVICE した f64 の
 buffer view を渡せない・精度も f32 になる（issue #72）。
 
+SYSTEM-LIBRARY が真なら、:local に --iree-llvmcpu-link-embedded=false を
+付け、embedded ELF の代わりに system library（ランタイムが dlopen で読み込む
+共有ライブラリ）を作らせる。libm を呼ぶモジュール（%needs-libm-p）にだけ
+使うこと。理由と代償は %needs-libm-p を参照。:cuda では無視する。
+
 注意（将来 jit キャッシュを作るとき向け）: :local のフラグは
 NABLA_IREE_HOME/bin/iree-lld の有無というファイルシステムの状態に依存する。
 CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引数 +
@@ -129,12 +134,58 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
                            "--iree-hal-target-device=local"
                            "--iree-hal-local-target-device-backends=llvm-cpu"
                            "--iree-llvmcpu-target-cpu=host")
-                     (%embedded-linker-flags)))
+                     (if system-library
+                         (list "--iree-llvmcpu-link-embedded=false")
+                         (%embedded-linker-flags))))
     (:cuda (append (list "--iree-input-type=stablehlo"
                           "--iree-input-demote-f64-to-f32=false"
                           "--iree-hal-target-device=cuda")
                     (when cuda-arch
                       (list (format nil "--iree-cuda-target=~A" cuda-arch)))))))
+
+(defparameter *libm-f64-ops* '("exponential" "log" "tanh")
+  "llvm-cpu が f64 のときに libm の呼び出しとして残す StableHLO の op 名
+（stablehlo. を除いたもの）。%needs-libm-p が使う。")
+
+(defun %libm-f64-line-p (line)
+  "LINE が「<名前> = stablehlo.<op> ... : <f64 のテンソル型>」の形で、<op> が
+*libm-f64-ops* のどれかなら真を返す。"
+  (let ((start (search "= stablehlo." line)))
+    (when start
+      (let* ((op-start (+ start (length "= stablehlo.")))
+             (op-end (position #\Space line :start op-start)))
+        (and op-end
+             (member (subseq line op-start op-end) *libm-f64-ops* :test #'string=)
+             (search "f64>" line :start2 op-end)
+             t)))))
+
+(defun %needs-libm-p (text)
+  "StableHLO の TEXT（emit-stablehlo が出す pretty form）に、f64 の
+exp / log / tanh（*libm-f64-ops*）が1つでもあれば真を返す。
+
+llvm-cpu はこれらの f64 版を多項式近似せず（MathTransformPass.cpp の近似・
+f32 展開は f32 以下の型だけが対象）libm の exp / log / tanh の呼び出しとして
+残す。既定の embedded ELF は iree-lld で -nostdlib にリンクするので
+undefined symbol になりコンパイルできない（issue #72）。そこで真のときだけ
+COMPILE-FLAGS の :system-library で system library を作らせ、読み込み時に
+プロセスの libm に解決させる。
+
+system library のリンクは NABLA_IREE_HOME/bin/iree-lld を使えない（IREE は
+system linker を -flavor 無しで起動するが、iree-lld は先頭の引数に -flavor
+を要求する）。IREE は IREE_LLVM_SYSTEM_LINKER_PATH、無ければ PATH 上の
+ld.lld、無ければ ld を使い、-nostdlib -static -shared で呼ぶ。この組み合わせを
+共有ライブラリとして扱えるのは ld.lld だけ（ld.bfd は -static とみなし、
+ld.gold は拒否する。IREE の UnixLinkerTool.cpp のコメント）なので、実際には
+ld.lld が要る。固定コミットのリンカも使えない。そのため libm が要らない
+モジュールは従来どおり embedded ELF にし、この依存を f64 の
+exp / log / tanh を含むモジュールだけに閉じ込める。
+
+generic form（\"stablehlo.tanh\"(...)）は見ない。そこに f64 の
+exp / log / tanh があると、embedded ELF のリンクで失敗する。"
+  (with-input-from-string (stream text)
+    (loop for line = (read-line stream nil)
+          while line
+          thereis (%libm-f64-line-p line))))
 
 ;; ParseSource / Pipeline の失敗中に集める診断。callback は「invocation の
 ;; 破棄までどのスレッドからでも」呼ばれうる (embedding_api.h) ので、実行中の

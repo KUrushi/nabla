@@ -348,6 +348,44 @@ sb-sys:without-gcing の中（*gc-inhibit* が真）から呼ぶとエラーに�
   (is (member "--iree-cuda-target=sm_80" (compile-flags :cuda :cuda-arch "sm_80") :test #'string=))
   (signals error (compile-flags :nope)))
 
+(fiveam:test (compiler/compile-flags/system-library-replaces-embedded-linker :suite :nabla.small)
+  ":system-library を立てたときだけ :local のフラグに
+--iree-llvmcpu-link-embedded=false が入り、そのときは embedded linker の
+フラグ（--iree-llvmcpu-embedded-linker-path）を付けない。:cuda は
+:system-library で変わらない。"
+  (flet ((has (prefix flags)
+           (some (lambda (flag) (eql 0 (search prefix flag))) flags)))
+    (let ((embedded (compile-flags :local))
+          (system (compile-flags :local :system-library t)))
+      (is-false (has "--iree-llvmcpu-link-embedded=false" embedded))
+      (is-true (has "--iree-llvmcpu-link-embedded=false" system))
+      (is-false (has "--iree-llvmcpu-embedded-linker-path" system))
+      (is (equal (remove "--iree-llvmcpu-link-embedded=false" system :test #'string=)
+                 (remove-if (lambda (flag) (has "--iree-llvmcpu-embedded-linker-path" (list flag)))
+                            embedded))))
+    (is (equal (compile-flags :cuda :cuda-arch "sm_80")
+               (compile-flags :cuda :cuda-arch "sm_80" :system-library t)))))
+
+(fiveam:test (compiler/needs-libm-p/only-f64-exp-log-tanh :suite :nabla.small)
+  "単項演算1つ（- / exp / log / tanh）を浮動小数点の dtype でトレースした
+graph の emit-stablehlo の結果に %needs-libm-p が真を返すのは、dtype が
+:f64 で演算が exp / log / tanh のときだけ。"
+  (let ((ops (list (cons :neg (nb:with-tracing (a) (- a)))
+                   (cons :exp (nb:with-tracing (a) (exp a)))
+                   (cons :log (nb:with-tracing (a) (log a)))
+                   (cons :tanh (nb:with-tracing (a) (tanh a))))))
+    (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64 :f16 :bf16) :max-rank 3 :max-dim 4)
+                                     (uniform-integer :lo 0 :hi (1- (length ops)))))
+                  (lambda (args)
+                    (destructuring-bind (spec op-index) args
+                      (destructuring-bind (op-name . fn) (nth op-index ops)
+                        (let* ((aval (nb:make-aval (array-spec-shape spec) (array-spec-dtype spec)))
+                               (text (nb:emit-stablehlo (nb:trace-to-graph fn (list aval)))))
+                          (eq (and (nabla.iree::%needs-libm-p text) t)
+                              (and (eq (array-spec-dtype spec) :f64)
+                                   (member op-name '(:exp :log :tanh))
+                                   t))))))))))
+
 (define-iree-test compiler/compiler-revision/mentions-locked-commit
     "compiler-revision の文字列は third_party/iree.lock で固定したコミット
 ハッシュを含む。"

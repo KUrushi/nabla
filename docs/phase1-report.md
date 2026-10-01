@@ -105,7 +105,7 @@ IREE はコンパイル時に複数の演算を融合できるため、eager 実
 
 - **#70**: mutation runner の演算子と粒度を増やし、「mutation score 80%」を意味のある基準にする（§5 参照）
 - **#71**: jit キャッシュの後始末と並行性を直す（`backend-unload` が GC 時に呼ばれない・ロックの粒度・`recompile` リスタートの再帰に上限が無い・`defjit` が `:static-args` 未対応、`src/jit.lisp` のコメント参照）
-- **#72**: `f64` と `:i1` を `to-device` で扱えるようにし、op 対応表の全 dtype を `jit` で実行できるようにする（対応済み。ただし f64 の exp / log / tanh は llvm-cpu でリンクできず `jit` できない。docs/stablehlo-ops.md 参照）
+- **#72**: `f64` と `:i1` を `to-device` で扱えるようにし、op 対応表の全 dtype を `jit` で実行できるようにする（対応済み。f64 の exp / log / tanh は、それを含むモジュールだけ embedded ELF ではなく system library としてリンクすることで `jit` できるようにした（`ld.lld` が要る）。docs/stablehlo-ops.md 参照）
 - **#73**: IREE 3.11.0 の `AnnotateDispatches` のゼロ除算（§4.4）を最小の再現にまとめ、上流に報告する
 - **#74**: フェーズ1で残った配列 API とテスト支援の小さな制約を片づける（README の「既知の制約」に書いた、`dot` が `array`・`array` と `tracer`・`tracer` の2メソッドしか持たない等）
 - **#12**: GPU（`cuda` ターゲット）での local/cuda 数値一致は、フェーズ0から引き続き環境に GPU が無く未測定

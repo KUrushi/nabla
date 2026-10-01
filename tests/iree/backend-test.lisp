@@ -162,3 +162,24 @@ reference-* の期待値と、bf16 の許容誤差（rtol 1e-2 / atol 1e-3）で
           (is (allclose (%run-bf16-fixture "reduce_sum_bf16" (list a))
                         (reference-reduce-sum (decode-array a :bf16) 1)
                         :rtol rtol :atol atol)))))))
+
+(define-iree-test backend/compile/only-libm-modules-become-system-libraries
+    "BACKEND-COMPILE（:local）は、f64 の tanh を含むモジュールだけを system
+library にし（vmfb の実行形式名が \"system-\" で始まり \"embedded-elf-\" を
+含まない）、f32 の tanh のモジュールは従来どおり embedded ELF にする
+（\"embedded-elf-\" を含む）。libm を呼ばないモジュールまでシステムの
+リンカ（ld.lld）に依存させないため（%needs-libm-p）。"
+  (skip-unless-iree :library :compiler)
+  (let ((backend (nabla:find-backend :iree))
+        (nabla:*compile-cache-directory* nil))
+    (flet ((vmfb-for (dtype)
+             (let ((fn (nb:with-tracing (a) (tanh a))))
+               (nabla:backend-compile
+                backend (nb:emit-stablehlo (nb:trace-to-graph fn (list (nb:make-aval '(4) dtype)))))))
+           (contains-p (vmfb ascii)
+             (search (map '(vector (unsigned-byte 8)) #'char-code ascii) vmfb)))
+      (let ((f32 (vmfb-for :f32))
+            (f64 (vmfb-for :f64)))
+        (is-true (contains-p f32 "embedded-elf-"))
+        (is-false (contains-p f64 "embedded-elf-"))
+        (is-true (contains-p f64 "system-"))))))
