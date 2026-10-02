@@ -4,18 +4,19 @@
 ;;;; 「redefining NABLA::FOO in DEFUN」の STYLE-WARNING が出る。ロード順で
 ;;;; 振る舞いが変わる危険の目印なので、真っさらな子 SBCL で nabla を
 ;;;; ロードして出力に REDEFINING が無いことを確かめる。
+;;;; 子プロセスを起動して fasl を書くので、テストサイズは medium。
 
 (in-package #:nabla.tests)
 
-(in-suite :nabla.small)
+(in-suite :nabla.medium)
 
 (test load/nabla-emits-no-redefinition-warning
   "子 SBCL で nabla を強制再ロードしても、出力に「redefining NABLA...」が現れない。"
   (let* ((output (make-string-output-stream))
          (process
            (sb-ext:run-program
-            "sbcl"
-            (list "--non-interactive" "--disable-debugger"
+            "timeout"
+            (list "300" "sbcl" "--non-interactive" "--disable-debugger"
                   "--eval" "(require :asdf)"
                   "--eval" "(asdf:load-system \"nabla\" :force '(\"nabla\"))"
                   "--eval" "(format t \"LOAD-DONE~%\")")
