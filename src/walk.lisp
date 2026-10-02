@@ -7,6 +7,8 @@
 ;;;;
 ;;;; 対応する形式（マクロ展開後）: LET / LET* / PROGN / IF / FUNCTION /
 ;;;; FLET / LABELS / THE / SB-EXT:TRULY-THE / LOCALLY / QUOTE / アトム、
+;;;; MULTIPLE-VALUE-CALL / MULTIPLE-VALUE-PROG1（MULTIPLE-VALUE-BIND と
+;;;; MULTIPLE-VALUE-LIST / NTH-VALUE は SBCL がこれらに展開する。issue #115）、
 ;;;; および CL の算術・比較関数への呼び出し（下の *REWRITE-TABLE*）と、
 ;;;; それ以外のシンボルを演算子に持つ通常の関数呼び出し（引数だけ歩き、
 ;;;; 呼び出しそのものはそのまま残す。documented: ふつうの Lisp として実行
@@ -111,7 +113,8 @@ value に置き換える（型注釈はトレース対象の値には意味を�
   "(FUNCTION x)。x がシンボルならそのまま（#'+ は CL の + のまま。
 documented limitation: これを N 引数の関数として渡す先で使うと、シンボルの
 指す CL の関数がそのまま呼ばれ、トレーサに対しては動かない）。x が
-(LAMBDA ...) なら、その本体を歩く。"
+(LAMBDA ...) なら、その本体を歩く。MULTIPLE-VALUE-CALL の関数位置に
+置いた #'+ などは、%WALK-MULTIPLE-VALUE-CALL が UNSUPPORTED-FORM にする。"
   (let ((x (second form)))
     (if (and (consp x) (eq (first x) 'lambda))
         (list 'function (%walk-lambda-form x (%path-extend path 1)))
@@ -138,9 +141,35 @@ documented limitation: これを N 引数の関数として渡す先で使うと
   (list* (%walk-lambda-form (first form) (%path-extend path 0))
          (%walk-args (rest form) 1 path)))
 
+;;; --- 多値（issue #115） ---
+;;;
+;;; 歩いたあとのコードは、トレース中もふつうの Lisp として実行される。多値は
+;;; CL 自身の多値で、トレーサは単なるオブジェクトとして多値の各要素になる
+;;; だけなので、MULTIPLE-VALUE-CALL / MULTIPLE-VALUE-PROG1 は全サブフォームを
+;;; 歩いて形をそのまま残せばよい（トレーサ以外の実数・配列の多値も同じ扱い）。
+;;; 唯一の落とし穴は関数フォームに書き換え表にある CL の関数（#'+ など）を
+;;; 直接渡す形で、CL:+ がトレーサに適用されて実行時に分かりにくく失敗するので、
+;;; 展開時に UNSUPPORTED-FORM にする。
+
+(defun %walk-multiple-value-call (form path)
+  "(MULTIPLE-VALUE-CALL fn form...) の fn と各 form を歩く。fn が書き換え表に
+ある CL の関数への (FUNCTION sym) か (QUOTE sym) なら、関数フォームが無い形とともに
+UNSUPPORTED-FORM。"
+  (let ((fn-form (second form)))
+    (when (or (null (rest form))
+              (and (consp fn-form) (member (first fn-form) '(function quote))
+                   (symbolp (second fn-form)) (%find-rewriter (second fn-form))))
+      (%unsupported form path))
+    (list* 'multiple-value-call (%walk-args (rest form) 1 path))))
+
+(defun %walk-multiple-value-prog1 (form path)
+  "(MULTIPLE-VALUE-PROG1 first-form form...) の全フォームを歩く。"
+  (when (null (rest form)) (%unsupported form path))
+  (list* 'multiple-value-prog1 (%walk-args (rest form) 1 path)))
+
 (defparameter *unsupported-operators*
   '(setq block return-from tagbody go catch throw unwind-protect
-    multiple-value-call multiple-value-prog1 progv eval-when
+    progv eval-when
     load-time-value symbol-macrolet macrolet)
   "MACROEXPAND-ALL のあとも残りうる、WITH-TRACING が対応しない特殊形式の
 演算子シンボルのリスト。")
@@ -271,6 +300,8 @@ DEFUN を再評価して変異体を試す際にまさにこれを踏む）た�
     ((eq (first form) 'function) (%walk-function form path))
     ((eq (first form) 'lambda) (%walk-lambda-form form path))
     ((member (first form) '(flet labels)) (%walk-flet form path))
+    ((eq (first form) 'multiple-value-call) (%walk-multiple-value-call form path))
+    ((eq (first form) 'multiple-value-prog1) (%walk-multiple-value-prog1 form path))
     ((%unsupported-operator-p (first form)) (%unsupported form path))
     ((and (consp (first form)) (eq (first (first form)) 'lambda)) (%walk-lambda-call form path))
     ((symbolp (first form)) (%walk-call form path))

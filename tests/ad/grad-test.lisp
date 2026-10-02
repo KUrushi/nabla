@@ -182,3 +182,74 @@ eval-graph すると eager の grad と一致する。"
 
 (test grad/string-argument-signals-autodiff-error
   (signals nb:autodiff-error (funcall (nb:grad (nb:with-tracing (x) x)) "abc")))
+
+;;; --- with-tracing の中で multiple-value-bind が使える（issue #115） ---
+
+(defparameter *mvb-avals* (list (nb:make-aval '(3) :f64) (nb:make-aval '(3) :f64)))
+
+(defun %mvb-vg ()
+  (nb:value-and-grad (nb:with-tracing (x y) (nb:reduce-sum (+ (tanh (* x y)) x))) :argnums '(0 1)))
+
+(defun %mvb-graph (vg)
+  "multiple-value-bind で (値 勾配リスト) を受ける with-tracing を graph にする。"
+  (nb:trace-to-graph
+   (nb:with-tracing (x y)
+     (multiple-value-bind (v gs) (funcall vg x y)
+       (values v (first gs) (second gs))))
+   *mvb-avals*))
+
+(defun %flat-value-and-grads (vg &rest args)
+  "VG（argnums がリストの value-and-grad）を ARGS で呼び、(値 勾配...) を平らな多値にする
+普通の関数（multiple-value-bind を使わずに with-tracing から呼ぶ従来の回避法）。"
+  (let ((all (multiple-value-list (apply vg args))))
+    (values-list (cons (first all) (second all)))))
+
+(defun %values-list-graph (vg)
+  "従来の回避法（普通の関数に切り出す）の graph。"
+  (nb:trace-to-graph
+   (nb:with-tracing (x y) (%flat-value-and-grads vg x y))
+   *mvb-avals*))
+
+(test grad/multiple-value-bind-of-value-and-grad-matches-values-list
+  "with-tracing の本体で (multiple-value-bind (v g) (funcall (value-and-grad f) x y) ...) と
+受けた graph を eval-graph した結果が、(values-list ...) で平らにした回避法の graph の
+結果、および eager の value-and-grad の結果と一致する（ランダムな入力）。"
+  (let* ((vg (%mvb-vg))
+         (mvb (%mvb-graph vg))
+         (old (%values-list-graph vg)))
+    (is (check-it (generator (integer 0 100000))
+                  (lambda (seed)
+                    (let* ((arrays (list (make-random-array (make-array-spec '(3) :f64) :seed seed)
+                                         (make-random-array (make-array-spec '(3) :f64) :seed (+ seed 1))))
+                           (got (multiple-value-list (apply #'nb:eval-graph mvb arrays)))
+                           (via-list (multiple-value-list (apply #'nb:eval-graph old arrays)))
+                           (eager (multiple-value-bind (v gs) (apply vg arrays) (cons v gs))))
+                      (and (= 3 (length got))
+                           (%results-close-p got via-list :rtol 1d-12 :atol 1d-12)
+                           (%results-close-p got eager :rtol 1d-12 :atol 1d-12))))
+                  :regression-id grad/multiple-value-bind-of-value-and-grad-matches-values-list
+                  :regression-file (regression-path "grad-multiple-value-bind")))))
+
+(test grad/multiple-value-bind-with-fewer-or-more-variables
+  "受ける変数が値の数より少なければ余りは捨て、多ければ NIL。"
+  (let* ((f (nb:with-tracing (x) (* x x)))
+         (vg (nb:value-and-grad f))
+         (only-value (nb:with-tracing (x) (multiple-value-bind (v) (funcall vg x) v)))
+         (third-is-nil (nb:with-tracing (x) (multiple-value-bind (v g z) (funcall vg x) (list v g z)))))
+    (is (equalp (%f64-scalar 9d0) (funcall only-value 3d0)))
+    (is (null (third (funcall third-is-nil 3d0))))))
+
+(test grad/multiple-value-call-of-lambda-over-value-and-grad
+  "multiple-value-call に (lambda (v g) ...) を直接渡す形も動く（graph も eager と一致）。"
+  (let* ((vg (nb:value-and-grad (nb:with-tracing (x) (* x x))))
+         (f (nb:with-tracing (x) (multiple-value-call (lambda (v g) (+ v g)) (funcall vg x))))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '() :f64)))))
+    (is (equalp (%f64-scalar 15d0) (funcall f (%f64-scalar 3d0))))
+    (is (equalp (%f64-scalar 15d0) (nb:eval-graph graph (%f64-scalar 3d0))))))
+
+(test grad/multiple-value-bind-passes-through-non-tracer-values
+  "トレーサ以外（実数・配列）の多値も、ふつうの Lisp の多値としてそのまま受け取れる。"
+  (let ((f (nb:with-tracing (x) (multiple-value-bind (a b) (values 2d0 x) (* a b)))))
+    (is (equalp (%f64-scalar 6d0) (funcall f (%f64-scalar 3d0))))
+    (is (equalp (%f64-scalar 6d0)
+                (nb:eval-graph (nb:trace-to-graph f (list (nb:make-aval '() :f64))) (%f64-scalar 3d0))))))
