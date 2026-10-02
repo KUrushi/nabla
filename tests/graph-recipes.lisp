@@ -11,7 +11,8 @@
 ;;;;   (:in dtype shape)                 入力 var を1つ作る
 ;;;;   (:const dtype shape seed)         定数 var を1つ作る
 ;;;;   (:unary prim-keyword idx)         単項プリミティブを適用（%test-neg）
-;;;;   (:binary prim-keyword idx idx)    二項プリミティブを適用（%test-add）
+;;;;   (:binary prim-keyword idx idx)    二項プリミティブを適用（%test-add。
+;;;;                                     GRAPH-RECIPE の :binary-prims で %test-mul も選べる）
 ;;;;   (:reshape idx shape)              %test-reshape を適用
 ;;;;   (:convert idx dtype)              %test-convert を適用
 ;;;;   (:reduce idx axis)                %test-reduce を適用
@@ -41,7 +42,7 @@
           when (and (/= i idx1) (equalp a target))
             return i)))
 
-(defun %generate-recipe (max-ops dtypes max-rank max-dim)
+(defun %generate-recipe (max-ops dtypes max-rank max-dim &optional (binary-prims '(:%test-add)))
   "レシピ（ステップのリスト）を1つランダムに生成して返す。少なくとも1つの
 :IN ステップと、末尾に1つの :OUT ステップを持つ。"
   (let ((steps '())
@@ -74,7 +75,7 @@
            (setf avals (append avals (list aval))))
           (:binary
            (let* ((idx2 (or (%recipe-matching-index avals idx) idx)))
-             (push (list :binary :%test-add idx idx2) steps)
+             (push (list :binary (nth (random (length binary-prims)) binary-prims) idx idx2) steps)
              (setf avals (append avals (list aval)))))
           (:reshape
            ;; 要素数が変わらない reshape（フラット化）にする。BUILD-GRAPH が
@@ -99,14 +100,17 @@
   ((max-ops :initarg :max-ops :reader %graph-recipe-max-ops)
    (dtypes :initarg :dtypes :reader %graph-recipe-dtypes)
    (max-rank :initarg :max-rank :reader %graph-recipe-max-rank)
-   (max-dim :initarg :max-dim :reader %graph-recipe-max-dim))
+   (max-dim :initarg :max-dim :reader %graph-recipe-max-dim)
+   (binary-prims :initarg :binary-prims :initform '(:%test-add)
+                 :reader %graph-recipe-binary-prims))
   (:documentation "GRAPH-RECIPE の named generator の実体。"))
 
 (defmethod check-it:generate ((generator %graph-recipe-generator))
   (%generate-recipe (%graph-recipe-max-ops generator)
                      (%graph-recipe-dtypes generator)
                      (%graph-recipe-max-rank generator)
-                     (%graph-recipe-max-dim generator)))
+                     (%graph-recipe-max-dim generator)
+                     (%graph-recipe-binary-prims generator)))
 
 (defmethod check-it:shrink ((generator %graph-recipe-generator) test)
   ;; レシピの縮小は行わない（check-it の縮小プロトコルには cached-value を
@@ -115,9 +119,10 @@
   (declare (ignore test))
   (check-it:cached-value generator))
 
-(check-it:def-generator graph-recipe (&key (max-ops 6) (dtypes *dtypes*) (max-rank 3) (max-dim 4))
+(check-it:def-generator graph-recipe (&key (max-ops 6) (dtypes *dtypes*) (max-rank 3) (max-dim 4)
+                                         (binary-prims '(:%test-add)))
   (make-instance '%graph-recipe-generator :max-ops max-ops :dtypes dtypes
-                 :max-rank max-rank :max-dim max-dim))
+                 :max-rank max-rank :max-dim max-dim :binary-prims binary-prims))
 
 (defun build-graph (recipe)
   "RECIPE（このファイル冒頭のレシピ形式）から NB::GRAPH を組み立てて返す。

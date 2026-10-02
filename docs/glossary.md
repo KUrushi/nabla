@@ -122,10 +122,22 @@ pretty form を出力する。
 : 出力側の重み `u` から、各入力への影響（`uᵀ·J`）を計算する。深層学習の「逆伝播（バックプロパゲーション）」はこれ。出力がスカラー（損失）で入力が多い関数に向くので、`grad` はこちらを使う。
 
 **linearize（線形化）**
-: jvp の計算を「入力の値だけで決まる部分」と「`v` に対して線形な部分」に分けること。線形な部分だけを取り出すと、次の transpose がかけられる。
+: jvp の計算を「入力の値だけで決まる部分」と「`v` に対して線形な部分」に分けること。線形な部分だけを取り出すと、次の transpose がかけられる。nabla は graph が静的なので、「接線の入力に推移的に依存する eqn か」だけで分ける（`src/ad/linearize.lisp`）。線形な部分が使う主値の中間値を、残差（residuals）と呼ぶ。
 
 **transpose ルール（転置ルール）**
-: 線形な演算 `L` に対して、その転置 `Lᵀ` を計算するルール。行列 `A` をかける演算なら、転置は `Aᵀ` をかける演算になる。JAX と nabla は「jvp を線形化して転置すると vjp になる」という性質を使い、演算ごとに書くルールを jvp と transpose の2種類に抑えている。
+: 線形な演算 `L` に対して、その転置 `Lᵀ` を計算するルール。行列 `A` をかける演算なら、転置は `Aᵀ` をかける演算になる。JAX と nabla は「jvp を線形化して転置すると vjp になる」という性質を使い、演算ごとに書くルールを jvp と transpose の2種類に抑えている。transpose 変換（`src/ad/transpose.lisp`）は、線形な graph を逆順にたどり、各 eqn の出力の余接線からルールで入力の余接線を求め、同じ入力への寄与を足し合わせる。
+
+**symbolic zero（シンボリックなゼロ）**
+: 値がゼロと分かっている接線・余接線を、配列も eqn も作らずに表す内部オブジェクト（`src/ad/zero.lisp` の `symbolic-zero`）。jvp / transpose の変換はこれをそのまま伝播させ、ゼロとの加算や、ゼロを使う項の計算を丸ごと省く。graph の出力など、実体が必要になったときだけ `instantiate-zero` が、rank 0 の定数 0 と `broadcast-in-dim` で配列にする。transpose ルールで「まだ値が無い線形入力」を表す `undefined-primal` とは別物。
+
+**grad / value-and-grad（勾配）**
+: スカラー（rank 0 の浮動小数点）を返す関数 `f` の、引数についての勾配を返す関数を作る（`nb:grad`、`nb:value-and-grad`。`src/ad/grad.lisp`）。`value-and-grad` は値も一緒に返す。中身は、`f` を引数の `aval` で1回トレースして graph にし、vjp（余接線は rank 0 の `1`）で微分した graph にしたもの。呼び出しが別のトレース（`jit`・`with-tracing` の本体・別の `grad`）の中なら `inline-graph` でそのトレースへ展開し、そうでなければ `eval-graph` で評価する。`(grad f)` は呼ぶたびに新しい関数オブジェクトを作るので、`jit` のキャッシュ（関数の同一性が鍵）が効かず、ループの中で `(jit (grad f))` を作ると毎回コンパイルされる（JAX と同じ）。ループの外で作るか、`defjit` の本体の中で使う。
+
+**stop-gradient（勾配を止める）**
+: 値は入力そのままだが、自動微分では定数として扱う演算（`nb:stop-gradient`、プリミティブ `stop-gradient`、JAX の `lax.stop_gradient`）。jvp ルールは常に symbolic zero を返す。StableHLO には恒等の op が無いので、値を変えず最適化の境界になる `stablehlo.optimization_barrier` に出力する。
+
+**balanced eq（等しいときは半分ずつ）**
+: `max(x, y)` の微分で `x` と `y` が等しい点では、接線を各側に 0.5 ずつ流す JAX の規約（`jax._src.lax._balanced_eq`）。等しくない点では大きい側（`min` なら小さい側）の接線だけが通る。
 
 **vmap / バッチ化ルール（batching rule）**
 : `vmap` は、1つの例を処理する関数を、例の束（バッチ）をまとめて処理する関数に自動で変換する。そのために、各演算に「入力にバッチの軸が増えたら、出力のどこにバッチの軸が来るか」を決めるルールを書く。これがバッチ化ルール。
@@ -144,6 +156,9 @@ pretty form を出力する。
 
 **NaN propagation（NaN 伝播）**
 : 演算の入力のどれかが NaN なら、出力も必ず NaN になるという規則。StableHLO / IREE / JAX の `max` / `min` はこの規則に従うが、Common Lisp の `max` / `min` は引数の順序によって NaN を落としてしまうことがあるため、nabla は `%ieee-max` / `%ieee-min` で明示的に NaN 伝播を実装している。
+
+**指示関数（indicator）**
+: 条件を満たす要素で 1、そうでなければ 0 になる配列。`reduce-max` の jvp は、最大値を取る要素の指示関数を主値だけから作り、`reduce-sum(接線 · 指示関数) / reduce-sum(指示関数)` で接線を選ぶ（最大値が重複すれば平均になる。JAX と同じ）。指示関数は主値にしか依存しないので、接線について線形のまま保てる。
 
 ## テスト
 

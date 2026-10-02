@@ -122,24 +122,30 @@ DEPENDS-ON には (:REQUIRE \"sb-cltl2\") のような文字列でないエン�
                     :test #'string-equal))))
 
 (test (backend/core-sources/do-not-mention-iree :suite :nabla.medium)
-  "src/*.lisp と src/ffi-support/*.lisp（src/iree/ 以外、非再帰）と nabla.asd の \"nabla\" defsystem
-フォームには、大文字小文字を問わず \"iree\" という文字列が一度も現れない
-（core は実行系の実装を知らない、という issue #9 の設計の約束）。"
+  "src/ 以下の .lisp（再帰。src/iree/・src/pjrt/ を除く。src/ad/ や src/primitives/ など
+core のサブディレクトリと、IREE と PJRT の両方から使う src/ffi-support/（issue #79）も対象）と
+nabla.asd の \"nabla\" defsystem フォームには、大文字小文字を問わず \"iree\" という文字列が
+一度も現れない（core は実行系の実装を知らない、という issue #9 の設計の約束）。"
   (let ((offending nil))
-    (dolist (path (append (directory (merge-pathnames "*.lisp" (asdf:system-relative-pathname "nabla" "src/")))
-                          ;; nabla/ffi-support も IREE の名前を知らない（issue #79。
-                          ;; IREE と将来の PJRT の両方から使うため）。
-                          (directory (merge-pathnames "*.lisp" (asdf:system-relative-pathname "nabla" "src/ffi-support/")))))
+    (dolist (path (remove-if (lambda (path)
+                               (let ((name (namestring path)))
+                                 (some (lambda (dir) (search dir name))
+                                       '("/src/iree/" "/src/pjrt/"))))
+                             (directory (merge-pathnames "**/*.lisp" (asdf:system-relative-pathname "nabla" "src/")))))
       (with-open-file (stream path :direction :input)
         (let ((text (make-string (file-length stream))))
           (let ((count (read-sequence text stream)))
             (when (search "iree" (string-downcase (subseq text 0 count)))
               (push path offending))))))
     (is (null offending) "iree が現れる core ファイル: ~S" offending)
-    ;; core は PJRT の名前も知らない（CLAUDE.md、issue #78）。nabla/ffi-support は
-    ;; PJRT との共有が目的なので、ここでは src/*.lisp だけを見る。
+    ;; core は PJRT の名前も知らない（CLAUDE.md、issue #78）。src/ 以下を再帰で見る。
+    ;; nabla/ffi-support は PJRT との共有が目的なので、src/iree/・src/pjrt/ と並べて除く。
     (let ((pjrt-offending nil))
-      (dolist (path (directory (merge-pathnames "*.lisp" (asdf:system-relative-pathname "nabla" "src/"))))
+      (dolist (path (remove-if (lambda (path)
+                                 (let ((name (namestring path)))
+                                   (some (lambda (dir) (search dir name))
+                                         '("/src/iree/" "/src/pjrt/" "/src/ffi-support/"))))
+                               (directory (merge-pathnames "**/*.lisp" (asdf:system-relative-pathname "nabla" "src/")))))
         (with-open-file (stream path :direction :input)
           (let* ((text (make-string (file-length stream)))
                  (count (read-sequence text stream)))

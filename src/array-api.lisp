@@ -187,3 +187,16 @@ dtype は同じ真偽の rank 0 の PRED を渡したときと同じ）。PRED �
 
 (defmethod where (pred a b)
   (%t-select pred a b))
+
+;;; --- stop-gradient（issue #80） ---
+
+(defgeneric stop-gradient (x)
+  (:documentation "X と同じ値を返すが、自動微分（jvp / grad）では定数として
+扱われる（接線がゼロになる）。JAX の lax.stop_gradient と同じ。X は任意の
+dtype の配列かトレーサ。配列には中身が等しい新しい配列を返す。"))
+
+(defmethod stop-gradient ((x array))
+  (%trace-op-array :stop-gradient x))
+
+(defmethod stop-gradient ((x tracer))
+  (%trace-eqn :stop-gradient (list x)))

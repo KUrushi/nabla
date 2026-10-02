@@ -1,0 +1,7 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME JVP/RESULT-IS-WELL-FORMED-AND-ROUND-TRIPS :DATUM
+                 "((:IN :F64 (4 1 2)) (:IN :F32 (2)) (:IN :F64 (4 4 2))
+ (:CONST :F64 (1 3 4) 627421431) (:RESHAPE 3 (12)) (:RESHAPE 4 (12))
+ (:CONVERT 2 :F64) (:CONVERT 0 :F32) (:BINARY :%TEST-ADD 1 1)
+ (:BINARY :%TEST-ADD 2 6) (:OUT 5))"
+                 :TIMESTAMP 3999856297)

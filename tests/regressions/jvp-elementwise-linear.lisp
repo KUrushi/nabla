@@ -1,0 +1,3 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME JVP-ELEMENTWISE/TANGENT-IS-LINEAR :DATUM "0" :TIMESTAMP
+                 3999857340)
