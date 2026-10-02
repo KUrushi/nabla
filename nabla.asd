@@ -56,6 +56,9 @@
                ;; jvp 変換と、要素ごとのプリミティブの jvp ルール（issue #77、77c）
                (:file "src/ad/jvp")
                (:file "src/ad/rules-elementwise")
+               ;; linearize / transpose / vjp（issue #82）
+               (:file "src/ad/linearize")
+               (:file "src/ad/transpose")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -132,6 +135,9 @@
                (:file "tests/ad/rules-test")
                ;; jvp 変換（issue #77、77c）
                (:file "tests/ad/jvp-test")
+               ;; linearize / transpose / vjp（issue #82）
+               (:file "tests/ad/linearize-test")
+               (:file "tests/ad/transpose-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
@@ -213,6 +219,8 @@
                (:file "tests/iree/stablehlo-test")
                ;; jvp 変換した graph の IREE 実行（issue #77、77c）
                (:file "tests/iree/jvp-test")
+               ;; vjp 変換した graph の IREE 実行（issue #82）
+               (:file "tests/iree/vjp-test")
                ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
                (:file "tests/iree/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
