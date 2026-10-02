@@ -1,0 +1,1 @@
+レビュー対応: (quote sym) も弾く、docstring/README に nth-value・multiple-value-list を追記、grad テストの回避法側を普通の defun ヘルパーに変更、walk テストに eager 実行の検査を追加。mutation 10/10 killed、既定スイート通過。
