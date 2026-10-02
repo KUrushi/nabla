@@ -10,7 +10,7 @@
 ;;;;      PBT で確かめる）
 ;;;; 加えて max / min の同値（0.5 ずつ）・compare / convert / select の
 ;;;; 接線の扱いは固定の例で確かめる。
-;;;; 定義域: log / div の分母は正の値、max / min / select は2入力が必ず
+;;;; 定義域: log / div の分母は 0.1 以上の正の値、max / min / select は2入力が必ず
 ;;;; 離れた値（中心差分の刻み幅で比較の向きが変わらない）になるよう作る。
 
 (in-package #:nabla.tests)
@@ -55,13 +55,28 @@
 
 (defun %ew-case-name (case) (getf case :name))
 
+;; 中心差分の打ち切り誤差は f''' に比例し、log では 2/x^3 なので x が 1e-4 を
+;; 下回ると rtol 1e-4 を超えて落ちる（100001 シードの走査で log 7 件・div 11 件、
+;; すべて x < 1e-4）。x >= 0.1 なら相対誤差は 1e-10 以下。
+(defparameter *ew-positive-floor* 1d-1
+  "log / div の分母の :positive の主値に足す下限（理由は上のコメント）。")
+
+(defun %shift-up (array offset)
+  "ARRAY の各要素に OFFSET を足した新しい配列。"
+  (let ((result (make-array (array-dimensions array) :element-type (array-element-type array))))
+    (dotimes (i (array-total-size array) result)
+      (setf (row-major-aref result i) (+ (row-major-aref array i) offset)))))
+
 (defun %ew-inputs (case shape dtype seed &key tangent)
-  "CASE の各入力の決定的な乱数配列（定義域つき）。TANGENT が真なら接線用（定義域なし）。"
+  "CASE の各入力の決定的な乱数配列（定義域つき）。TANGENT が真なら接線用（定義域なし）。
+:positive の主値は (0, 1] に *EW-POSITIVE-FLOOR* を足して 0 から離す。"
   (let ((arrays (loop for domain in (getf case :domains)
                       for i from 0
-                      collect (make-random-array (make-array-spec shape dtype)
-                                                 :seed (+ seed (* 7 i) (if tangent 1000 0))
-                                                 :domain (if (eq domain :positive) :positive :any)))))
+                      collect (let* ((positive (and (eq domain :positive) (not tangent)))
+                                     (array (make-random-array (make-array-spec shape dtype)
+                                                               :seed (+ seed (* 7 i) (if tangent 1000 0))
+                                                               :domain (if positive :positive :any))))
+                                (if positive (%shift-up array *ew-positive-floor*) array)))))
     (if tangent
         arrays
         (let ((previous nil))
@@ -100,23 +115,32 @@
   `(dolist (,case-var (remove-if-not (lambda (c) (declare (ignorable c)) ,filter) *elementwise-jvp-cases*))
      ,@body))
 
+(defun %cd-matches-p (case seed)
+  "CASE の f64 の jvp の接線が、SEED から作った入力で中心差分と一致するか。"
+  (let* ((shape (%ew-shape seed))
+         (graph (%ew-graph case :f64 shape))
+         (primals (%ew-inputs case shape :f64 seed))
+         (tangents (%ew-inputs case shape :f64 seed :tangent t))
+         (result (%ew-eval (nb::jvp-graph graph) (append primals tangents)))
+         (n-out (length (nb:graph-outvars graph))))
+    (%ew-close-p (subseq result n-out)
+                 (central-difference-jvp graph primals tangents)
+                 :rtol *autodiff-rtol* :atol *autodiff-atol*)))
+
 (test jvp-elementwise/tangent-matches-central-difference-f64
   "各ルールの接線が f64 の中心差分と許容誤差で一致する（compare / convert は対象外）。"
   (%do-ew-cases (case :filter (getf c :cd t))
     (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
-                  (lambda (seed)
-                    (let* ((shape (%ew-shape seed))
-                           (graph (%ew-graph case :f64 shape))
-                           (primals (%ew-inputs case shape :f64 seed))
-                           (tangents (%ew-inputs case shape :f64 seed :tangent t))
-                           (result (%ew-eval (nb::jvp-graph graph) (append primals tangents)))
-                           (n-out (length (nb:graph-outvars graph))))
-                      (%ew-close-p (subseq result n-out)
-                                   (central-difference-jvp graph primals tangents)
-                                   :rtol *autodiff-rtol* :atol *autodiff-atol*)))
+                  (lambda (seed) (%cd-matches-p case seed))
                   :regression-id jvp-elementwise/tangent-matches-central-difference-f64
                   :regression-file (regression-path "jvp-elementwise-central-difference"))
         "~S" (%ew-case-name case))))
+
+(test jvp-elementwise/log-div-central-difference-near-zero-seeds
+  "issue #121 の回帰: 0 に近い :positive の主値（x < 1e-4）で中心差分の打ち切り誤差が
+rtol を超えた固定シード。主値を 0 から離す下限（*EW-POSITIVE-FLOOR*）で通る。"
+  (is (%cd-matches-p (find :log *elementwise-jvp-cases* :key #'%ew-case-name) 91519))
+  (is (%cd-matches-p (find :div *elementwise-jvp-cases* :key #'%ew-case-name) 91512)))
 
 (test jvp-elementwise/tangent-is-linear
   "接線について線形: jvp(3·v) = 3·jvp(v)、jvp(v + w) = jvp(v) + jvp(w)（主値は固定）。"
