@@ -3,8 +3,10 @@
 ;;;; テスト専用の %TEST- プリミティブ向け）と同じ考え方だが、こちらは実際に
 ;;;; 登録されているプリミティブ（add / neg / compare / dot-general など）
 ;;;; だけを使い、生成した graph をそのまま EMIT-STABLEHLO → IREE に渡せる
-;;;; ようにする。IREE の TO-DEVICE / 出力の型制約（:f32 :bf16 :f16 のみ）に
-;;;; 合わせ、入出力の dtype はこの3つに限る。:div と :log は inf/NaN を
+;;;; ようにする。IREE の TO-DEVICE / 出力の型制約に合わせ、
+;;;; 既定の dtype は :f32 :bf16 :f16 の3つ。*PRIMITIVE-RECIPE-DTYPES*
+;;;; （export 済み）を再束縛すると別の dtype 集合にできる（例: '(:f64) で
+;;;; eval-graph 専用の自動微分テスト、issue #76）。:div と :log は inf/NaN を
 ;;;; 作りうるので対象外（例ベースのテストで別に確かめる。契約 §3）。
 ;;;;
 ;;;; レシピはステップのリスト:
@@ -30,7 +32,9 @@
 (in-package #:nabla.tests.support)
 
 (defparameter *primitive-recipe-dtypes* '(:f32 :bf16 :f16)
-  "IREE の TO-DEVICE / 出力が受け付ける3つの dtype。")
+  "レシピが使う dtype の集合。既定は IREE の TO-DEVICE / 出力が受け付ける
+3つ。export 済みで、LET で再束縛できる（生成時に読まれる）。例えば '(:f64)
+にすると、eval-graph だけで評価する f64 の graph を作れる（issue #76）。")
 
 (defun %pr-random-shape (max-rank max-dim)
   (loop repeat (random (1+ max-rank)) collect (1+ (random max-dim))))

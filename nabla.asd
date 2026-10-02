@@ -72,6 +72,7 @@
                (:file "tests/support/regression")
                ;; StableHLO emitter の medium PBT が使うレシピ生成器（issue #33、s1）
                (:file "tests/support/primitive-recipes")
+               (:file "tests/support/autodiff")
                (:file "tests/support/run-tests")))
 
 (defsystem "nabla/tests"
@@ -79,6 +80,7 @@
   :depends-on ("nabla" "nabla/test-support")
   :components ((:file "tests/package")
                (:file "tests/support-test")
+               (:file "tests/autodiff-support-test")
                (:file "tests/dtype-test")
                ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
                (:file "tests/float16-test")
