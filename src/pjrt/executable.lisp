@@ -121,6 +121,20 @@ compile_portable_executable=1 にするのは、実行体にデバイス割り�
   "NAME（PJRT_Executable_Destroy / PJRT_LoadedExecutable_Destroy）で POINTER を破棄する。"
   (%pjrt-call (api name args (:struct %executable-destroy-args) (executable pointer))))
 
+(defun %client-state-destroy-loaded-executable (state executable-address)
+  "EXECUTABLE-ADDRESS（PJRT_LoadedExecutable* の整数アドレス）を
+PJRT_LoadedExecutable_Destroy し、生きているオブジェクトの数を1つ減らす
+（バッファと同じカウンタ。ロード済みの実行体もクライアントより先に破棄する）。
+所有者が既にいなくて、これが最後なら、クライアントも破棄する。finalizer からも
+呼ばれるので、エラーは握りつぶす。"
+  (unwind-protect
+       (ignore-errors
+        (let ((api (%client-state-api state)))
+          (%destroy-executable api "PJRT_LoadedExecutable_Destroy"
+                               (cffi:make-pointer executable-address))))
+    (sb-ext:atomic-decf (client-state-live-buffers state))
+    (ignore-errors (%client-state-destroy-if-unused state))))
+
 (defun %get-executable (api loaded)
   "LOADED（PJRT_LoadedExecutable*）から PJRT_Executable* を取り出す。
 呼び出し側が PJRT_Executable_Destroy する。"
@@ -194,8 +208,9 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
 (defstruct (pjrt-module (:constructor %make-pjrt-module (client address num-outputs)))
   "BACKEND-LOAD が返す不透明な module。ADDRESS は PJRT_LoadedExecutable* の
 整数アドレス。RELEASED-P は BACKEND-UNLOAD の CAS で立てる。CLIENT を強い参照で
-持つので、client はこの module より先には破棄されない。finalizer は持たない
-ので、使い終わったら BACKEND-UNLOAD すること（jit のキャッシュは行う）。"
+持つ。BACKEND-UNLOAD せずに捨てても、finalizer（整数アドレスと CLIENT-STATE
+だけを捕まえる）が PJRT_LoadedExecutable_Destroy する。CLIENT-STATE の生存数
+に数えるので、クライアントの破棄は必ずこの破棄より後になる（client.lisp 冒頭）。"
   client
   (address 0 :type (unsigned-byte 64) :read-only t)
   (num-outputs 0 :type fixnum :read-only t)
@@ -218,18 +233,25 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
                                              'loaded-executable)))))
             (done nil))
         (unwind-protect
-             (prog1 (%make-pjrt-module client (cffi:pointer-address loaded)
-                                       (%loaded-executable-num-outputs api loaded))
-               (setf done t))
+             (let* ((state (%pjrt-client-state client))
+                    (address (cffi:pointer-address loaded))
+                    (module (%make-pjrt-module client address
+                                               (%loaded-executable-num-outputs api loaded))))
+               (%client-state-buffer-created state)
+               (tg:finalize module
+                            (lambda () (%client-state-destroy-loaded-executable state address)))
+               (setf done t)
+               module)
           (unless done
             (%destroy-executable api "PJRT_LoadedExecutable_Destroy" loaded)))))))
 
 (defun %module-unload (module)
-  "MODULE の PJRT_LoadedExecutable を破棄する。2回目以降は何もしない。"
+  "MODULE の PJRT_LoadedExecutable を破棄する。先に tg:cancel-finalization で
+finalizer を取り消す（二重解放を避ける）。2回目以降は何もしない。"
   (when (null (sb-ext:compare-and-swap (pjrt-module-released-p module) nil t))
-    (%destroy-executable (%pjrt-client-api (pjrt-module-client module))
-                         "PJRT_LoadedExecutable_Destroy"
-                         (cffi:make-pointer (pjrt-module-address module))))
+    (tg:cancel-finalization module)
+    (%client-state-destroy-loaded-executable
+     (%pjrt-client-state (pjrt-module-client module)) (pjrt-module-address module)))
   nil)
 
 (defun %buffer-aval (api buffer)
@@ -287,6 +309,10 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
       (unless (eq (device-array-client array) client)
         (error "the device-array belongs to a different PJRT client"))
       (%live-device-array-pointer array "invoke"))
+    ;; module を実行の完了まで生かしておく（finalizer が実行中の
+    ;; PJRT_LoadedExecutable を破棄しないように。アドレスしか読まないので、
+    ;; 呼び出し側が参照を捨てると、コンパイラは module を死んだとみなしうる）。
+    (sb-sys:with-pinned-objects (module)
     (cffi:with-foreign-objects ((options '(:struct %execute-options))
                                 (arg-list :pointer (max num-args 1))
                                 (arg-lists :pointer 1)
@@ -326,4 +352,4 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
             (mapc #'release-device-array outputs)
             (unless outputs
               (ignore-errors
-               (%await-and-destroy-event api (cffi:mem-aref events :pointer 0))))))))))
+               (%await-and-destroy-event api (cffi:mem-aref events :pointer 0)))))))))))
