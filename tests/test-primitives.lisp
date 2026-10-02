@@ -145,3 +145,41 @@
 ;; （issue #29、u1b）。
 (nb:defprimitive %test-flag (:keep)
   :abstract-eval (lambda (in-avals &key keep) (declare (ignore keep)) (first in-avals)))
+
+;;; --- jvp ルール（issue #77、77c）。 ---
+;;;
+;;; %test-neg / %test-add / %test-reshape / %test-convert / %test-reduce は
+;;; どれも入力について線形（convert は丸めを除いて線形）なので、接線は
+;;; 同じプリミティブを接線に適用するだけ。ランダムな graph-recipe の jvp
+;;; 変換のテストが使う。%TEST-NO-EAGER にはわざと jvp ルールを付けない
+;;; （NO-JVP-RULE のテスト用）。
+
+(nb::def-jvp-rule %test-neg (primals out tangents)
+  (declare (ignore primals out))
+  (nb::%trace-eqn :%test-neg (list (first tangents))))
+
+(nb::def-jvp-rule %test-add (primals out tangents)
+  (declare (ignore primals out))
+  (nb::add-tangents (first tangents) (second tangents)))
+
+(nb::def-jvp-rule %test-reshape (primals out tangents &key shape)
+  (declare (ignore primals out))
+  (nb::%trace-eqn :%test-reshape (list (first tangents)) :shape shape))
+
+(nb::def-jvp-rule %test-convert (primals out tangents &key dtype)
+  (declare (ignore primals out))
+  (nb::%trace-eqn :%test-convert (list (first tangents)) :dtype dtype))
+
+(nb::def-jvp-rule %test-reduce (primals out tangents &key axis)
+  (declare (ignore primals out))
+  (nb::%trace-eqn :%test-reduce (list (first tangents)) :axis axis))
+
+;; わざと主値と aval の違う接線（f64 なら f32、それ以外なら f64）を返す
+;; jvp ルールを持つプリミティブ（autodiff-error のテスト用）。
+(nb:defprimitive %test-bad-jvp ()
+  :abstract-eval (lambda (in-avals) (first in-avals)))
+
+(nb::def-jvp-rule %test-bad-jvp (primals out tangents)
+  (declare (ignore primals))
+  (nb::%trace-eqn :%test-convert (list (first tangents))
+                  :dtype (if (eq (nb:aval-dtype (nb::tracer-aval out)) :f64) :f32 :f64)))

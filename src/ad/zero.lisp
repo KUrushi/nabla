@@ -32,13 +32,20 @@
   "TANGENT が SYMBOLIC-ZERO なら、現在のトレース（*CURRENT-TRACE*）に、同じ
 aval を持つゼロのトレーサを作って返す: rank 0 の定数 0 を登録し、rank が 1
 以上なら BROADCAST-IN-DIM で shape まで広げる（%LIFT-NUMBER と同じ形）。
-TRACER ならそのまま返す（eqn は足さない）。:I1 の aval は
-%SCALAR-ARRAY が TRACING-ERROR にする。"
+TRACER ならそのまま返す（eqn は足さない）。:I1 は %SCALAR-ARRAY が数値との
+対応を持たず拒否するので、rank 0 の bit 配列 0（false）を直接登録する
+（jvp の :I1 出力の接線は常に全 false）。"
   (etypecase tangent
     (tracer tangent)
     (symbolic-zero
      (let ((aval (symbolic-zero-aval tangent)))
-       (%lift-number-to 0 (aval-dtype aval) (aval-shape aval))))))
+       (if (eq (aval-dtype aval) :i1)
+           (let ((scalar (%lift-constant (make-array '() :element-type 'bit :initial-element 0)
+                                         (make-aval '() :i1) *current-trace*)))
+             (if (plusp (length (aval-shape aval)))
+                 (%trace-eqn :broadcast-in-dim (list scalar) :shape (aval-shape aval) :dims '())
+                 scalar))
+           (%lift-number-to 0 (aval-dtype aval) (aval-shape aval)))))))
 
 (defun add-tangents (a b)
   "接線（余接線）A と B（それぞれ TRACER または SYMBOLIC-ZERO）の和を返す。
