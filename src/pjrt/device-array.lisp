@@ -57,9 +57,9 @@ finalizer は整数アドレスと CLIENT-STATE だけを捕まえる。"
        (%pjrt-client-state (device-array-client device-array)) address))
     nil))
 
-(defun %live-device-array-pointer (device-array)
+(defun %live-device-array-pointer (device-array &optional (context "to-host"))
   (when (device-array-released-p device-array)
-    (error 'pjrt-object-released :kind :device-array :context "to-host"
+    (error 'pjrt-object-released :kind :device-array :context context
                                  :message "the device-array was already released"))
   (%device-array-pointer device-array))
 

@@ -270,12 +270,13 @@
 
 (defsystem "nabla/pjrt"
   :description "PJRT 連携（プラグインの .so を dlopen し、クライアント・デバイス・device-array を扱う。コンパイルと実行は後続の issue）"
-  :depends-on ("nabla" "nabla/ffi-support" "cffi" "trivial-garbage")
+  :depends-on ("nabla" "nabla/ffi-support" "cffi" "trivial-garbage" "ironclad")
   :components ((:file "src/pjrt/package")
                (:file "src/pjrt/library")
                (:file "src/pjrt/ffi")
                (:file "src/pjrt/client")
                (:file "src/pjrt/device-array")
+               (:file "src/pjrt/executable")
                (:file "src/pjrt/backend")))
 
 ;; nabla/pjrt/tests も nabla/iree/tests と同じく nabla/tests から独立している。
@@ -290,4 +291,5 @@
                ;; FFI 定義とヘッダの照合、クライアント・backend・device-array（issue #85）
                (:file "tests/pjrt/ffi-test")
                (:file "tests/pjrt/backend-test")
-               (:file "tests/pjrt/client-test")))
+               ;; コンパイル・ロード・実行、jit、fingerprint（issue #87）
+               (:file "tests/pjrt/executable-test")))
