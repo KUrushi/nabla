@@ -109,7 +109,7 @@ WITH-IEEE-ARITHMETIC でマスクしているので signal せず、IEEE 754 の
 ;;; 持つが、要素ごとの演算に CL の MAX/MIN ではなく %IEEE-MAX/%IEEE-MIN
 ;;; （src/primitives/common.lisp）を使う。CL の MAX/MIN は NaN を伝播しない
 ;;; ため（(max nan 1.0) => 1.0 だが (max 1.0 nan) => NaN）、StableHLO の
-;;; stablehlo.maximum / stablehlo.minimum・IREE・jnp.maximum に合わせて
+;;; stablehlo.maximum / stablehlo.minimum・バックエンドの実装・jnp.maximum に合わせて
 ;;; どちらの引数が NaN でも NaN を返す必要がある。
 
 (defun %max-element (a b)

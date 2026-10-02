@@ -1,0 +1,7 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME
+                 LINEARIZE/LINEAR-PART-DEPENDS-ON-TANGENTS-AND-PRIMAL-PART-DOES-NOT
+                 :DATUM "((:IN :F32 (4 4 4)) (:IN :F64 (2 3 1)) (:IN :F32 (1 2))
+ (:CONST :F64 (3) 540751604) (:CONST :F64 (4) 1900380568) (:CONVERT 4 :F64)
+ (:OUT 1))"
+                 :TIMESTAMP 3999857452)

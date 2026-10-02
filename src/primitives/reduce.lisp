@@ -90,7 +90,7 @@ sum は 0（\"0.0\"）。add は :bf16 / :f16 のとき常に %REDUCE-ACCUMULATE
             (:f16 "0xFC00")))))
 
 (defun %reduce-accumulate-in-f32-p (op dtype)
-  "OP が :ADD で、かつ DTYPE が :BF16 / :F16 なら真。IREE（llvm-cpu）の
+  "OP が :ADD で、かつ DTYPE が :BF16 / :F16 なら真。バックエンド（StableHLO のコンパイラ、CPU 実行）の
 stablehlo.reduce（add）は入力 dtype のまま累積し、eager 実装
 （single-float 累積）と軸長が大きいときに許容誤差を超えてずれる
 （issue #63。dot_general の issue #54 と同じ原因だが、dot_general 側の

@@ -456,3 +456,11 @@ TRACEABLE-FUNCTION を配列に直接適用した結果とビット単位で一�
                       (approx= direct plain :dtype :f32))))
                 :regression-id trace/expr-tree-direct-call-matches-plain-cl-eval-on-scalars
                 :regression-file (regression-path "trace-expr-tree-matches-plain-eval"))))
+
+(test trace/avals-count-mismatch-signals-tracing-error
+  "avals の個数が関数の引数の個数と違えば（多くても少なくても）TRACE-TO-GRAPH は
+TRACING-ERROR を signal する。"
+  (let ((aval (nb:make-aval '(2) :f32))
+        (fn (nb:with-tracing (x y) (+ x y))))
+    (signals nb:tracing-error (nb:trace-to-graph fn (list aval)))
+    (signals nb:tracing-error (nb:trace-to-graph fn (list aval aval aval)))))
