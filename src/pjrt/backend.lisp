@@ -91,7 +91,9 @@ PJRT_Executable_Serialize したバイト列を返す。失敗は PJRT-ERROR。"
   (%client-load (%pjrt-backend-client backend) octets))
 
 (defmethod nabla:backend-unload ((backend pjrt-backend) module)
-  "MODULE の PJRT_LoadedExecutable を破棄する。2回目以降は何もしない（冪等）。"
+  "MODULE の PJRT_LoadedExecutable を破棄する。2回目以降は何もしない（冪等）。
+破棄が失敗したら PJRT-ERROR を伝える。そのときも MODULE は released 済みに
+なり、再試行はされない（2回目の呼び出しは何もしない）。"
   (declare (ignore backend))
   (%module-unload module))
 

@@ -230,3 +230,29 @@ format の制御文字列）は、出力するトークン（演算名など）�
   (is (null (nabla.mutate:mutation-sites '(%my-error "bad value") :string-constant)))
   (is (null (nabla.mutate:mutation-sites '(%my-error "x=~A") :string-constant)))
   (is (equal '((emit "")) (nabla.mutate:mutation-sites '(emit "stablehlo.add") :string-constant))))
+
+(test autodiff-rule-definitions-are-mutable-and-bodies-deletable
+  "def-jvp-rule / def-transpose-rule は defun と同じく、名前とラムダリストの後が
+本体で、declare と最後のフォームは消さない。def-jvp-partials は部分形式
+（lambda の本体）をたどる。"
+  (dolist (head '("DEF-JVP-RULE" "DEF-TRANSPOSE-RULE" "DEF-JVP-PARTIALS"))
+    (is-true (nabla.mutate:mutable-definition-p (list (intern head :nabla.mutate.tests)
+                                                      'foo))))
+  (let ((rule (read-from-string
+               "(def-jvp-rule foo (primals out tangents &key k) (declare (ignore out)) (g k) (h primals))")))
+    (is (equal (read-from-string
+                "((def-jvp-rule foo (primals out tangents &key k) (declare (ignore out)) (h primals)))")
+               (nabla.mutate:mutation-sites rule :delete-form))))
+  (let ((rule (read-from-string "(def-transpose-rule foo (ct x) (g ct) (h ct x))")))
+    (is (equal (read-from-string "((def-transpose-rule foo (ct x) (h ct x)))")
+               (nabla.mutate:mutation-sites rule :delete-form))))
+  (let ((partials (read-from-string
+                   "(def-jvp-partials foo (lambda (primals out) (g out) (h primals)))")))
+    (is (equal (read-from-string
+                "((def-jvp-partials foo (lambda (primals out) (h primals))))")
+               (nabla.mutate:mutation-sites partials :delete-form)))
+    (is (equal (read-from-string
+                "((def-jvp-partials foo (lambda (primals out) (g out) (- primals))))")
+               (nabla.mutate:mutation-sites
+                (read-from-string "(def-jvp-partials foo (lambda (primals out) (g out) (+ primals)))")
+                :arith-swap)))))

@@ -185,6 +185,79 @@ pjrt-object-released。"
     (finishes (nabla:backend-unload backend module))
     (finishes (nabla:backend-unload backend module))))
 
+;;; --- unload せずに捨てた module の finalizer（issue #114）---
+
+(defun %drop-modules (backend count)
+  "COUNT 個の module を backend-load し、unload せずに捨てる。参照がスタックに
+残らないよう別関数にしてある。"
+  (declare (notinline nabla:backend-load))
+  (let ((octets (nabla:backend-compile backend (stablehlo-fixture "add"))))
+    (dotimes (i count)
+      (nabla:backend-load backend octets))))
+
+(define-pjrt-test executable/finalizer/frees-dropped-modules
+  "unload せずに捨てた module は、GC と finalizer の後で破棄される（client-state の
+生存数が元に近い値に戻る）。保守的なスタックルートで少数は残りうる。"
+  (skip-unless-pjrt :kind :cpu)
+  (let* ((backend (nabla:find-backend :pjrt))
+         (baseline (%live-buffers backend))
+         (count 100))
+    (%drop-modules backend count)
+    (is (>= (- (%live-buffers backend) baseline) 1))
+    (dotimes (i 3) (gc-and-run-finalizers))
+    (is (<= (- (%live-buffers backend) baseline) 5)
+        "~D modules still alive after GC" (- (%live-buffers backend) baseline))))
+
+(defun %module-on-private-backend ()
+  "専用クライアントで module を1つロードし、(values module client-state) を返す。
+backend への参照はこの関数のフレームとともに消える。"
+  (declare (notinline nabla:make-backend nabla:backend-load))
+  (let* ((backend (nabla:make-backend :pjrt))
+         (module (nabla:backend-load
+                  backend (nabla:backend-compile backend (stablehlo-fixture "add")))))
+    (values module
+            (nabla.pjrt::%pjrt-client-state (nabla.pjrt::%pjrt-backend-client backend)))))
+
+(define-pjrt-test executable/module/outlives-its-backend
+  "所有者（backend / client）が消えた後でも module は invoke でき、クライアントは
+module を unload した時点で初めて破棄される（LoadedExecutable が先）。"
+  (skip-unless-pjrt :kind :cpu)
+  (multiple-value-bind (module state) (%module-on-private-backend)
+    (nabla.pjrt::%client-state-owner-gone state)
+    (is (not (nabla.pjrt::client-state-destroyed-p state))
+        "the client was destroyed while a module was still loaded")
+    (let* ((client (nabla.pjrt::pjrt-module-client module))
+           (device (first (nabla.pjrt::%pjrt-client-devices client)))
+           (x (make-array '(4 8) :element-type 'single-float :initial-element 1.5))
+           (a (nabla.pjrt::%client-to-device client device x :f32)))
+      (unwind-protect
+           (let ((out (nabla.pjrt::%module-invoke module device (list a a))))
+             (is (allclose (nabla:to-host out) (reference-add x x) :dtype :f32))
+             (release-device-array out))
+        (release-device-array a))
+      (is (not (nabla.pjrt::client-state-destroyed-p state))))
+    ;; unload は backend 引数を使わない（module が client を持つ）ので、共有の
+    ;; backend を渡せる。専用 backend は既に消えている。
+    (nabla:backend-unload (nabla:find-backend :pjrt) module)
+    (is (nabla.pjrt::client-state-destroyed-p state))))
+
+(define-pjrt-test executable/unload/then-gc-does-not-double-free
+  "明示的に unload した module を捨てて GC しても、二重解放にならず、生存数は
+元に戻っている。共有の find-backend だと、他のテストが残したゴミが生存数に
+数えられて GC で減るので、専用の backend を使う。"
+  (skip-unless-pjrt :kind :cpu)
+  (let* ((backend (nabla:make-backend :pjrt))
+         (baseline (%live-buffers backend)))
+    (flet ((churn (octets)
+             (declare (notinline nabla:backend-load nabla:backend-unload))
+             (dotimes (i 20)
+               (let ((m (nabla:backend-load backend octets)))
+                 (nabla:backend-unload backend m)
+                 (nabla:backend-unload backend m)))))
+      (churn (nabla:backend-compile backend (stablehlo-fixture "add"))))
+    (dotimes (i 3) (finishes (gc-and-run-finalizers)))
+    (is (= baseline (%live-buffers backend)))))
+
 ;;; --- ランダムな graph（emit-stablehlo）が eval-graph と一致する ---
 
 (defun %graph-invar-arrays (graph base-seed)
