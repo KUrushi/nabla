@@ -34,7 +34,9 @@
 ;;;; クライアントの foreign 側の状態を CLIENT-STATE（device-array とは別の
 ;;;; 構造体）に分け、「生きているバッファの数」を数える。PJRT_Client_Destroy は
 ;;;; 「所有者（PJRT-CLIENT オブジェクト）が消えた」かつ「生きているバッファが
-;;;; 0」になった時点で、最後に行った方が実行する。
+;;;; 0」になった時点で、最後に行った方が実行する。ロード済みの実行体
+;;;; （PJRT_LoadedExecutable、executable.lisp の PJRT-MODULE）も同じカウンタに
+;;;; 数える（issue #114）。
 
 (in-package #:nabla.pjrt)
 
