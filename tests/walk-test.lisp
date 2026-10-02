@@ -61,7 +61,10 @@ FORM は (SETQ X (+ 1 X))。"
     (is (equal '(setq a 1) form)))
   (%signals-unsupported-form (form path)
       '(nb:with-tracing (x y) (multiple-value-bind (a b) (values x (setq y 1)) a))
-    (is (equal '(setq y 1) form))))
+    (is (equal '(setq y 1) form))
+    ;; (PROGN (MULTIPLE-VALUE-CALL (FUNCTION (LAMBDA ...)) (VALUES X (SETQ Y 1)))):
+    ;; MULTIPLE-VALUE-CALL が位置1、その値フォーム (VALUES ...) が位置2、SETQ が VALUES の位置2。
+    (is (equal '(1 2 2) path))))
 
 (test walk/multiple-value-call-of-rewritten-cl-function-signals-unsupported-form
   "(MULTIPLE-VALUE-CALL #'+ ...) のように、書き換え表にある CL の関数を直接
@@ -87,6 +90,12 @@ UNSUPPORTED-FORM。"
       '(nb:with-tracing (x y) (multiple-value-prog1 x (setq y 1)))
     (is (equal '(setq y 1) form))
     (is (equal '(1 2) path))))
+
+(test walk/empty-multiple-value-prog1-signals-unsupported-form
+  "最初のフォームの無い (MULTIPLE-VALUE-PROG1) は UNSUPPORTED-FORM。"
+  (%signals-unsupported-form (form path) '(nb:with-tracing (x) x (multiple-value-prog1))
+    (is (equal '(multiple-value-prog1) form))
+    (is (equal '(2) path))))
 
 (test walk/multiple-value-prog1-multiple-values-flow-through
   "MULTIPLE-VALUE-PROG1 は最初のフォームの多値をそのまま返し、残りは副作用だけ。"
