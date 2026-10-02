@@ -1,0 +1,1 @@
+pjrt-module に finalizer を追加。client-state の live-buffers カウンタをロード済み実行体にも使い、LoadedExecutable_Destroy が Client_Destroy より先になるようにした。レビュー指摘: invoke 中に module が死ぬと finalizer が実行中の executable を破棄しうるので with-pinned-objects で生かした。destroy 関数は struct 定義順の都合で executable.lisp に置いた。mutation は CFFI オーケストレーションのため対象外。
