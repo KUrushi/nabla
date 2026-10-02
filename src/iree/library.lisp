@@ -78,7 +78,7 @@ cffi:*foreign-library-directories* に push しておく必要がある。"
           ;; 行ったりはしない。それでも「LLVM を初めて呼ぶ」制御された1点
           ;; なので、以後 %warm-up-compiler にフォールバックする経路も含めて
           ;; この呼び出し元スレッドを一貫してマスクしておく
-          ;; （float-traps.lisp 冒頭のコメント。世界が止まっている間の
+          ;; （docs/float-traps-experiments.md。世界が止まっている間の
           ;; マスクはスレッドローカルな MXCSR の書き換えだけなので安全）。
           (let ((home (iree-home)))
             (pushnew (merge-pathnames "lib/" home) cffi:*foreign-library-directories*

@@ -11,6 +11,10 @@
   ;; check-it 側を優先する（PBT の試行回数はこちらで制御するため）。
   (:shadowing-import-from #:check-it #:*num-trials*)
   (:export
+   ;; 子 SBCL プロセスの環境（child-sbcl.lisp）
+   #:%child-source-registry
+   #:*child-sbcl-forwarded-env-vars*
+   #:%forward-env-vars
    ;; スイート実行
    #:run-tests
    #:sizes-from-env
@@ -76,4 +80,17 @@
    #:primitive-graph-recipe
    #:build-primitive-graph
    #:primitive-recipe-eqn-count
-   #:replay-recipe-avals))
+   #:replay-recipe-avals
+   ;; レシピが使う dtype（束縛すると f64 だけの graph も作れる。issue #76）
+   #:*primitive-recipe-dtypes*
+   ;; 自動微分のテスト支援（issue #76）
+   #:central-difference-jvp
+   #:central-difference-gradient
+   #:*central-difference-step*
+   #:*autodiff-rtol*
+   #:*autodiff-atol*
+   #:inner-product
+   #:random-tangent
+   #:random-cotangent
+   #:scalar-loss-function
+   #:scalar-loss-oracle))

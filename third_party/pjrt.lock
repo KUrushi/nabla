@@ -1,0 +1,25 @@
+# PJRT C API プラグインで固定する版。
+#
+# scripts/fetch-pjrt.sh はこのファイルを読んで wheel を取得・検査・展開する。
+# 更新するときは、この行と docs/pjrt-setup.md の記録を一緒に直す。
+#
+# どちらも x86_64 Linux の manylinux wheel（zip）。wheel の中の .so だけを
+# NABLA_PJRT_HOME に取り出す。sha256 は PyPI の JSON API
+# (https://pypi.org/pypi/<name>/<version>/json) の digests と、実際に
+# ダウンロードして計算した値の両方で確かめてある。
+#
+# CPU: OpenXLA の xla-cpu-pjrt（PJRT API 0.81、版はこれ1つだけ）
+# CUDA: jax-cuda13-pjrt（PJRT API 0.115。libcuda.so.1 は遅延ロードなので
+#       GPU が無くてもロードはできる）
+
+cpu_name=xla-cpu-pjrt
+cpu_version=0.0.1
+cpu_url=https://files.pythonhosted.org/packages/5d/ca/5487881b30d07396c168749ead36f57dbc4538cafdc535943afc81b3e5a2/xla_cpu_pjrt-0.0.1-py3-none-manylinux_2_27_x86_64.whl
+cpu_sha256=55837b6b7b47daa717f2d9a5a03563ea0ceaa338d06a81a1e2d3f060d960decc
+cpu_member=xla_plugins/xla_cpu_pjrt/xla_cpu_pjrt.so
+
+cuda_name=jax-cuda13-pjrt
+cuda_version=0.11.2
+cuda_url=https://files.pythonhosted.org/packages/a8/13/247ba4ea1ac057309f2e1328d743ba355631b76d31fbebd076421a74e26e/jax_cuda13_pjrt-0.11.2-py3-none-manylinux_2_27_x86_64.whl
+cuda_sha256=e5ff589d43064913bb74027682d89639c7ea48f9f81c2bae6fc75117e913f93e
+cuda_member=jax_plugins/xla_cuda13/xla_cuda_plugin.so

@@ -186,27 +186,33 @@ TRACING-ERROR を signal する。"
             :format-control "トレース対象の関数はトレーサ・実数・配列以外を返せない: ~S"
             :format-arguments (list value)))))
 
-(defun trace-to-graph (fn avals)
-  "FN（WITH-TRACING が返す TRACEABLE-FUNCTION）を AVALS（FN の引数と同じ数の
-AVAL のリスト）でトレースし、CHECK-GRAPH した GRAPH を返す。
-
-手順: AVALS ごとに invar（VAR）を作り、新しい %TRACE を *CURRENT-TRACE* に
-束縛したうえで、それぞれの invar に対応する TRACER を FN の関数に適用する。
-戻り値（多値。0個なら outvars も0個）を %OUTVAR-OF で1つずつ outvar に変換し、
-GRAPH を組み立てる。FN 自身が呼び出したトレース対象の演算は、すべて
-%TRACE-EQN 経由で *CURRENT-TRACE* に積まれる。"
-  (unless (typep fn 'traceable-function)
-    (error 'tracing-error
-           :format-control "FN は TRACEABLE-FUNCTION でなければならない（WITH-TRACING で作る）: ~S"
-           :format-arguments (list fn)))
-  (%check-avals-length fn avals)
+(defun %call-with-fresh-trace (avals fn)
+  "AVALS ごとに invar（VAR）を作り、新しい %TRACE を *CURRENT-TRACE* に
+束縛したうえで、それぞれの invar に対応する TRACER を FN（普通の関数）に
+適用する。戻り値（多値。0個なら outvars も0個）を %OUTVAR-OF で1つずつ
+outvar に変換し、CHECK-GRAPH した GRAPH を返す。FN が呼び出したトレース対象の
+演算は、すべて %TRACE-EQN 経由で *CURRENT-TRACE* に積まれる。TRACE-TO-GRAPH
+と、変換（jvp など）が別のトレースを新しく始めるときに共有する。"
   (let* ((invars (mapcar #'make-var avals))
          (trace (%make-trace invars))
          (*current-trace* trace)
          (tracers (mapcar (lambda (var) (make-instance 'tracer :var var :trace trace)) invars)))
-    (let ((results (multiple-value-list (apply (%traceable-function-function fn) tracers))))
+    (let ((results (multiple-value-list (apply fn tracers))))
       (check-graph
        (make-graph invars
                    (reverse (trace-eqns trace))
                    (mapcar (lambda (v) (%outvar-of v trace)) results)
                    (reverse (trace-constants trace)))))))
+
+(defun trace-to-graph (fn avals)
+  "FN（WITH-TRACING が返す TRACEABLE-FUNCTION）を AVALS（FN の引数と同じ数の
+AVAL のリスト）でトレースし、CHECK-GRAPH した GRAPH を返す。
+
+手順は %CALL-WITH-FRESH-TRACE を参照（FN の型と AVALS の個数を確かめた
+うえで、その薄い包みとして動く）。"
+  (unless (typep fn 'traceable-function)
+    (error 'tracing-error
+           :format-control "FN は TRACEABLE-FUNCTION でなければならない（WITH-TRACING で作る）: ~S"
+           :format-arguments (list fn)))
+  (%check-avals-length fn avals)
+  (%call-with-fresh-trace avals (%traceable-function-function fn)))

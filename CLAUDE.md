@@ -9,7 +9,7 @@ nabla は Common Lisp で書く、JAX に相当する深層学習ライブラリ
 ## 構成
 
 - 処理系は SBCL のみ。C ライブラリの呼び出しは CFFI、GC との連携は trivial-garbage、並列処理は lparallel を使う
-- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/iree`、`nabla/pjrt`、`nabla/nn`、`nabla/data` の5つ。テストは各システムに対応する `<system>/tests` に置く（テストの共通部品は `nabla/test-support` に置き、そこに依存する）。公開 API の一覧は README.md の「公開 API」を正とする
+- ASDF システムは `nabla`（コア、パッケージのニックネームは `nb`）、`nabla/ffi-support`（IREE と PJRT が共有する、C ライブラリ呼び出しの保護。シグナルハンドラと浮動小数点トラップ。`src/ffi-support/`、core にも IREE にも依存しない。issue #79）、`nabla/iree`、`nabla/pjrt`（PJRT プラグインを dlopen して使う。issue #78 時点はロードと API の版の読み出しまで。core は PJRT の名前を知らない）、`nabla/nn`、`nabla/data` の6つ。テストは各システムに対応する `<system>/tests` に置く（テストの共通部品は `nabla/test-support` に置き、そこに依存する）。公開 API の一覧は README.md の「公開 API」を正とする
 - Quicklisp は使えない（ネットワーク方針）。Lisp の依存は apt パッケージと、固定コミットで git clone したもの（check-it など）を `scripts/setup-lisp-deps.sh` で揃える。システムのロードは ASDF の `CL_SOURCE_REGISTRY` で行い、`ql:quickload` は使わない
 - IREE は固定したコミットで使う（詳細は `docs/iree-build.md`）。ランタイムの共有ライブラリは常にそのコミットからソースビルドする。コンパイラ (`libIREECompiler.so`) は既定では同じコミットからビルドされた PyPI ホイール（`third_party/iree.lock` に記録）を使う。フルソースビルドは `scripts/build-iree.sh --compiler=source` で選べるが、このマシン相当のスペックでは実用的な時間で終わらないことを確認している。コンパイラは埋め込み C API を dlopen して呼び、`iree-compile` をサブプロセスで起動しない（ビルドスクリプト内の動作確認を除く）
 - IREE ランタイムの C API（`iree_allocator_t` / `iree_string_view_t` / `iree_hal_buffer_params_t` / `iree_timeout_t` など）は構造体を値で渡し、値で返す関数もある。素の CFFI はこれに対応しないため `nabla/iree` は `cffi-libffi`（apt の `cl-cffi` に同梱）を使う。`cffi-libffi` は libffi-dev をビルド時に必要とするので `scripts/setup-lisp-deps.sh` の APT_PACKAGES に `libffi-dev` を含めてある。C 側のヘルパーは書かない（`cffi:defcfun` / `cffi:defcstruct` をそのまま使える）
@@ -32,6 +32,13 @@ NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh
 # 無いと自動でスキップされる。CI では NABLA_REQUIRE_IREE=1 を立てて、その
 # スキップを失敗にする
 NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
+# nabla/pjrt の medium テストは PJRT プラグイン（NABLA_PJRT_HOME 配下）が無いと
+# 自動でスキップされる。CI では NABLA_REQUIRE_PJRT=1 を立てて失敗にする
+
+# PJRT プラグイン（CPU。--cuda で CUDA も）を third_party/pjrt.lock の wheel から
+# 取得・sha256 検査・展開する。インストール先は NABLA_PJRT_HOME（既定
+# ~/.local/share/nabla/pjrt-0.0.1）。詳細は docs/pjrt-setup.md
+scripts/fetch-pjrt.sh
 
 # vmfb ディスクキャッシュ（既定 ${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/。
 # NABLA_CACHE_DIR で場所を変える。消してよい。テストで検査した挙動を
@@ -77,8 +84,10 @@ Lisp パッケージ + check-it / optima の git clone。`$NABLA_LISP_DEPS` を
 （`third_party/iree.lock` と `scripts/build-iree.sh` のハッシュをキーに
 `$NABLA_IREE_HOME` をキャッシュし、当たればビルドをスキップ、外れれば
 `scripts/build-iree.sh --compiler=wheel` を実行）→ `scripts/verify-iree.sh`
-→ `NABLA_REQUIRE_IREE=1 scripts/run-tests.sh`（IREE 未検出によるスキップを
-失敗にする）→ `nabla-mutate` 自身のテスト（`tools/mutate/README.md` のコマンド）。
+→ PJRT CPU プラグイン（`third_party/pjrt.lock` と `scripts/fetch-pjrt.sh` の
+ハッシュをキーに `$NABLA_PJRT_HOME` をキャッシュし、外れれば
+`scripts/fetch-pjrt.sh`）→ `NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_PJRT=1
+scripts/run-tests.sh`（IREE / PJRT 未検出によるスキップを失敗にする）→ `nabla-mutate` 自身のテスト（`tools/mutate/README.md` のコマンド）。
 GPU を使う large テストは CI では動かさない。
 
 `.github/workflows/pr-title.yml` が PR タイトルを Conventional Commits の
@@ -106,8 +115,8 @@ GPU を使う large テストは CI では動かさない。
 - デバイス上のバッファは `device-array` で包む。`device-array` は生成時に自分のデバイス（`iree_hal_device_t`）を retain し、解放時に buffer view → device の順で release する（IREE の heap buffer が確保元 allocator の統計ブロックへの生ポインタを持ち、その allocator を device が所有しているため。device を先に解放すると use-after-free になる）。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）。この解放は `trivial-garbage:finalize` で自動化されており（`device-array` 生成時に登録）、明示的な `release-device-array` は `tg:cancel-finalization` で finalizer を先に取り消してから自分で解放するので、二重解放にはならない。SBCL は finalizer を別スレッド（finalizer thread）で非同期に実行するため、テストで確認するときは `gc-and-run-finalizers`（`tests/iree/support.lisp`）のように GC の後で明示的に保留中の finalizer を実行させる
 - 実行系は `backend` プロトコル（`src/backend.lisp`）の裏に置く。core は IREE の名前を知らない（medium テストで検査）。総称関数は `backend-` 接頭辞（CL の `compile` / `load` と衝突させない）
 - vmfb のディスクキャッシュ（`src/compile-cache.lisp`、issue #10）は `BACKEND-COMPILE` に `:AROUND` メソッドを足す形で実装し、`BACKEND` そのものは変えない。キーは `BACKEND-FINGERPRINT`（ターゲット・GPU 世代・解決済みのコンパイルフラグ・IREE のリビジョンを含む文字列のリスト）と `TEXT` を、それぞれ「UTF-8 バイト長:」の ASCII 接頭辞つきで連結した SHA-256（ironclad）の16進文字列。ファイルは `<hex>.module` = マジック `"NBLMOD01"`（8バイト）+ payload の SHA-256（32バイト、生）+ payload（vmfb）で、一時ファイルへの書き込み + `uiop:rename-file-overwriting-target` でアトミックに作る。場所は `nabla:*compile-cache-directory*`（既定 `${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/`、`NABLA_CACHE_DIR` で変更、`NIL` で無効化）
-- LLVM を呼びうる FFI エントリポイント（IREE コンパイラ、将来の PJRT）は、必ず `with-lisp-signal-handlers-preserved`（`src/iree/signals.lisp`）で本体を包む。LLVM は初回の呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きする。放置すると、以後どこかのスレッドが GC を始めた瞬間に "no SP known for thread" で SBCL が確実に落ちる（issue #5）
-- 上記の LLVM のシグナルハンドラ登録そのものは、`ensure-compiler-loaded` が他の全 Lisp スレッドを SBCL の GC と同じ仕組み（`%call-with-world-stopped`、`src/iree/signals.lisp`）で止めた、制御された1点で済ませる。世界が止まっている間はどのスレッドもシグナルを受け取れないので、登録の瞬間に別スレッドが GC を始める競合の隙間が無くなる（詳しい根拠と残る課題は signals.lisp 冒頭のコメント）
+- LLVM を呼びうる FFI エントリポイント（IREE コンパイラ、将来の PJRT）は、必ず `with-lisp-signal-handlers-preserved`（`nabla/ffi-support`、`src/ffi-support/signals.lisp`）で本体を包む。LLVM は初回の呼び出し中にプロセス全体のシグナルハンドラを sigaction で登録し直し、SBCL が GC の stop-the-world に使う SIGUSR2 を上書きする。放置すると、以後どこかのスレッドが GC を始めた瞬間に "no SP known for thread" で SBCL が確実に落ちる（issue #5）
+- 上記の LLVM のシグナルハンドラ登録そのものは、`ensure-compiler-loaded` が他の全 Lisp スレッドを SBCL の GC と同じ仕組み（`%call-with-world-stopped`、`src/ffi-support/signals.lisp`）で止めた、制御された1点で済ませる（IREE 固有の登録手順 `%register-llvm-signal-handlers` は `src/iree/signals.lisp`）。世界が止まっている間はどのスレッドもシグナルを受け取れないので、登録の瞬間に別スレッドが GC を始める競合の隙間が無くなる（詳しい根拠は両方の signals.lisp 冒頭のコメント。浮動小数点トラップのマスク `with-all-float-traps-masked` も `nabla/ffi-support`）
 
 ## 開発の原則
 
