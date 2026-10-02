@@ -130,6 +130,9 @@ pretty form を出力する。
 **symbolic zero（シンボリックなゼロ）**
 : 値がゼロと分かっている接線・余接線を、配列も eqn も作らずに表す内部オブジェクト（`src/ad/zero.lisp` の `symbolic-zero`）。jvp / transpose の変換はこれをそのまま伝播させ、ゼロとの加算や、ゼロを使う項の計算を丸ごと省く。graph の出力など、実体が必要になったときだけ `instantiate-zero` が、rank 0 の定数 0 と `broadcast-in-dim` で配列にする。transpose ルールで「まだ値が無い線形入力」を表す `undefined-primal` とは別物。
 
+**grad / value-and-grad（勾配）**
+: スカラー（rank 0 の浮動小数点）を返す関数 `f` の、引数についての勾配を返す関数を作る（`nb:grad`、`nb:value-and-grad`。`src/ad/grad.lisp`）。`value-and-grad` は値も一緒に返す。中身は、`f` を引数の `aval` で1回トレースして graph にし、vjp（余接線は rank 0 の `1`）で微分した graph にしたもの。呼び出しが別のトレース（`jit`・`with-tracing` の本体・別の `grad`）の中なら `inline-graph` でそのトレースへ展開し、そうでなければ `eval-graph` で評価する。`(grad f)` は呼ぶたびに新しい関数オブジェクトを作るので、`jit` のキャッシュ（関数の同一性が鍵）が効かず、ループの中で `(jit (grad f))` を作ると毎回コンパイルされる（JAX と同じ）。ループの外で作るか、`defjit` の本体の中で使う。
+
 **stop-gradient（勾配を止める）**
 : 値は入力そのままだが、自動微分では定数として扱う演算（`nb:stop-gradient`、プリミティブ `stop-gradient`、JAX の `lax.stop_gradient`）。jvp ルールは常に symbolic zero を返す。StableHLO には恒等の op が無いので、値を変えず最適化の境界になる `stablehlo.optimization_barrier` に出力する。
 

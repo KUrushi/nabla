@@ -68,7 +68,9 @@
                (:file "src/backend")
                (:file "src/compile-cache")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
-               (:file "src/jit"))
+               (:file "src/jit")
+               ;; grad / value-and-grad（issue #86。jitted-function を受けるので jit の後）
+               (:file "src/ad/grad"))
   :in-order-to ((test-op (test-op "nabla/tests"))))
 
 (defsystem "nabla/test-support"
@@ -150,6 +152,8 @@
                (:file "tests/ad/jvp-shape-test")
                ;; 線形プリミティブの transpose ルール（issue #83）
                (:file "tests/ad/transpose-rules-test")
+               ;; grad / value-and-grad（issue #86）
+               (:file "tests/ad/grad-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
@@ -244,4 +248,6 @@
                ;; jit キャッシュのモジュール解放・並行性・入れ子（issue #71）
                (:file "tests/iree/jit-cache-test")
                ;; f64 と :i1 の to-device / to-host / invoke を jit で通す（issue #72）
-               (:file "tests/iree/jit-dtype-test")))
+               (:file "tests/iree/jit-dtype-test")
+               ;; (jit (grad f)) の IREE 実行（issue #86）
+               (:file "tests/iree/grad-test")))
