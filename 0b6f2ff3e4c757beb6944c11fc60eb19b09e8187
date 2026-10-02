@@ -1,0 +1,1 @@
+jvp.lisp と common.lisp の定義は同一（member dtype '(:f32 :f64 :bf16 :f16)）。jvp 側を削除。テストは子 SBCL で nabla を force ロードし 'redefining NABLA' が無いことを確認（ironclad 自身の BLOCK-LENGTH 警告は対象外）。修正前は失敗、修正後は成功を確認。
