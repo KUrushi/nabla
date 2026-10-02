@@ -19,9 +19,6 @@
                                      (tangent-aval tangent) (tracer-aval out))))
     tangent))
 
-(defun %float-dtype-p (dtype)
-  (member dtype '(:f32 :f64 :bf16 :f16)))
-
 (defun jvp-graph (graph &key (nonzero (mapcar (lambda (v) (and (%float-dtype-p (aval-dtype (var-aval v))) t))
                                               (graph-invars graph))))
   "GRAPH を jvp 変換した新しい GRAPH を CHECK-GRAPH して返す。GRAPH 自体は

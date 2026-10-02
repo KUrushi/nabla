@@ -106,6 +106,7 @@
                (:file "tests/aval-test")
                (:file "tests/backend-test")
                (:file "tests/compile-cache-test")
+               (:file "tests/load-warnings-test")
                ;; IR と defprimitive（issue #29、u1a）
                (:file "tests/test-primitives")
                (:file "tests/graph-recipes")
