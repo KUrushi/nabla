@@ -243,9 +243,10 @@ module を unload した時点で初めて破棄される（LoadedExecutable が
 
 (define-pjrt-test executable/unload/then-gc-does-not-double-free
   "明示的に unload した module を捨てて GC しても、二重解放にならず、生存数は
-元に戻っている。"
+元に戻っている。共有の find-backend だと、他のテストが残したゴミが生存数に
+数えられて GC で減るので、専用の backend を使う。"
   (skip-unless-pjrt :kind :cpu)
-  (let* ((backend (nabla:find-backend :pjrt))
+  (let* ((backend (nabla:make-backend :pjrt))
          (baseline (%live-buffers backend)))
     (flet ((churn (octets)
              (declare (notinline nabla:backend-load nabla:backend-unload))
