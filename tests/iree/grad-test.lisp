@@ -155,3 +155,26 @@ value-and-grad の値は f の eager の結果と一致する。"
                     (make-array '(3) :element-type 'single-float :initial-contents '(6f0 -12f0 3f0))
                     :dtype :f32)))
     (gc-and-run-finalizers)))
+
+;;; --- with-tracing の中の multiple-value-bind を jit で（issue #115） ---
+
+(define-iree-test grad/jit-multiple-value-bind-matches-eager
+    "(jit (with-tracing (x y) (multiple-value-bind (v gs) (funcall vg x y) (values v (first gs) (second gs)))))
+の結果が、値・勾配とも eager の value-and-grad と f32 の許容誤差で一致する。"
+  (skip-unless-iree :library :both)
+  (let* ((backend (nabla:find-backend :iree))
+         (nb:*compile-cache-directory* nil)
+         (vg (nb:value-and-grad (nb:with-tracing (x y) (nb:reduce-sum (+ (tanh (* x y)) x))) :argnums '(0 1)))
+         (jitted (nb:jit (nb:with-tracing (x y)
+                           (multiple-value-bind (v gs) (funcall vg x y)
+                             (values v (first gs) (second gs))))
+                         :backend backend))
+         (x (%grad-random-array '(3) :f32 11))
+         (y (%grad-random-array '(3) :f32 12)))
+    (unwind-protect
+         (let ((got (multiple-value-list (funcall jitted x y)))
+               (expected (multiple-value-bind (v gs) (funcall vg x y) (cons v gs))))
+           (is (= 3 (length got)))
+           (is (every (lambda (r e) (allclose r e :dtype :f32)) got expected)))
+      (nb::%jit-cache-forget (nb::%jitted-function-fn jitted)))
+    (gc-and-run-finalizers)))

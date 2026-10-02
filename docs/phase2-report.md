@@ -147,7 +147,6 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 ## 5. 既知の制限と積み残し
 
 - **`pjrt-module` に finalizer が無い**: `backend-unload` を呼ばないと PJRT の実行体が解放されない。jit のキャッシュは evict 時に unload する（#71）が、`backend-load` を直接呼ぶ利用者は自分で unload する必要がある。
-- **`with-tracing` が `multiple-value-bind` に対応していない**: `examples/mlp.lisp` は `value-and-grads-values` という普通の関数に切り出して回避している。
 - **argnums がリストの勾配は jit の出力にできない**: 勾配のリストは jit の出力（フラットな多値）にならないので、`examples/mlp.lisp` のように多値に直す。
 - **`grad` は jitted-function の `:backend` を無視する**: `grad` が jit した関数をトレース中に呼ぶと、その関数は展開されるだけで `:backend` は見られない（外側の `jit` の backend が使われる）。
 - **PJRT で `:i1` は未対応**（`unsupported-dtype`）。複数デバイス・replica、CUDA プラグインでの動作も未検証。

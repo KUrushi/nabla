@@ -24,13 +24,6 @@
       (setf (row-major-aref new i)
             (- (row-major-aref param i) (* lr (row-major-aref grad i)))))))
 
-(defun value-and-grads-values (vg &rest args)
-  "VG（argnums がリストの value-and-grad）を ARGS で呼び、(値 勾配...) をフラットな
-多値にして返す。トレース中（jit の本体）に呼ぶ。with-tracing の本体は
-multiple-value-bind を扱えないので、普通の関数に切り出してある。"
-  (multiple-value-bind (loss grads) (apply vg args)
-    (values-list (cons loss grads))))
-
 (defun make-mlp-train-step (&key (lr 0.5) (n 16) (h 8) (c 2) backend)
   "学習ステップ (lambda (params x y)) を返す。PARAMS は (w1 b1 w2 b2) の f32 配列のリスト。
 戻り値は2つ: その関数と、jit した関数そのもの（(w1 b1 w2 b2 x y) を取り、
@@ -38,10 +31,12 @@ multiple-value-bind を扱えないので、普通の関数に切り出してあ
 ステップ時間を分けて測るときに使う）。関数は多値の (更新前の損失 SGD で更新した PARAMS) を返す。
 BACKEND は jit の :backend（NIL なら既定）。(jit (value-and-grad loss)) は
 ここで1回だけ作り、呼び出しごとにはコンパイルしない（2回目以降はキャッシュを使う）。
-argnums がリストのとき勾配のリストは jit の出力にできないので、多値に直す。"
+argnums がリストのとき勾配のリストは jit の出力にできないので、
+multiple-value-bind で受けて (値 勾配...) の多値に直す。"
   (let* ((vg (nb:value-and-grad (make-mlp-loss n h c) :argnums '(0 1 2 3)))
          (jitted (nb:jit (nb:with-tracing (w1 b1 w2 b2 x y)
-                           (value-and-grads-values vg w1 b1 w2 b2 x y))
+                           (multiple-value-bind (loss grads) (funcall vg w1 b1 w2 b2 x y)
+                             (values-list (cons loss grads))))
                          :backend backend)))
     (values
      (lambda (params x y)

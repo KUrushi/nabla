@@ -46,13 +46,52 @@ FORM は (SETQ X (+ 1 X))。"
     (is (equal '(block nil (return-from nil x)) form))
     (is (equal '(1) path))))
 
-(test walk/multiple-value-bind-signals-unsupported-form
-  "MULTIPLE-VALUE-BIND は MULTIPLE-VALUE-CALL に展開されるので
-UNSUPPORTED-FORM になる。"
+(test walk/multiple-value-bind-is-walked-not-rejected
+  "MULTIPLE-VALUE-BIND（SBCL が MULTIPLE-VALUE-CALL + (LAMBDA (&OPTIONAL ...)) に
+展開する）は対応している: マクロ展開時に signal せず、本体の中の演算子も
+書き換わる（% T-ADD になる）。"
+  (let ((expansion (macroexpand-1 '(nb:with-tracing (x y) (multiple-value-bind (a b) (values x y) (+ a b))))))
+    (is (search "%T-ADD" (prin1-to-string expansion)))))
+
+(test walk/multiple-value-bind-body-is-still-checked
+  "MULTIPLE-VALUE-BIND の値フォームにも本体にも、対応していない形式（SETQ）が
+あれば従来どおり UNSUPPORTED-FORM になる。"
   (%signals-unsupported-form (form path)
-      '(nb:with-tracing (x y) (multiple-value-bind (a b) (values x y) a))
+      '(nb:with-tracing (x y) (multiple-value-bind (a b) (values x y) (setq a 1) b))
+    (is (equal '(setq a 1) form)))
+  (%signals-unsupported-form (form path)
+      '(nb:with-tracing (x y) (multiple-value-bind (a b) (values x (setq y 1)) a))
+    (is (equal '(setq y 1) form))))
+
+(test walk/multiple-value-call-of-rewritten-cl-function-signals-unsupported-form
+  "(MULTIPLE-VALUE-CALL #'+ ...) のように、書き換え表にある CL の関数を直接
+渡す形は、実行時にトレーサへ CL:+ を適用して分かりにくく失敗するので、
+マクロ展開時に UNSUPPORTED-FORM にする。FORM は MULTIPLE-VALUE-CALL フォーム全体。"
+  (%signals-unsupported-form (form path)
+      '(nb:with-tracing (x y) (multiple-value-call #'+ (values x y)))
     (is (eq 'multiple-value-call (first form)))
     (is (equal '(1) path))))
+
+(test walk/multiple-value-call-without-function-form-signals-unsupported-form
+  "関数フォームの無い (MULTIPLE-VALUE-CALL) は UNSUPPORTED-FORM。"
+  (%signals-unsupported-form (form path) '(nb:with-tracing (x) x (multiple-value-call))
+    (is (equal '(multiple-value-call) form))
+    (is (equal '(2) path))))
+
+(test walk/multiple-value-prog1-is-walked
+  "MULTIPLE-VALUE-PROG1 は対応している（全フォームを歩く）。中の SETQ は従来どおり
+UNSUPPORTED-FORM。"
+  (is (search "%T-ADD" (prin1-to-string
+                        (macroexpand-1 '(nb:with-tracing (x y) (multiple-value-prog1 (+ x y) (+ x 1)))))))
+  (%signals-unsupported-form (form path)
+      '(nb:with-tracing (x y) (multiple-value-prog1 x (setq y 1)))
+    (is (equal '(setq y 1) form))
+    (is (equal '(1 2) path))))
+
+(test walk/multiple-value-prog1-multiple-values-flow-through
+  "MULTIPLE-VALUE-PROG1 は最初のフォームの多値をそのまま返し、残りは副作用だけ。"
+  (let ((f (nb:with-tracing (x y) (multiple-value-prog1 (values x y) (+ x y)))))
+    (is (equal '(1 2) (multiple-value-list (funcall f 1 2))))))
 
 (test walk/unwind-protect-signals-unsupported-form
   "UNWIND-PROTECT はそのまま対応していない特殊形式。"
