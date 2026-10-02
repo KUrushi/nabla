@@ -146,7 +146,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 
 ## 5. 既知の制限と積み残し
 
-- **`pjrt-module` に finalizer が無い**: `backend-unload` を呼ばないと PJRT の実行体が解放されない。jit のキャッシュは evict 時に unload する（#71）が、`backend-load` を直接呼ぶ利用者は自分で unload する必要がある。
+- **`pjrt-module` の finalizer はフェーズ2の後に追加した**（#120）: 報告書の計測時点では `backend-unload` を呼ばないと PJRT の実行体が解放されなかった。現在は GC でも解放される（明示的な `backend-unload` との二重解放は起きない）。
 - **argnums がリストの勾配は jit の出力にできない**: 勾配のリストは jit の出力（フラットな多値）にならないので、`examples/mlp.lisp` のように多値に直す。
 - **`grad` は jitted-function の `:backend` を無視する**: `grad` が jit した関数をトレース中に呼ぶと、その関数は展開されるだけで `:backend` は見られない（外側の `jit` の backend が使われる）。
 - **PJRT で `:i1` は未対応**（`unsupported-dtype`）。複数デバイス・replica、CUDA プラグインでの動作も未検証。
