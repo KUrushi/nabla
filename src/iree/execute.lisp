@@ -37,7 +37,7 @@ buffer view を解放してからエラーを signal する。途中で失敗し
 それまでに包んだ出力の device-array をすべて release-device-array してから
 再度エラーを送出する。
 
-CALL-INVOKE 本体は WITH-ALL-FLOAT-TRAPS-MASKED（float-traps.lisp、issue #53
+CALL-INVOKE 本体は WITH-ALL-FLOAT-TRAPS-MASKED（src/ffi-support/float-traps.lisp、issue #53
 で SBCL（x86-64）が制御できる5種類全部に広げた）で包む（MAKE-DEVICE の docstring
 参照。カーネルを実行するワーカースレッドは MAKE-DEVICE の時点でマスク
 済みになるが、呼び出し元スレッド自身がここで結果を読み出す・計算に参加する

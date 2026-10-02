@@ -27,5 +27,6 @@ exec sbcl --non-interactive \
             (unless (equal (truename expected) (truename actual))
               (error \"scripts/run-tests.sh: nabla.asd が想定と違う場所から見つかった。期待: ~A 実際: ~A\" expected actual)))" \
   --eval '(asdf:load-system "nabla/tests")' \
+  --eval '(asdf:load-system "nabla/ffi-support/tests")' \
   --eval '(asdf:load-system "nabla/iree/tests")' \
   --eval '(uiop:quit (if (nabla.tests.support:run-tests) 0 1))'

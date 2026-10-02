@@ -307,15 +307,14 @@ SIGUSR2 のハンドラが ensure-compiler-loaded から戻る頃には SBCL の
 differ: not restored to SBCL's own handler. output:~%~A"
           before after output))))
 
-(fiveam:test (signals/call-with-world-stopped/returns-thunk-value-and-rejects-nesting :suite :nabla.medium)
-  "%call-with-world-stopped は THUNK の戻り値をそのまま返し、既に
-sb-sys:without-gcing の中（*gc-inhibit* が真）から呼ぶとエラーになる
-（signals.lisp の %call-with-world-stopped docstring 参照。二重にロックを
-取り合うと進めなくなるための安全策）。IREE の共有ライブラリは要らない。"
-  (is (eql :ok (nabla.iree::%call-with-world-stopped (lambda () :ok))))
-  (signals error
-    (sb-sys:without-gcing
-      (nabla.iree::%call-with-world-stopped (lambda () :unreachable)))))
+(fiveam:test (signals/guards-are-shared-with-ffi-support :suite :nabla.medium)
+  "nabla.iree が使う保護は nabla/ffi-support のものと同一のシンボル
+（issue #79。振る舞いのテストは tests/ffi-support にある）。"
+  (is (eq 'nabla.ffi-support::%call-with-world-stopped 'nabla.iree::%call-with-world-stopped))
+  (is (eq 'nabla.ffi-support:with-lisp-signal-handlers-preserved
+          'nabla.iree::with-lisp-signal-handlers-preserved))
+  (is (eq 'nabla.ffi-support:with-all-float-traps-masked
+          'nabla.iree::with-all-float-traps-masked)))
 
 (define-iree-test compiler/compile-stablehlo/explicit-full-gc-does-not-crash
     "compile-stablehlo のあとに SB-EXT:GC :FULL T を明示的に呼んでも SBCL

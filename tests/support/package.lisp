@@ -11,6 +11,10 @@
   ;; check-it 側を優先する（PBT の試行回数はこちらで制御するため）。
   (:shadowing-import-from #:check-it #:*num-trials*)
   (:export
+   ;; 子 SBCL プロセスの環境（child-sbcl.lisp）
+   #:%child-source-registry
+   #:*child-sbcl-forwarded-env-vars*
+   #:%forward-env-vars
    ;; スイート実行
    #:run-tests
    #:sizes-from-env
