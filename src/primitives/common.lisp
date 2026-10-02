@@ -80,7 +80,7 @@ bf16 / f16 は RNE でビット列にエンコードする。それ以外（:F32
 
 SBCL は既定でこれらのトラップを有効にしているため、たとえば
 `(/ 1.0 0.0)` はコンディションを signal してしまう。プリミティブの eager
-実装は StableHLO / IREE と同じ IEEE 754 の挙動（±inf・NaN を返す）に
+実装は StableHLO のバックエンドと同じ IEEE 754 の挙動（±inf・NaN を返す）に
 揃えたいので、eager 呼び出し全体をこのマクロで包む（要素ごとにマスクを
 掛け外しすると遅いので、必ず呼び出し全体を包む。用語集の「浮動小数点
 トラップ」参照）。"
@@ -127,13 +127,13 @@ WITH-IEEE-ARITHMETIC に包むこと（ここでは包まない）。"
 
 (defun %ieee-max (a b)
   "A と B の大きい方を返す。CL の MAX と違い、どちらか一方でも NaN なら
-NaN を返す（StableHLO の stablehlo.maximum / IREE / jnp.maximum に合わせる。
+NaN を返す（StableHLO の stablehlo.maximum / バックエンド / jnp.maximum に合わせる。
 issue #31 p2 の pitfall: (max nan 1.0) => 1.0 だが (max 1.0 nan) => NaN、と
 CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。
 
 符号付きゼロは NaN でない場合 CL の MAX にそのまま委ねているため、
 (%ieee-max -0.0 0.0) は -0.0 になる（CL の MAX は等しい引数のうち最初の
-方を返す）。IREE の stablehlo.maximum と JAX の jnp.maximum はどちらも
+方を返す）。バックエンドの stablehlo.maximum と JAX の jnp.maximum はどちらも
 +0.0 を返すので、ここは食い違う。allclose の許容誤差の中では無害な
 違いなので phase 1 では直さない（%IEEE-MIN も同様の食い違いを持つ）。"
   (cond
@@ -146,7 +146,7 @@ CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。
 なら NaN を返す。
 
 符号付きゼロも %IEEE-MAX と同じ理由で食い違う: (%ieee-min -0.0 0.0) は
-CL の MIN に委ねているため -0.0 になるが、IREE の stablehlo.minimum は
+CL の MIN に委ねているため -0.0 になるが、バックエンドの stablehlo.minimum は
 +0.0 を、JAX の jnp.minimum は -0 を返す。%IEEE-MAX の docstring も参照。"
   (cond
     ((sb-ext:float-nan-p a) a)

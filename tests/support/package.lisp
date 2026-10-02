@@ -80,4 +80,17 @@
    #:primitive-graph-recipe
    #:build-primitive-graph
    #:primitive-recipe-eqn-count
-   #:replay-recipe-avals))
+   #:replay-recipe-avals
+   ;; レシピが使う dtype（束縛すると f64 だけの graph も作れる。issue #76）
+   #:*primitive-recipe-dtypes*
+   ;; 自動微分のテスト支援（issue #76）
+   #:central-difference-jvp
+   #:central-difference-gradient
+   #:*central-difference-step*
+   #:*autodiff-rtol*
+   #:*autodiff-atol*
+   #:inner-product
+   #:random-tangent
+   #:random-cotangent
+   #:scalar-loss-function
+   #:scalar-loss-oracle))

@@ -55,7 +55,7 @@ SB-INT:PROPER-LIST-P で正リストであることも確かめる。"
   (format nil "[~{~D~^, ~}]" dims))
 
 (defun %dot-accumulate-in-f32-p (dtype)
-  "DTYPE が :BF16 / :F16 なら真。IREE（llvm-cpu）の dot_general は入力
+  "DTYPE が :BF16 / :F16 なら真。バックエンド（StableHLO のコンパイラ、CPU 実行）の dot_general は入力
 dtype のまま累積し、eager 実装（single-float 累積）と縮約が長いときに
 許容誤差を超えてずれる（issue #54）ので、この場合だけ f32 で累積させて
 から元の dtype に戻す2行の :emit にする。"
@@ -94,8 +94,8 @@ node 判定に埋もれさせず、この 1 を変異させられるようにす
 (defun %dot-zero-contracting-p (lhs-aval lhs-contracting)
   "LHS-AVAL の LHS-CONTRACTING（縮約次元の番号のリスト）のうち、どれか
 1つでもサイズ0の次元があれば真（rhs 側の対応する次元は abstract-eval で
-サイズが一致することを確かめ済みなので、lhs だけ見ればよい）。IREE
-3.11.0 のコンパイラは、この形（K=0）の stablehlo.dot_general で
+サイズが一致することを確かめ済みなので、lhs だけ見ればよい）。固定した版の
+バックエンドのコンパイラ（記録は docs/ と issue #62）は、この形（K=0）の stablehlo.dot_general で
 AnnotateDispatches の整数0除算により落ちる（issue #62）。"
   (some (lambda (d) (zerop (nth d (aval-shape lhs-aval)))) lhs-contracting))
 
@@ -107,7 +107,7 @@ issue #62）。"
 
 (defun %dot-emit-lines (in-names in-avals out-name out-aval
                         lhs-batch rhs-batch lhs-contracting rhs-contracting)
-  "dot-general の :emit 本体。縮約次元がゼロサイズ（K=0）なら、IREE の
+  "dot-general の :emit 本体。縮約次元がゼロサイズ（K=0）なら、バックエンドの
 コンパイラクラッシュ（issue #62）を避けるため dot_general を出さずに
 ゼロ定数1行を返す。そうでなく OUT-AVAL の dtype が bf16/f16 なら、f32 の
 結果型を持つ dot_general と convert の2行を、それ以外は dot_general

@@ -130,6 +130,24 @@ sbcl --non-interactive --load examples/add.lisp
 
 `tests/iree/example-test.lisp` がこの例を毎回 `load` して出力を確認しているので、この例が壊れたら既定のテストスイートが落ちる（ビヨンセ・ルール）。
 
+## 使ってみる（2層 MLP の学習）
+
+`examples/mlp.lisp` は、XOR 風の2次元2クラス分類データで 2層 MLP（dense → tanh → dense）を softmax 交差エントロピーで学習する。`(jit (with-tracing ... (value-and-grad loss :argnums '(0 1 2 3))))` をループの外で1回だけ作り、SGD の更新は Lisp 側の配列演算で行う（2ステップ目以降はコンパイルしない）。`argnums` がリストだと勾配のリストは `jit` の出力にできないので、`value-and-grads-values` で `(値 勾配...)` の多値に直している。学習ステップは `make-mlp-train-step` として関数で呼べる。
+
+```sh
+export CL_SOURCE_REGISTRY="$PWD/:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}//:"
+sbcl --non-interactive --load examples/mlp.lisp
+```
+
+出力（100ステップの最初と最後の損失）:
+
+```
+loss[0] = 0.6404
+final loss = 0.0745
+```
+
+`tests/iree/mlp-train-test.lisp` が、JAX のフィクスチャ（`tests/fixtures/train/mlp-sgd.lisp`、生成は `generate.py`）との数値一致、損失の減少、コンパイルが1回だけであること、この例の実行を確かめている（issue #88）。
+
 ## 使ってみる（jit）
 
 `examples/jit.lisp`（このコードブロックと同じ内容）:
@@ -175,7 +193,12 @@ sbcl --non-interactive --load examples/jit.lisp
 
 **if を select に、配列レベルの公開 API**（`src/trace-ops.lisp`、`src/array-api.lisp`、issue #32）: `with-tracing` の本体の `if`（および `when`/`unless`/`cond`/`and`/`or` のように `if` にマクロ展開されるもの）は、条件がトレーサ・配列で dtype が `:i1`（比較の結果）なら、THEN・ELSE を両方評価してから `select` の演算に書き換える。条件が `:i1` でないトレーサ・配列なら `tracing-error`、それ以外（ふつうの Lisp の値）ならふつうの `if` のまま。`and`/`or` はトレーサの条件に対して `(if x x else)` に展開され、`:i1` の値がそのまま分岐に来るので `tracing-error`（明示的な比較や `where` を使う）。`when`/`unless` は省略された ELSE が `NIL` になるので、条件がトレーサ・配列だと同じ理由で `tracing-error` になる（`nil` は数値としてリフトできない）。
 
-配列レベルの公開 API は8個の総称関数（`array` と `tracer` の両方のメソッドを持つ）: `dot`（最後の軸と最初の軸を縮約する、バッチ無しの `dot-general`。rank 0 は `tracing-error`。配列とトレーサを混ぜて呼ぶと、配列をトレーサと同じ dtype の定数としてリフトする）, `reshape`, `transpose`（`perm` 省略時は軸を逆順にする）, `broadcast-in-dim`, `reduce-sum` / `reduce-max`（`axes` 省略時は全軸を潰す。`axes` を明示的に空リストで渡すと reduce しない＝X をそのまま返す。トレース時は eqn も足さない。省略とは区別される）, `convert`, `where`（`pred`・`a`・`b`。`pred` が真の要素は `a`、偽の要素は `b`。`pred` が eager な bit 配列でも `a`・`b` の少なくとも一方がトレーサなら `pred` を定数としてリフトしてトレースする。`pred` が rank 0 で `a`・`b` が rank 1 以上なら `pred` を分岐の shape にブロードキャストする（`if` の条件も同じ）。`pred` が Lisp のブール値 `t`／`nil` なら、ふつうの `if` と同じく片方の分岐を静的に選び `select` をトレースしない（結果の shape・dtype は同じ真偽の rank 0 の `pred` と同じ）。それ以外のふつうの Lisp の値は `tracing-error`）。数値・rank 0 の値は、もう一方の分岐・オペランドの shape・dtype に合わせて自動でブロードキャストされる（それ以外の shape の不一致は `primitive-error`）。`where`（および `if`/`select` への書き換え）の両方の分岐が数値だと dtype を決められず `tracing-error` になる。
+配列レベルの公開 API は9個の総称関数（`array` と `tracer` の両方のメソッドを持つ）: `dot`（最後の軸と最初の軸を縮約する、バッチ無しの `dot-general`。rank 0 は `tracing-error`。配列とトレーサを混ぜて呼ぶと、配列をトレーサと同じ dtype の定数としてリフトする）, `reshape`, `transpose`（`perm` 省略時は軸を逆順にする）, `broadcast-in-dim`, `reduce-sum` / `reduce-max`（`axes` 省略時は全軸を潰す。`axes` を明示的に空リストで渡すと reduce しない＝X をそのまま返す。トレース時は eqn も足さない。省略とは区別される）, `convert`, `where`（`pred`・`a`・`b`。`pred` が真の要素は `a`、偽の要素は `b`。`pred` が eager な bit 配列でも `a`・`b` の少なくとも一方がトレーサなら `pred` を定数としてリフトしてトレースする。`pred` が rank 0 で `a`・`b` が rank 1 以上なら `pred` を分岐の shape にブロードキャストする（`if` の条件も同じ）。`pred` が Lisp のブール値 `t`／`nil` なら、ふつうの `if` と同じく片方の分岐を静的に選び `select` をトレースしない（結果の shape・dtype は同じ真偽の rank 0 の `pred` と同じ）。それ以外のふつうの Lisp の値は `tracing-error`）, `stop-gradient`（issue #80。値は引数そのままで、自動微分では定数として扱われる＝接線がゼロ。任意の dtype を通し、配列には中身の等しい新しい配列を返す。StableHLO では `stablehlo.optimization_barrier` になる）。数値・rank 0 の値は、もう一方の分岐・オペランドの shape・dtype に合わせて自動でブロードキャストされる（それ以外の shape の不一致は `primitive-error`）。`where`（および `if`/`select` への書き換え）の両方の分岐が数値だと dtype を決められず `tracing-error` になる。
+
+**自動微分のコンディション**（`src/ad/rules.lisp`、issue #77）: `autodiff-error`（自動微分の変換が続けられないときの親。ルールの無いプリミティブは子の `no-jvp-rule` / `no-transpose-rule` で、`no-jvp-rule-name` / `no-transpose-rule-name` がプリミティブ名を返す）。jvp / transpose ルールの宣言（`def-jvp-rule` など）と symbolic zero は内部 API で、公開していない。
+
+**grad / value-and-grad**（`src/ad/grad.lisp`、issue #86）: `grad`（`f &key argnums`。`with-tracing` が作った関数、`#'name`（`defjit` が定義した関数）、`jit` した関数を `f` に渡せる（`jit` は `:static-args` の無いものだけ。中の `traceable-function` だけを使い、その `:backend` は無視される。backend 上で動かすには外側を `(jit (grad f) :backend b)` にする）。スカラー出力についての `f` の勾配を返す関数を作る）, `value-and-grad`（同じ引数。多値の `(値 勾配)` を返す）, `grad-requires-scalar-output`, `grad-requires-scalar-output-aval`（`autodiff-error` の子。`f` の出力が rank 0 の浮動小数点ちょうど1つでないときに signal する。`-aval` は問題の出力の aval）。`argnums` は微分する引数の位置（0始まりの整数、または整数のリスト。既定は 0）で、整数なら勾配1つ、リストならリスト（`argnums` の順。JAX と同じ）を返す。範囲外・重複・整数でない `argnums` と、微分する引数が浮動小数点でないとき（`:i1` など）は `autodiff-error`。勾配の shape・dtype はその引数と同じ。戻り値は `traceable-function` なので、配列・実数を渡して直接呼べる（eager。実数は rank 0 の配列として扱い、`double-float` は `:f64`、それ以外は `:f32`）ほか、`(jit (grad f))`、`with-tracing` / `defjit` の本体の中、別の `grad` の対象（`(grad (grad f))` の高階微分）にもできる。トレース中の呼び出しは、微分した graph を呼び出し元のトレースへ展開する。`argnums` がリストのときの勾配のリストは `jit` の出力にできない（`jit` が返せるのは配列かトレーサだけ）ので、`(with-tracing (...) (values-list (funcall g ...)))` で包む。既知の制限: `f` が外側のトレースのトレーサを閉包で捕まえていると `tracing-error` になる（外側の値は `f` の引数として渡す）。`(grad f)` は呼ぶたびに新しい関数オブジェクトを作り、`jit` のキャッシュは関数の同一性が鍵なので、**ループの中で `(jit (grad f))` を作ると毎回コンパイルされる**（JAX と同じ）。ループの外で `(jit (grad f))` を1回だけ作るか、`defjit` の本体の中で `grad` を使うこと。
+
 **StableHLO テキスト emitter**（`src/stablehlo.lisp`、issue #33）: `emit-stablehlo`（graph を、無名の module の中に1つの `func.func`（既定名 `main`）を持つ StableHLO テキストに変換する。`backend-compile` にそのまま渡せる。各 eqn の出力行には `loc("eqn-N")` が付く）, `primitive-not-emittable`, `primitive-not-emittable-name`（`:emit` を持たないプリミティブに当たったときに signal する）
 
 **jit**（`src/jit.lisp`、issue #34）: `jit`（`with-tracing` / `defjit` が作った `traceable-function` を、呼ぶたびに必要なら1回だけコンパイルしてから実行する関数にする。`:static-args` で0始まりの引数位置を静的引数に指定でき、`:backend` で使う backend（`nil` なら `*default-backend*`）を指定できる。呼び出し時の動的引数は、CL の配列（`array-aval` で aval を推論する）か device array のどちらでもよい。bf16 / f16 は生の `(unsigned-byte 16)` 配列のままでは dtype を推論できないため、先に `to-device` で device array にしてから渡すこと。戻り値は graph の出力の個数だけ `to-host` した多値になる——v1 は常に host 配列を返す。IREE の `local` backend は f64 の `exp` / `log` / `tanh` を libm の呼び出しとして残すので、これらを含む関数のコンパイルにだけ PATH 上の `ld.lld` が要る（`docs/stablehlo-ops.md`）), `jit-error`（`jit` / jit した関数の呼び出しが誤った使い方を検出したときに signal する）, `*default-backend*`（`jit` に `:backend` を渡さなかったときに使う既定の backend。`nil`・backend の KIND（キーワード）・backend インスタンスのいずれか。`nabla/iree` をロードするとまだ未設定のときに限りこの変数を自分の KIND に設定する）。jit キャッシュは関数の同一性（EQ）・aval・静的引数の値・backend（フィンガープリント込み）をキーにするインメモリのキャッシュで、vmfb のディスクキャッシュ（`*compile-cache-directory*`）とは別の層（`docs/glossary.md` の「インメモリのコンパイルキャッシュ」参照）。
@@ -201,7 +224,7 @@ tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
 docs/                glossary.md, iree-build.md, phase0-report.md, phase1-report.md
-examples/            add.lisp（この README の使用例）
+examples/            add.lisp, jit.lisp, mlp.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
