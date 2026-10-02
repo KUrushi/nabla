@@ -130,6 +130,12 @@ pretty form を出力する。
 **symbolic zero（シンボリックなゼロ）**
 : 値がゼロと分かっている接線・余接線を、配列も eqn も作らずに表す内部オブジェクト（`src/ad/zero.lisp` の `symbolic-zero`）。jvp / transpose の変換はこれをそのまま伝播させ、ゼロとの加算や、ゼロを使う項の計算を丸ごと省く。graph の出力など、実体が必要になったときだけ `instantiate-zero` が、rank 0 の定数 0 と `broadcast-in-dim` で配列にする。transpose ルールで「まだ値が無い線形入力」を表す `undefined-primal` とは別物。
 
+**stop-gradient（勾配を止める）**
+: 値は入力そのままだが、自動微分では定数として扱う演算（`nb:stop-gradient`、プリミティブ `stop-gradient`、JAX の `lax.stop_gradient`）。jvp ルールは常に symbolic zero を返す。StableHLO には恒等の op が無いので、値を変えず最適化の境界になる `stablehlo.optimization_barrier` に出力する。
+
+**balanced eq（等しいときは半分ずつ）**
+: `max(x, y)` の微分で `x` と `y` が等しい点では、接線を各側に 0.5 ずつ流す JAX の規約（`jax._src.lax._balanced_eq`）。等しくない点では大きい側（`min` なら小さい側）の接線だけが通る。
+
 **vmap / バッチ化ルール（batching rule）**
 : `vmap` は、1つの例を処理する関数を、例の束（バッチ）をまとめて処理する関数に自動で変換する。そのために、各演算に「入力にバッチの軸が増えたら、出力のどこにバッチの軸が来るか」を決めるルールを書く。これがバッチ化ルール。
 
