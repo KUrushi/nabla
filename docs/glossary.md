@@ -154,6 +154,9 @@ pretty form を出力する。
 **NaN propagation（NaN 伝播）**
 : 演算の入力のどれかが NaN なら、出力も必ず NaN になるという規則。StableHLO / IREE / JAX の `max` / `min` はこの規則に従うが、Common Lisp の `max` / `min` は引数の順序によって NaN を落としてしまうことがあるため、nabla は `%ieee-max` / `%ieee-min` で明示的に NaN 伝播を実装している。
 
+**指示関数（indicator）**
+: 条件を満たす要素で 1、そうでなければ 0 になる配列。`reduce-max` の jvp は、最大値を取る要素の指示関数を主値だけから作り、`reduce-sum(接線 · 指示関数) / reduce-sum(指示関数)` で接線を選ぶ（最大値が重複すれば平均になる。JAX と同じ）。指示関数は主値にしか依存しないので、接線について線形のまま保てる。
+
 ## テスト
 
 **property-based testing（PBT, 性質ベーステスト）**
