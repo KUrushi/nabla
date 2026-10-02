@@ -51,6 +51,8 @@
                ;; 自動微分の骨格: symbolic zero とルール種別（issue #77、77a）
                (:file "src/ad/zero")
                (:file "src/ad/rules")
+               ;; graph のインライン化と不要 eqn の削除（issue #77、77b）
+               (:file "src/ad/inline")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -118,6 +120,8 @@
                ;; if を select に、配列レベルの公開 API（issue #32、t2）
                (:file "tests/trace-if-test")
                (:file "tests/array-api-test")
+               ;; graph のインライン化と不要 eqn の削除（issue #77、77b）
+               (:file "tests/ad/inline-test")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "tests/stablehlo-test")
                ;; 自動微分の骨格: symbolic zero とルール種別（issue #77、77a）
