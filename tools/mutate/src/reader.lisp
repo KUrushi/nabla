@@ -32,11 +32,13 @@ signal する。FILE-ERROR のサブタイプなので、run.sh のように
 (setf (documentation 'source-form-package 'function) "そのフォームを読んだときの *PACKAGE*。")
 
 (defparameter *mutable-definition-heads*
-  '("DEFUN" "DEFMETHOD" "DEFMACRO" "DEFPRIMITIVE")
+  '("DEFUN" "DEFMETHOD" "DEFMACRO" "DEFPRIMITIVE"
+    "DEF-JVP-RULE" "DEF-TRANSPOSE-RULE" "DEF-JVP-PARTIALS")
   "変異の対象になるトップレベル定義の先頭シンボル名（パッケージ非依存）。")
 
 (defun mutable-definition-p (form)
-  "FORM が変異対象の定義（defun / defmethod / defmacro / defprimitive）なら T。"
+  "FORM が変異対象の定義（defun / defmethod / defmacro / defprimitive と、自動微分の
+def-jvp-rule / def-transpose-rule / def-jvp-partials）なら T。"
   (and (consp form)
        (symbolp (car form))
        (member (symbol-name (car form)) *mutable-definition-heads*
