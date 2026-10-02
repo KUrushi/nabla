@@ -51,7 +51,13 @@ FORM は (SETQ X (+ 1 X))。"
 展開する）は対応している: マクロ展開時に signal せず、本体の中の演算子も
 書き換わる（% T-ADD になる）。"
   (let ((expansion (macroexpand-1 '(nb:with-tracing (x y) (multiple-value-bind (a b) (values x y) (+ a b))))))
-    (is (search "%T-ADD" (prin1-to-string expansion)))))
+    (is (search "%T-ADD" (prin1-to-string expansion))))
+  (let ((f (nb:with-tracing (x y) (multiple-value-bind (a b) (values x y) (+ a (* b 10))))))
+    (is (= 21 (funcall f 1 2))))
+  (let ((f (nb:with-tracing (x y) (multiple-value-list (values x y)))))
+    (is (equal '(1 2) (funcall f 1 2))))
+  (let ((f (nb:with-tracing (x y) (nth-value 1 (values x (+ y 1))))))
+    (is (= 3 (funcall f 1 2)))))
 
 (test walk/multiple-value-bind-body-is-still-checked
   "MULTIPLE-VALUE-BIND の値フォームにも本体にも、対応していない形式（SETQ）が
@@ -75,6 +81,13 @@ FORM は (SETQ X (+ 1 X))。"
     (is (eq 'multiple-value-call (first form)))
     (is (equal '(1) path))))
 
+(test walk/multiple-value-call-of-quoted-rewritten-cl-function-signals-unsupported-form
+  "(MULTIPLE-VALUE-CALL '+ ...) も #'+ と同じく UNSUPPORTED-FORM。"
+  (%signals-unsupported-form (form path)
+      '(nb:with-tracing (x y) (multiple-value-call '+ (values x y)))
+    (is (eq 'multiple-value-call (first form)))
+    (is (equal '(1) path))))
+
 (test walk/multiple-value-call-without-function-form-signals-unsupported-form
   "関数フォームの無い (MULTIPLE-VALUE-CALL) は UNSUPPORTED-FORM。"
   (%signals-unsupported-form (form path) '(nb:with-tracing (x) x (multiple-value-call))
@@ -86,6 +99,8 @@ FORM は (SETQ X (+ 1 X))。"
 UNSUPPORTED-FORM。"
   (is (search "%T-ADD" (prin1-to-string
                         (macroexpand-1 '(nb:with-tracing (x y) (multiple-value-prog1 (+ x y) (+ x 1)))))))
+  (let ((f (nb:with-tracing (x y) (multiple-value-prog1 (+ x y) (+ x 1)))))
+    (is (= 3 (funcall f 1 2))))
   (%signals-unsupported-form (form path)
       '(nb:with-tracing (x y) (multiple-value-prog1 x (setq y 1)))
     (is (equal '(setq y 1) form))

@@ -198,13 +198,16 @@ eval-graph すると eager の grad と一致する。"
        (values v (first gs) (second gs))))
    *mvb-avals*))
 
+(defun %flat-value-and-grads (vg &rest args)
+  "VG（argnums がリストの value-and-grad）を ARGS で呼び、(値 勾配...) を平らな多値にする
+普通の関数（multiple-value-bind を使わずに with-tracing から呼ぶ従来の回避法）。"
+  (let ((all (multiple-value-list (apply vg args))))
+    (values-list (cons (first all) (second all)))))
+
 (defun %values-list-graph (vg)
-  "従来の回避法 (values-list) の graph。"
+  "従来の回避法（普通の関数に切り出す）の graph。"
   (nb:trace-to-graph
-   (nb:with-tracing (x y)
-     (multiple-value-bind (v) (funcall vg x y) v)
-     (let ((all (multiple-value-list (funcall vg x y))))
-       (values-list (cons (first all) (second all)))))
+   (nb:with-tracing (x y) (%flat-value-and-grads vg x y))
    *mvb-avals*))
 
 (test grad/multiple-value-bind-of-value-and-grad-matches-values-list

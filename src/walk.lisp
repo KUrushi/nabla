@@ -8,7 +8,7 @@
 ;;;; 対応する形式（マクロ展開後）: LET / LET* / PROGN / IF / FUNCTION /
 ;;;; FLET / LABELS / THE / SB-EXT:TRULY-THE / LOCALLY / QUOTE / アトム、
 ;;;; MULTIPLE-VALUE-CALL / MULTIPLE-VALUE-PROG1（MULTIPLE-VALUE-BIND と
-;;;; MULTIPLE-VALUE-LIST は SBCL がこれらに展開する。issue #115）、
+;;;; MULTIPLE-VALUE-LIST / NTH-VALUE は SBCL がこれらに展開する。issue #115）、
 ;;;; および CL の算術・比較関数への呼び出し（下の *REWRITE-TABLE*）と、
 ;;;; それ以外のシンボルを演算子に持つ通常の関数呼び出し（引数だけ歩き、
 ;;;; 呼び出しそのものはそのまま残す。documented: ふつうの Lisp として実行
@@ -113,7 +113,8 @@ value に置き換える（型注釈はトレース対象の値には意味を�
   "(FUNCTION x)。x がシンボルならそのまま（#'+ は CL の + のまま。
 documented limitation: これを N 引数の関数として渡す先で使うと、シンボルの
 指す CL の関数がそのまま呼ばれ、トレーサに対しては動かない）。x が
-(LAMBDA ...) なら、その本体を歩く。"
+(LAMBDA ...) なら、その本体を歩く。MULTIPLE-VALUE-CALL の関数位置に
+置いた #'+ などは、%WALK-MULTIPLE-VALUE-CALL が UNSUPPORTED-FORM にする。"
   (let ((x (second form)))
     (if (and (consp x) (eq (first x) 'lambda))
         (list 'function (%walk-lambda-form x (%path-extend path 1)))
@@ -152,11 +153,11 @@ documented limitation: これを N 引数の関数として渡す先で使うと
 
 (defun %walk-multiple-value-call (form path)
   "(MULTIPLE-VALUE-CALL fn form...) の fn と各 form を歩く。fn が書き換え表に
-ある CL の関数への (FUNCTION sym) なら、関数フォームが無い形とともに
+ある CL の関数への (FUNCTION sym) か (QUOTE sym) なら、関数フォームが無い形とともに
 UNSUPPORTED-FORM。"
   (let ((fn-form (second form)))
     (when (or (null (rest form))
-              (and (consp fn-form) (eq (first fn-form) 'function)
+              (and (consp fn-form) (member (first fn-form) '(function quote))
                    (symbolp (second fn-form)) (%find-rewriter (second fn-form))))
       (%unsupported form path))
     (list* 'multiple-value-call (%walk-args (rest form) 1 path))))
