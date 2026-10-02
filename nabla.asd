@@ -3,8 +3,8 @@
 ;;;; nabla: Common Lisp × IREE の深層学習ライブラリ。
 ;;;;
 ;;;; システムは nabla / nabla/test-support / nabla/tests / nabla/ffi-support /
-;;;; nabla/ffi-support/tests / nabla/iree / nabla/iree/tests（と nabla/pjrt /
-;;;; nabla/nn / nabla/data の予定）。nabla/ffi-support は IREE と将来の PJRT が
+;;;; nabla/ffi-support/tests / nabla/iree / nabla/iree/tests / nabla/pjrt /
+;;;; nabla/pjrt/tests（と nabla/nn / nabla/data の予定）。nabla/ffi-support は IREE と PJRT が
 ;;;; 共有する FFI 保護（issue #79）で、nabla/iree 無しでロードできる。
 ;;;;
 ;;;; 1つの defsystem に1つの :components エントリを1行、で揃えている。
@@ -267,3 +267,19 @@
                (:file "tests/iree/grad-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
                (:file "tests/iree/mlp-train-test")))
+
+(defsystem "nabla/pjrt"
+  :description "PJRT 連携（プラグインの .so を dlopen して C API の版を読む。クライアントは後続の issue）"
+  :depends-on ("nabla/ffi-support" "cffi")
+  :components ((:file "src/pjrt/package")
+               (:file "src/pjrt/library")))
+
+;; nabla/pjrt/tests も nabla/iree/tests と同じく nabla/tests から独立している。
+(defsystem "nabla/pjrt/tests"
+  :description "nabla/pjrt のテスト（プラグインが無ければスキップ。NABLA_REQUIRE_PJRT が空でなければ失敗）"
+  :depends-on ("nabla/pjrt" "nabla/test-support" (:require "sb-posix"))
+  :components ((:file "tests/pjrt/package")
+               (:file "tests/pjrt/support")
+               (:file "tests/pjrt/support-test")
+               ;; CPU プラグインの dlopen と PJRT API の版（issue #78）
+               (:file "tests/pjrt/smoke-test")))

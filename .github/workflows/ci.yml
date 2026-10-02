@@ -22,7 +22,10 @@ jobs:
       NABLA_IREE_SRC: ${{ github.workspace }}/../iree-src
       NABLA_IREE_BUILD: ${{ github.workspace }}/../iree-build-runtime
       NABLA_IREE_WHEEL_DIR: ${{ github.workspace }}/../iree-wheel
+      NABLA_PJRT_HOME: ${{ github.workspace }}/.nabla-pjrt-home
+      NABLA_PJRT_WHEEL_DIR: ${{ github.workspace }}/../pjrt-wheel
       NABLA_REQUIRE_IREE: "1"
+      NABLA_REQUIRE_PJRT: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -68,6 +71,17 @@ jobs:
 
       - name: Verify IREE (CPU only)
         run: scripts/verify-iree.sh
+
+      - name: Cache PJRT CPU plugin
+        id: cache-pjrt
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.NABLA_PJRT_HOME }}
+          key: pjrt-${{ runner.os }}-${{ hashFiles('third_party/pjrt.lock', 'scripts/fetch-pjrt.sh') }}
+
+      - name: Fetch PJRT CPU plugin
+        if: steps.cache-pjrt.outputs.cache-hit != 'true'
+        run: scripts/fetch-pjrt.sh
 
       - name: Run default test suite (small + medium)
         run: |
