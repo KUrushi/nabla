@@ -121,17 +121,19 @@ compile_portable_executable=1 にするのは、実行体にデバイス割り�
   "NAME（PJRT_Executable_Destroy / PJRT_LoadedExecutable_Destroy）で POINTER を破棄する。"
   (%pjrt-call (api name args (:struct %executable-destroy-args) (executable pointer))))
 
-(defun %client-state-destroy-loaded-executable (state executable-address)
+(defun %client-state-destroy-loaded-executable (state executable-address &key signal-errors)
   "EXECUTABLE-ADDRESS（PJRT_LoadedExecutable* の整数アドレス）を
 PJRT_LoadedExecutable_Destroy し、生きているオブジェクトの数を1つ減らす
 （バッファと同じカウンタ。ロード済みの実行体もクライアントより先に破棄する）。
 所有者が既にいなくて、これが最後なら、クライアントも破棄する。finalizer からも
-呼ばれるので、エラーは握りつぶす。"
+呼ばれるので、既定ではエラーを握りつぶす。SIGNAL-ERRORS が真なら（明示的な
+unload）、破棄のエラーを伝える（カウンタの減算とクライアントの破棄は、その場合も行う）。"
   (unwind-protect
-       (ignore-errors
-        (let ((api (%client-state-api state)))
-          (%destroy-executable api "PJRT_LoadedExecutable_Destroy"
-                               (cffi:make-pointer executable-address))))
+       (flet ((destroy ()
+                (let ((api (%client-state-api state)))
+                  (%destroy-executable api "PJRT_LoadedExecutable_Destroy"
+                                       (cffi:make-pointer executable-address)))))
+         (if signal-errors (destroy) (ignore-errors (destroy))))
     (sb-ext:atomic-decf (client-state-live-buffers state))
     (ignore-errors (%client-state-destroy-if-unused state))))
 
@@ -238,8 +240,13 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
                     (module (%make-pjrt-module client address
                                                (%loaded-executable-num-outputs api loaded))))
                (%client-state-buffer-created state)
-               (tg:finalize module
-                            (lambda () (%client-state-destroy-loaded-executable state address)))
+               ;; finalize が失敗したら、数えた分を戻してから再 signal する。
+               (handler-bind ((serious-condition
+                                (lambda (condition)
+                                  (declare (ignore condition))
+                                  (sb-ext:atomic-decf (client-state-live-buffers state)))))
+                 (tg:finalize module
+                              (lambda () (%client-state-destroy-loaded-executable state address))))
                (setf done t)
                module)
           (unless done
@@ -247,11 +254,13 @@ PJRT が持つバッファは、Lisp へコピーした後で deleter により�
 
 (defun %module-unload (module)
   "MODULE の PJRT_LoadedExecutable を破棄する。先に tg:cancel-finalization で
-finalizer を取り消す（二重解放を避ける）。2回目以降は何もしない。"
+finalizer を取り消す（二重解放を避ける）。2回目以降は何もしない。破棄が失敗したら
+PJRT-ERROR を伝える。そのときも module は released 済みで、再試行はされない。"
   (when (null (sb-ext:compare-and-swap (pjrt-module-released-p module) nil t))
     (tg:cancel-finalization module)
     (%client-state-destroy-loaded-executable
-     (%pjrt-client-state (pjrt-module-client module)) (pjrt-module-address module)))
+     (%pjrt-client-state (pjrt-module-client module)) (pjrt-module-address module)
+     :signal-errors t))
   nil)
 
 (defun %buffer-aval (api buffer)
@@ -297,7 +306,9 @@ finalizer を取り消す（二重解放を避ける）。2回目以降は何も
   "MODULE を、ARRAYS（device-array のリスト）を引数に DEVICE（PJRT_Device*）
 1台で実行し、出力の device-array を多値で返す。実行の完了イベントを待ってから返す。
 同じ MODULE に対する BACKEND-UNLOAD と本関数を並行させてはならない（unload が
-実行中の PJRT_LoadedExecutable を破棄しうる。呼び出し側が直列化する）。"
+実行中の PJRT_LoadedExecutable を破棄しうる。呼び出し側が直列化する）。
+実行中は module を pin するが、守るのは finalizer からだけで、明示的な unload
+との並行は守らない。"
   (when (pjrt-module-released-p module)
     (error 'pjrt-object-released :kind :module :context "invoke"
                                  :message "the module was already unloaded"))

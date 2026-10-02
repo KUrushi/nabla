@@ -236,6 +236,8 @@ module を unload した時点で初めて破棄される（LoadedExecutable が
              (release-device-array out))
         (release-device-array a))
       (is (not (nabla.pjrt::client-state-destroyed-p state))))
+    ;; unload は backend 引数を使わない（module が client を持つ）ので、共有の
+    ;; backend を渡せる。専用 backend は既に消えている。
     (nabla:backend-unload (nabla:find-backend :pjrt) module)
     (is (nabla.pjrt::client-state-destroyed-p state))))
 
@@ -245,14 +247,13 @@ module を unload した時点で初めて破棄される（LoadedExecutable が
   (skip-unless-pjrt :kind :cpu)
   (let* ((backend (nabla:find-backend :pjrt))
          (baseline (%live-buffers backend)))
-    (flet ((churn ()
+    (flet ((churn (octets)
              (declare (notinline nabla:backend-load nabla:backend-unload))
              (dotimes (i 20)
-               (let ((m (nabla:backend-load
-                         backend (nabla:backend-compile backend (stablehlo-fixture "add")))))
+               (let ((m (nabla:backend-load backend octets)))
                  (nabla:backend-unload backend m)
                  (nabla:backend-unload backend m)))))
-      (churn))
+      (churn (nabla:backend-compile backend (stablehlo-fixture "add"))))
     (dotimes (i 3) (finishes (gc-and-run-finalizers)))
     (is (= baseline (%live-buffers backend)))))
 
