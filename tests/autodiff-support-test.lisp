@@ -198,10 +198,3 @@
                            (progn (apply #'nb:eval-graph graph args) t))))
                   :regression-id support/autodiff/f64-recipe-graphs-are-valid
                   :regression-file (regression-path "autodiff-f64-recipe-graphs")))))
-
-(test support/autodiff/recipes-exclude-dot-when-asked
-  "*PRIMITIVE-RECIPE-DOT-P* を NIL に束縛すると、レシピに :DOT ステップが現れない
-（既定では現れうる）。"
-  (let ((*primitive-recipe-dot-p* nil))
-    (is (check-it (generator (primitive-graph-recipe :max-ops 8))
-                  (lambda (recipe) (notany (lambda (step) (eq (first step) :dot)) recipe))))))

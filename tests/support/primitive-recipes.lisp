@@ -36,11 +36,6 @@
 3つ。export 済みで、LET で再束縛できる（生成時に読まれる）。例えば '(:f64)
 にすると、eval-graph だけで評価する f64 の graph を作れる（issue #76）。")
 
-(defparameter *primitive-recipe-dot-p* t
-  "真なら、レシピに :DOT ステップ（dot-general）を含めうる。export 済みで、
-LET で再束縛できる（生成時に読まれる）。dot-general の transpose ルールが
-無い間（issue #84 まで）に、transpose を通すテストが NIL にして使う。")
-
 (defun %pr-random-shape (max-rank max-dim)
   (loop repeat (random (1+ max-rank)) collect (1+ (random max-dim))))
 
@@ -86,7 +81,7 @@ with itself」と同じ考え方）。"
              (rank (length shape))
              (choices (append '(:binary :unary :compare-select :convert :broadcast)
                                (when (plusp rank) '(:reshape :transpose :reduce))
-                               (when (and *primitive-recipe-dot-p* (= rank 2)) '(:dot))))
+                               (when (= rank 2) '(:dot))))
              (kind (nth (random (length choices)) choices)))
         (ecase kind
           (:binary
