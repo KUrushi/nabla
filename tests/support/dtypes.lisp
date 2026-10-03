@@ -5,6 +5,10 @@
 (defparameter *dtypes* '(:f32 :f64 :bf16 :f16)
   "nabla がサポートする dtype の一覧。")
 
+(defparameter *integer-dtypes* '(:i32 :u32 :u64)
+  "整数 dtype の一覧（issue #126）。*DTYPES* には入れない: 既存の PBT は
+*DTYPES* を exp / log / dot-general などの浮動小数点専用の演算にも流すため。")
+
 (defun dtype-tolerance (dtype)
   "DTYPE の既定の許容誤差を (values rtol atol) で返す。
 
@@ -16,7 +20,7 @@ f64 は 1e-12/1e-12、f32 は 1e-5/1e-6、bf16/f16 は 1e-2/1e-3。i1（issue #3
     (:f32 (values 1d-5 1d-6))
     (:bf16 (values 1d-2 1d-3))
     (:f16 (values 1d-2 1d-3))
-    (:i1 (values 0d0 0d0))))
+    ((:i1 :i32 :u32 :u64) (values 0d0 0d0))))
 
 (defparameter *float-dtype-precision-rank* '((:bf16 . 0) (:f16 . 0) (:f32 . 1) (:f64 . 2))
   "浮動小数点 dtype を精度の低い順に並べた順位（小さいほど精度が低い）。

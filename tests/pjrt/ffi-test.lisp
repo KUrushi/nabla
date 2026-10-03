@@ -66,7 +66,10 @@
   (let ((ordinals (%header-enum-ordinals "PJRT_Buffer_Type" "PJRT_Buffer_Type_")))
     (is (= 0 (cdr (assoc "PJRT_Buffer_Type_INVALID" ordinals :test #'string=))))
     (loop for (dtype . value) in nabla.pjrt::*buffer-types*
-          for name = (format nil "PJRT_Buffer_Type_~A" (string-upcase (symbol-name dtype)))
+          for name = (format nil "PJRT_Buffer_Type_~A"
+                             ;; 整数は nabla の dtype タグとヘッダの綴りが違う（issue #126）
+                             (case dtype (:i32 "S32") (:u32 "U32") (:u64 "U64")
+                               (t (string-upcase (symbol-name dtype)))))
           do (is (eql value (cdr (assoc name ordinals :test #'string=)))
                  "~A: expected ~A" name (cdr (assoc name ordinals :test #'string=))))))
 

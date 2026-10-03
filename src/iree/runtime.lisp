@@ -452,6 +452,15 @@ buffer-view-release で解放すること（call.h:115-117）。"
 ;;   IREE_HAL_NUMERICAL_TYPE_FLOAT_IEEE  = FLOAT(0x20) | 0x01 = #x21 (buffer_view.h:44,46)
 ;;   IREE_HAL_NUMERICAL_TYPE_FLOAT_BRAIN = FLOAT(0x20) | 0x02 = #x22 (buffer_view.h:44,48)
 ;;   IREE_HAL_NUMERICAL_TYPE_BOOLEAN     = INTEGER(0x10) | 0x03 = #x13 (buffer_view.h:33,41)
+;;   IREE_HAL_NUMERICAL_TYPE_INTEGER_SIGNED   = INTEGER(0x10) | 0x01 = #x11 (buffer_view.h:35-36)
+;;   IREE_HAL_NUMERICAL_TYPE_INTEGER_UNSIGNED = INTEGER(0x10) | 0x02 = #x12 (buffer_view.h:38-39)
+;; :u32 / :u64 は IREE_HAL_ELEMENT_TYPE_UINT_32 / UINT_64（buffer_view.h:152-156。
+;; issue #126）。:i32 は SINT_32 ではなく IREE_HAL_ELEMENT_TYPE_INT_32
+;; （INTEGER = #x10、符号の指定なし。buffer_view.h:150）にする: i32 を返す関数の
+;; 出力は、コンパイラが符号なしの型を ui32 のときだけ UNSIGNED にするため
+;; 符号なし指定の無い INT_32 で返ってくる（SINT_32 にすると出力の
+;; 要素型が *element-types* に見つからず invoke が失敗した）。ホストの
+;; 整数配列はそのまま渡せる。
 ;; :f64 は IREE_HAL_ELEMENT_TYPE_FLOAT_64（FLOAT_IEEE, 64。buffer_view.h:158）、
 ;; :i1 は IREE_HAL_ELEMENT_TYPE_BOOL_8（BOOLEAN, 8。buffer_view.h:140）。
 ;; コンパイラは関数境界の i1 を BOOLEAN の 8 ビットにする
@@ -463,7 +472,10 @@ buffer-view-release で解放すること（call.h:115-117）。"
         (cons :f64 (logior (ash #x21 24) 64))
         (cons :bf16 (logior (ash #x22 24) 16))
         (cons :f16 (logior (ash #x21 24) 16))
-        (cons :i1 (logior (ash #x13 24) 8)))
+        (cons :i1 (logior (ash #x13 24) 8))
+        (cons :i32 (logior (ash #x10 24) 32))
+        (cons :u32 (logior (ash #x12 24) 32))
+        (cons :u64 (logior (ash #x12 24) 64)))
   "nabla.iree で扱う dtype キーワードと iree_hal_element_type_t の整数値の対応表。")
 
 (defun %element-type-code (keyword)

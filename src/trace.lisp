@@ -141,6 +141,16 @@ TRACING-ERROR を signal する。"
     (error 'tracing-error
            :format-control ":I1 の値 ~S はリフトできない（数値との対応が定義されていない）"
            :format-arguments (list number)))
+  (when (integer-dtype-p dtype)
+    ;; 整数 dtype へのリフトは、もう一方のオペランドの dtype に合わせる
+    ;; （issue #126）。整数リテラルだけが範囲内なら入る。浮動小数点の
+    ;; リテラルを黙って切り捨てると意図しない値になるので拒否する。
+    (unless (and (integerp number) (= number (wrap-integer number dtype)))
+      (error 'tracing-error
+             :format-control "~S は dtype ~S の整数としてリフトできない（整数で、その dtype の範囲内でなければならない）"
+             :format-arguments (list number dtype)))
+    (return-from %filled-array
+      (make-array shape :element-type (dtype-element-type dtype) :initial-element number)))
   (let* ((compute-type (%compute-element-type dtype))
          (array (make-array shape :element-type compute-type :initial-element (coerce number compute-type))))
     (%encode-array array dtype)))

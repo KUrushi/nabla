@@ -20,6 +20,9 @@
    #:sizes-from-env
    ;; dtype と許容誤差
    #:*dtypes*
+   #:*integer-dtypes*
+   #:make-random-integer-array
+   #:integer-edge-values
    #:dtype-tolerance
    #:graph-worst-float-dtype
    ;; check-it::*size* にクランプされない一様な整数・実数の生成器

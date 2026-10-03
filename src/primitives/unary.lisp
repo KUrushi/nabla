@@ -41,7 +41,7 @@ MINUSP は -0.0 を偽にするので、ZEROP のこの分岐が無いと -0.0 �
   (tanh x))
 
 (defun %neg-abstract-eval (in-avals)
-  (%unary-float-abstract-eval :neg in-avals))
+  (%unary-numeric-abstract-eval :neg in-avals))
 
 (defun %exp-abstract-eval (in-avals)
   (%unary-float-abstract-eval :exp in-avals))

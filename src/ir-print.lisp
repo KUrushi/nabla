@@ -253,7 +253,12 @@ outvars のどれでも定義されていない var を参照している（未�
 (defun %parse-dtype (sym)
   (unless (symbolp sym)
     (%graph-syntax-error sym "dtype が symbol でない: ~S" sym))
-  (let ((keyword (intern (symbol-name sym) :keyword)))
+  (let ((keyword (let ((name (symbol-name sym)))
+                   ;; 符号なし整数の MLIR の綴り（ui32 / ui64）は dtype タグ
+                   ;; （:u32 / :u64）と違う（issue #126）
+                   (cond ((string= name "UI32") :u32)
+                         ((string= name "UI64") :u64)
+                         (t (intern name :keyword))))))
     (unless (typep keyword 'dtype)
       (%graph-syntax-error sym "未知の dtype: ~S" sym))
     keyword))

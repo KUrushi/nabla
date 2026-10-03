@@ -70,7 +70,8 @@ CLAUDE.md の約束どおり bf16/f16 はビット列のまま持つため、デ
   (ecase dtype
     ((:f32 :f64) (%stablehlo-float-literal value dtype))
     ((:bf16 :f16) (%stablehlo-f16-literal value))
-    (:i1 (if (= value 1) "true" "false"))))
+    (:i1 (if (= value 1) "true" "false"))
+    ((:i32 :u32 :u64) (format nil "~D" value))))
 
 (defun %nest-elements (array dtype dims next-index)
   "DIMS（残りの次元のリスト）ぶんだけネストした \"[...]\" を組み立てる。
