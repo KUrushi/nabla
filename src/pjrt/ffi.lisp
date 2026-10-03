@@ -191,12 +191,12 @@ PJRT_Api_Version (struct_size 8 + extension_start 8 + major 4 + minor 4 = 24)。
   (event :pointer))
 
 (defparameter *buffer-types*
-  '((:f16 . 10) (:f32 . 11) (:f64 . 12) (:bf16 . 13))
+  '((:i32 . 4) (:u32 . 8) (:u64 . 9) (:f16 . 10) (:f32 . 11) (:f64 . 12) (:bf16 . 13))
   "dtype キーワードと PJRT_Buffer_Type の値の対応。値は pjrt_c_api.h の
 PJRT_Buffer_Type の enum を INVALID = 0 から数えた位置（PRED 1、S8 2、S16 3、
 S32 4、S64 5、U8 6、U16 7、U32 8、U64 9、F16 10、F32 11、F64 12、BF16 13）。
-small テストがこの値をヘッダの enum と突き合わせる。:i1（PRED）はまだ
-対応しない。")
+small テストがこの値をヘッダの enum と突き合わせる。:i32（S32）、:u32（U32）、
+:u64（U64）は issue #126 で足した。:i1（PRED）はまだ対応しない。")
 
 (defconstant +host-buffer-immutable-until-transfer-completes+ 1
   "PJRT_HostBufferSemantics_kImmutableUntilTransferCompletes

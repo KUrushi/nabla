@@ -20,7 +20,7 @@ NaN が絡む比較は :NE 以外すべて偽（0）、:NE だけ真（1）に�
 規則。CLAUDE.md / 契約の pitfall）。SBCL の < > = はトラップをマスクした
 状態でも NaN に対して正しく NIL/T を返すが、可読性と mutation testing の
 的にするため分岐を明示的に書く。"
-  (if (or (sb-ext:float-nan-p a) (sb-ext:float-nan-p b))
+  (if (or (and (floatp a) (sb-ext:float-nan-p a)) (and (floatp b) (sb-ext:float-nan-p b)))
       (if (eq direction :ne) 1 0)
       (if (ecase direction
             (:lt (< a b))
@@ -33,10 +33,10 @@ NaN が絡む比較は :NE 以外すべて偽（0）、:NE だけ真（1）に�
           0)))
 
 (defun %compare-abstract-eval (in-avals &key direction)
-  "2入力・浮動小数点・shape/dtype が一致する演算の共通チェックをしたあと、
+  "2入力・浮動小数点か整数・shape/dtype が一致する演算の共通チェックをしたあと、
 DIRECTION が :LT :LE :GT :GE :EQ :NE のいずれかであることを確かめ、入力と
 同じ shape・dtype :I1 の AVAL を返す。"
-  (let ((in-aval (%binary-float-abstract-eval :compare in-avals)))
+  (let ((in-aval (%binary-numeric-abstract-eval :compare in-avals)))
     (unless (member direction '(:lt :le :gt :ge :eq :ne))
       (error 'primitive-error :name :compare :in-avals in-avals
              :format-control "direction ~S は :LT :LE :GT :GE :EQ :NE のいずれかでなければならない"
@@ -114,14 +114,14 @@ EQUAL、on-true/on-false の AVAL は EQUALP（dtype は :I1 を含む任意の 
 ;;; --- convert ---
 
 (defun %convert-abstract-eval (in-avals &key dtype)
-  "1入力・浮動小数点。DTYPE も浮動小数点（:I1 は不可）でなければ
-PRIMITIVE-ERROR。入力と同じ shape・DTYPE の AVAL を返す。"
+  "1入力。入力の dtype も DTYPE も、浮動小数点・整数・:I1 のどれでもよい
+（整数 ⇔ 浮動小数点 ⇔ :I1 を変換できる。issue #126）。DTYPE が dtype として
+不正なら PRIMITIVE-ERROR。入力と同じ shape・DTYPE の AVAL を返す。"
   (%check-arity :convert in-avals 1)
   (let ((in-aval (first in-avals)))
-    (%check-float-dtype :convert in-avals in-aval)
-    (unless (%float-dtype-p dtype)
+    (unless (typep dtype 'dtype)
       (error 'primitive-error :name :convert :in-avals in-avals
-             :format-control "dtype ~S は浮動小数点でなければならない"
+             :format-control "dtype ~S は nabla の dtype でなければならない"
              :format-arguments (list dtype)))
     (make-aval (aval-shape in-aval) dtype)))
 
@@ -130,10 +130,32 @@ PRIMITIVE-ERROR。入力と同じ shape・DTYPE の AVAL を返す。"
   (format nil "~A = stablehlo.convert ~A : (~A) -> ~A"
           out-name (first in-names) (tensor-type-string (first in-avals)) (tensor-type-string out-aval)))
 
+(defun %convert-to-integer (a dtype)
+  "A（浮動小数点・整数・BIT の1要素）を整数 DTYPE にする。浮動小数点は
+0 に向かって丸め、NaN は 0、範囲外は DTYPE の範囲の端に飽和させる（XLA の
+convert と同じ。バックエンドによっては範囲外が未定義なので、範囲外の入力は
+バックエンドと一致を保証しない）。整数どうしは WRAP-INTEGER で折り返す。"
+  (if (floatp a)
+      (let ((lo (wrap-integer (ash 1 (1- (integer-dtype-bits dtype))) dtype))
+            (hi (if (eq dtype :i32) (1- (ash 1 31)) (1- (ash 1 (integer-dtype-bits dtype))))))
+        (cond ((sb-ext:float-nan-p a) 0)
+              ((sb-ext:float-infinity-p a) (if (plusp a) hi (if (eq dtype :i32) lo 0)))
+              (t (let ((lo (if (eq dtype :i32) lo 0)))
+                   (max lo (min hi (truncate a)))))))
+      (wrap-integer a dtype)))
+
+(defun %convert-element (a dtype)
+  "A（入力 dtype の計算用の値）を DTYPE の計算用の値にする。:I1 への変換は
+0 以外が 1（StableHLO の convert と同じ。NaN も 1）、整数への変換は
+%CONVERT-TO-INTEGER、浮動小数点への変換は CL:COERCE。"
+  (cond ((eq dtype :i1) (if (zerop a) 0 1))
+        ((integer-dtype-p dtype) (%convert-to-integer a dtype))
+        (t (coerce a (%compute-element-type dtype)))))
+
 (defun %convert-eager (arrays in-avals &key dtype)
-  "入力を計算用の浮動小数点値にデコードし（bf16/f16 は SINGLE-FLOAT に、
-f32/f64 はそのまま）、出力 DTYPE の計算型（SINGLE-FLOAT か DOUBLE-FLOAT）に
-CL:COERCE してから、出力 DTYPE の格納表現にエンコードする。
+  "入力を計算用の値にデコードし（bf16/f16 は SINGLE-FLOAT に、f32/f64/整数/
+:I1 はそのまま）、%CONVERT-ELEMENT で出力 DTYPE の計算型にしてから、出力
+DTYPE の格納表現にエンコードする。
 
 f64 → bf16/f16 は DOUBLE-FLOAT → SINGLE-FLOAT の CL:COERCE を経由するため
 2回丸めになる（JAX は1回で丸める）。フェーズ1の既知の制約として許容する
@@ -143,7 +165,7 @@ WITH-IEEE-ARITHMETIC が浮動小数点トラップをマスクしているの�
 signal せず +/-inf になる。"
   (let ((out-aval (%convert-abstract-eval in-avals :dtype dtype)))
     (with-ieee-arithmetic
-      (%elementwise-eager (lambda (a) (coerce a (%compute-element-type dtype)))
+      (%elementwise-eager (lambda (a) (%convert-element a dtype))
                            arrays in-avals out-aval))))
 
 (defprimitive convert (:dtype)

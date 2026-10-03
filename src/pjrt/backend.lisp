@@ -42,7 +42,7 @@ addressable なデバイスの DEVICE-INDEX 番目を送り先にする PJRT-BAC
 
 (defmethod to-device (array (backend pjrt-backend) &key dtype)
   "ARRAY（simple-array）を BACKEND のデバイスへコピーし、DEVICE-ARRAY を返す。
-f32 / f64 / bf16 / f16 に対応する（:i1 などは NABLA:UNSUPPORTED-DTYPE）。
+f32 / f64 / bf16 / f16 / i32 / u32 / u64 に対応する（:i1 は NABLA:UNSUPPORTED-DTYPE）。
 ARRAY が simple-array でなければ TYPE-ERROR、要素型と DTYPE が矛盾すれば
 NABLA:DTYPE-MISMATCH。"
   (%client-to-device (%pjrt-backend-client backend) (%pjrt-backend-device backend)

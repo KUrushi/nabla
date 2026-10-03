@@ -269,19 +269,19 @@ on-true/on-false の aval 不一致のどれでも PRIMITIVE-ERROR になる。"
       "on-true と on-false の shape が違う")))
 
 (test primitives/convert/invalid-inputs-signal-primitive-error
-  "convert は: 1個以外の入力の個数、入力が非浮動小数点 dtype、出力 dtype が
-非浮動小数点（:i1）のどれでも PRIMITIVE-ERROR になる。"
+  "convert は: 1個以外の入力の個数、dtype でないタグの出力 dtype のどれでも
+PRIMITIVE-ERROR になる（整数・:i1 との変換は issue #126 で許すようになった）。"
   (let ((eval (nb::primitive-abstract-eval (nb::find-primitive :convert))))
     (signals nb:primitive-error (funcall eval '() :dtype :f32) "0個の入力")
     (signals nb:primitive-error
         (funcall eval (list (nb:make-aval '(4) :f32) (nb:make-aval '(4) :f32)) :dtype :f32)
       "2個の入力")
     (signals nb:primitive-error
-        (funcall eval (list (nb:make-aval '(4) :i1)) :dtype :f32)
-      "入力が :i1")
+        (funcall eval (list (nb:make-aval '(4) :f32)) :dtype :f128)
+      "出力 dtype が dtype でない")
     (signals nb:primitive-error
-        (funcall eval (list (nb:make-aval '(4) :f32)) :dtype :i1)
-      "出力 dtype が :i1")))
+        (funcall eval (list (nb:make-aval '(4) :f32)) :dtype nil)
+      "出力 dtype が NIL")))
 
 ;;; --- 性質4: golden emit テスト ---
 

@@ -13,6 +13,11 @@
 含まない）なら真を返す。"
   (member dtype '(:f32 :f64 :bf16 :f16)))
 
+(defun %numeric-dtype-p (dtype)
+  "DTYPE が浮動小数点または整数（:I32 :U32 :U64）の dtype なら真を返す
+（:I1 は含まない。issue #126）。"
+  (or (%float-dtype-p dtype) (integer-dtype-p dtype)))
+
 (defun %check-arity (name in-avals n)
   "IN-AVALS の個数が N でなければ PRIMITIVE-ERROR を signal する。"
   (unless (= (length in-avals) n)
@@ -25,6 +30,14 @@
   (unless (%float-dtype-p (aval-dtype aval))
     (error 'primitive-error :name name :in-avals in-avals
            :format-control "dtype ~S は浮動小数点でなければならない"
+           :format-arguments (list (aval-dtype aval)))))
+
+(defun %check-numeric-dtype (name in-avals aval)
+  "AVAL の dtype が浮動小数点でも整数でもなければ（:I1 など）PRIMITIVE-ERROR を
+signal する（issue #126。整数を受け付ける演算 add sub mul max min neg 用）。"
+  (unless (%numeric-dtype-p (aval-dtype aval))
+    (error 'primitive-error :name name :in-avals in-avals
+           :format-control "dtype ~S は浮動小数点か整数でなければならない"
            :format-arguments (list (aval-dtype aval)))))
 
 (defun %check-same-avals (name in-avals)
@@ -47,6 +60,13 @@
   (%check-arity name in-avals 2)
   (let ((result (%check-same-avals name in-avals)))
     (%check-float-dtype name in-avals result)
+    result))
+
+(defun %binary-numeric-abstract-eval (name in-avals)
+  "%BINARY-FLOAT-ABSTRACT-EVAL の、整数も受け付ける版（issue #126）。"
+  (%check-arity name in-avals 2)
+  (let ((result (%check-same-avals name in-avals)))
+    (%check-numeric-dtype name in-avals result)
     result))
 
 (defun %compute-element-type (dtype)
@@ -97,16 +117,24 @@ SBCL は既定でこれらのトラップを有効にしているため、たと
 （0 または 1）をそのまま格納し、それ以外なら計算結果を OUT-AVAL の dtype
 の格納表現にエンコードする。rank 0 や要素数0の配列も扱える。FN の呼び出し
 全体を浮動小数点トラップから守りたいときは、呼び出し側で
-WITH-IEEE-ARITHMETIC に包むこと（ここでは包まない）。"
+WITH-IEEE-ARITHMETIC に包むこと（ここでは包まない）。
+
+整数 dtype（issue #126）は格納表現の整数のまま FN に渡し、OUT-AVAL が
+整数ならその範囲に WRAP-INTEGER で折り返す（StableHLO のオーバーフローと同じ）。"
   (let* ((out-dtype (aval-dtype out-aval))
          (out-shape (aval-shape out-aval))
          (decoded (mapcar (lambda (array in-aval) (%decode-array array (aval-dtype in-aval)))
                            arrays in-avals))
-         (compute-type (if (eq out-dtype :i1) 'bit (%compute-element-type out-dtype)))
+         (compute-type (cond ((eq out-dtype :i1) 'bit)
+                             ;; 整数は格納表現のまま計算し、2の補数（符号なしは
+                             ;; 法 2^n）で折り返す（issue #126）
+                             ((integer-dtype-p out-dtype) (dtype-element-type out-dtype))
+                             (t (%compute-element-type out-dtype))))
          (result (make-array out-shape :element-type compute-type)))
     (dotimes (i (array-total-size result))
-      (setf (row-major-aref result i)
-            (apply fn (mapcar (lambda (a) (row-major-aref a i)) decoded))))
+      (let ((value (apply fn (mapcar (lambda (a) (row-major-aref a i)) decoded))))
+        (setf (row-major-aref result i)
+              (if (integer-dtype-p out-dtype) (wrap-integer value out-dtype) value))))
     (%encode-array result out-dtype)))
 
 (defun %unary-float-abstract-eval (name in-avals)
@@ -115,6 +143,13 @@ WITH-IEEE-ARITHMETIC に包むこと（ここでは包まない）。"
   (%check-arity name in-avals 1)
   (let ((aval (first in-avals)))
     (%check-float-dtype name in-avals aval)
+    aval))
+
+(defun %unary-numeric-abstract-eval (name in-avals)
+  "%UNARY-FLOAT-ABSTRACT-EVAL の、整数も受け付ける版（issue #126。neg 用）。"
+  (%check-arity name in-avals 1)
+  (let ((aval (first in-avals)))
+    (%check-numeric-dtype name in-avals aval)
     aval))
 
 (defun %quiet-nan (element-type)
@@ -137,8 +172,8 @@ CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。
 +0.0 を返すので、ここは食い違う。allclose の許容誤差の中では無害な
 違いなので phase 1 では直さない（%IEEE-MIN も同様の食い違いを持つ）。"
   (cond
-    ((sb-ext:float-nan-p a) a)
-    ((sb-ext:float-nan-p b) b)
+    ((and (floatp a) (sb-ext:float-nan-p a)) a)
+    ((and (floatp b) (sb-ext:float-nan-p b)) b)
     (t (max a b))))
 
 (defun %ieee-min (a b)
@@ -149,8 +184,8 @@ CL の MAX は引数の順序で挙動が変わり NaN を伝播しない）。
 CL の MIN に委ねているため -0.0 になるが、バックエンドの stablehlo.minimum は
 +0.0 を、JAX の jnp.minimum は -0 を返す。%IEEE-MAX の docstring も参照。"
   (cond
-    ((sb-ext:float-nan-p a) a)
-    ((sb-ext:float-nan-p b) b)
+    ((and (floatp a) (sb-ext:float-nan-p a)) a)
+    ((and (floatp b) (sb-ext:float-nan-p b)) b)
     (t (min a b))))
 
 (defun %emit-elementwise (op-name in-names out-name out-aval)

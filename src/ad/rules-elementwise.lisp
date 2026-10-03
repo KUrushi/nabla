@@ -83,7 +83,7 @@
 (def-jvp-rule convert (primals out tangents &key dtype)
   (declare (ignore primals))
   (let ((tangent (first tangents)))
-    ;; 入力は convert の abstract-eval が float に限るので、DTYPE だけ見ればよい。
+    ;; 入力が整数・:i1 のときの接線はゼロでルールは呼ばれない（jvp-graph）ので、DTYPE だけ見ればよい。
     (if (%float-dtype-p dtype)
         (%trace-eqn :convert (list tangent) :dtype dtype)
         (make-symbolic-zero (tracer-aval out)))))

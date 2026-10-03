@@ -32,13 +32,13 @@
   (/ a b))
 
 (defun %add-abstract-eval (in-avals)
-  (%binary-float-abstract-eval :add in-avals))
+  (%binary-numeric-abstract-eval :add in-avals))
 
 (defun %sub-abstract-eval (in-avals)
-  (%binary-float-abstract-eval :sub in-avals))
+  (%binary-numeric-abstract-eval :sub in-avals))
 
 (defun %mul-abstract-eval (in-avals)
-  (%binary-float-abstract-eval :mul in-avals))
+  (%binary-numeric-abstract-eval :mul in-avals))
 
 (defun %div-abstract-eval (in-avals)
   (%binary-float-abstract-eval :div in-avals))
@@ -121,10 +121,10 @@ WITH-IEEE-ARITHMETIC でマスクしているので signal せず、IEEE 754 の
   (%ieee-min a b))
 
 (defun %max-abstract-eval (in-avals)
-  (%binary-float-abstract-eval :max in-avals))
+  (%binary-numeric-abstract-eval :max in-avals))
 
 (defun %min-abstract-eval (in-avals)
-  (%binary-float-abstract-eval :min in-avals))
+  (%binary-numeric-abstract-eval :min in-avals))
 
 (defun %max-emit (in-names out-name out-aval)
   (%emit-elementwise "maximum" in-names out-name out-aval))

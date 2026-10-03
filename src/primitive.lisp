@@ -129,7 +129,10 @@ PRIMITIVE のルール（DEF-JVP-RULE などで後から設定したものを含
     (:f64 "f64")
     (:bf16 "bf16")
     (:f16 "f16")
-    (:i1 "i1")))
+    (:i1 "i1")
+    (:i32 "i32")
+    (:u32 "ui32")
+    (:u64 "ui64")))
 
 (defun tensor-type-string (aval)
   "AVAL を表す MLIR のテンソル型の文字列を返す（\"tensor<2x3xf32>\"）。

@@ -235,6 +235,7 @@
 
 
                ;; フェーズ3 anchor: issue #126（整数 dtype）。この issue のテストはこの下に足す
+               (:file "tests/integer-dtype-test")
 
 
 
@@ -411,6 +412,7 @@
 
 
                ;; フェーズ3 anchor: issue #126（整数 dtype）。この issue のテストはこの下に足す
+               (:file "tests/iree/integer-test")
 
 
 
@@ -499,4 +501,5 @@
                ;; コンパイル・ロード・実行、jit、fingerprint（issue #87）
                (:file "tests/pjrt/executable-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
-               (:file "tests/pjrt/bench-test")))
+               (:file "tests/pjrt/bench-test")
+               (:file "tests/pjrt/integer-test")))

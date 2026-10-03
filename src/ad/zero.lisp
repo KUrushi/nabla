@@ -34,14 +34,16 @@ aval を持つゼロのトレーサを作って返す: rank 0 の定数 0 を登
 以上なら BROADCAST-IN-DIM で shape まで広げる（%LIFT-NUMBER と同じ形）。
 TRACER ならそのまま返す（eqn は足さない）。:I1 は %SCALAR-ARRAY が数値との
 対応を持たず拒否するので、rank 0 の bit 配列 0（false）を直接登録する
-（jvp の :I1 出力の接線は常に全 false）。"
+（jvp の :I1 出力の接線は常に全 false）。整数 dtype（issue #126）も同じく、
+接線は常にゼロなので 0 の rank 0 配列を直接登録する。"
   (etypecase tangent
     (tracer tangent)
     (symbolic-zero
      (let ((aval (symbolic-zero-aval tangent)))
-       (if (eq (aval-dtype aval) :i1)
-           (let ((scalar (%lift-constant (make-array '() :element-type 'bit :initial-element 0)
-                                         (make-aval '() :i1) *current-trace*)))
+       (if (or (eq (aval-dtype aval) :i1) (integer-dtype-p (aval-dtype aval)))
+           (let ((scalar (%lift-constant (make-array '() :element-type (dtype-element-type (aval-dtype aval))
+                                                         :initial-element 0)
+                                         (make-aval '() (aval-dtype aval)) *current-trace*)))
              (if (plusp (length (aval-shape aval)))
                  (%trace-eqn :broadcast-in-dim (list scalar) :shape (aval-shape aval) :dims '())
                  scalar))

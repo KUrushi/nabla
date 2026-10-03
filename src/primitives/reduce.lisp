@@ -21,9 +21,9 @@
 (in-package #:nabla)
 
 (defun %reduce-float-dtype-p (dtype)
-  "DTYPE が reduce の入力として許される4つの浮動小数点 dtype
-（:f32 :f64 :bf16 :f16）のいずれかかどうかを返す。"
-  (and (member dtype '(:f32 :f64 :bf16 :f16)) t))
+  "DTYPE が reduce の入力として許される dtype（浮動小数点 :f32 :f64 :bf16
+:f16 と、整数 :i32 :u32 :u64。issue #126）のいずれかかどうかを返す。"
+  (and (member dtype '(:f32 :f64 :bf16 :f16 :i32 :u32 :u64)) t))
 
 (defun %reduce-check-axes (name in-avals axes rank)
   "AXES（[0, RANK) の範囲内の、非空・重複無し・昇順の整数のリスト）を
@@ -65,7 +65,7 @@ PRIMITIVE-ERROR を signal する。"
          (shape (aval-shape in-aval)))
     (unless (%reduce-float-dtype-p dtype)
       (error 'primitive-error :name name :in-avals in-avals
-             :format-control "reduce は float dtype の入力しか受け付けない: ~S"
+             :format-control "reduce は浮動小数点か整数 dtype の入力しか受け付けない: ~S"
              :format-arguments (list dtype)))
     (%reduce-check-axes name in-avals axes (length shape))
     (values dtype shape)))
@@ -82,8 +82,11 @@ sum は 0（\"0.0\"）。add は :bf16 / :f16 のとき常に %REDUCE-ACCUMULATE
 なくなった）ので、ここでは :bf16 / :f16 を分岐しない。max は -inf を
 16進ビット列で書く（\"dense<-inf>\" は書かない）。"
   (ecase op
-    (:add "0.0")
+    (:add (if (integer-dtype-p dtype) "0" "0.0"))
     (:max (ecase dtype
+            ;; 整数の最大値の単位元はその dtype の最小値（issue #126）
+            (:i32 "-2147483648")
+            ((:u32 :u64) "0")
             (:f32 "0xFF800000")
             (:f64 "0xFFF0000000000000")
             (:bf16 "0xFF80")
@@ -160,13 +163,19 @@ stablehlo.reduce の2行を、入力と同じ dtype のまま返す。"
 :f32 / :f64 ならそのまま ARRAY を返す。"
   (if (member dtype '(:bf16 :f16)) (decode-float16-array array dtype) array))
 
+(defun %reduce-integer-init (op dtype)
+  "整数 DTYPE の OP（:ADD / :MAX）の初期値（max は DTYPE の最小値）。"
+  (ecase op
+    (:add 0)
+    (:max (if (eq dtype :i32) (- (ash 1 31)) 0))))
+
 (defun %reduce-max-element (a b)
   "A・B（同じ COMPUTE-TYPE の浮動小数点数）の NaN 伝播する最大値を返す。
 CL:MAX は NaN を伝播しない（(max nan 1.0) => 1.0 のことがある）ので、
 どちらかが NaN ならその NaN をそのまま返す。"
   (cond
-    ((sb-ext:float-nan-p a) a)
-    ((sb-ext:float-nan-p b) b)
+    ((and (floatp a) (sb-ext:float-nan-p a)) a)
+    ((and (floatp b) (sb-ext:float-nan-p b)) b)
     (t (max a b))))
 
 (defun %reduce-init-value (op compute-type)
@@ -184,15 +193,24 @@ row-major index を driver にして、AXES を落とした出力の添字へ足
 する。契約のピットフォール(4)）。"
   (let* ((in-aval (first in-avals))
          (dtype (aval-dtype in-aval))
-         (compute-type (if (eq dtype :f64) 'double-float 'single-float))
+         (integer-p (integer-dtype-p dtype))
+         (compute-type (cond (integer-p (dtype-element-type dtype))
+                             ((eq dtype :f64) 'double-float)
+                             (t 'single-float)))
          (in-shape (aval-shape in-aval))
          (out-shape (%reduce-out-shape in-shape axes))
          (in-array (%reduce-decode (first arrays) dtype))
          (in-strides (%shape-strides in-shape))
          (out-strides (%shape-strides out-shape))
          (result (make-array out-shape :element-type compute-type
-                              :initial-element (%reduce-init-value op compute-type)))
-         (combine (ecase op (:add #'+) (:max #'%reduce-max-element))))
+                              :initial-element (if integer-p
+                                                    (%reduce-integer-init op dtype)
+                                                    (%reduce-init-value op compute-type))))
+         (combine (ecase op
+                    (:add (if integer-p
+                              (lambda (a b) (wrap-integer (+ a b) dtype))
+                              #'+))
+                    (:max #'%reduce-max-element))))
     (sb-int:with-float-traps-masked (:overflow :invalid :divide-by-zero)
       (dotimes (in-i (array-total-size in-array))
         (let* ((in-subs (%shape-subscripts in-i in-shape in-strides))
