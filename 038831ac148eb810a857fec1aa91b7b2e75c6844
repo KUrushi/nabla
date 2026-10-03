@@ -1,0 +1,1 @@
+レビュー対応: 既知の ys の出力と同じ残差を積み直さず外側の ys を転送（%scan-pe-forwarded、既知の xs の転送と同じ分類関数に集約）。IREE の大きさのあるケース（H=16, T=30, 入力 0.3 倍）を追加（固定 seed 5つ、既定の許容誤差で一致。入力を 0.3 倍しないと f32 の誤差が許容を超えた）。linearize は multiple-value-bind に、registry の docstring は while-loop だけ逆モード未対応に修正。全スイート small 140195 / medium 1438 通過。
