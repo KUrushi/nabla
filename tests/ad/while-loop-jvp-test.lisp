@@ -135,3 +135,29 @@ autodiff-error になる。"
           (fail "autodiff-error にならなかった"))
       (nb::autodiff-error (c)
         (is (search ":WHILE-LOOP" (princ-to-string c)))))))
+
+(test while-loop-jvp/grad-ignores-an-unused-while-loop
+  "結果に効かない while-loop は、grad の途中の DCE で消えるので、逆モードに対応していなくても
+エラーにならない（JAX と同じ）。勾配は while-loop が無い関数のものと一致する。"
+  (let* ((f (nb:with-tracing (x)
+              (let ((unused (nb:while-loop
+                             (nb:with-tracing (c) (< (second c) 3.0))
+                             (nb:with-tracing (c) (list (* (first c) 2.0) (+ (second c) 1.0)))
+                             (list x (nb::%scalar-array 0.0 :f32)))))
+                (declare (ignorable unused))
+                (nb:reduce-sum (* x x) :axes '(0)))))
+         (x (make-random-array (make-array-spec '(3) :f32) :seed 4)))
+    (is (allclose (funcall (nb:grad f) x) (nb::%t-mul x (nb::%scalar-array 2.0 :f32)) :dtype :f32))))
+
+(test while-loop-jvp/grad-through-a-used-while-loop-still-errors-after-dce
+  "結果に効く while-loop を通した grad は、DCE の後でも autodiff-error（メッセージは
+プリミティブ名 :WHILE-LOOP を含み、while 専用の文言ではなく一般的な説明）。"
+  (let ((f (nb:with-tracing (x)
+             (nb:reduce-sum
+              (first (nb:while-loop
+                      (nb:with-tracing (c) (< (second c) 3.0))
+                      (nb:with-tracing (c) (list (* (first c) 2.0) (+ (second c) 1.0)))
+                      (list x (nb::%scalar-array 0.0 :f32))))
+              :axes '(0)))))
+    (signals nb::autodiff-error
+      (funcall (nb:grad f) (make-random-array (make-array-spec '(3) :f32) :seed 4)))))

@@ -182,17 +182,25 @@ INDEX が NIL なら loc を付けない（リージョンの中の eqn。外側
 
 ;;; ---- 本体 ----
 
+(defvar *stablehlo-constant-names* nil
+  "いま出している graph（関数本体かリージョン）の、graph の定数（stablehlo.constant で出す
+もの）の SSA 名（文字列）のリスト。:EMIT が、オペランドが定数かどうかを知るために読む
+（while-loop の emit。docs/stablehlo-ops.md の制御構造の節）。%STABLEHLO-BODY-LINES と
+%STABLEHLO-REGION-LINES が graph ごとに束縛する。")
+
 (defun %stablehlo-body-lines (numbers graph)
   "GRAPH の func.func 本体（定数・eqn・return）の行のリストを、インデント
 無しで返す。NUMBERS は %ASSIGN-VAR-NUMBERS が返す var → 番号の表
 （EMIT-STABLEHLO がヘッダ行と共有して1回だけ計算する）。"
-  (append
-   (mapcar (lambda (entry) (%stablehlo-constant-line numbers (car entry) (cdr entry)))
-           (graph-constants graph))
-   (loop for eqn in (graph-eqns graph)
-         for index from 0
-         append (%stablehlo-eqn-lines numbers eqn index))
-   (list (%stablehlo-return-line numbers (graph-outvars graph)))))
+  (let ((*stablehlo-constant-names*
+          (mapcar (lambda (entry) (%var-name numbers (car entry))) (graph-constants graph))))
+    (append
+     (mapcar (lambda (entry) (%stablehlo-constant-line numbers (car entry) (cdr entry)))
+             (graph-constants graph))
+     (loop for eqn in (graph-eqns graph)
+           for index from 0
+           append (%stablehlo-eqn-lines numbers eqn index))
+     (list (%stablehlo-return-line numbers (graph-outvars graph))))))
 
 (defvar *stablehlo-region-counter* nil
   "EMIT-STABLEHLO が 0 に束縛する整数。%STABLEHLO-REGION-LINES がリージョンを
@@ -243,15 +251,17 @@ eqn の行には loc を付けない。サブグラフは外側の var を参照
           do (if name
                  (setf (gethash var *var-name-overrides*) name)
                  (push var block-args)))
-    (append
-     (when block-args
-       (list (format nil "^bb0(~{~A~^, ~}):"
-                     (mapcar (lambda (v) (%stablehlo-arg-string numbers v)) (reverse block-args)))))
-     (mapcar (lambda (entry) (%stablehlo-constant-line numbers (car entry) (cdr entry)))
-             (graph-constants graph))
-     (loop for eqn in (graph-eqns graph)
-           append (%stablehlo-eqn-lines numbers eqn nil))
-     (list (%stablehlo-region-return-line numbers (graph-outvars graph))))))
+    (let ((*stablehlo-constant-names*
+            (mapcar (lambda (entry) (%var-name numbers (car entry))) (graph-constants graph))))
+      (append
+       (when block-args
+         (list (format nil "^bb0(~{~A~^, ~}):"
+                       (mapcar (lambda (v) (%stablehlo-arg-string numbers v)) (reverse block-args)))))
+       (mapcar (lambda (entry) (%stablehlo-constant-line numbers (car entry) (cdr entry)))
+               (graph-constants graph))
+       (loop for eqn in (graph-eqns graph)
+             append (%stablehlo-eqn-lines numbers eqn nil))
+       (list (%stablehlo-region-return-line numbers (graph-outvars graph)))))))
 
 (defun emit-stablehlo (graph &key (function-name "main"))
   "GRAPH を StableHLO のテキストに変換して返す。無名の module の中に

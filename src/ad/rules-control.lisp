@@ -66,10 +66,13 @@ loop 不変のオペランドとして足す（本体は素通しのまま。EQ 
              (o-const (subseq jvp-outvars n (+ n m)))
              (o-t-carry (%while-jvp-pick (subseq jvp-outvars (+ n m) (+ n m n)) carry-nonzero))
              (o-t-const (%while-jvp-pick (nthcdr (+ n m n) jvp-outvars) const-nonzero))
-             (new-body (make-graph (append p-carry t-carry p-const t-const)
-                                   (graph-eqns jvp)
-                                   (append o-carry o-t-carry o-const o-t-const)
-                                   (graph-constants jvp)))
+             ;; 本体は DCE する（実体化したゼロの接線の死んだ eqn を残さない）。「jvp-graph の中では
+             ;; DCE しない」という約束は最上位の jvp graph の話で、ここは別の graph（サブグラフ）。
+             ;; DCE は入力を消さないので、素通しの EQ の約束（出力 = 入力 var）も保たれる。
+             (new-body (dce-graph (make-graph (append p-carry t-carry p-const t-const)
+                                              (graph-eqns jvp)
+                                              (append o-carry o-t-carry o-const o-t-const)
+                                              (graph-constants jvp))))
              ;; cond は接線を使わないので、接線の入力は未使用の入力として足す。
              (cond-invars (graph-invars cond))
              (new-cond (make-graph (append (subseq cond-invars 0 n)
