@@ -27,7 +27,9 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
 (defun %linearize-mixed-eqn-p (eqn)
   "EQN が、主値と接線を1つの eqn で計算する jvp の結果（while-loop / scan の jvp など）か:
 複数出力で transpose ルールを持たない。cond の jvp は主値の cond と線形な cond に分けて出す
-ので当てはまらない（src/ad/rules-control.lisp）。"
+ので当てはまらない（src/ad/rules-control.lisp）。scan の jvp は、ここへ来る前に
+%PARTIAL-EVAL-SPLIT（partial-eval.lisp）が主値の scan と線形な scan に分け、scan は transpose
+ルールを持つので当てはまらない（issue #139）。"
   (and (primitive-multiple-outputs-p (eqn-prim eqn))
        (null (primitive-transpose (eqn-prim eqn)))))
 
@@ -79,13 +81,16 @@ LINEARIZATION に分ける。cond の jvp ルールが、枝ごとに主値と�
   (let* ((primal-invars (subseq (graph-invars jvp) 0 n-primals))
          (tangent-invars (nthcdr n-primals (graph-invars jvp)))
          (primal-outvars (subseq (graph-outvars jvp) 0 n-outputs))
-         (tangent-outvars (nthcdr n-outputs (graph-outvars jvp)))
-         (constants (graph-constants jvp))
-         (constant-table (make-hash-table :test 'eq))
-         (seen (make-hash-table :test 'eq)))
+         (tangent-outvars (nthcdr n-outputs (graph-outvars jvp))))
+   ;; scan など、主値と接線を1つの eqn で計算する eqn を、主値だけの eqn と接線に依存する
+   ;; eqn に分ける（partial-eval.lisp。issue #139）。
+   (multiple-value-bind (jvp-eqns extra-constants) (%partial-eval-split (graph-eqns jvp) tangent-invars)
+    (let* ((constants (append (graph-constants jvp) extra-constants))
+           (constant-table (make-hash-table :test 'eq))
+           (seen (make-hash-table :test 'eq)))
     (loop for (var . nil) in constants do (setf (gethash var constant-table) t))
     (multiple-value-bind (primal-eqns linear-eqns)
-        (partition-eqns-by-dependence (graph-eqns jvp) tangent-invars)
+        (partition-eqns-by-dependence jvp-eqns tangent-invars)
       ;; 主値の出力そのものが、主値と接線を混ぜた eqn の下流（線形側）にあるときは、DCE の
       ;; 前に拒否する（主値 graph がその出力を作れない。結果に効かない mixed eqn は
       ;; 下の DCE の後の検査で見逃す: JAX と同じく消えるだけ）。
@@ -126,4 +131,4 @@ LINEARIZATION に分ける。cond の jvp ルールが、枝ごとに主値と�
                (primal (dce-graph (make-graph primal-invars primal-eqns
                                               (append primal-outvars residuals) constants))))
           (declare (ignore checked))
-          (make-linearization primal linear n-outputs (length residuals)))))))
+          (make-linearization primal linear n-outputs (length residuals)))))))))

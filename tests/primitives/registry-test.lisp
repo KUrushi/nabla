@@ -79,8 +79,8 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 ここに理由つきで足すか、jvp ルールを書く。
   - :rng-bit-generator（issue #133）: 状態もビットも整数で接線が常に symbolic zero なので、
     jvp-graph が全入力ゼロのときにルールを呼ばず主値を再発行する。ルールは要らない。
-  （while-loop と cond は issue #134、scan は issue #135 で jvp を持った。while-loop と scan の
-  逆モードは対応せず、linearize が NO-TRANSPOSE-RULE にする。）")
+  （while-loop と cond は issue #134、scan は issue #135 で jvp を持った。逆モードに対応しないのは
+  while-loop だけで、linearize が NO-TRANSPOSE-RULE にする。cond は #134、scan は #139。）")
 
 (defun %registered-real-primitives ()
   "登録済みのプリミティブのうち、テスト専用でない（名前が % で始まらない）ものの
@@ -94,9 +94,10 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 (defparameter *linear-primitive-names*
   '(:add :sub :neg :convert :reshape :transpose :broadcast-in-dim :reduce-sum
-    :select :mul :div :dot-general :cond)
+    :select :mul :div :dot-general :cond :scan)
   "接線について線形に使われうる（:transpose を持つべき）プリミティブ。mul / div /
-dot-general は片側だけが線形、select は条件以外の分岐が線形、cond は pred 以外の入力が線形（枝が線形な cond だけが transpose される。issue #134）。max / min / exp / log /
+dot-general は片側だけが線形、select は条件以外の分岐が線形、cond は pred 以外の入力が線形（枝が線形な cond だけが transpose される。issue #134）、scan（issue #139）は
+partial eval で分けた線形な scan（残差を consts / xs で受ける）が線形。max / min / exp / log /
 tanh / compare / reduce-max / stop-gradient の jvp は接線について線形な式（mul、select
 など）だけを出すので、transpose ルールは要らない。")
 
