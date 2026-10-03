@@ -75,3 +75,17 @@
                 *cond-iree-avals*)))
     (%with-cond-iree-check (backend graph "closure-nested")
       "IREE の cond* の結果が eager と一致しなかった")))
+
+(define-iree-test cond/iree-integer-operand-matches-eager
+    "整数（:i32）の配列を operand に渡した cond* も IREE で動き、eager と一致する。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (graph (nb::trace-to-graph
+                (nb:with-tracing (p x y)
+                  (nb:cond* p
+                            (nb:with-tracing (u k v) (+ u v))
+                            (nb:with-tracing (u k v) (- u v))
+                            x (make-array 2 :element-type '(signed-byte 32) :initial-element 7) y))
+                *cond-iree-avals*)))
+    (%with-cond-iree-check (backend graph "integer-operand")
+      "IREE の cond* の結果が eager と一致しなかった")))

@@ -1,14 +1,15 @@
 ;;;; primitives/cond: cond プリミティブ（issue #130）。
 ;;;;
 ;;;; 2つのサブグラフ（:THEN / :ELSE）を持つ高階プリミティブ（契約 C1 / C2）。
-;;;; eqn の invars は「pred、operands（N 個）、then の捕捉値、else の捕捉値」の
-;;;; 順に並ぶ（捕捉値は closure conversion で外側から持ち上げたトレーサ）。
-;;;; then のサブグラフの invars は「operands、then の捕捉値」、else のサブグラフ
-;;;; の invars は「operands、else の捕捉値」。パラメタ :NUM-OPERANDS が N。
+;;;; JAX と同じく、両方の枝は「同一の入力シグネチャ」を持つ: eqn の invars は
+;;;; 「pred、operands、captures（両枝の捕捉値の和集合）」の順で、:THEN と :ELSE の
+;;;; サブグラフの invars はどちらも「operands、captures」と同じ aval の並び。枝が
+;;;; 使わない捕捉値の位置には使われない invar が置かれる（%COND-UNIFY-BRANCHES、
+;;;; src/cond.lisp）。jvp（#134）や vmap（#140）が枝を同じ形で書き換えられる。
 ;;;;
 ;;;; StableHLO は stablehlo.if（リージョンが2つ）。stablehlo.case は添え字が
 ;;;; i32 なので pred の変換が要る。実行系が stablehlo.if を受け付けることは
-;;;; 実行系の medium テスト（cond-test） で確かめる。枝のリージョンは外側の SSA 値を直接
+;;;; 実行系の medium テスト（cond-test）で確かめる。枝のリージョンは外側の SSA 値を直接
 ;;;; 参照できるので、枝の invars は外側の入力の名前に結びつける
 ;;;; （%STABLEHLO-REGION-LINES の :ARG-NAMES）。
 ;;;;
@@ -18,38 +19,21 @@
 
 (in-package #:nabla)
 
-(defun %cond-split-args (items num-operands then-graph else-graph)
-  "ITEMS（pred を除いた「operands、then の捕捉値、else の捕捉値」の並び）を、
-(VALUES THEN-ARGS ELSE-ARGS) に分ける。THEN-ARGS は then のサブグラフの invars に、
-ELSE-ARGS は else のサブグラフの invars に対応する。"
-  (let* ((then-captured (- (length (graph-invars then-graph)) num-operands))
-         (operands (subseq items 0 num-operands))
-         (then-captures (subseq items num-operands (+ num-operands then-captured)))
-         (else-captures (subseq items (+ num-operands then-captured))))
-    (unless (= (length else-captures) (- (length (graph-invars else-graph)) num-operands))
-      (error 'primitive-error :name :cond
-             :format-control "入力の個数 ~D が operands ~D と枝の捕捉値の個数に合わない"
-             :format-arguments (list (length items) num-operands)))
-    (values (append operands then-captures) (append operands else-captures))))
-
-(defun %cond-abstract-eval (in-avals &key then else num-operands)
-  (unless (and (graph-p then) (graph-p else) (typep num-operands '(integer 0)))
+(defun %cond-abstract-eval (in-avals &key then else)
+  (unless (and (graph-p then) (graph-p else))
     (error 'primitive-error :name :cond :in-avals in-avals
-           :format-control ":THEN / :ELSE は graph、:NUM-OPERANDS は非負整数でなければならない"
+           :format-control ":THEN / :ELSE は graph でなければならない"
            :format-arguments nil))
   (let ((pred (first in-avals)))
     (unless (and pred (eq (aval-dtype pred) :i1) (null (aval-shape pred)))
       (error 'primitive-error :name :cond :in-avals in-avals
              :format-control "pred は rank 0 の :i1 でなければならない: ~S"
              :format-arguments (list pred))))
-  (multiple-value-bind (then-args else-args) (%cond-split-args (rest in-avals) num-operands then else)
-    (flet ((check (graph args)
-             (unless (equalp args (mapcar #'var-aval (graph-invars graph)))
-               (error 'primitive-error :name :cond :in-avals in-avals
-                      :format-control "入力の aval が枝の入力と一致しない: ~S / ~S"
-                      :format-arguments (list args (mapcar #'var-aval (graph-invars graph)))))))
-      (check then then-args)
-      (check else else-args)))
+  (dolist (graph (list then else))
+    (unless (equalp (rest in-avals) (mapcar #'var-aval (graph-invars graph)))
+      (error 'primitive-error :name :cond :in-avals in-avals
+             :format-control "入力の aval が枝の入力と一致しない（両枝は同じ入力シグネチャを持つ）: ~S / ~S"
+             :format-arguments (list (rest in-avals) (mapcar #'var-aval (graph-invars graph))))))
   (let ((then-out (mapcar #'var-aval (graph-outvars then)))
         (else-out (mapcar #'var-aval (graph-outvars else))))
     (unless (and then-out (equalp then-out else-out))
@@ -58,25 +42,30 @@ ELSE-ARGS は else のサブグラフの invars に対応する。"
              :format-arguments (list then-out else-out)))
     then-out))
 
-(defun %cond-emit (in-names in-avals out-names out-avals &key then else num-operands)
-  (declare (ignore in-avals))
-  (multiple-value-bind (then-names else-names)
-      (%cond-split-args (rest in-names) num-operands then else)
-    (format nil "~{~A~^, ~} = \"stablehlo.if\"(~A) ({~%~{  ~A~^~%~}~%}, {~%~{  ~A~^~%~}~%}) : (tensor<i1>) -> (~{~A~^, ~})"
-            out-names
-            (first in-names)
-            (%stablehlo-region-lines then :arg-names then-names)
-            (%stablehlo-region-lines else :arg-names else-names)
-            (mapcar #'tensor-type-string out-avals))))
+(defun %cond-indent (lines)
+  "LINES（複数行の文字列を含みうる）の全ての行を2文字インデントした、改行区切りの文字列。"
+  (format nil "~{  ~A~^~%~}"
+          (loop for line in lines
+                append (loop for start = 0 then (1+ pos)
+                             for pos = (position #\Newline line :start start)
+                             collect (subseq line start pos)
+                             while pos))))
 
-(defun %cond-eager (arrays in-avals &key then else num-operands)
+(defun %cond-emit (in-names in-avals out-names out-avals &key then else)
   (declare (ignore in-avals))
-  (multiple-value-bind (then-args else-args) (%cond-split-args (rest arrays) num-operands then else)
-    (if (= 1 (row-major-aref (first arrays) 0))
-        (multiple-value-list (apply #'eval-graph then then-args))
-        (multiple-value-list (apply #'eval-graph else else-args)))))
+  (format nil "~{~A~^, ~} = \"stablehlo.if\"(~A) ({~%~A~%}, {~%~A~%}) : (tensor<i1>) -> (~{~A~^, ~})"
+          out-names
+          (first in-names)
+          (%cond-indent (%stablehlo-region-lines then :arg-names (rest in-names)))
+          (%cond-indent (%stablehlo-region-lines else :arg-names (rest in-names)))
+          (mapcar #'tensor-type-string out-avals)))
 
-(defprimitive cond (:then :else :num-operands)
+(defun %cond-eager (arrays in-avals &key then else)
+  (declare (ignore in-avals))
+  (multiple-value-list
+   (apply #'eval-graph (if (= 1 (row-major-aref (first arrays) 0)) then else) (rest arrays))))
+
+(defprimitive cond (:then :else)
   :multiple-outputs t
   ;; #'関数 を直接渡すと、関数オブジェクトがロード時に固定されて再定義
   ;; （mutation testing）が効かなくなるので、名前で呼ぶ lambda で包む。

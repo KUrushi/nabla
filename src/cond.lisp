@@ -21,13 +21,32 @@ pred が rank 0 の :i1 でない、枝が TRACEABLE-FUNCTION でない、両枝
   (and (arrayp pred) (null (array-dimensions pred)) (eq (aval-dtype (array-aval pred)) :i1)))
 
 (defun %cond-lift-operand (operand)
-  "OPERAND（トレーサ・:f32 / :f64 / :i1 の配列・実数）を現在のトレースのトレーサにする。
-bf16 / f16 の生の配列は dtype を推論できないので受け付けない（トレーサで渡す）。"
+  "OPERAND（トレーサ・ARRAY-DTYPE が dtype を推論できる配列・実数）を現在のトレースの
+トレーサにする。bf16 / f16 の生の (unsigned-byte 16) 配列は dtype を推論できないので
+COND-ERROR（トレーサで渡す）。"
   (typecase operand
     (tracer operand)
-    ((or (array single-float) (array double-float) (array bit)) (%lift-array-to operand (aval-dtype (array-aval operand))))
+    (array (%lift-array-to operand
+                           (handler-case (array-dtype operand)
+                             (dtype-mismatch ()
+                               (%cond-error "COND* の operand の配列の dtype を推論できない（bf16 / f16 の生の配列はトレーサで渡す）: ~S"
+                                            (type-of operand))))))
     (real (%lift-number-to operand (if (typep operand 'double-float) :f64 :f32) '()))
     (t (%cond-error "COND* の operand はトレーサ・配列・実数でなければならない: ~S" operand))))
+
+(defun %cond-unify-branches (graph captured captures num-operands)
+  "枝の GRAPH（invars は「operands、CAPTURED の捕捉値」）を、invars が「operands、
+CAPTURES（両枝の捕捉値の和集合）」の同じ並びの graph に直す。GRAPH が使わない捕捉値の
+位置には、その aval の使われない新しい invar を置く。"
+  (let* ((invars (graph-invars graph))
+         (own (pairlis captured (nthcdr num-operands invars))))
+    (check-graph
+     (make-graph (append (subseq invars 0 num-operands)
+                         (mapcar (lambda (capture)
+                                   (or (cdr (assoc capture own :test #'eq))
+                                       (make-var (tracer-aval capture))))
+                                 captures))
+                 (graph-eqns graph) (graph-outvars graph) (graph-constants graph)))))
 
 (defun cond* (pred then-fn else-fn &rest operands)
   "PRED が真なら (THEN-FN OPERANDS...) を、偽なら (ELSE-FN OPERANDS...) を評価する。
@@ -37,7 +56,10 @@ bf16 / f16 の生の配列は dtype を推論できないので受け付けな�
 
 THEN-FN / ELSE-FN は WITH-TRACING で作った TRACEABLE-FUNCTION で、OPERANDS を
 位置引数で受け取り、普通のトレース対象の関数と同じく1つの値または多値を返す。
-COND* も同じ個数の値（多値）を返す。両枝の出力の aval（個数・形状・dtype）は
+COND* も同じ個数の値（多値）を返す。枝の引数の個数が OPERANDS の個数と違えば COND-ERROR。
+OPERANDS はトレーサ・実数・dtype を推論できる配列（:f32 / :f64 / :i1 / :i32 / :u32 / :u64。
+bf16 / f16 の生の配列は COND-ERROR なのでトレーサで渡す）。
+両枝は同一の入力シグネチャ（OPERANDS と、両枝の捕捉値の和集合）を持つ。両枝の出力の aval（個数・形状・dtype）は
 一致しなければならず、違えば COND-ERROR。枝が閉包で捕まえた外側のトレーサも使える
 （closure conversion で eqn の入力に持ち上がる）。
 
@@ -65,6 +87,12 @@ NO-JVP-RULE（名前は :COND）になる。"
          (%cond-error "COND* の pred は rank 0 の :i1 でなければならない: ~S" aval)))
      (let* ((operands (mapcar #'%cond-lift-operand operands))
             (avals (mapcar #'tracer-aval operands)))
+       (flet ((check-arity (fn what)
+                (unless (= (length (traceable-function-lambda-list fn)) (length operands))
+                  (%cond-error "COND* の ~A の引数の個数 ~D が operands の個数 ~D と一致しない"
+                               what (length (traceable-function-lambda-list fn)) (length operands)))))
+         (check-arity then-fn "then-fn")
+         (check-arity else-fn "else-fn"))
        (multiple-value-bind (then-graph then-captured) (%trace-subgraph then-fn avals)
          (multiple-value-bind (else-graph else-captured) (%trace-subgraph else-fn avals)
            (let ((then-out (mapcar #'var-aval (graph-outvars then-graph)))
@@ -74,10 +102,13 @@ NO-JVP-RULE（名前は :COND）になる。"
                             then-out else-out))
              (when (null then-out)
                (%cond-error "COND* の枝は1つ以上の値を返さなければならない"))
-             (values-list
-              (%trace-eqn* :cond (append (list pred) operands then-captured else-captured)
-                           :then then-graph :else else-graph
-                           :num-operands (length operands))))))))
+             (let* ((captures (remove-duplicates (append then-captured else-captured)
+                                                 :test #'eq :from-end t))
+                    (n (length operands)))
+               (values-list
+                (%trace-eqn* :cond (append (list pred) operands captures)
+                             :then (%cond-unify-branches then-graph then-captured captures n)
+                             :else (%cond-unify-branches else-graph else-captured captures n)))))))))
     ((or (eq pred t) (eq pred nil) (%cond-bit-pred-p pred))
      (apply (if (or (eq pred t) (and (arrayp pred) (= 1 (row-major-aref pred 0)))) then-fn else-fn)
             operands))

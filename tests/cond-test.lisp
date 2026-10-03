@@ -204,18 +204,68 @@
 
 (test cond/primitive-abstract-eval-rejects-inconsistent-eqns
   "make-eqn で直接 :cond の eqn を作ったときも、不整合は primitive-error になる
-（pred の型・枝の入力 aval・出力 aval の不一致・num-operands）。"
+（pred の型・枝の入力 aval の不一致・出力 aval の不一致・graph でない枝）。"
   (let* ((f32 (nb:make-aval '(2) :f32))
          (one (nb::trace-to-graph (nb:with-tracing (u) (+ u u)) (list f32)))
-         (two (nb::trace-to-graph (nb:with-tracing (u) (values u u)) (list f32)))
-         (i1 (nb:make-aval '() :i1)))
-    (is (not (%cond-eqn-avals-error-p (list i1 f32) :then one :else one :num-operands 1)))
-    (is (%cond-eqn-avals-error-p (list f32 f32) :then one :else one :num-operands 1))
-    (is (%cond-eqn-avals-error-p (list (nb:make-aval '(1) :i1) f32) :then one :else one :num-operands 1))
-    (is (%cond-eqn-avals-error-p (list i1 f32) :then one :else two :num-operands 1))
-    (is (%cond-eqn-avals-error-p (list i1 (nb:make-aval '(3) :f32)) :then one :else one :num-operands 1))
-    (is (%cond-eqn-avals-error-p (list i1 f32) :then one :else one :num-operands 0))
-    (is (%cond-eqn-avals-error-p (list i1 f32) :then 1 :else one :num-operands 1))))
+         (two (nb::trace-to-graph (nb:with-tracing (u) (values u u)) (list f32))))
+    (let ((i1 (nb:make-aval '() :i1)))
+      (is (not (%cond-eqn-avals-error-p (list i1 f32) :then one :else one)))
+      (is (%cond-eqn-avals-error-p (list f32 f32) :then one :else one))
+      (is (%cond-eqn-avals-error-p (list (nb:make-aval '(1) :i1) f32) :then one :else one))
+      (is (%cond-eqn-avals-error-p (list i1 f32) :then one :else two))
+      (is (%cond-eqn-avals-error-p (list i1 (nb:make-aval '(3) :f32)) :then one :else one))
+      (is (%cond-eqn-avals-error-p (list i1) :then one :else one))
+      (is (%cond-eqn-avals-error-p (list i1 f32 f32) :then one :else one))
+      (is (%cond-eqn-avals-error-p (list i1 f32) :then 1 :else one)))))
+
+(test cond/both-branches-share-the-identical-input-signature
+  "両枝のサブグラフの invars は、どちらも eqn の invars（pred を除く）と同じ aval の並びで、
+片方しか使わない捕捉値の位置には使われない invar が置かれる。捕捉値の和集合は最初に使った順。"
+  (let* ((graph (nb::trace-to-graph
+                 (nb:with-tracing (p x y)
+                   (nb:cond* p (nb:with-tracing (u) (+ u y)) (nb:with-tracing (u) (* u x)) x))
+                 (%cond-avals '(2 3))))
+         (eqn (first (nb:graph-eqns graph)))
+         (expected (mapcar #'nb:var-aval (rest (nb:eqn-invars eqn)))))
+    (is (equal (list (second (nb:graph-invars graph)) (third (nb:graph-invars graph))
+                     (second (nb:graph-invars graph)))
+               (rest (nb:eqn-invars eqn))))
+    (is (equalp expected (mapcar #'nb:var-aval (nb:graph-invars (getf (nb:eqn-params eqn) :then)))))
+    (is (equalp expected (mapcar #'nb:var-aval (nb:graph-invars (getf (nb:eqn-params eqn) :else)))))))
+
+(test cond/error-on-zero-outputs
+  "枝が値を返さなければ cond-error。"
+  (signals nb:cond-error
+    (nb::trace-to-graph
+     (nb:with-tracing (p x) (nb:cond* p (nb:with-tracing (u) (values)) (nb:with-tracing (u) (values)) x))
+     (list (nb:make-aval '() :i1) (nb:make-aval '(2) :f32)))))
+
+(test cond/error-on-branch-arity-mismatch
+  "枝の引数の個数が operands の個数と違えば cond-error。"
+  (signals nb:cond-error
+    (nb::trace-to-graph
+     (nb:with-tracing (p x) (nb:cond* p (nb:with-tracing (u v) u) (nb:with-tracing (u) u) x))
+     (list (nb:make-aval '() :i1) (nb:make-aval '(2) :f32)))))
+
+(test cond/integer-array-operand-is-lifted
+  "operand に整数の配列（:i32）を渡せる。bf16 / f16 の生の配列は cond-error。"
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (p x)
+                  (nb:cond* p
+                            (nb:with-tracing (u k) (values (+ u 1) k))
+                            (nb:with-tracing (u k) (values (- u 1) k))
+                            x (make-array 2 :element-type '(signed-byte 32) :initial-element 7)))
+                (list (nb:make-aval '() :i1) (nb:make-aval '(2) :f32))))
+        (x (make-random-array (make-array-spec '(2) :f32) :seed 9)))
+    (multiple-value-bind (a k) (nb:eval-graph graph (%cond-pred 1) x)
+      (is (allclose a (reference-add x (make-array 2 :element-type 'single-float :initial-element 1f0)) :dtype :f32))
+      (is (equalp k (make-array 2 :element-type '(signed-byte 32) :initial-element 7)))))
+  (signals nb:cond-error
+    (nb::trace-to-graph
+     (nb:with-tracing (p x)
+       (nb:cond* p (nb:with-tracing (u k) u) (nb:with-tracing (u k) u)
+                 x (make-array 2 :element-type '(unsigned-byte 16))))
+     (list (nb:make-aval '() :i1) (nb:make-aval '(2) :f32)))))
 
 (test cond/zero-operands-with-captured-values-only
   "operand が0個でも、枝が閉包で捕まえた外側の値だけで動く。"
