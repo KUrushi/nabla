@@ -19,7 +19,7 @@
 | 定型の `do` ループを `scan` に展開する | 達成（`do` のみ。`dotimes` / `loop` / `do*` は対象外） | `tests/loop-scan-test.lisp`（PBT: 展開した `scan` と Lisp の `do` の一致）。§3.11 |
 | GPU（CUDA）での数値一致と計測 | 未測定 | このマシンに GPU が無い（#12 から引き続き） |
 
-結論: CPU 上の完了条件はすべて達成した。既定スイート（small + medium、IREE・PJRT 必須）は各 PR で通した（#136 の PR #156 のブランチで small 140212 checks / medium 1493 checks。このブランチの最終実行は main を merge した後の medium 1500 checks）。
+結論: CPU 上の完了条件はすべて達成した。既定スイート（small + medium、IREE・PJRT 必須）は各 PR で通した（#136 の PR #156 のブランチで small 140212 checks / medium 1493 checks。このブランチ（#142）の最終実行は #156 と #163 を取り込んだ後の small 140473 checks / medium 1587 checks）。
 
 ## 2. 作ったもの
 
