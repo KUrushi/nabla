@@ -116,7 +116,10 @@
   (let* ((graph (%scan-jvp-graph 2 3 nil))
          (jvp (nb::jvp-graph graph))
          (n (length (nb:graph-invars graph))))
-    (signals nb::autodiff-error (nb::transpose-graph jvp n))))
+    (handler-case (progn (nb::transpose-graph jvp n) (fail "autodiff-error が出なかった"))
+      (nb::autodiff-error (c)
+        ;; 別の理由のエラーでなく、carry が線形入力に依存しないという検査で止まる
+        (is (search "線形入力に依存しない" (princ-to-string c)))))))
 
 (defparameter *host-constant* (make-array 3 :element-type 'double-float :initial-contents '(0.3d0 -0.2d0 0.5d0)))
 
@@ -170,4 +173,33 @@ h' = tanh(h exp(c) + x)（c はホストの配列）。中心差分と一致す�
     (is (= 2 (length (nb::eqn-outvars primal-scan))))
     ;; 線形な scan の xs は x_t と tanh の微分の2つ（consts 0、carry 1、xs 2）
     (is (= 3 (length (nb::eqn-invars linear-scan))))
+    (is (= 0 (getf (nb::eqn-params linear-scan) :num-consts)))))
+
+(test vjp-scan/carry-that-is-a-linear-input-passes-through
+  "carry の出力が線形入力（xs の要素）そのものでも転置できる: h' = x_t なら、最後の h の総和の
+勾配は、最後のステップの x にだけ 1（reverse でない scan）。"
+  (let* ((f (nb:with-tracing (h0 xs)
+              (nb:reduce-sum (first (nb:scan (nb:with-tracing (carry x) (values (list (first x)) '()))
+                                             (list h0) (list xs) :length 3)))))
+         (h0 (make-array 2 :element-type 'double-float :initial-element 0d0))
+         (xs (make-array '(3 2) :element-type 'double-float :initial-element 1d0))
+         (grads (funcall (nb:grad f :argnums '(0 1)) h0 xs)))
+    (is (equalp #(0d0 0d0) (first grads)))
+    (is (equalp #2A((0d0 0d0) (0d0 0d0) (1d0 1d0)) (second grads)))))
+
+(test vjp-scan/closed-over-host-array-is-a-body-constant-not-a-residual
+  "閉包で捕まえたホストの配列は scan の consts ではなく本体の定数（exp(c) はトレース時に計算済み）。
+残差にも consts にもならず、線形な scan の本体に定数として入る: 主値側の scan の出力は
+最終 carry と tanh の微分の2つ、線形な scan の consts は 0。"
+  (let* ((graph (nb::trace-to-graph
+                 (nb:with-tracing (h0 xs)
+                   (first (nb:scan (nb:with-tracing (carry x)
+                                     (values (list (tanh (+ (* (first carry) (exp *host-constant*)) (first x))))
+                                             '()))
+                                   (list h0) (list xs) :length 4)))
+                 (list (nb:make-aval '(3) :f64) (nb:make-aval '(4 3) :f64))))
+         (lin (nb::linearize-graph graph :nonzero '(t nil)))
+         (primal-scan (first (%scan-eqns (nb::linearization-primal-graph lin))))
+         (linear-scan (first (%scan-eqns (nb::linearization-linear-graph lin)))))
+    (is (= 2 (length (nb::eqn-outvars primal-scan))))
     (is (= 0 (getf (nb::eqn-params linear-scan) :num-consts)))))
