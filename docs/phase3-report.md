@@ -16,7 +16,7 @@
 | per-example 勾配が JAX と一致する | 達成 | #138。`tests/fixtures/per-example/`（JAX 0.10.2、x64 無効）と f32 の許容誤差で一致 |
 | 明示的なキー渡しの PRNG が eager・`jit`・`vmap` で動く | 達成 | #133（`rng-bit-generator`）と #136（`prng-key` / `split` / `fold-in` / `uniform` / `normal`）。eager == IREE == PJRT（XLA CPU）のビット一致、統計検定 |
 | RNN を `scan` で学習できる（end-to-end） | 達成 | #141。`tests/iree/rnn-train-test.lisp`、JAX（`jax.lax.scan`）フィクスチャと損失の軌跡が一致 |
-| `dotimes` / `loop` を `scan` に展開する | TODO(#137): #137 のマージ後に埋める | |
+| 定型の `do` ループを `scan` に展開する | 達成（`do` のみ。`dotimes` / `loop` / `do*` は対象外） | `tests/loop-scan-test.lisp`（PBT: 展開した `scan` と Lisp の `do` の一致）。§3.11 |
 | GPU（CUDA）での数値一致と計測 | 未測定 | このマシンに GPU が無い（#12 から引き続き） |
 
 結論: CPU 上の完了条件は、#137 を除きすべて達成した。既定スイート（small + medium、IREE・PJRT 必須）は各 PR で通した（最後に計った #136 のブランチで small 140212 checks / medium 1493 checks）。
@@ -41,8 +41,8 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **#135（PR #158）**: `scan` の jvp。
 - **#139（PR #160）**: `scan` の partial eval（`*partial-eval-rules*`）と transpose。これで `grad` が `scan` を通る。
 - **#141（PR #161）**: RNN の end-to-end 学習（`examples/rnn.lisp`）。
-- **#136（PR #156）**: PRNG の公開 API（`prng-key` / `split` / `fold-in` / `uniform` / `normal`）。TODO(#136): マージ後に PR 番号・最終的な API を確認して書き直す。
-- **#137**: `dotimes` / `loop` の `scan` への展開。TODO(#137): マージ後に埋める。
+- **#136（PR #156）**: PRNG の公開 API（`prng-key` / `split` / `fold-in` / `uniform` / `normal` / `prng-error`）。`shift-right-logical` / `bitwise-or` / `bitcast-convert` の内部プリミティブとバッチ化ルール、`rng-bit-generator` のバッチ化も含む。
+- **#137（PR #163）**: `with-tracing` の中の定型の `do` ループを `scan` に展開する（`src/loop-scan.lisp`）。
 - **フォローアップ #159**: `scan` の `ys` が IREE で O(length × |ys|) になる問題（§5）。
 
 ## 3. 設計上の判断
@@ -96,8 +96,6 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 
 ### 3.8 PRNG
 
-TODO(#136): マージ後に、最終的な API・キーの表現・JAX との違いを確認して書き直す。マージ前の PR #156 の記述に基づく暫定:
-
 - **`rng-bit-generator`（#133）**: `stablehlo.rng_bit_generator`（`THREE_FRY`）に対応する複数出力のプリミティブ。状態は `ui64[2]` で、`[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は鍵を保ち、カウンタを生成した64ビット単位の個数だけ進める。eager は IREE の lowering（`StableHLOToLinalgRandom`）を写した Threefry-2x32 で、**eager == IREE（local）== PJRT（XLA CPU）が23通りの形状 × `:u32` / `:u64` でビット単位で一致する**。XLA 自身の実装ではなく IREE の lowering を写したのは、IREE との一致を保証するため。
 - **キー**: `:u32` の `(2)`。状態 `ui64[2]` への写像は `[k0 | k1<<32, カウンタ]`（`bitcast-convert` で2語を1語にする）。`uniform` / `normal` / `split` はカウンタ 0 から、`fold-in` はカウンタ 2^32 + data から始める（引く量が 2^32 未満なら重ならない）。ビットは常に1次元で作って reshape する（多次元の `:u32` の配置と状態の進みが形に依存するため）。
 - **JAX とビット単位では一致しない**: JAX は `threefry_2x32` を直接呼ぶ（nabla は `rng_bit_generator` の上に組んでいる）。統計的性質（平均・分散・KS 検定・裾・相関）で検査し、JAX 0.10.2 の既知の答え（zero 状態と形 `(3 3 3)` の `:u32`）は `rng-bit-generator` のテストにある。
@@ -110,7 +108,15 @@ TODO(#136): マージ後に、最終的な API・キーの表現・JAX との違
 - 整数の接線は常に symbolic zero。`div` `exp` `log` `tanh` `dot-general` は整数を `primitive-error` で拒否する（暗黙の型昇格もしない）。
 - **float → int の `convert` は、飽和と NaN → 0 を StableHLO 側で明示する**（clamp と select。IREE の `fptosi` は範囲外・NaN が未定義で eager と食い違った）。**整数 → `:bf16` は f32 を経由し、間に `optimization_barrier` を置く**（IREE CPU が `__truncsfbf2` のリンクに失敗する。barrier が無いと2つの convert が最適化で畳まれて同じ失敗になる）。
 
-### 3.10 IREE 3.11 のバグと回避策
+### 3.10 PRNG の API
+
+公開 API は `prng-key`（整数のシードから `[上位32ビット 下位32ビット]`）、`split`、`fold-in`、`uniform`、`normal`、`prng-error`。eager・`jit`・`vmap` で動く。キーは「使う（`uniform` / `normal`）か `split` するか」のどちらか一方にだけ使う。詳細は §3.8。
+
+### 3.11 `do` ループの `scan` への展開（#137）
+
+`with-tracing` の最初の処理（`macroexpand-all` より前、展開前のフォームに対して）で、**定型の `do` だけ**を `scan` にする（`src/loop-scan.lisp` の表）。`do` は展開されると `block` / `tagbody` / `setq` になって元の形が分からなくなるため。対応する形は、カウンタの step が `(1+ i)` / `(+ i 1)` / `(+ 1 i)`、終了条件が `(>= i N)` か `(= i N)`、本体のフォームが無いもの（宣言だけ可）。carry の step は純粋な式（`setq` は書けない）で、step の無い変数は不変。カウンタは `:i32` の carry で、上限 `N` は1回だけ評価する（トレース時に決まる整数）。反復回数は `(>= i N)` なら `max(0, N - INIT)`、`(= i N)` で `N < INIT` なら `scan-length-error`。`dotimes` / `loop` / `do*` は従来どおり `unsupported-form`（`dotimes` は carry を `setq` でしか渡せず、`loop` の `for ... = ... then ...` は更新と終了判定の順序が `do` と違うため）。`quote` / バッククォートの中と、`flet` / `labels` / `macrolet` の定義リストは見ない（呼び出し側が `do` の構文に読めると `do` 扱いになる制限は README に記載）。
+
+### 3.12 IREE 3.11 のバグと回避策
 
 フェーズ3で IREE 3.11（固定コミット）のコンパイラのバグを3つ踏んだ。
 
@@ -135,14 +141,14 @@ IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピ�
 #### 4.4 mutation testing
 
 `def-batch-rule` を変異対象に加え（PR #151）、ルールを足した PR ごとに実行した。主な結果: #130 は 41 中 34 kill（生存は defun 先頭行の同値のみ）、#131 は 48/48、#135 は 16/16、#133 は `--max-per-def 15` で 58/58、#126 は 255 中 234 kill（生存は SSA 補助名の等価変異）、#136 は 82/91（生存9件は等価か別の有効値）。
-TODO(#137): #137 の結果を足す。
+#137 は mutation 55/56（残りは不完全な定義のガードで、テストを追加済み。再実行はしていない）。
 
 ## 5. 既知の制限と積み残し
 
 - **#159: `scan` の `ys` が IREE で O(length × |ys|)**（§4.1）。`dynamic_update_slice` が in-place にならない。
 - **バッチされた rng の emit が行ごとの展開**（§3.8）。行数が数百になるとコンパイルが数十秒。`scan` 化が将来策。
 - **`while-loop` の逆モード（`grad`）は対応しない**（§3.5）。`scan` で書く。
-- **IREE 3.11 の `:i1` carry のバグは回避策が無い**（§3.10 の 2。比較由来の `:i1` の carry を持つ while の結果を jit の戻り値にしない）。
+- **IREE 3.11 の `:i1` carry のバグは回避策が無い**（§3.12 の 2。比較由来の `:i1` の carry を持つ while の結果を jit の戻り値にしない）。
 - **f64 の `normal` の裾は f32 並みの精度**（erf の逆関数の単精度近似を使う。§3.8）。
 - **PJRT では `:i1` が未対応のまま**（`PRED` に写していない。`unsupported-dtype`）。したがって `:i1` を入力・出力にする PJRT のテストは無い。`cond*` の `pred` の rank 0 `:i1` は graph の内部の値なので動く。
 - **PRNG は JAX とビット単位で一致しない**（§3.8）。`rng_bit_generator` の `:i32` のビットと Philox / `DEFAULT` は未対応。
@@ -151,7 +157,7 @@ TODO(#137): #137 の結果を足す。
 - **`(vmap f)` / `(grad f)` は呼ぶたびに新しい関数オブジェクト**を作り、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため）。
 - **重複した捕捉値の dedupe は見送り**（`while-loop`。同じトレーサを複数の本体が捕まえると、オペランドが重複する。結果は正しい）。
 - **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。
-- **#68 / #73**: フェーズ1から引き続き（in-process コンパイラのメモリ破壊の根本原因、IREE 上流への報告）。上の IREE 3.11 のバグ（§3.10 の 1 と 2）も上流への報告は未実施。
+- **#68 / #73**: フェーズ1から引き続き（in-process コンパイラのメモリ破壊の根本原因、IREE 上流への報告）。上の IREE 3.11 のバグ（§3.12 の 1 と 2）も上流への報告は未実施。
 
 ## 6. 進め方の知見（プロセス）
 
@@ -168,6 +174,6 @@ TODO(#137): #137 の結果を足す。
 - **`defmodule` の init / dropout は PRNG のキーを使う**。`split` と `fold-in` でパラメータごとのキーを作り、`uniform` / `normal` で初期化する。キーは `:u32` の `(2)` の配列で PyTree の葉にできる。`vmap` でキーをバッチして独立な乱数を作る使い方は動く（ただしバッチされた rng は行数が多いとコンパイルが重い。§5）。dropout のように `jit` の中で毎ステップキーを更新するときは、キーを引数に取って新しいキーを返す形にする（`jit` のキャッシュに乗せるため、キーは動的な引数）。
 - **`scan` で層の積み重ね（`nn.scan` 相当）やループを書ける**。本体のパラメータは consts（ループ不変）か xs（層ごとに別）で渡す。長い系列の `ys` に注意（§5）。
 - **バッチ化ルール・partial eval の拡張点**: 新しいプリミティブには `defprimitive` の `:batch` か `def-batch-rule` を書く（`src/ad/rules-batch-*.lisp`）。主値と接線を分ける特別な処理が要る高階プリミティブは `set-partial-eval-rule` を使う。
-- **`optimization_barrier` のルール**: 定数の carry を持ちうる `while` を emit するプリミティブを足すときは、定数オペランドを `%while-barrier-lines` に通す（§3.10）。
+- **`optimization_barrier` のルール**: 定数の carry を持ちうる `while` を emit するプリミティブを足すときは、定数オペランドを `%while-barrier-lines` に通す（§3.12）。
 - **per-example 勾配**（`vmap` の `in-axes` で、パラメータをバッチしない）は、PyTree のパラメータでは `in-axes` の指定が PyTree になる。
 - **CUDA の未測定**: GPU のある環境で `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh`（#12）と `scripts/bench-backends.sh --cuda` を実行する。

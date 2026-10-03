@@ -232,7 +232,6 @@ pretty form を出力する。
 
 
 
-<!-- フェーズ3 anchor: issue #127 -->
 
 **サブグラフ（subgraph）と高階プリミティブ**
 : eqn の `params` の値として持たせる、閉じた `graph`（外側の var を参照せず、定数は自分の定数表に持つ）。`cond` / `while-loop` / `scan` のように、本体の関数を別の graph として持つプリミティブを高階プリミティブと呼ぶ。印字では入れ子に、StableHLO ではリージョンとして出す。`eval-graph` / `inline-graph` / `dce-graph` と jvp / transpose の変換は、サブグラフの中身を書き換えずに素通しする（中身の変換は各プリミティブのルールの仕事）。
@@ -245,46 +244,39 @@ pretty form を出力する。
 
 
 
-<!-- フェーズ3 anchor: issue #126 -->
 
 **2 の補数での折り返し（整数のオーバーフロー）**
 : 整数の演算結果がその dtype の範囲を超えたとき、上位のビットを捨てて範囲内に収める挙動（`:i32` は 2 の補数、`:u32` / `:u64` は法 2^n）。StableHLO の整数演算がこうなので、eager 実装も同じにそろえる（`(+ 2147483647 1)` の `:i32` は -2147483648）。issue #126。
 
 
 
-<!-- フェーズ3 anchor: issue #125 -->
 
 **バッチ次元（vmap）**
 : `vmap` が、例の束を並べるために配列へ足した軸。`dot_general` の batch dims（縮約せずに両オペランドに共通して残る次元。上の「contracting dims / batch dims」）とは別の概念で、同じ名前で呼ぶので注意する。`vmap` は値ごとに「バッチ次元がどの位置にあるか（無ければ `nil`）」を伝播させながら graph を書き換える。バッチ次元を持たない値だけを入力とする演算は、バッチ化ルールを呼ばずにそのまま残す（不要な複製をしない）。最後に出力ごとに `out-axes` の位置へ動かす。
 
 
 
-<!-- フェーズ3 anchor: issue #128 -->
 
 **broadcast_batcher（要素演算のバッチ化）**
 : JAX の `broadcast_batcher` に倣った、要素演算のバッチ化ルール†の共通の実装。バッチ軸がすべて同じ位置のときは何も動かさず、違うときは先頭へ `transpose` で揃え、バッチされていない引数は `broadcast-in-dim` でバッチ軸を足してから、元のプリミティブを1つ適用する。
 
 
 
-<!-- フェーズ3 anchor: issue #129 -->
 
 
 
-<!-- フェーズ3 anchor: issue #130 -->
 
 **cond* と select**
 : `select`（`with-tracing` の `if`、`where`）は `:i1` の条件を要素ごとに使い、両方の枝を必ず計算してから選ぶ。計算量は両枝の和で、選ばれなかった枝の NaN / inf は捨てられるが評価はされる。`cond*` は rank 0 の `:i1` の条件で片方の枝だけを実行する高階プリミティブ（StableHLO の `stablehlo.if`）で、選ばれなかった枝は実行時に評価されない。代わりに条件はスカラーに限り、両枝の出力の aval が一致していなければならない。`if` を `cond*` に落とさず `select` のままにしているのは、`if` の条件が要素ごとの配列でありうるため。
 
 
 
-<!-- フェーズ3 anchor: issue #131 -->
 ### while-loop（ホワイルループ）
 
 反復回数がトレース時に決まらないループを表す高階プリミティブ（issue #131）。条件（cond）と本体（body）をサブグラフとして持ち、StableHLO では `stablehlo.while`（cond と body の2つのリージョン）になる。JAX の `lax.while_loop` に相当する。carry（ループで受け渡す値）の aval は本体の前後で一致しなければならない。逆モードの自動微分には対応しない（反復回数が分からないと、各反復の途中の値＝残差を保存できないため）。
 
 
 
-<!-- フェーズ3 anchor: issue #132 -->
 
 **scan（制御構造）**
 : 配列の先頭の軸に沿って、状態（carry）を持ち回しながら関数を回す高階プリミティブ。JAX の `lax.scan` に相当し、RNN のように「前のステップの出力を次のステップの入力にする」計算を、Lisp のループを展開せずに1つの eqn で表す。eqn の params は JAX と同じく `num-consts`（ループ不変な入力の個数）、`num-carry`、`length`、`reverse`、本体のサブグラフ（入力は consts ++ carry ++ x_t、出力は carry ++ y_t）。StableHLO では `:i32` のカウンタを carry に足した `stablehlo.while` に落とし、x_t は `dynamic_slice`、y_t は `dynamic_update_slice` で読み書きする。
@@ -297,7 +289,6 @@ pretty form を出力する。
 **optimization_barrier（最適化の境界）**
 : `stablehlo.optimization_barrier`。値を変えずにそのまま通す op で、コンパイラがこの前後で式を畳んだり移動したりしない境界になる。nabla は `stop-gradient` の出力のほか、IREE 3.11 のコンパイラのバグの回避（定数で初期化された carry を持つ `while` の定数オペランド、整数 → bf16 の `convert` の2段の間）に使う。
 
-<!-- フェーズ3 anchor: issue #133 -->
 
 **Threefry / rng_bit_generator**
 
@@ -306,7 +297,6 @@ Threefry は、鍵とカウンタから乱数のビット列を作るカウン�
 
 
 
-<!-- フェーズ3 anchor: issue #134 -->
 
 ### 不動点（fixpoint、while-loop の jvp）
 
@@ -314,7 +304,6 @@ Threefry は、鍵とカウンタから乱数のビット列を作るカウン�
 
 
 
-<!-- フェーズ3 anchor: issue #135 -->
 
 ### carry の接線の不動点（fixed point）
 
@@ -322,7 +311,6 @@ Threefry は、鍵とカウンタから乱数のビット列を作るカウン�
 
 
 
-<!-- フェーズ3 anchor: issue #136 -->
 
 **PRNG のキー / split / fold-in**
 
@@ -338,20 +326,17 @@ nabla の PRNG は JAX と同じ「明示的なキー渡し」で、グローバ
 
 
 
-<!-- フェーズ3 anchor: issue #137 -->
 
 **do ループの scan への展開**（issue #137）: `with-tracing` の中の定型の `do`（カウンタ・carry・不変な変数、終了条件 `(>= i n)` / `(= i n)`）を、反復回数だけ展開せずに1つの `scan`† にする変換。`do` はマクロ展開されると `block` / `tagbody` / `setq` になって形が分からなくなるので、`macroexpand-all` の前の、展開前のフォームに対して行う。`do` の step 式は純粋で、`setq` なしで carry を更新できるので scan の本体にそのまま写せる。定型でない `do` は原因のフォームを示す `unsupported-form`、`dotimes` / `loop` / `do*` は従来どおり展開後の `block` で `unsupported-form`。
 
 
 
-<!-- フェーズ3 anchor: issue #138 -->
 
 **per-example 勾配（サンプルごとの勾配）**
 : バッチ全体の損失の勾配（1つの値）ではなく、バッチの各サンプルについての損失の勾配を、サンプルごとに別々に求めたもの。`(vmap (grad loss) :in-axes ...)` と書く。`grad` は1サンプルの損失を微分し、`vmap` がそれをサンプルの束にまとめて適用する。パラメータはバッチしない（`in-axes` が `nil`）ので、結果の各勾配は `(N ...パラメータの形)` になる。平均すると、バッチ平均損失の `grad` に一致する。差分プライバシー付きの学習（サンプルごとの勾配のクリッピング）などに使う。
 
 
 
-<!-- フェーズ3 anchor: issue #139 -->
 
 ### partial eval（部分評価）とループ不変な残差
 
@@ -359,11 +344,9 @@ jvp した graph を、主値だけで決まる部分（既知）と接線に依
 
 
 
-<!-- フェーズ3 anchor: issue #140 -->
 
 **バッチされる carry の不動点（制御構造の vmap）**
 : `while-loop`（と `scan`）の本体を `vmap` するとき、最初はバッチされない carry が、本体でバッチされた値と混ざってバッチされることがある。すると次の反復の入力が変わるので、本体を何度かバッチ化し直して「バッチされる carry の集合」が変わらなくなるまで広げる。この変わらなくなった状態が不動点。jvp で「接線が非ゼロの carry の集合」を不動点まで広げるのと同じ形。
 
 
 
-<!-- フェーズ3 anchor: issue #141 -->
