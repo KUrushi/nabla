@@ -450,3 +450,17 @@ loc はリージョンの外の行（補助の定数行と演算を閉じる最�
 (test subgraph/region-return-line-without-outvars-is-bare
   "出力の無いリージョンは、裸の stablehlo.return で終わる。"
   (is (string= "stablehlo.return" (nb::%stablehlo-region-return-line (make-hash-table :test 'eq) '()))))
+
+;;; ---- vmap との関係（#140 までは明示的なエラー） ----
+
+(test subgraph/vmap-rejects-multiple-output-eqn-with-vmap-error
+  "vmap は、複数出力の eqn（高階プリミティブ）を、文書化された VMAP-ERROR で拒否する。
+サブグラフを持たない普通の関数の vmap は従来どおり動く。"
+  (let ((x (make-random-array (make-array-spec '(4 2 3) :f32) :seed 1))
+        (y (make-random-array (make-array-spec '(4 2 3) :f32) :seed 2)))
+    (signals nb:vmap-error
+      (funcall (nb:vmap (nb:with-tracing (a b)
+                          (first (test-call-subgraph (nb:with-tracing (p q) (+ p q)) a b))))
+               x y))
+    (is (allclose (funcall (nb:vmap (nb:with-tracing (a b) (+ a b))) x y)
+                  (reference-add x y) :dtype :f32))))
