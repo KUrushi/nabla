@@ -21,8 +21,9 @@
 ;;;; 各 step の dtype・shape は init と同じでなければならない（SCAN-CARRY-MISMATCH）。
 ;;;;
 ;;;; 展開しないもの: DO*、DOTIMES、LOOP（従来どおり展開後の BLOCK が UNSUPPORTED-FORM
-;;;; になる。DOTIMES / LOOP の for = then は進める順序や終了判定の順序が DO と違い、
-;;;; 同じ意味にできない）。ユーザーのマクロが DO に展開されるものは、この段階では
+;;;; になる。DOTIMES は carry を SETQ でしか渡せず、LOOP の for ... = ... then ... は
+;;;; 更新と終了判定の順序が DO と違うので、同じ意味にできない）。QUOTE / バッククォートの中と、
+;;;; FLET / LABELS / MACROLET の局所関数の定義（名前が do でも）は見ない。ユーザーのマクロが DO に展開されるものは、この段階では
 ;;;; 見えないので展開しない。また、DO の形をした束縛（(let ((do ...)))）は DO の構文として
 ;;;; 読めれば DO として扱う。
 
@@ -111,10 +112,27 @@
   "FORM（展開前の WITH-TRACING の本体）の中の DO を、構文として読めるものだけ
 %LOWER-DO で書き換えて返す。QUOTE の中は見ない。"
   (cond ((atom form) form)
-        ((eq (first form) 'quote) form)
+        ;; QUOTE とバッククォート（sb-int:quasiquote）の中はデータなので見ない。
+        ((member (first form) '(quote sb-int:quasiquote)) form)
+        ((and (member (first form) '(flet labels macrolet)) (consp (cdr form)) (listp (second form)))
+         (%expand-do-loops-local-functions form))
         ((and (eq (first form) 'do) (%do-syntax-p form))
          (%expand-do-loops (%lower-do form)))
         (t (%expand-do-loops-list form))))
+
+(defun %expand-do-loops-local-functions (form)
+  "(FLET|LABELS|MACROLET ((name lambda-list . body)...) . body) の中を書き換える。
+局所関数の定義 (name lambda-list . body) 自体は DO の構文に見えうる（(flet ((do (a b) ...)))）
+ので、定義の先頭 2 要素（名前と仮引数リスト）は見ず、本体だけを書き換える。
+局所関数の呼び出し側の (do ...) が DO の構文に読めるときは、DO として扱ってしまう（制限）。"
+  (list* (first form)
+         (mapcar (lambda (definition)
+                   (if (and (consp definition) (consp (cdr definition)))
+                       (list* (first definition) (second definition)
+                              (%expand-do-loops-list (cddr definition)))
+                       definition))
+                 (second form))
+         (%expand-do-loops-list (cddr form))))
 
 (defun %expand-do-loops-list (list)
   (cond ((atom list) list)

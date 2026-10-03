@@ -138,7 +138,7 @@
 
 
 
-               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のコンポーネントはこの下に足す
+               ;; フェーズ3 anchor: issue #137（do を scan に展開）。この issue のコンポーネントはこの下に足す
 
 
 
@@ -315,7 +315,7 @@
 
 
 
-               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のテストはこの下に足す
+               ;; フェーズ3 anchor: issue #137（do を scan に展開）。この issue のテストはこの下に足す
                (:file "tests/loop-scan-test")
 
 
@@ -508,7 +508,7 @@
 
 
 
-               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のテストはこの下に足す
+               ;; フェーズ3 anchor: issue #137（do を scan に展開）。この issue のテストはこの下に足す
                (:file "tests/iree/loop-scan-test")
 
 

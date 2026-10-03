@@ -112,7 +112,7 @@ GPU を使う large テストは CI では動かさない。
 - 演算（プリミティブ）は `defprimitive` で宣言する。形状推論（出力の形と型を計算する関数）、StableHLO 出力、eager 用の CPU 実装の3つは同じ変更の中で書く。jvp† / transpose ルール†とバッチ化ルール†は、その演算を `grad` / `vmap` に対応させるときに必須になる
 - 自動微分は JAX と同じ「jvp + transpose」方式にする（`jax._src.interpreters.ad` を参考にし、演算ごとのルールは `jax._src.lax` から写す）
 - v1 は静的形状（配列の形がコンパイル時に決まっている）だけを扱う。jit キャッシュのキーは「関数の同一性 + 引数の `aval` + 静的引数 + コンパイルターゲット（`sm_XX` などの GPU 世代を含む）」
-- トレースは `with-tracing` によるコードウォーク†方式。トレースされるコードでは `setq` を禁止し、対応していない形式はコンディション（Lisp の例外）で報告する。フェーズ1の作業単位は #35 の子 issue を参照。対応する特殊形式・書き換える CL 関数の一覧は `src/walk.lisp`（issue #32）の `%walk` と `*rewrite-table*` を正とする
+- トレースは `with-tracing` によるコードウォーク†方式。トレースされるコードでは `setq` を禁止し、対応していない形式はコンディション（Lisp の例外）で報告する。フェーズ1の作業単位は #35 の子 issue を参照。対応する特殊形式・書き換える CL 関数の一覧は `src/walk.lisp`（issue #32）の `%walk` と `*rewrite-table*` を正とする。`do` を `scan` に展開する対応表（対応する形）は `src/loop-scan.lisp`（issue #137）にある
 - PyTree† として既定で扱うのは、リスト・ベクタ・`defmodule` で定義した構造体だけ。plist / alist / ハッシュ表は明示的に登録する
 - bf16 / f16† は `(unsigned-byte 16)` の配列で持ち、`aval` の dtype タグで区別する
 - IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す

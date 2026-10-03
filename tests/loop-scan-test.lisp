@@ -240,3 +240,18 @@ UNSUPPORTED-FORM が signal されること。"
   (signals nb:unsupported-form (macroexpand-1 '(nb:with-tracing (x) (dotimes (i 3) x))))
   (signals nb:unsupported-form
     (macroexpand-1 '(nb:with-tracing (x) (loop for i below 3 for h = x then (+ h 1.0) finally (return h))))))
+
+(test loop-scan/quoted-and-backquoted-do-are-left-untouched
+  "quote とバッククォートの中の (do ...) は書き換えない。"
+  (let ((q '(do ((i 0 (1+ i))) ((>= i 3) x))))
+    (is (equal `(progn ',q) (nb::%expand-do-loops `(progn ',q))))
+    (is (equal '(progn `(do ((i 0 (1+ i))) ((>= i 3) x)) x)
+               (nb::%expand-do-loops '(progn `(do ((i 0 (1+ i))) ((>= i 3) x)) x))))))
+
+(test loop-scan/local-function-named-do-is-not-a-loop
+  "flet / labels / macrolet の局所関数の定義は、名前が do でもループとして読まれず、書き換えられない
+（SBCL は CL の do の局所束縛をパッケージロックで拒否するので、前処理だけを見る。
+ロックを外した別パッケージの do 相当を使う利用者のための挙動）。"
+  (dolist (op '(flet labels macrolet))
+    (let ((form `(,op ((do (a b) (+ a b))) (do 1 2))))
+      (is (equal form (nb::%expand-do-loops form))))))
