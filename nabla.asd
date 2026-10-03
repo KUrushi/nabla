@@ -109,6 +109,7 @@
 
 
                ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のコンポーネントはこの下に足す
+               (:file "src/scan")
 
 
 
@@ -279,6 +280,7 @@
 
 
                ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のテストはこの下に足す
+               (:file "tests/scan-test")
 
 
 
@@ -466,6 +468,7 @@
 
 
                ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のテストはこの下に足す
+               (:file "tests/iree/scan-test")
 
 
 

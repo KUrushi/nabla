@@ -1,0 +1,2 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME SCAN/WITHOUT-XS :DATUM "(0 0 0)" :TIMESTAMP 3999997040)

@@ -251,6 +251,10 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #132 -->
 
+#### scan（issue #132）
+
+`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。この issue は順方向だけで、`grad` は `no-jvp-rule`（`:scan`）、`vmap` は #140 まで `vmap-error`。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
+
 
 
 <!-- フェーズ3 anchor: issue #133 -->
