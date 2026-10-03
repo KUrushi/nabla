@@ -1,0 +1,1 @@
+レビュー修正: ルール結果にトレーサ性・dtype の検査を追加、複数出力 eqn は assert をやめ vmap-error（#140 まで）、docstring/README に『リストは返せない』『ループ内 jit(vmap f) は毎回コンパイル』を追記、テストの declare を除去、rank1 の非バッチ出力の正例を追加。small 139541 / medium 1179 通過（/tmp/nabla-tests.lock）。PR 本文のフッターを削除。grad との共通化はしなかった。
