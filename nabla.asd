@@ -48,6 +48,8 @@
                ;; トレーサ（issue #32、t1）
                (:file "src/trace")
                (:file "src/trace-ops")
+               ;; with-tracing の do を scan に展開する前処理（issue #137。walk の with-tracing が使う）
+               (:file "src/loop-scan")
                (:file "src/walk")
                ;; if を select に、配列レベルの公開 API（issue #32、t2）
                (:file "src/array-api")
@@ -130,10 +132,13 @@
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のコンポーネントはこの下に足す
+               (:file "src/primitives/bits")
+               (:file "src/ad/rules-batch-rng")
+               (:file "src/prng")
 
 
 
-               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のコンポーネントはこの下に足す
+               ;; フェーズ3 anchor: issue #137（do を scan に展開）。この issue のコンポーネントはこの下に足す
 
 
 
@@ -305,10 +310,13 @@
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+               (:file "tests/primitives/bits-test")
+               (:file "tests/prng-test")
 
 
 
-               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のテストはこの下に足す
+               ;; フェーズ3 anchor: issue #137（do を scan に展開）。この issue のテストはこの下に足す
+               (:file "tests/loop-scan-test")
 
 
 
@@ -496,10 +504,12 @@
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+               (:file "tests/iree/prng-test")
 
 
 
-               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のテストはこの下に足す
+               ;; フェーズ3 anchor: issue #137（do を scan に展開）。この issue のテストはこの下に足す
+               (:file "tests/iree/loop-scan-test")
 
 
 
@@ -551,4 +561,6 @@
                (:file "tests/pjrt/bench-test")
                (:file "tests/pjrt/integer-test")
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）
-               (:file "tests/pjrt/rng-test")))
+               (:file "tests/pjrt/rng-test")
+               ;; フェーズ3 anchor: issue #136（PRNG の公開 API）
+               (:file "tests/pjrt/prng-test")))

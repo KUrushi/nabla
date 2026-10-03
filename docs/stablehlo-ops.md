@@ -115,7 +115,15 @@ mlir::iree_compiler::DFX::Solver::updateElement(...)
 | op | 状況 | 代替 |
 | --- | --- | --- |
 | `stablehlo.custom_call` | `failed to legalize operation` でコンパイル不可（IREE の入力パイプラインが明示的に illegal にしている） | 使わない |
-| `stablehlo.rng_bit_generator` | 対応済み（issue #133、`rng-bit-generator` プリミティブ）。`%s2, %b = stablehlo.rng_bit_generator %s, algorithm = THREE_FRY : (tensor<2xui64>) -> (tensor<2xui64>, tensor<…xui32>)` の形で、rank 0 と rank 4、奇数の次元、`ui64` の出力でもコンパイル・実行できる。**IREE（local）と PJRT（XLA CPU）は同じ状態から同じ結果（新しい状態とビット）をビット単位で返し、eager 実装とも一致する**（rank 0〜4・23通りの形状・`ui32` / `ui64`・64ビット全域の状態で確認。`tests/iree/rng-test.lisp` と `tests/pjrt/rng-test.lisp`） | 使える。状態 `ui64[2]` は `[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は `[0]` を保ち `[1]` を生成した64ビット単位の個数だけ進める。アルゴリズムの写し元と配置は `src/primitives/rng.lisp` の冒頭。`ui32` は Threefry-2x32 の2出力を別の要素にし、最初の偶数の次元（無ければ最大の次元）を半分にして並べる（要素数が偶数なら count は要素数の半分）。公開の PRNG API は issue #136 |
+| `stablehlo.rng_bit_generator` | 対応済み（issue #133、`rng-bit-generator` プリミティブ）。`%s2, %b = stablehlo.rng_bit_generator %s, algorithm = THREE_FRY : (tensor<2xui64>) -> (tensor<2xui64>, tensor<…xui32>)` の形で、rank 0 と rank 4、奇数の次元、`ui64` の出力でもコンパイル・実行できる。**IREE（local）と PJRT（XLA CPU）は同じ状態から同じ結果（新しい状態とビット）をビット単位で返し、eager 実装とも一致する**（rank 0〜4・23通りの形状・`ui32` / `ui64`・64ビット全域の状態で確認。`tests/iree/rng-test.lisp` と `tests/pjrt/rng-test.lisp`） | 使える。状態 `ui64[2]` は `[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は `[0]` を保ち `[1]` を生成した64ビット単位の個数だけ進める。アルゴリズムの写し元と配置は `src/primitives/rng.lisp` の冒頭。`ui32` は Threefry-2x32 の2出力を別の要素にし、最初の偶数の次元（無ければ最大の次元）を半分にして並べる（要素数が偶数なら count は要素数の半分）。公開の PRNG API は issue #136（`prng-key` / `split` / `uniform` など。README の「PRNG」） |
+
+## PRNG が使う op（issue #136。IREE（local）と PJRT（XLA CPU）の両方で実測）
+
+| op | 状況 |
+| --- | --- |
+| `stablehlo.bitcast_convert` | 同じ幅（`ui32` ⇄ `f32` / `i32`、`ui64` ⇄ `f64`）に加え、幅が違う `tensor<2xui32>` → `tensor<ui64>`（末尾の次元が消える）と、その逆（`tensor<…xui64>` → `tensor<…x2xui32>`）もコンパイル・実行できる。並びはリトルエンディアン（先頭の要素が下位32ビット）。eager 実装（`bitcast-convert`）と一致 |
+| `stablehlo.shift_right_logical` / `stablehlo.or`（`ui32` / `ui64`） | 使える。量がビット幅以上のとき 0（eager も同じ） |
+| `stablehlo.slice` / `stablehlo.concatenate`（バッチ次元つきの `rng_bit_generator` の展開に使う） | `stablehlo.slice %x [0:1, 0:2] : (tensor<Nx2xui64>) -> tensor<1x2xui64>` と `stablehlo.concatenate %a, %b, dim = 0` の pretty form がそのまま通る 。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度。vmap の入れ子では行数が段ごとの積になる。将来は scan 化で解消する |
 
 ## その他の確認事項
 

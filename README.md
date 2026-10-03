@@ -261,7 +261,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### rng-bit-generator プリミティブ（issue #133、内部）
 
-`:rng-bit-generator`（複数出力）は `stablehlo.rng_bit_generator`（THREE_FRY）に対応し、状態 `ui64[2]` から `(新しい状態, 乱数ビット)` を作る。params は出力の `:shape` と `:dtype`（`:u32` / `:u64`）。eager 実装は IREE の lowering を写した Threefry-2x32 で、IREE（local）とも PJRT（XLA CPU）ともビット単位で一致する（`docs/stablehlo-ops.md`）。状態もビットも整数なので微分しない。公開の PRNG API（`key` / `split` / `uniform` など）は #136 で、このプリミティブは今のところ内部（`nb::rng-bit-generator`）。
+`:rng-bit-generator`（複数出力）は `stablehlo.rng_bit_generator`（THREE_FRY）に対応し、状態 `ui64[2]` から `(新しい状態, 乱数ビット)` を作る。params は出力の `:shape` と `:dtype`（`:u32` / `:u64`）。eager 実装は IREE の lowering を写した Threefry-2x32 で、IREE（local）とも PJRT（XLA CPU）ともビット単位で一致する（`docs/stablehlo-ops.md`）。状態もビットも整数なので微分しない。公開の PRNG API（`prng-key` / `split` / `uniform` など）は #136（下の「PRNG」）で、このプリミティブは内部（`nb::rng-bit-generator`）。状態の先頭にバッチ次元を付けられる（#136）。
 
 
 
@@ -280,9 +280,56 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #136 -->
 
+#### PRNG（issue #136）
+
+JAX の `jax.random` と同じ、明示的なキー渡しの PRNG。キーは `:u32` の `(2)` の配列で、乱数が要る関数にはキーを引数として渡し、同じキーからは必ず同じ値が出る。キーは「使う（`uniform` / `normal`）か、`split` する」のどちらか一方にだけ使い、元のキーで両方を引かない。
+
+| 関数 | 役割 |
+| --- | --- |
+| `(prng-key seed)` | 整数のシード（64ビットに収まる整数）からキー `[上位32ビット 下位32ビット]` を作る |
+| `(split key &optional (n 2))` | 独立な `n` 個のキー（shape `(n 2)`、`:u32`）を作る |
+| `(fold-in key data)` | キーに整数 `data`（0 以上 2^32 未満、または `:u32` / `:i32` の rank 0 のトレーサ）を混ぜた新しいキー |
+| `(uniform key shape &key dtype minval maxval)` | `[minval, maxval)` の一様乱数（`dtype` は `:f32`（既定）/ `:f64`、範囲の既定は 0 と 1） |
+| `(normal key shape &key dtype)` | 標準正規分布の乱数（`dtype` は `:f32`（既定）/ `:f64`） |
+| `prng-error` | 不正な引数のコンディション |
+
+eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーをバッチすると各要素はそのキーで単独に呼んだ結果とビット単位で一致する（`(vmap (with-tracing (k) (uniform k '(3))))` を `(split key 8)` に適用する、など）。
+
+決めたこと:
+
+- **キー → 状態**: キー `[k0 k1]` を `rng-bit-generator` の状態 `ui64[2] = [k0 | k1 << 32, カウンタ]` にする（`bitcast-convert` で2語を1語にまとめる）。`uniform` / `normal` / `split` はカウンタ 0 から引き、`fold-in` はカウンタ `2^32 + data` の2語を新しいキーにする（引く量が 2^32 要素未満なら、`fold-in` の出力が `uniform` / `split` の列と重なることはない）。
+- **JAX とビット単位では一致しない**: JAX の既定は `threefry_2x32` を直接呼ぶ実装で `rng_bit_generator` を使わないため、同じシードでも値が違う。nabla は `stablehlo.rng_bit_generator`（THREE_FRY）を使い、IREE・PJRT・eager が互いにビット単位で一致する（`docs/stablehlo-ops.md`）。分布としては同じ（統計検定で確かめている）。
+- **uniform**: 乱数ビットの仮数部だけを取り出して `[1, 2)` の浮動小数点数にし、1 を引いて範囲に伸ばす（JAX と同じ。`:f32` は 23 ビット、`:f64` は 52 ビットの粒度）。丸めのため `maxval` にちょうど等しい値が出うる。
+- **normal**: JAX と同じく、`(-1, 1)` の一様乱数に erf の逆関数をかけて √2 倍する。Box–Muller は `sin` / `cos` のプリミティブが無いため採らなかった。erf の逆関数は Giles の単精度多項式近似（JAX の f32 と同じ係数。相対誤差 約 1e-7）で、`:f64` でも同じ近似を使うので精度は f32 並みで、極端な裾は過小評価される（`u = ±(1 - 2^-53)` で約 ±7.32、真の分位点は約 8.2）。
+- **バッチ化**: バッチ次元を持つ状態 `ui64[..., 2]` を `rng-bit-generator` が受け付け、各行は単独に呼んだ結果とビット単位で一致する。StableHLO の `rng_bit_generator` は `ui64[2]` しか受けないので、行ごとに slice → `rng_bit_generator` → concatenate に展開して出力する（行数だけ演算が増える。静的形状のため）。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度で、`vmap` を入れ子にすると行数は段ごとの積になる。将来は scan（while）で1行ぶんの本体を回す形にして解消する。
+- 新しいビット演算プリミティブ（内部）: `:shift-right-logical`、`:bitwise-or`（整数専用の2入力の要素演算）と、ビット列を再解釈する `:bitcast-convert`（`:f32 :f64 :i32 :u32 :u64`。幅が違うときは StableHLO と同じく末尾の次元が増減し、並びはリトルエンディアン）。どれも整数・ビット列の演算なので微分しない。
+
 
 
 <!-- フェーズ3 anchor: issue #137 -->
+
+
+#### with-tracing の do ループ（issue #137）
+
+`with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
+
+```lisp
+(nb:with-tracing (h0 w)
+  (do ((i 0 (1+ i))                    ; カウンタ。step は (1+ i) / (+ i 1) / (+ 1 i)
+       (h h0 (tanh (+ (* h s) 0.1)))   ; carry。step は純粋な式（全 step が古い値を見る）
+       (s w))                          ; step が無い変数は不変
+      ((>= i n) h)))                   ; 終了条件は (>= i n) か (= i n)。結果形式は最終値で評価
+```
+
+- カウンタの初期値と上限 `n` はトレース時に決まる整数（閉包で捕まえた Lisp の整数など）。上限は `do` 変数を参照できない。整数でないと `scan-error`。反復回数は `(>= i n)` なら `max(0, n - 初期値)`、`(= i n)` なら `n - 初期値`（`n` が初期値より小さいと Lisp では止まらないので `scan-length-error`）
+- カウンタは step の中では `:i32` のスカラーのトレーサ、結果形式の中では最終値の Lisp の整数。浮動小数点の carry と組むときは `(nb:convert i :f32)` のように明示的に変換する（暗黙の型昇格はしない）。carry の dtype・shape は init と step で一致しなければならない（`scan-carry-mismatch`）
+- 上限 `n` は CL の `do` のように反復ごとではなく、ループに入る前に1回だけ評価する（init 式のあとに評価する）
+- 整数リテラルの carry（例 `(k 0 (+ k 1))`）は Lisp の整数ではなく、f32 の rank 0 の配列として戻る（scan が Lisp の実数を f32 のスカラーにするため。整数の carry にしたいときは `:i32` の配列を init に渡す）
+- 本体のフォーム（`do` の body）は書けない（宣言だけ可）。この形に合わない `do`（終了条件が無い、step が別の形、本体にフォームがある、など）は、原因の `do` フォームを持つ `unsupported-form`（`path` は `nil`）
+- `do*` / `dotimes` / `loop` は展開しない。従来どおり、展開後の `block` で `unsupported-form` になる。`dotimes` は carry を `setq` でしか渡せず、`loop` の `for ... = ... then` は更新と終了判定の順序が `do` と違って同じ意味に写せないため。ユーザー定義のマクロが `do` に展開されるものも、展開前のフォームだけを見るので対象外
+- `quote` とバッククォートの中の `do` は書き換えない。`flet` / `labels` / `macrolet` の局所関数の定義（名前が `do` でも）も見ないが、`do` という名前の局所関数の呼び出しが `do` の構文に読める形だと `do` として扱ってしまう（制限）
+- 展開は `src/loop-scan.lisp`（`%expand-do-loops`。`with-tracing` が `macroexpand-all` の前に呼ぶ）。`%walk` / `*rewrite-table*` は変えない
+- 新しい export はない
 
 
 

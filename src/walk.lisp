@@ -1,6 +1,8 @@
 ;;;; walk: WITH-TRACING が本体を歩くコードウォーカ（issue #32、t1）。
 ;;;;
-;;;; 手順: (1) 仮引数リストが必須引数だけであることを確かめる、(2)
+;;;; 手順: (0) 定型の DO を SCAN を呼ぶフォームに書き換える（issue #137。展開前の
+;;;; フォームに対する前処理で、src/loop-scan.lisp が対応する形と対応表を持つ）、
+;;;; (1) 仮引数リストが必須引数だけであることを確かめる、(2)
 ;;;; SB-CLTL2:MACROEXPAND-ALL で本体をマクロ展開する（COND/WHEN/UNLESS/
 ;;;; INCF/DOTIMES などのマクロは、この時点で IF/SETQ/BLOCK/TAGBODY などの
 ;;;; 基本形に展開される）、(3) %WALK でその展開結果を歩く。
@@ -330,12 +332,14 @@ PATH は NIL）。"
 手順: (1) LAMBDA-LIST が必須引数のシンボルだけであることを確かめる、(2)
 (SB-CLTL2:MACROEXPAND-ALL `(PROGN ,@BODY) ENV) で本体をマクロ展開する、(3)
 %WALK でその展開結果を歩く（対応していない形式は UNSUPPORTED-FORM を
-マクロ展開時に signal する）。CL の + - * / max min exp log tanh 1+ 1-
+マクロ展開時に signal する）。本体の定型の DO（src/loop-scan.lisp。
+カウンタ・carry・終了条件 (>= i n) / (= i n)）は、展開される前に1つの SCAN になる。
+CL の + - * / max min exp log tanh 1+ 1-
 < <= > >= = /= は、この時点でトレース対象の内部ジェネリック（%T-ADD 等）
 への呼び出しに書き換わる。それ以外のシンボルを演算子に持つ呼び出しは
 そのまま残す（ふつうの Lisp として実行される。トレーサを渡すと、その
 関数の実装が対応していない限り失敗する）。"
   (%check-tracing-lambda-list lambda-list)
-  (let* ((expanded (sb-cltl2:macroexpand-all `(progn ,@body) env))
+  (let* ((expanded (sb-cltl2:macroexpand-all `(progn ,@(%expand-do-loops-list body)) env))
          (walked (%walk expanded '())))
     `(%make-traceable-function ',lambda-list (lambda ,lambda-list ,walked))))

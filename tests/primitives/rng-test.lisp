@@ -202,3 +202,33 @@ float の入力で grad できる（jvp ルール無しで、勾配は変換し�
          (g (funcall (nb:grad f :argnums 0) x state))
          (bits (second (%rng-run state '(4) :u32))))
     (is (equalp g (map 'vector (lambda (b) (coerce b 'single-float)) bits)))))
+
+;;; --- 既知の答え（JAX の fixture） ---
+;;;
+;;; 期待値は JAX 0.10.2 の lax.rng_bit_generator（algorithm = RNG_THREE_FRY、x64 有効）で
+;;; 生成した（python3 は fixture の生成にだけ使う）:
+;;;   s = np.zeros(2, np.uint64)
+;;;   lax.rng_bit_generator(s, shape, dtype=np.uint32, algorithm=lax.RandomAlgorithm.RNG_THREE_FRY)
+;;; IREE / PJRT が無い環境でも、Threefry の実装の誤りをここで検出できる。
+
+(defparameter *rng-jax-zero-state-u32-8*
+  '(1797259609 2579123966 1351547692 3235790642 1688610540 4229293427 3098264785 87550854))
+
+(defparameter *rng-jax-zero-state-u32-3-3-3*
+  '(1797259609 1351547692 1688610540 3098264785 2892874427 1447157908 2772180201 645374554
+    755508351 2579123966 3235790642 4229293427 87550854 2813178819 239777021 2882477498
+    1993301756 2169798897 757048634 882350354 1642178052 441180599 3103801366 1075548667
+    608542336 2015619565 2652030227))
+
+(test primitives/rng/matches-jax-known-answers
+  "状態 [0 0]（ui64）から、shape (8) の :u32 は新しい状態 [0 4] とビット *rng-jax-zero-state-u32-8*、
+shape (3 3 3) の :u32 は新しい状態 [0 18]（カウンタが 18 進む）とビット *rng-jax-zero-state-u32-3-3-3*
+（行優先）を返す。JAX 0.10.2 の rng_bit_generator（THREE_FRY）と同じ値。"
+  (let ((zero (make-array 2 :element-type '(unsigned-byte 64) :initial-element 0)))
+    (destructuring-bind (state bits) (%rng-run zero '(8) :u32)
+      (is (equalp #(0 4) state))
+      (is (equal *rng-jax-zero-state-u32-8* (%rng-flat bits))))
+    (destructuring-bind (state bits) (%rng-run zero '(3 3 3) :u32)
+      (is (equalp #(0 18) state))
+      (is (equal '(3 3 3) (array-dimensions bits)))
+      (is (equal *rng-jax-zero-state-u32-3-3-3* (%rng-flat bits))))))
