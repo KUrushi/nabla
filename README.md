@@ -255,6 +255,11 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #133 -->
 
+#### rng-bit-generator プリミティブ（issue #133、内部）
+
+`:rng-bit-generator`（複数出力）は `stablehlo.rng_bit_generator`（THREE_FRY）に対応し、状態 `ui64[2]` から `(新しい状態, 乱数ビット)` を作る。params は出力の `:shape` と `:dtype`（`:u32` / `:u64`）。eager 実装は IREE の lowering を写した Threefry-2x32 で、IREE（local）とも PJRT（XLA CPU）ともビット単位で一致する（`docs/stablehlo-ops.md`）。状態もビットも整数なので微分しない。公開の PRNG API（`key` / `split` / `uniform` など）は #136 で、このプリミティブは今のところ内部（`nb::rng-bit-generator`）。
+
+
 
 
 <!-- フェーズ3 anchor: issue #134 -->
