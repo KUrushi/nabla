@@ -234,6 +234,8 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #129 -->
 
+形状演算・縮約・`dot-general` のバッチ化ルール（`src/ad/rules-batch-shape.lisp`）: `broadcast-in-dim` / `reshape` / `transpose`（バッチ軸を先頭に置く）、`reduce-sum` / `reduce-max`（縮約軸をずらし、出力のバッチ軸は自然な位置）、`dot-general`（片側だけバッチなら自由次元、両側なら新しい batch 次元の先頭。出力のバッチ軸は自然な位置）。公開 API の追加は無い（`vmap` を通して使う）。
+
 
 
 <!-- フェーズ3 anchor: issue #130 -->

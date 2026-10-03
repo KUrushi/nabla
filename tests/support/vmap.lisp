@@ -59,3 +59,16 @@ IN-AXES は非負の整数だけを受ける（負の軸は呼び出し側で正
           collect (if axis
                       (stack-along-axis (mapcar (lambda (r) (nth k r)) results) axis)
                       (nth k (first results))))))
+
+(defun primitive-function (name params arity)
+  "プリミティブ NAME（キーワード）を PARAMS（plist）で1回だけ呼ぶ ARITY 引数の
+TRACEABLE-FUNCTION。トレーサが渡れば eqn を足し、配列だけなら eager 実装を呼ぶ。
+形状演算・縮約・dot-general のバッチ化ルールのテスト（issue #129）が、params を
+ランダムにした f を作るのに使う。"
+  (nb::%make-traceable-function
+   (loop for i below arity collect (intern (format nil "X~D" i)))
+   (lambda (&rest args)
+     (if (some (lambda (a) (typep a 'nb::tracer)) args)
+         (apply #'nb::%trace-eqn name args params)
+         (apply (nb::primitive-eager (nb::find-primitive name))
+                args (mapcar #'nb:array-aval args) params)))))
