@@ -81,14 +81,13 @@ LINEARIZATION に分ける。cond の jvp ルールが、枝ごとに主値と�
   (let* ((primal-invars (subseq (graph-invars jvp) 0 n-primals))
          (tangent-invars (nthcdr n-primals (graph-invars jvp)))
          (primal-outvars (subseq (graph-outvars jvp) 0 n-outputs))
-         (tangent-outvars (nthcdr n-outputs (graph-outvars jvp)))
-         ;; scan など、主値と接線を1つの eqn で計算する eqn を、主値だけの eqn と接線に依存する
-         ;; eqn に分ける（partial-eval.lisp。issue #139）。
-         (split (multiple-value-list (%partial-eval-split (graph-eqns jvp) tangent-invars)))
-         (jvp-eqns (first split))
-         (constants (append (graph-constants jvp) (second split)))
-         (constant-table (make-hash-table :test 'eq))
-         (seen (make-hash-table :test 'eq)))
+         (tangent-outvars (nthcdr n-outputs (graph-outvars jvp))))
+   ;; scan など、主値と接線を1つの eqn で計算する eqn を、主値だけの eqn と接線に依存する
+   ;; eqn に分ける（partial-eval.lisp。issue #139）。
+   (multiple-value-bind (jvp-eqns extra-constants) (%partial-eval-split (graph-eqns jvp) tangent-invars)
+    (let* ((constants (append (graph-constants jvp) extra-constants))
+           (constant-table (make-hash-table :test 'eq))
+           (seen (make-hash-table :test 'eq)))
     (loop for (var . nil) in constants do (setf (gethash var constant-table) t))
     (multiple-value-bind (primal-eqns linear-eqns)
         (partition-eqns-by-dependence jvp-eqns tangent-invars)
@@ -132,4 +131,4 @@ LINEARIZATION に分ける。cond の jvp ルールが、枝ごとに主値と�
                (primal (dce-graph (make-graph primal-invars primal-eqns
                                               (append primal-outvars residuals) constants))))
           (declare (ignore checked))
-          (make-linearization primal linear n-outputs (length residuals)))))))
+          (make-linearization primal linear n-outputs (length residuals)))))))))

@@ -32,3 +32,36 @@
                  (list (nb:make-aval '(3 3) :f32) (nb:make-aval '(3 3) :f32) (nb:make-aval '(3) :f32)
                        (nb:make-aval '(3) :f32) (nb:make-aval '(5 3) :f32)))))
     (%with-scan-iree-check (graph "elman-grad") "IREE の RNN の grad graph の結果が eager と一致しなかった")))
+
+(define-iree-test vjp-scan/iree-elman-grad-at-size-matches-eager
+    "中くらいの大きさ（H=16、T=30、入力は ±0.3 に収める）の Elman RNN の grad graph が IREE と eager で一致する（積んだ残差と逆向きの while の lowering を大きさのあるものでも確かめる）。"
+  (skip-unless-iree :library :both)
+  (let* ((h 16) (steps 30)
+         (f (nb:with-tracing (w u b h0 xs)
+              (nb:reduce-sum
+               (first (nb:scan (nb:with-tracing (carry x)
+                                 (values (list (tanh (+ (+ (nb:dot w (first carry)) (nb:dot u (first x))) b)))
+                                         '()))
+                               (list h0) (list xs) :length steps)))))
+         (graph (nb::trace-to-graph
+                 (let ((g (nb:grad f :argnums '(0 1 2 3 4))))
+                   ;; 入力（[-1, 1)）を 0.3 倍して、勾配が発散しない well-conditioned な範囲にする
+                   (nb:with-tracing (w u b h0 xs)
+                     (values-list (funcall g (* w 0.3) (* u 0.3) (* b 0.3) (* h0 0.3) (* xs 0.3)))))
+                 (list (nb:make-aval (list h h) :f32) (nb:make-aval (list h h) :f32) (nb:make-aval (list h) :f32)
+                       (nb:make-aval (list h) :f32) (nb:make-aval (list steps h) :f32)))))
+    ;; seed は固定の数個。大きさのある1つの graph の lowering を確かめるのが目的。
+    (let* ((backend (nabla:find-backend :iree))
+           (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph)))))
+      (unwind-protect
+           (dolist (seed '(0 1 2 3 4))
+             (let* ((arrays (%scan-iree-arrays graph seed))
+                    (device (mapcar (lambda (a) (to-device a backend :dtype :f32)) arrays))
+                    (results (multiple-value-list (apply #'nabla:backend-invoke backend module "main" device)))
+                    (expected (multiple-value-list (apply #'nb:eval-graph graph arrays))))
+               (is (every (lambda (r e) (allclose (to-host r) e :dtype :f32 ))
+                          results expected)
+                   "IREE の大きさのある RNN の grad graph の結果が eager と一致しなかった (seed ~D)" seed)
+               (mapc #'release-device-array results)
+               (mapc #'release-device-array device)))
+        (nabla:backend-unload backend module)))))

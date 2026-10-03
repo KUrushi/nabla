@@ -79,9 +79,8 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 ここに理由つきで足すか、jvp ルールを書く。
   - :rng-bit-generator（issue #133）: 状態もビットも整数で接線が常に symbolic zero なので、
     jvp-graph が全入力ゼロのときにルールを呼ばず主値を再発行する。ルールは要らない。
-  （while-loop と cond は issue #134、scan は issue #135 で jvp を持った。while-loop と scan の
-  逆モードは対応せず、linearize が NO-TRANSPOSE-RULE にする。scan の逆モードは issue #139 で
-  partial eval と transpose を足した。）")
+  （while-loop と cond は issue #134、scan は issue #135 で jvp を持った。逆モードに対応しないのは
+  while-loop だけで、linearize が NO-TRANSPOSE-RULE にする。cond は #134、scan は #139。）")
 
 (defun %registered-real-primitives ()
   "登録済みのプリミティブのうち、テスト専用でない（名前が % で始まらない）ものの

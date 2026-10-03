@@ -73,6 +73,17 @@ partial eval 済み） 追加の定数 依存する var の表) を返す。"
               (return (values unk-carry ordered extra dependent)))
             (setf unk-carry new)))))))
 
+(defun %scan-pe-forwarded (var b-xs o-xs ys-outs ys-unk outer-ys)
+  "残差 VAR が、既知の xs の要素（B-XS の要素）か既知の ys の出力（YS-OUTS のうち YS-UNK が偽の
+もの）そのものなら、対応する外側の var（O-XS / OUTER-YS の要素）を返す。そうでなければ NIL。
+これらは既に外側で積まれているので、残差として積み直さない。"
+  (let ((i (position var b-xs :test #'eq)))
+    (if i
+        (nth i o-xs)
+        (let ((j (loop for out in ys-outs for unk in ys-unk for k from 0
+                       when (and (not unk) (eq out var)) return k)))
+          (and j (nth j outer-ys))))))
+
 (defun %scan-partial-eval (eqn flags)
   "scan の EQN（FLAGS は eqn の invars ごとの「接線に依存するか」）を、主値だけの scan と
 接線に依存する scan に分ける。(VALUES eqn のリスト 追加の定数)。"
@@ -118,17 +129,16 @@ partial eval 済み） 追加の定数 依存する var の表) を返す。"
               (loop for v in b-consts for o in o-consts do (setf (gethash v env) o))
               (multiple-value-bind (hoisted hoist-constants)
                   (%scan-pe-hoist inv-res known-eqns invariant-p env constants)
-                (let* (;; 既知の xs の要素そのものが残差なら、積み直さず外側の xs をそのまま渡す
-                       ;; （JAX の _scan_partial_eval も既知の xs を転送する）。
-                       (stacked-outer (mapcar (lambda (v)
-                                                (let ((i (position v b-xs :test #'eq)))
-                                                  (if i
-                                                      (nth i o-xs)
-                                                      (make-var (%scan-stacked-aval length (var-aval v))))))
-                                              stacked-res))
-                       (new-stacked (remove-if (lambda (v) (member v b-xs :test #'eq)) stacked-res))
-                       (stacked-vars (loop for o in stacked-outer for v in stacked-res
-                                           unless (member v b-xs :test #'eq) collect o))
+                (let* (;; 残差の分類（%SCAN-PE-FORWARDED）: 既知の xs の要素・既知の ys の出力と
+                       ;; 同じ var は積み直さず、外側の xs / ys をそのまま渡す。
+                       (forwarded (mapcar (lambda (v) (%scan-pe-forwarded v b-xs o-xs ys-outs ys-unk
+                                                                          (nthcdr num-carry (eqn-outvars eqn))))
+                                          stacked-res))
+                       (stacked-outer (mapcar (lambda (v f)
+                                                (or f (make-var (%scan-stacked-aval length (var-aval v)))))
+                                              stacked-res forwarded))
+                       (new-stacked (loop for v in stacked-res for f in forwarded unless f collect v))
+                       (stacked-vars (loop for o in stacked-outer for f in forwarded unless f collect o))
                        (flag-idx (lambda (flags value)
                                    (loop for f in flags for i from 0 when (eq (and f t) value) collect i)))
                        (known-const-idx (funcall flag-idx flag-consts nil))
