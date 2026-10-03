@@ -213,9 +213,24 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
           (format nil "~{~A~^~%~}"
                   (append
                    ;; ループ前: カウンタと ys バッファの初期値
-                   (list (format nil "~A = stablehlo.constant dense<0> : ~A" counter i32))
+                   ;; while の定数オペランド（カウンタと ys の0初期値）は optimization_barrier を
+                   ;; 通す。特定の版のバックエンドのコンパイラ（記録は docs/stablehlo-ops.md）は、cond を決める carry が constant 初期化の
+                   ;; while（他に carry が2つ以上、うち1つは rank 1 以上）で、Stream の
+                   ;; AffinityAnalysis が非決定的にクラッシュする（docs/stablehlo-ops.md）。
+                   ;; 長さ 1 は そのコンパイラが while を scf.for にしてしまい、barrier があると
+                   ;; 型の不一致（stream.resource<transient> / <external>）でコンパイルに
+                   ;; 失敗するので、barrier を付けない（constant のまま。この長さでは
+                   ;; クラッシュしない）。
+                   (if (= length 1)
+                       (list (format nil "~A = stablehlo.constant dense<0> : ~A" counter i32))
+                       (list (format nil "~A_c = stablehlo.constant dense<0> : ~A" counter i32)
+                             (format nil "~A = stablehlo.optimization_barrier ~A_c : ~A" counter counter i32)))
                    (loop for name in ys-init for aval in ys-avals
-                         collect (%scan-zero-constant-line name aval))
+                         append (if (= length 1)
+                                    (list (%scan-zero-constant-line name aval))
+                                    (list (%scan-zero-constant-line (format nil "~A_c" name) aval)
+                                          (format nil "~A = stablehlo.optimization_barrier ~A_c : ~A"
+                                                  name name (tensor-type-string aval)))))
                    (list
                     (format nil "~{~A~^, ~} = \"stablehlo.while\"(~{~A~^, ~}) ({"
                             (cons (format nil "~A_n" p) out-names)
