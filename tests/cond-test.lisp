@@ -224,4 +224,4 @@
                   (nb:cond* p (nb:with-tracing () (+ x y)) (nb:with-tracing () (* x y))))
                 (%cond-avals '(2)))))
     (destructuring-bind (p x y) (%cond-arrays 4 '(2))
-      (is (allclose (nb:eval-graph graph p x y) (reference-sub x y) :dtype :f32)))))
+      (is (allclose (nb:eval-graph graph p x y) (reference-mul x y) :dtype :f32)))))
