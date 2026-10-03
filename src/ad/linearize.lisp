@@ -58,16 +58,20 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
          (tangent-invars (nthcdr n-primals (graph-invars jvp)))
          (primal-outvars (subseq (graph-outvars jvp) 0 n-outputs))
          (tangent-outvars (nthcdr n-outputs (graph-outvars jvp)))
-         (constants (graph-constants jvp))
+         ;; scan など、主値と接線を1つの eqn で計算する eqn を、主値だけの eqn と接線に依存する
+         ;; eqn に分ける（partial-eval.lisp）。
+         (split (multiple-value-list (%partial-eval-split (graph-eqns jvp) tangent-invars)))
+         (jvp-eqns (first split))
+         (constants (append (graph-constants jvp) (second split)))
          (constant-table (make-hash-table :test 'eq))
          (seen (make-hash-table :test 'eq)))
     (loop for (var . nil) in constants do (setf (gethash var constant-table) t))
     (multiple-value-bind (primal-eqns linear-eqns)
-        (partition-eqns-by-dependence (graph-eqns jvp) tangent-invars)
-      ;; 主値と接線を1つの eqn で計算する複数出力の eqn（scan の jvp など）は、丸ごと線形側に
-      ;; 入ってしまい、主値側に主値が残らない。主値と線形の部分に分ける partial eval を書く
-      ;; まで（#139）は、transpose ルールが無ければここで NO-TRANSPOSE-RULE にして、
-      ;; 壊れた graph（MALFORMED-GRAPH）を作らない。
+        (partition-eqns-by-dependence jvp-eqns tangent-invars)
+      ;; 主値と接線を1つの eqn で計算する複数出力の eqn は、丸ごと線形側に入ってしまい、主値側に
+      ;; 主値が残らない。scan は上の %PARTIAL-EVAL-SPLIT で分け済み（線形側には線形な scan だけが
+      ;; 来る）。partial eval ルールも transpose ルールも無いものは、ここで NO-TRANSPOSE-RULE に
+      ;; して、壊れた graph（MALFORMED-GRAPH）を作らない。
       (dolist (eqn linear-eqns)
         (when (primitive-multiple-outputs-p (eqn-prim eqn))
           (require-transpose-rule (eqn-prim eqn))))

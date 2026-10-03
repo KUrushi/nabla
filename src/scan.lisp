@@ -348,8 +348,8 @@ ys は先頭の軸が 0 の空の配列になる。REVERSE が真なら添字 N-
 （ys[t] には、そのときも添字 t のステップの y が入る）。
 
 F が閉包で捕まえた外側の値は、ループ不変な入力（consts）になる。トレース中
-（with-tracing・jit の中）でもその場（eager）でも使える。grad・vmap は未対応で、
-grad は :SCAN の NO-TRANSPOSE-RULE を signal する（jvp は #135、逆モードは #139）。引数や F の戻り値の形が不正なときは
+（with-tracing・jit の中）でもその場（eager）でも使える。grad は scan を通る（jvp は #135、partial eval と transpose は #139。
+src/ad/rules-scan-reverse.lisp）。vmap は未対応。引数や F の戻り値の形が不正なときは
 SCAN-ERROR。"
   (unless (and (typep f 'traceable-function)
                (= 2 (length (traceable-function-lambda-list f))))

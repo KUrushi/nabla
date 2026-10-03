@@ -253,7 +253,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### scan（issue #132）
 
-`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。順方向と jvp（#135、下記）に対応し、`grad` は #139 まで `no-transpose-rule`（`:scan`）、`vmap` は #140 まで `vmap-error`。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
+`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。順方向・jvp（#135、下記）・`grad`（#139、下記）に対応し、`vmap` は #140 まで `vmap-error`。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
 
 
 
@@ -267,7 +267,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #135 -->
 
-**scan の jvp ルール**（`src/ad/rules-scan.lisp`、issue #135。内部のみで export は無い）: `:scan` の jvp ルールは JAX の `_scan_jvp` と同じ形で、本体を `jvp-graph` した「主値と接線を一緒に回す1つの `scan`」を作る（ループを2回回さない）。並びは consts ++ 接線のある consts の接線、carry ++ 接線のある carry の接線、xs ++ 接線のある xs の接線（出力は 最終 carry ++ その接線 ++ ys ++ ys の接線）。symbolic zero の接線は入力にも出力にもならない。carry の接線の有無は本体を通ると変わりうる（初期の接線がゼロでも、本体で非ゼロの接線を受ければ次のステップで非ゼロ）ので、「非ゼロの接線を持つ carry の集合」を増えなくなるまで広げる（不動点）。`grad`（逆モード）は #139（scan の linearize と transpose）まで未対応で、`:scan` の `no-transpose-rule` になる（`linearize-graph` は、主値と接線を1つの eqn で計算する複数出力の eqn に transpose ルールが無ければ、壊れた graph を作らずこのコンディションで止める）。
+**scan の jvp ルール**（`src/ad/rules-scan.lisp`、issue #135。内部のみで export は無い）: `:scan` の jvp ルールは JAX の `_scan_jvp` と同じ形で、本体を `jvp-graph` した「主値と接線を一緒に回す1つの `scan`」を作る（ループを2回回さない）。並びは consts ++ 接線のある consts の接線、carry ++ 接線のある carry の接線、xs ++ 接線のある xs の接線（出力は 最終 carry ++ その接線 ++ ys ++ ys の接線）。symbolic zero の接線は入力にも出力にもならない。carry の接線の有無は本体を通ると変わりうる（初期の接線がゼロでも、本体で非ゼロの接線を受ければ次のステップで非ゼロ）ので、「非ゼロの接線を持つ carry の集合」を増えなくなるまで広げる（不動点）。逆モードは次の段落。
 
 
 
@@ -290,6 +290,9 @@ sbcl --non-interactive --load examples/jit.lisp
 
 
 <!-- フェーズ3 anchor: issue #139 -->
+
+**scan の逆モード（partial eval と transpose）**（`src/ad/partial-eval.lisp`、`src/ad/rules-scan-reverse.lisp`、issue #139。内部のみで export は無い）: `linearize-graph` は、jvp した graph を接線への依存で主値側と線形側に分ける前に、プリミティブごとの partial eval ルール（`set-partial-eval-rule`）で eqn を置き換える。`:scan` のルールは JAX の `_scan_partial_eval` と同じで、jvp した1つの scan を「主値と各ステップの残差（`ys` として積む）を計算する scan」と「残差を `xs`、ループ不変な残差を `consts` として受ける、接線について線形な scan」に分ける。未知（接線に依存する）carry の集合は不動点まで広げる。ループ不変な残差（consts と本体の定数だけで決まる値。閉包で捕まえたホストの配列は本体の定数なので不変）は積まず、scan の外で（必要なら計算して）渡す。`:scan` の transpose ルールは JAX の `_scan_transpose` と同じで、線形な scan を `reverse` を反転した scan にし（carry の余接線は carry、`xs` の余接線は `ys`、consts の余接線は carry に足し込む和）、`ys` の余接線が symbolic zero なら `xs` に積まず本体の中でゼロを作る。carry が線形入力に依存しない scan（主値と接線が混ざった scan）の transpose は `autodiff-error`。これで `grad` は scan を通る。
+
 
 
 

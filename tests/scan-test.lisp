@@ -258,18 +258,17 @@ carry も ys も無い、で SCAN-ERROR。"
     (signals nb:scan-error
       (nb:scan (nb:with-tracing (c x) c x (values '() '())) '() '() :length 1))))
 
-(test scan/grad-reports-missing-transpose-rule
-  "scan を通る grad は、jvp ルールはある（#135）が transpose ルールが無いこと（#139 で足す）を
-:scan の名前つきの NO-TRANSPOSE-RULE で報告する。"
-  (let ((f (nb:with-tracing (h0)
-             (multiple-value-bind (carry ys)
-                 (nb:scan (nb:with-tracing (c x) x (values (list (tanh (first c))) '()))
-                          (list h0) '() :length 3)
-               ys
-               (first carry)))))
-    (handler-case (funcall (nb:grad f) (%scan-one '()))
-      (nb:no-transpose-rule (c) (is (eq :scan (nb:no-transpose-rule-name c))))
-      (:no-error (&rest r) r (fail "no-transpose-rule が出なかった")))))
+(test scan/grad-through-scan-works
+  "scan を通る grad は動く（#139）。h' = 2h を3回回すので、d(最後の h の総和)/d h0 は全要素で 8。"
+  (let* ((f (nb:with-tracing (h0)
+              (multiple-value-bind (carry ys)
+                  (nb:scan (nb:with-tracing (c x) x (values (list (* 2.0d0 (first c))) '()))
+                           (list h0) '() :length 3)
+                (declare (ignore ys))
+                (nb:reduce-sum (first carry)))))
+         (g (funcall (nb:grad f) (make-array '(2) :element-type 'double-float :initial-element 0.5d0))))
+    ;; h' = 2h を3回: d/dh0 = 8
+    (is (equalp #(8.0d0 8.0d0) g))))
 
 ;;; ---- 回帰: carry が入力の x_t をそのまま返す（eager が行バッファを使い回さない） ----
 

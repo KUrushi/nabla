@@ -80,7 +80,7 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
   - :while-loop（issue #131）: 逆モードは反復回数が分からず対応しない。jvp は #134 で足す
     （足したらここから外す）。それまでは grad を通すと NO-JVP-RULE になる。
   - :cond（issue #130）: jvp は #134 で足す（足したらここから外す）。
-  ※ :scan（issue #132）は jvp を #135 で足したので外した。逆モード（linearize / transpose）は #139。")
+  ※ :scan（issue #132）は jvp を #135、partial eval と transpose を #139 で足したので外した。")
 
 (defun %registered-real-primitives ()
   "登録済みのプリミティブのうち、テスト専用でない（名前が % で始まらない）ものの
