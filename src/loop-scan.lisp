@@ -78,7 +78,7 @@
             (error 'unsupported-form :form form :path nil))
           (let* ((carries (remove counter bindings :key #'%do-binding-var))
                  (carry-vars (mapcar #'%do-binding-var carries))
-                 (c (gensym "CARRY")) (count (gensym "COUNT")) (finals (gensym "FINALS"))
+                 (c (gensym "CARRY")) (x (gensym "X")) (count (gensym "COUNT")) (finals (gensym "FINALS"))
                  ;; DO と同じく、init は束縛の順に評価する（そのあとで上限）。
                  (counter-tmp (gensym "INIT"))
                  (carry-tmps (mapcar (lambda (b) (declare (ignore b)) (gensym "INIT")) carries))
@@ -100,7 +100,7 @@
             `(let* ,init-bindings
                (multiple-value-bind (,count ,finals)
                    (%do-scan ,counter-tmp ,bound ,test-key (list ,@carry-tmps)
-                             (with-tracing (,c ,(gensym "X")) ,step-body))
+                             (with-tracing (,c ,x) ,x ,step-body))
                  (declare (ignorable ,count ,finals))
                  (let (,@(list `(,counter ,count))
                        ,@(loop for v in carry-vars for k from 0 collect `(,v (nth ,k ,finals))))

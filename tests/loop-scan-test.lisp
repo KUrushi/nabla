@@ -209,6 +209,12 @@ UNSUPPORTED-FORM が signal されること。"
        :regression-id loop-scan/counter-values
        :regression-file (regression-path "loop-scan-counter-values"))))
 
+(test loop-scan/counter-may-reach-the-i32-maximum
+  "カウンタの最終値が :i32 の最大値 2^31-1 ちょうどでも通る（収まらないのはその1つ上から）。"
+  (let ((f (%eval-tracing '(nb:with-tracing (h0)
+                            (do ((i 2147483646 (1+ i)) (h h0 (+ h 1.0))) ((>= i 2147483647) i))))))
+    (is (= 2147483647 (funcall f (%loop-vec 1 1))))))
+
 (test loop-scan/test-form-semantics
   "(>= i n) は n が初期値以下なら0回、(= i n) は n が初期値より小さいと SCAN-LENGTH-ERROR。"
   (let ((ge (%eval-tracing '(nb:with-tracing (h0) (do ((i 5 (1+ i)) (h h0 (+ h 1.0))) ((>= i 3) h)))))
