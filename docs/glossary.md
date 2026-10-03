@@ -286,6 +286,9 @@ pretty form を出力する。
 
 <!-- フェーズ3 anchor: issue #132 -->
 
+**scan（制御構造）**
+: 配列の先頭の軸に沿って、状態（carry）を持ち回しながら関数を回す高階プリミティブ。JAX の `lax.scan` に相当し、RNN のように「前のステップの出力を次のステップの入力にする」計算を、Lisp のループを展開せずに1つの eqn で表す。eqn の params は JAX と同じく `num-consts`（ループ不変な入力の個数）、`num-carry`、`length`、`reverse`、本体のサブグラフ（入力は consts ++ carry ++ x_t、出力は carry ++ y_t）。StableHLO では `:i32` のカウンタを carry に足した `stablehlo.while` に落とし、x_t は `dynamic_slice`、y_t は `dynamic_update_slice` で読み書きする。
+
 
 
 <!-- フェーズ3 anchor: issue #133 -->

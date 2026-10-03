@@ -120,6 +120,21 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
   `4xi8=1,0,1,0` と書けば通り、i1 の返り値は `4xi8=1 0 1 0` と表示される
   （issue #72 で確認）
 
+## scan が使う op（issue #132）
+
+`scan` プリミティブ（`src/scan.lisp`）は、次の op を `:emit` の中だけで使う（IR のプリミティブではない）。IREE（`iree-3.11.0`）が受け付けることは `tests/iree/scan-test.lisp` で確かめている。
+
+| op | 綴り（form） | 用途 |
+| --- | --- | --- |
+| while | `%n, %c, %y = "stablehlo.while"(%i0, %init, %ybuf) ({ ^bb0(...): ... stablehlo.return %p : tensor<i1> }, { ^bb0(...): ... stablehlo.return ... })` | ループ本体。carry の先頭に `tensor<i32>` のカウンタ、末尾に ys のバッファを足す。consts は外側の SSA 名をリージョンの中から直接参照する |
+| compare | `%p = stablehlo.compare LT, %i, %len : (tensor<i32>, tensor<i32>) -> tensor<i1>` | cond: カウンタ < length |
+| dynamic_slice | `%s = stablehlo.dynamic_slice %xs, %idx, %z, sizes = [1, 3] : (tensor<4x3xf32>, tensor<i32>, tensor<i32>) -> tensor<1x3xf32>` | x_t を読む（先頭の軸だけ動的、他の添字は 0） |
+| reshape | `%x = stablehlo.reshape %s : (tensor<1x3xf32>) -> tensor<3xf32>` | 先頭の軸 1 を落とす / y_t に足す |
+| dynamic_update_slice | `%w = stablehlo.dynamic_update_slice %ybuf, %y1, %idx, %z : (tensor<4x3xf32>, tensor<1x3xf32>, tensor<i32>, tensor<i32>) -> tensor<4x3xf32>` | y_t を ys のバッファに書く |
+| subtract / add | `%idx = stablehlo.subtract %last, %i : tensor<i32>` | reverse の添字 `length-1-i` / カウンタの増分 |
+
+長さ 0 の scan は、`dynamic_slice` の切り出し幅 1 が長さ 0 の軸を超えて不正になるので `while` を出さない。carry は入力と同じ型の `stablehlo.reshape` で素通しにし、ys は `stablehlo.constant dense<> : tensor<0x...>` にする（この形を IREE が受け付けることを確認済み）。
+
 ## フィクスチャとテスト
 
 - `tests/fixtures/stablehlo/ops/<op>.mlir`（f32）と `<op>_bf16.mlir`（bf16）。
