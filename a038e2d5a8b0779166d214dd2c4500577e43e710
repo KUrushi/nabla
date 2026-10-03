@@ -1,0 +1,1 @@
+Phase B: scan のバッチ化ルール（不動点。consts は元の軸、carry は軸0、xs のバッチ軸は 1 へ、ys も 1 に出る）。Fable の nit: select の broadcast は形ごとに1回で形 [B] は恒等 broadcast なし、%vmap-subgraph の out-dims は自然な軸だけを返す、%axis-at を tests/support の axis-at に移動。フルスイート 1430 checks 通過。IREE medium は scan 3 ケース追加（carry 2 つ + rank1 でバリア経路）。mutation は他の Driver とロード待ちのため後続報告。
