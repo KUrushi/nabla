@@ -74,21 +74,13 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 ;;; --- 自動微分のルール（issue #86。フェーズ2の全ルール検査） ---
 
-<<<<<<< HEAD
-(defparameter *non-differentiable-primitive-names* '()
-  "意図的に :jvp を持たない本物のプリミティブ。:jvp の無い defprimitive を足すときは、
-ここに理由つきで足すか、jvp ルールを書く。現在は無い（while-loop と cond は issue #134 で
-jvp を持った。while-loop の逆モードは対応せず、linearize が autodiff-error にする）。")
-=======
-(defparameter *non-differentiable-primitive-names* '(:while-loop :cond :rng-bit-generator)
+(defparameter *non-differentiable-primitive-names* '(:rng-bit-generator)
   "意図的に :jvp を持たない本物のプリミティブ。:jvp の無い defprimitive を足すときは、
 ここに理由つきで足すか、jvp ルールを書く。
-  - :while-loop（issue #131）: 逆モードは反復回数が分からず対応しない。jvp は #134 で足す
-    （足したらここから外す）。それまでは grad を通すと NO-JVP-RULE になる。
-  - :cond（issue #130）: jvp は #134 で足す（足したらここから外す）。
   - :rng-bit-generator（issue #133）: 状態もビットも整数で接線が常に symbolic zero なので、
-    jvp-graph が全入力ゼロのときにルールを呼ばず主値を再発行する。ルールは要らない。")
->>>>>>> origin/main
+    jvp-graph が全入力ゼロのときにルールを呼ばず主値を再発行する。ルールは要らない。
+  （while-loop と cond は issue #134 で jvp を持った。while-loop の逆モードは対応せず、
+  linearize が autodiff-error にする。）")
 
 (defun %registered-real-primitives ()
   "登録済みのプリミティブのうち、テスト専用でない（名前が % で始まらない）ものの
