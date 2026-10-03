@@ -45,15 +45,23 @@
                                (list h0) (list xs) :length steps)))))
          (graph (nb::trace-to-graph
                  (let ((g (nb:grad f :argnums '(0 1 2 3 4))))
-                   (nb:with-tracing (w u b h0 xs) (values-list (funcall g w u b h0 xs))))
+                   ;; 入力（[-1, 1)）を 0.3 倍して、勾配が発散しない well-conditioned な範囲にする
+                   (nb:with-tracing (w u b h0 xs)
+                     (values-list (funcall g (* w 0.3) (* u 0.3) (* b 0.3) (* h0 0.3) (* xs 0.3)))))
                  (list (nb:make-aval (list h h) :f32) (nb:make-aval (list h h) :f32) (nb:make-aval (list h) :f32)
                        (nb:make-aval (list h) :f32) (nb:make-aval (list steps h) :f32)))))
-    ;; 乱数の seed は固定の数個（100 試行の PBT では、f32 の足し込みの順序の差が許容誤差を超える
-    ;; seed が稀にあった。大きさのある1つの graph の lowering を確かめるのが目的なので固定にする）。
+    ;; seed は固定の数個。大きさのある1つの graph の lowering を確かめるのが目的。
     (let* ((backend (nabla:find-backend :iree))
            (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph)))))
       (unwind-protect
            (dolist (seed '(0 1 2 3 4))
-             (is (%scan-iree-matches-eager-p backend module graph seed)
-                 "IREE の大きさのある RNN の grad graph の結果が eager と一致しなかった (seed ~D)" seed))
+             (let* ((arrays (%scan-iree-arrays graph seed))
+                    (device (mapcar (lambda (a) (to-device a backend :dtype :f32)) arrays))
+                    (results (multiple-value-list (apply #'nabla:backend-invoke backend module "main" device)))
+                    (expected (multiple-value-list (apply #'nb:eval-graph graph arrays))))
+               (is (every (lambda (r e) (allclose (to-host r) e :dtype :f32 ))
+                          results expected)
+                   "IREE の大きさのある RNN の grad graph の結果が eager と一致しなかった (seed ~D)" seed)
+               (mapc #'release-device-array results)
+               (mapc #'release-device-array device)))
         (nabla:backend-unload backend module)))))
