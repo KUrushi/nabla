@@ -51,16 +51,28 @@ outvars）の番号を振り、var から番号への EQ ハッシュ表を返�
         (dolist (var (eqn-outvars eqn)) (assign var))))
     numbers))
 
+(defvar *var-name-prefix* "%"
+  "%VAR-NAME が番号の前に付ける接頭辞。StableHLO のリージョン（契約 C1）の
+中だけ \"%s<k>_\" に束縛し、外側の SSA 名と衝突させない。")
+
+(defvar *var-name-overrides* nil
+  "NIL か、var → 名前（文字列）の EQ ハッシュ表。あれば %VAR-NAME は番号より
+先にこちらを引く。StableHLO のリージョンの invars を外側の SSA 名に結びつける
+ために使う（%STABLEHLO-REGION-LINES の :ARG-NAMES）。")
+
 (defun %var-name (numbers var)
-  "VAR の印字名 \"%N\" を返す。VAR が NUMBERS に無ければ（GRAPH が未定義の
+  "VAR の印字名 \"%N\" を返す。*VAR-NAME-OVERRIDES* に VAR があればその名前。
+VAR が NUMBERS に無ければ（GRAPH が未定義の
 var を参照している、壊れた graph）、~D に NIL を渡して \"%nil\" のような
 壊れた文字列を返す代わりに MALFORMED-GRAPH を signal する。"
   (multiple-value-bind (n found) (gethash var numbers)
+    (when (and *var-name-overrides* (gethash var *var-name-overrides*))
+      (return-from %var-name (gethash var *var-name-overrides*)))
     (unless found
       (error 'malformed-graph :graph nil
              :format-control "var ~S が graph のどこにも定義されていない（未定義参照）"
              :format-arguments (list var)))
-    (format nil "%~D" n)))
+    (format nil "~A~D" *var-name-prefix* n)))
 
 (defun %print-shape (stream shape)
   "SHAPE（非負整数のリスト）を \"(2 3)\" のように印字する。rank 0（NIL）は
@@ -115,6 +127,15 @@ var を参照している、壊れた graph）、~D に NIL を渡して \"%nil\
      (write-string " . " stream)
      (%print-form stream tail))))
 
+(defvar *print-indent* 0
+  "印字中の graph の入れ子の深さに応じた、各行の先頭に足す空白の数
+（サブグラフの中の行を、深さごとに 4 桁ずつ字下げする）。")
+
+(defun %print-newline (stream)
+  "改行し、*PRINT-INDENT* 桁の空白を書く。"
+  (write-char #\Newline stream)
+  (dotimes (i *print-indent*) (write-char #\Space stream)))
+
 (defun %print-form (stream form)
   "FORM を ~S に近い形で印字するが、NIL（空リスト）だけは \"()\" にする
 （~S の NIL は *print-pretty* が NIL のとき \"nil\" になり、READ-GRAPH が
@@ -123,6 +144,9 @@ var を参照している、壊れた graph）、~D に NIL を渡して \"%nil\
 ~S をそのまま使わない理由）。"
   (cond
     ((null form) (write-string "()" stream))
+    ((graph-p form)
+     (let ((*print-indent* (+ *print-indent* 4)))
+       (%print-graph-body form stream)))
     ((consp form)
      (write-char #\( stream)
      (%print-form stream (car form))
@@ -130,23 +154,27 @@ var を参照している、壊れた graph）、~D に NIL を渡して \"%nil\
      (write-char #\) stream))
     (t (format stream "~S" form))))
 
-(defun %contains-graph-p (form)
-  "FORM（eqn-params のようなリスト）のどこかに GRAPH 構造体（サブグラフ）
-を含むかどうかを返す。フェーズ1では eqn の params にサブグラフを持たせない
-（フェーズ3で拡張。契約 §2）。"
-  (cond
-    ((graph-p form) t)
-    ((consp form) (or (%contains-graph-p (car form)) (%contains-graph-p (cdr form))))
-    (t nil)))
-
 (defun %print-eqn-entry (stream numbers eqn)
-  (unless (= 1 (length (eqn-outvars eqn)))
-    (error "print-graph: eqn の outvars が1つでない graph は印字できない（フェーズ1では対象外）: ~S" eqn))
-  (when (%contains-graph-p (eqn-params eqn))
-    (error "print-graph: params にサブグラフを含む eqn は印字できない（フェーズ1では対象外）: ~S" eqn))
-  (let* ((out (first (eqn-outvars eqn)))
-         (prim-name (primitive-name (eqn-prim eqn))))
-    (%print-entry-header stream numbers out)
+  "eqn を1つ印字する。出力が1つなら (%N dtype shape := prim params invars...)、
+複数（契約 C1）なら出力のヘッダを並べた
+((%N dtype shape) (%M dtype shape) := prim params invars...)。params に
+サブグラフがあれば、その場で入れ子に印字する（%PRINT-FORM）。"
+  (let ((outvars (eqn-outvars eqn))
+        (prim-name (primitive-name (eqn-prim eqn))))
+    (if (primitive-multiple-outputs-p (eqn-prim eqn))
+        (progn
+          (write-char #\( stream)
+          (loop for (out . rest) on outvars
+                do (write-char #\( stream)
+                   (let ((aval (var-aval out)))
+                     (format stream "~A ~A " (%var-name numbers out) (dtype-mlir-name (aval-dtype aval)))
+                     (%print-shape stream (aval-shape aval)))
+                   (write-char #\) stream)
+                   (when rest (write-char #\Space stream))))
+        (progn
+          (unless (= 1 (length outvars))
+            (error "print-graph: 単一出力のプリミティブの eqn の outvars が1つでない: ~S" eqn))
+          (%print-entry-header stream numbers (first outvars))))
     (format stream " := ~A " (string-downcase (symbol-name prim-name)))
     (%print-form stream (eqn-params eqn))
     (dolist (v (eqn-invars eqn))
@@ -156,22 +184,27 @@ var を参照している、壊れた graph）、~D に NIL を渡して \"%nil\
 (defun %print-graph-body (graph stream)
   (let ((numbers (%assign-var-numbers graph)))
     (write-string "(graph" stream)
-    (write-string (format nil "~% (:in") stream)
+    (%print-newline stream)
+    (write-string " (:in" stream)
     (dolist (var (graph-invars graph))
       (write-char #\Space stream)
       (%print-in-entry stream numbers var))
     (write-char #\) stream)
-    (write-string (format nil "~% (:const") stream)
+    (%print-newline stream)
+    (write-string " (:const" stream)
     (dolist (entry (graph-constants graph))
       (write-char #\Space stream)
       (%print-const-entry stream numbers (car entry) (cdr entry)))
     (write-char #\) stream)
-    (write-string (format nil "~% (:eqns") stream)
+    (%print-newline stream)
+    (write-string " (:eqns" stream)
     (dolist (eqn (graph-eqns graph))
-      (write-string (format nil "~%  ") stream)
+      (%print-newline stream)
+      (write-string "  " stream)
       (%print-eqn-entry stream numbers eqn))
     (write-char #\) stream)
-    (write-string (format nil "~% (:out") stream)
+    (%print-newline stream)
+    (write-string " (:out" stream)
     (dolist (var (graph-outvars graph))
       (write-char #\Space stream)
       (write-string (%var-name numbers var) stream))
@@ -187,16 +220,21 @@ dtype とプリミティブ名は小文字、shape はリスト（rank 0 は \"(
 印字する。READ-GRAPH で読み戻すと同じ graph になる（内部の関数。
 テキスト形式はフェーズ1では公開契約にしない）。
 
+eqn の params にサブグラフ（GRAPH 構造体。契約 C2）があれば、その場で入れ子に
+印字する（サブグラフの var 名は、サブグラフの中で 0 から振り直し、サブグラフの
+中の行は入れ子の深さごとに 4 桁字下げする）。複数出力の eqn（契約 C1）は
+((%N dtype shape) (%M dtype shape) := ...) の形で印字する。
+
 次の graph は印字できずエラーになる（いずれもフェーズ1では対象外）:
-非有限（NaN / ±inf）の f32 / f64 定数を持つもの、eqn の outvars が1つで
-ないもの、eqn の params にサブグラフ（GRAPH 構造体）を含むもの。また、
+非有限（NaN / ±inf）の f32 / f64 定数を持つもの。また、
 どこかの eqn の invars や GRAPH-OUTVARS が invars / constants / 他の eqn の
 outvars のどれでも定義されていない var を参照している（未定義参照の
 壊れた graph）場合も MALFORMED-GRAPH を signal する（\"%nil\" のような壊れた
 テキストを黙って出力しない）。"
   (let ((text (with-standard-io-syntax
                 (let ((*print-case* :downcase)
-                      (*print-readably* nil))
+                      (*print-readably* nil)
+                      (*print-indent* 0))
                   (with-output-to-string (out) (%print-graph-body graph out))))))
     (cond
       ((null stream) text)
@@ -292,6 +330,21 @@ NIL は空リストとして特別に読まれるので同様に影響を受け�
               (%require-section eqns-section :eqns)
               (%require-section out-section :out)))))
 
+(defun %build-subgraphs-in-params (form)
+  "params の FORM を再帰的にたどり、(graph ...) の形をしたリスト（PRINT-GRAPH が
+サブグラフを印字した形）を %BUILD-GRAPH-FROM-FORM で GRAPH に戻す。"
+  (cond
+    ((and (consp form) (%symbol-named-p (first form) "GRAPH"))
+     (%build-graph-from-form form))
+    ((consp form)
+     ;; リストは要素ごとにたどる（cdr に再帰すると、途中の尾が graph という
+     ;; シンボルで始まるだけの params をサブグラフと取り違える）。
+     (loop for tail = form then (cdr tail)
+           while (consp tail)
+           collect (%build-subgraphs-in-params (car tail)) into items
+           finally (return (if tail (nconc items tail) items))))
+    (t form)))
+
 (defun %build-graph-from-form (form)
   (multiple-value-bind (in-section const-section eqns-section out-section)
       (%split-graph-form form)
@@ -331,20 +384,31 @@ NIL は空リストとして特別に読まれるので同様に影響を受け�
               (define name var)
               (push (cons var array) constants))))
         (dolist (entry (rest eqns-section))
-          (destructuring-bind (name dtype-sym shape assign-sym prim-sym params &rest invar-names) entry
-            (unless (eq assign-sym :=)
-              (%graph-syntax-error entry ":= が無い eqn: ~S" entry))
-            (let* ((prim-key (intern (symbol-name prim-sym) :keyword))
-                   (resolved-invars (mapcar #'resolve invar-names))
-                   (eqn (apply #'make-eqn prim-key resolved-invars params))
-                   (out (first (eqn-outvars eqn)))
-                   (printed-aval (make-aval shape (%parse-dtype dtype-sym))))
-              (unless (equalp printed-aval (var-aval out))
-                (%graph-syntax-error entry
-                                      "eqn ~S: 印字された aval ~S と再計算した aval ~S が一致しない"
-                                      entry printed-aval (var-aval out)))
-              (define name out)
-              (push eqn eqns))))
+          ;; 出力が1つなら (name dtype shape := ...)、複数なら
+          ;; ((name dtype shape) (name dtype shape) ... := ...)（契約 C1）。
+          (let* ((multiple (consp (first entry)))
+                 (assign-position (if multiple (position := entry) 3))
+                 (headers (if multiple (subseq entry 0 assign-position) (list (subseq entry 0 3))))
+                 (rest-form (nthcdr (or assign-position (length entry)) entry)))
+            (destructuring-bind (assign-sym prim-sym params &rest invar-names) rest-form
+              (unless (eq assign-sym :=)
+                (%graph-syntax-error entry ":= が無い eqn: ~S" entry))
+              (let* ((prim-key (intern (symbol-name prim-sym) :keyword))
+                     (resolved-invars (mapcar #'resolve invar-names))
+                     (eqn (apply #'make-eqn prim-key resolved-invars (%build-subgraphs-in-params params)))
+                     (outs (eqn-outvars eqn)))
+                (unless (= (length outs) (length headers))
+                  (%graph-syntax-error entry "eqn ~S: 出力の個数 ~D が再計算した個数 ~D と一致しない"
+                                       entry (length headers) (length outs)))
+                (loop for (name dtype-sym shape) in headers
+                      for out in outs
+                      for printed-aval = (make-aval shape (%parse-dtype dtype-sym))
+                      do (unless (equalp printed-aval (var-aval out))
+                           (%graph-syntax-error entry
+                                                 "eqn ~S: 印字された aval ~S と再計算した aval ~S が一致しない"
+                                                 entry printed-aval (var-aval out)))
+                         (define name out))
+                (push eqn eqns)))))
         (dolist (name (rest out-section))
           (push (resolve name) outvars)))
       (check-graph

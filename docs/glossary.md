@@ -234,6 +234,15 @@ pretty form を出力する。
 
 <!-- フェーズ3 anchor: issue #127 -->
 
+**サブグラフ（subgraph）と高階プリミティブ**
+: eqn の `params` の値として持たせる、閉じた `graph`（外側の var を参照せず、定数は自分の定数表に持つ）。`cond` / `while-loop` / `scan` のように、本体の関数を別の graph として持つプリミティブを高階プリミティブと呼ぶ。印字では入れ子に、StableHLO ではリージョンとして出す。`eval-graph` / `inline-graph` / `dce-graph` と jvp / transpose の変換は、サブグラフの中身を書き換えずに素通しする（中身の変換は各プリミティブのルールの仕事）。
+
+**closure conversion（閉包変換）**
+: 制御構造の本体が外側のトレーサを閉包で捕まえたとき、その値をサブグラフの追加の入力に持ち上げ、呼び出し側の eqn の入力の末尾に足す変換（`%trace-subgraph`）。同じトレーサは1回だけ持ち上げられ、持ち上げた順に並ぶ。`grad` の `%call-with-fresh-trace` は親を持たないので、外側のトレーサを捕まえると従来どおり `tracing-error` になる。
+
+**複数出力のプリミティブ**
+: `defprimitive` に `:multiple-outputs t` を付けたプリミティブ。`abstract-eval` が aval のリスト、`eager` が配列のリストを返し、`emit` は出力の名前と aval をリストで受けて `%8, %9 = ...` の左辺を自分で書く。トレースには、常にトレーサのリストを返す `%trace-eqn*` を使う。
+
 
 
 <!-- フェーズ3 anchor: issue #126 -->

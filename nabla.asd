@@ -163,6 +163,8 @@
                ;; StableHLO emitter の medium PBT が使うレシピ生成器（issue #33、s1）
                (:file "tests/support/primitive-recipes")
                (:file "tests/support/autodiff")
+               ;; テスト専用の高階プリミティブ（issue #127）
+               (:file "tests/support/subgraph-primitive")
                ;; vmap の参照実装（issue #125）
                (:file "tests/support/vmap")
                (:file "tests/support/run-tests")))
@@ -237,6 +239,7 @@
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
                (:file "tests/jit-cache-test")
                ;; フェーズ3 anchor: issue #127（サブグラフを持つ eqn）。この issue のテストはこの下に足す
+               (:file "tests/subgraph-test")
 
 
 
@@ -415,6 +418,7 @@
                (:file "tests/iree/bench-test")
 
                ;; フェーズ3 anchor: issue #127（サブグラフを持つ eqn）。この issue のテストはこの下に足す
+               (:file "tests/iree/subgraph-test")
 
 
 

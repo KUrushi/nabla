@@ -19,6 +19,34 @@
                                      (tangent-aval tangent) (tracer-aval out))))
     tangent))
 
+(defun %jvp-multiple-output-rule (eqn rule primals tangents)
+  "複数出力の EQN（契約 C1）の jvp ルール RULE を
+  (apply rule primals tangents params)
+で呼び、(VALUES 主値の出力のトレーサのリスト 接線のリスト) を返す。ルールが主値の
+eqn も自分で足す（JVP-GRAPH は事前に足さない。足すと while / scan / cond のような
+高階プリミティブが2回走る eqn になってしまうため）。個数と、主値・接線の aval が
+EQN の outvars と合わなければ AUTODIFF-ERROR。"
+  (multiple-value-bind (outs tangents-out) (apply rule primals tangents (eqn-params eqn))
+    (let ((name (primitive-name (eqn-prim eqn)))
+          (n (length (eqn-outvars eqn))))
+      (unless (and (listp outs) (listp tangents-out)
+                   (= (length outs) n) (= (length tangents-out) n))
+        (error 'autodiff-error
+               :format-control "プリミティブ ~S の jvp ルールは、出力と同じ長さ ~D の主値のリストと接線のリストの2値を返さなければならない: ~S / ~S"
+               :format-arguments (list name n outs tangents-out)))
+      (loop for var in (eqn-outvars eqn)
+            for out in outs
+            for tangent in tangents-out
+            do (unless (equalp (tracer-aval out) (var-aval var))
+                 (error 'autodiff-error
+                        :format-control "プリミティブ ~S の jvp ルールが返した主値の aval ~S が、出力の aval ~S と一致しない"
+                        :format-arguments (list name (tracer-aval out) (var-aval var))))
+               (unless (equalp (tangent-aval tangent) (var-aval var))
+                 (error 'autodiff-error
+                        :format-control "プリミティブ ~S の jvp ルールが返した接線の aval ~S が、主値の出力の aval ~S と一致しない"
+                        :format-arguments (list name (tangent-aval tangent) (var-aval var)))))
+      (values outs tangents-out))))
+
 (defun jvp-graph (graph &key (nonzero (mapcar (lambda (v) (and (%float-dtype-p (aval-dtype (var-aval v))) t))
                                               (graph-invars graph))))
   "GRAPH を jvp 変換した新しい GRAPH を CHECK-GRAPH して返す。GRAPH 自体は
@@ -39,7 +67,10 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
 各 eqn は主値を %TRACE-EQN で再発行する。全入力の接線がゼロなら出力の接線も
 ゼロ（ルールを呼ばない）。そうでなければ REQUIRE-JVP-RULE のルールを
   (apply rule primals out tangents (eqn-params eqn))
-で呼ぶ（無ければ NO-JVP-RULE）。定数の接線はゼロ。"
+で呼ぶ（無ければ NO-JVP-RULE）。複数出力のプリミティブ（契約 C1）は主値の eqn を
+事前に足さず、ルールを (apply rule primals tangents params) で呼んで
+(VALUES 主値の出力のリスト 接線のリスト) を受け取る（ルールが主値の eqn を足す。
+全入力の接線がゼロなら、複数出力でもルールを呼ばず主値だけ再発行する）。定数の接線はゼロ。"
   (let ((invars (graph-invars graph)))
     (unless (= (length nonzero) (length invars))
       (error 'autodiff-error
@@ -70,17 +101,27 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
                         (cons (%lift-constant array (var-aval var) *current-trace*)
                               (make-symbolic-zero (var-aval var)))))
          (dolist (eqn (graph-eqns graph))
-           ;; フェーズ1では eqn の outvars は常に1つ（src/ir.lisp の EQN を参照）。
-           (assert (= 1 (length (eqn-outvars eqn))))
            (let* ((entries (mapcar (lambda (v) (gethash v env)) (eqn-invars eqn)))
                   (primals (mapcar #'car entries))
                   (tangents (mapcar #'cdr entries))
-                  (out (apply #'%trace-eqn (primitive-name (eqn-prim eqn)) primals (eqn-params eqn)))
-                  (tangent (if (every #'symbolic-zero-p tangents)
-                               (make-symbolic-zero (tracer-aval out))
-                               (%jvp-rule-tangent eqn (require-jvp-rule (eqn-prim eqn))
-                                                  primals out tangents))))
-             (setf (gethash (first (eqn-outvars eqn)) env) (cons out tangent))))
+                  (prim (eqn-prim eqn))
+                  (zero-p (every #'symbolic-zero-p tangents)))
+             (multiple-value-bind (outs out-tangents)
+                 (cond
+                   ;; 複数出力で接線がゼロでない: ルールが主値も足す。
+                   ((and (primitive-multiple-outputs-p prim) (not zero-p))
+                    (%jvp-multiple-output-rule eqn (require-jvp-rule prim) primals tangents))
+                   (t
+                    (let ((outs (apply #'%trace-eqn* (primitive-name prim) primals (eqn-params eqn))))
+                      (values outs
+                              (if zero-p
+                                  (mapcar (lambda (o) (make-symbolic-zero (tracer-aval o))) outs)
+                                  (list (%jvp-rule-tangent eqn (require-jvp-rule prim)
+                                                           primals (first outs) tangents)))))))
+               (loop for var in (eqn-outvars eqn)
+                     for out in outs
+                     for tangent in out-tangents
+                     do (setf (gethash var env) (cons out tangent))))))
          (let ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph))))
            (values-list (append (mapcar #'car entries)
                                 (mapcar (lambda (entry) (instantiate-zero (cdr entry))) entries)))))))))
