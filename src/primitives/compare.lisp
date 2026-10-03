@@ -211,7 +211,7 @@ f16 / bf16 は f32 にしてから同じ手順（f32 は f16 / bf16 を正確に
 (defun %convert-emit (in-names in-avals out-name out-aval)
   "convert の StableHLO。通常は \"<out-name> = stablehlo.convert <a> : (<Tin>) -> <Tout>\"
 の1行。次の2つだけ複数行になる（issue #126）:
-- 整数 → :bf16: 整数 → f32 → bf16 の2段（IREE llvm-cpu は整数から bf16 への
+- 整数 → :bf16: 整数 → f32 → bf16 の2段（間に optimization_barrier を置く。一部のバックエンド（CPU コード生成）は整数から bf16 への
   直接の変換を __truncsfbf2 に落とし、リンクに失敗する）。
 - 浮動小数点 → 整数: 飽和と NaN → 0 つき（%CONVERT-EMIT-SATURATING）。"
   (let* ((in-aval (first in-avals))
@@ -221,9 +221,13 @@ f16 / bf16 は f32 にしてから同じ手順（f32 は f16 / bf16 を正確に
       ((and (integer-dtype-p in-dtype) (eq out-dtype :bf16))
        (let* ((mid (%convert-aux-name "f32" out-name))
               (mid-aval (make-aval (aval-shape in-aval) :f32)))
-         (format nil "~A~%~A"
-                 (%convert-line mid (first in-names) in-aval mid-aval)
-                 (%convert-line out-name mid mid-aval out-aval))))
+         ;; optimization_barrier が無いと、2つの convert がバックエンドの最適化で
+         ;; 1つの「整数 → bf16」に畳まれ、元の問題に戻ってしまう
+         (let ((barrier (%convert-aux-name "barrier" out-name)))
+           (format nil "~A~%~A = stablehlo.optimization_barrier ~A : ~A~%~A"
+                   (%convert-line mid (first in-names) in-aval mid-aval)
+                   barrier mid (tensor-type-string mid-aval)
+                   (%convert-line out-name barrier mid-aval out-aval)))))
       ((and (%float-dtype-p in-dtype) (integer-dtype-p out-dtype))
        (%convert-emit-saturating in-names in-avals out-name out-aval))
       (t (%convert-line out-name (first in-names) in-aval out-aval)))))

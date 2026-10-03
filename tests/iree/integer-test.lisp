@@ -30,7 +30,9 @@ to-device → to-host で要素型・値（端の値を含む）が変わらな�
 結果の配列を (VALUES iree eager) で返す（出力は1つの graph だけを渡す）。"
   (let* ((backend (nabla:find-backend :iree))
          (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph))))
-         (devs (mapcar (lambda (a) (to-device a backend)) arrays)))
+         (devs (mapcar (lambda (a invar)
+                         (to-device a backend :dtype (nb:aval-dtype (nb:var-aval invar))))
+                       arrays (nb:graph-invars graph))))
     (unwind-protect
          (let ((result (apply #'nabla:backend-invoke backend module "main" devs)))
            (unwind-protect
