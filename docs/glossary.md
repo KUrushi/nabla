@@ -229,3 +229,71 @@ pretty form を出力する。
 
 **squash merge**
 : PR をマージするとき、PR 内の複数のコミットを1つにまとめてから取り込む方法。`main` の履歴が「1つの PR = 1つのコミット」になり、読みやすく、取り消し（revert）もしやすい。
+
+
+
+<!-- フェーズ3 anchor: issue #127 -->
+
+
+
+<!-- フェーズ3 anchor: issue #126 -->
+
+
+
+<!-- フェーズ3 anchor: issue #125 -->
+
+
+
+<!-- フェーズ3 anchor: issue #128 -->
+
+
+
+<!-- フェーズ3 anchor: issue #129 -->
+
+
+
+<!-- フェーズ3 anchor: issue #130 -->
+
+
+
+<!-- フェーズ3 anchor: issue #131 -->
+
+
+
+<!-- フェーズ3 anchor: issue #132 -->
+
+
+
+<!-- フェーズ3 anchor: issue #133 -->
+
+
+
+<!-- フェーズ3 anchor: issue #134 -->
+
+
+
+<!-- フェーズ3 anchor: issue #135 -->
+
+
+
+<!-- フェーズ3 anchor: issue #136 -->
+
+
+
+<!-- フェーズ3 anchor: issue #137 -->
+
+
+
+<!-- フェーズ3 anchor: issue #138 -->
+
+
+
+<!-- フェーズ3 anchor: issue #139 -->
+
+
+
+<!-- フェーズ3 anchor: issue #140 -->
+
+
+
+<!-- フェーズ3 anchor: issue #141 -->
