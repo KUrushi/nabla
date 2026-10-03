@@ -291,6 +291,12 @@ pretty form を出力する。
 
 
 
+**carry（キャリー）**
+: `while-loop` や `scan` で、反復のたびに次の反復へ持ち回す値。`scan` では本体が `(carry x_t) → (新しい carry, y_t)` を計算し、最後の carry と、各ステップの `y_t` を積んだ `ys` が結果になる。nabla では carry・`xs`・`ys` はリストで受け渡し、フェーズ4で PyTree に一般化する。carry の aval は反復の前後で一致しなければならない。
+
+**optimization_barrier（最適化の境界）**
+: `stablehlo.optimization_barrier`。値を変えずにそのまま通す op で、コンパイラがこの前後で式を畳んだり移動したりしない境界になる。nabla は `stop-gradient` の出力のほか、IREE 3.11 のコンパイラのバグの回避（定数で初期化された carry を持つ `while` の定数オペランド、整数 → bf16 の `convert` の2段の間）に使う。
+
 <!-- フェーズ3 anchor: issue #133 -->
 
 **Threefry / rng_bit_generator**
