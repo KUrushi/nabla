@@ -287,6 +287,7 @@
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
                (:file "tests/ad/while-loop-jvp-test")
+               (:file "tests/ad/cond-jvp-test")
 
 
 
@@ -472,6 +473,7 @@
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
                (:file "tests/iree/while-loop-jvp-test")
+               (:file "tests/iree/cond-jvp-test")
 
 
 

@@ -51,10 +51,15 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
 主値 graph と線形 graph を順に評価すると、JVP-GRAPH を評価した結果（主値 ++ 接線）と
 一致する。線形 graph には DCE-GRAPH をかけ、残差は線形 graph が実際に使うものだけに
 絞る（主値 graph にも DCE をかける）。"
-  (let* ((jvp (if nonzero-p (jvp-graph graph :nonzero nonzero) (jvp-graph graph)))
-         (n-primals (length (graph-invars graph)))
-         (n-outputs (length (graph-outvars graph)))
-         (primal-invars (subseq (graph-invars jvp) 0 n-primals))
+  (%linearize-jvp-graph (if nonzero-p (jvp-graph graph :nonzero nonzero) (jvp-graph graph))
+                        (length (graph-invars graph))
+                        (length (graph-outvars graph))))
+
+(defun %linearize-jvp-graph (jvp n-primals n-outputs)
+  "LINEARIZE-GRAPH の後半。JVP（JVP-GRAPH の結果と同じ形の graph。入力は主値 N-PRIMALS 個に
+続けて接線、出力は主値 N-OUTPUTS 個に続けて接線。接線の個数は入力・出力とも任意）を
+LINEARIZATION に分ける。cond の jvp ルールが、枝ごとに主値と接線を分けるのにも使う。"
+  (let* ((primal-invars (subseq (graph-invars jvp) 0 n-primals))
          (tangent-invars (nthcdr n-primals (graph-invars jvp)))
          (primal-outvars (subseq (graph-outvars jvp) 0 n-outputs))
          (tangent-outvars (nthcdr n-outputs (graph-outvars jvp)))
@@ -67,7 +72,8 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
       ;; 複数出力の eqn が線形側に入り、transpose ルールを持たないのは、主値と接線を
       ;; 1つの eqn で計算している（while-loop の jvp など）とき。主値の部分を
       ;; 主値 graph へ分けられず壊れた graph になるので、どのプリミティブか分かる
-      ;; エラーにする（cond は後で partial eval で分けてからここに来る）。
+      ;; エラーにする（cond の jvp は主値の cond と線形な cond の2つの eqn に分けて出すので、
+      ;; ここには来ない。src/ad/rules-control.lisp）。
       (dolist (eqn linear-eqns)
         (when (and (primitive-multiple-outputs-p (eqn-prim eqn))
                    (null (primitive-transpose (eqn-prim eqn))))
