@@ -183,9 +183,9 @@ h' = tanh(h exp(c) + x)（c はホストの配列）。中心差分と一致す�
                                              (list h0) (list xs) :length 3)))))
          (h0 (make-array 2 :element-type 'double-float :initial-element 0d0))
          (xs (make-array '(3 2) :element-type 'double-float :initial-element 1d0))
-         (grads (funcall (nb:grad f :argnums '(0 1)) h0 xs)))
-    (is (equalp #(0d0 0d0) (first grads)))
-    (is (equalp #2A((0d0 0d0) (0d0 0d0) (1d0 1d0)) (second grads)))))
+         ;; xs だけを微分する: h0 の接線はゼロなので、carry の初期値は線形でない（既知のゼロ）
+         (grad (funcall (nb:grad f :argnums 1) h0 xs)))
+    (is (equalp #2A((0d0 0d0) (0d0 0d0) (1d0 1d0)) grad))))
 
 (test vjp-scan/closed-over-host-array-is-a-body-constant-not-a-residual
   "閉包で捕まえたホストの配列は scan の consts ではなく本体の定数（exp(c) はトレース時に計算済み）。
