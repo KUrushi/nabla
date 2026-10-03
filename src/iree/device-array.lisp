@@ -127,8 +127,8 @@ IREE_HAL_ELEMENT_TYPE_BOOL_8 は1要素1バイトなので、%I1-OCTETS で
 ARRAY が simple-array でなければ（adjustable / displaced）TYPE-ERROR、
 ARRAY の要素型と DTYPE が矛盾すれば NABLA:DTYPE-MISMATCH（NABLA:ARRAY-AVAL
 経由）が signal される。デバイスに送れる dtype は *element-types* にある
-もの（:f32 / :f64 / :bf16 / :f16 / :i1。issue #72 で :f64 と :i1 を
-足した）で、それ以外の dtype には NABLA:UNSUPPORTED-DTYPE を signal する
+もの（:f32 / :f64 / :bf16 / :f16 / :i1 / :i32 / :u32 / :u64。issue #72 で
+:f64 と :i1 を、issue #126 で整数を足した）で、それ以外の dtype には NABLA:UNSUPPORTED-DTYPE を signal する
 （issue #37）。DEVICE が release-device 済みなら IREE-OBJECT-RELEASED
 （kind :device）が signal される。"
   (check-type array simple-array)

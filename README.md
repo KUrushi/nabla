@@ -175,7 +175,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 `nabla`（nickname `nb`）が export するシンボルのみ。`nabla.iree` の低水準な C API バインディングはここには載せない（ハイラムの法則に備え、README に載せた名前を事実上の公開約束にしすぎないため）。詳しく知りたければ `src/iree/package.lisp` を見る。
 
-**dtype**（`src/dtype.lisp`）: `dtype`（`:f32` / `:f64` / `:bf16` / `:f16` / `:i1`。`:i1` は issue #37 で追加した真偽値の dtype で、compare の出力・select の条件に使う）, `dtype-element-type`, `dtype-byte-width`, `array-dtype`, `dtype-mismatch`, `dtype-mismatch-element-type`, `dtype-mismatch-dtype`
+**dtype**（`src/dtype.lisp`）: `dtype`（`:f32` / `:f64` / `:bf16` / `:f16` / `:i1` / `:i32` / `:u32` / `:u64`。`:i1` は issue #37 で追加した真偽値の dtype で、compare の出力・select の条件に使う。`:i32` / `:u32` / `:u64` は issue #126 で追加した整数の dtype）, `dtype-element-type`, `dtype-byte-width`, `array-dtype`, `dtype-mismatch`, `dtype-mismatch-element-type`, `dtype-mismatch-dtype`
 
 **aval**（`src/aval.lisp`）: `aval`, `make-aval`, `aval-p`, `aval-shape`, `aval-dtype`, `aval-rank`, `aval-size`, `aval-byte-length`, `array-aval`
 
@@ -210,6 +210,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 
 <!-- フェーズ3 anchor: issue #126 -->
+**整数 dtype**（`src/dtype.lisp`、`src/primitives/*.lisp`、issue #126）: `:i32`（Lisp では `(signed-byte 32)`、StableHLO では `i32`）、`:u32`（`(unsigned-byte 32)`、`ui32`）、`:u64`（`(unsigned-byte 64)`、`ui64`。THREE_FRY の状態 `ui64[2]` のために足した）。`add` `sub` `mul` `max` `min` `neg` `compare` `select` `convert` `broadcast-in-dim` `reshape` `transpose` `reduce-sum` `reduce-max` は整数を受け付け、`div` `exp` `log` `tanh` `dot-general` は整数を `primitive-error`（トレース時）で拒否する。整数どうしの演算は dtype が一致していなければならず（暗黙の型昇格はしない）、eager の算術は StableHLO と同じく 2 の補数（符号なしは法 2^n）で折り返す。`convert` は整数 ⇔ 浮動小数点 ⇔ `:i1` を変換できる（浮動小数点 → 整数は 0 方向へ丸め、NaN は 0、範囲外（±無限大を含む）は整数の端に飽和。これはどのバックエンドでも同じになるよう、出力する StableHLO が clamp と select で飽和と NaN → 0 を明示する。整数 → `:bf16` は f32 を経由する2段の convert。→ `:i1` は 0 以外が真）。`with-tracing` の中の整数リテラルは相手の整数 dtype にリフトされる（浮動小数点のリテラルや範囲外の整数は `tracing-error`。浮動小数点のトレーサと組むリテラルは従来どおり `:f32`）。整数の接線は変換の中では常に symbolic zero で、整数の入力に対する `grad` は `autodiff-error`、整数を経由する計算の勾配はゼロ。IREE と PJRT（CPU）の `to-device` / `to-host` は整数に対応する。新しい export はない。
 
 
 
