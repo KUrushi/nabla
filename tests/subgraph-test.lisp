@@ -294,3 +294,109 @@ loc は演算の最後の行にだけ付く。"
                 (format nil "~{~A~^~%~}" (nb::%stablehlo-region-lines (%sg-body-graph))))))
     (is (search "^bb0(%s1_0: tensor<2x3xf32>, %s1_1: tensor<2x3xf32>):" text))
     (is (search "stablehlo.return" text))))
+
+(test subgraph/emit-stablehlo-region-refers-to-outer-names-without-block-arguments
+  "枝のリージョン（arg-names あり）の中の演算は、ブロック引数ではなく外側の SSA 名
+（%0, %1）を直接使う。"
+  (let ((text (nb:emit-stablehlo (%sg-call-graph))))
+    (is (search "stablehlo.add %0, %1" text))
+    (is (null (search "^bb0" text)))))
+
+;;; ---- 内部ヘルパーの境界 ----
+
+(test subgraph/param-subgraphs-finds-graphs-in-nested-lists-in-order
+  "params の値のどこにある GRAPH も、出現順に（重複も含めて）見つかる。"
+  (let ((g1 (%sg-body-graph)) (g2 (%sg-body-graph)))
+    (is (equal (list g1 g2 g1)
+               (nb::%param-subgraphs (list :a g1 :b (list (list g2) g1) :c 3))))
+    (is (null (nb::%param-subgraphs (list :a 1 :b '(2 3)))))))
+
+(test subgraph/read-graph-keeps-params-with-graph-symbol-in-non-head-position
+  "params に、先頭ではない位置に graph という名前のシンボルがあっても、
+サブグラフと取り違えない。"
+  (let* ((sym (intern "GRAPH" :nabla.graph-syntax))
+         (form (list :k 1 sym 2))
+         (dotted (cons 1 2)))
+    (is (equal form (nb::%build-subgraphs-in-params form)))
+    (is (equal dotted (nb::%build-subgraphs-in-params dotted)))))
+
+(nb:defprimitive %test-bad-multiple ()
+  :multiple-outputs t
+  :abstract-eval (lambda (in-avals) (first in-avals)))
+
+(test subgraph/multiple-output-abstract-eval-must-return-a-list
+  "複数出力のプリミティブの abstract-eval が aval のリストを返さなければ PRIMITIVE-ERROR。"
+  (signals nb:primitive-error
+    (nb::make-eqn :%test-bad-multiple (list (nb::make-var (nb:make-aval '(2) :f32))))))
+
+;;; ---- 複数出力の jvp / transpose ルールの呼び出し規約 ----
+
+(defmacro %with-test-rule ((accessor setter fn) &body body)
+  "テスト用に %TEST-CALL-SUBGRAPH の ACCESSOR のルールを FN に差し替え、BODY の後で戻す。"
+  `(let* ((prim (nb::find-primitive :%test-call-subgraph))
+          (old (,accessor prim)))
+     (unwind-protect (progn (,setter :%test-call-subgraph ,fn) ,@body)
+       (setf (,accessor prim) old))))
+
+(defun %sg-identity-graph (avals)
+  "恒等の本体 (a b) -> (a b) を %TEST-CALL-SUBGRAPH 経由で呼ぶ graph。"
+  (nb::trace-to-graph
+   (nb:with-tracing (x y)
+     (let ((r (test-call-subgraph (nb:with-tracing (a b) (values a b)) x y)))
+       (values (first r) (second r))))
+   avals))
+
+(test subgraph/multiple-output-jvp-rule-receives-lists-and-returns-tangent-list
+  "複数出力の jvp ルールは (primals outs tangents &key params) → 接線のリストで呼ばれる。"
+  (let ((graph (%sg-identity-graph *subgraph-test-avals*)))
+    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule
+                      (lambda (primals outs tangents &key body)
+                        (declare (ignore body))
+                        (assert (and (listp primals) (listp outs) (listp tangents)
+                                     (= 2 (length outs))))
+                        tangents))
+      (let ((jvp (nb::jvp-graph graph)))
+        (is (= 4 (length (nb:graph-outvars jvp))))
+        (destructuring-bind (x y tx ty) (%sg-random-arrays 7 (append *subgraph-test-avals*
+                                                                      *subgraph-test-avals*))
+          (is (equalp (list x y tx ty)
+                      (multiple-value-list (nb:eval-graph jvp x y tx ty)))))))))
+
+(test subgraph/multiple-output-jvp-rule-result-is-checked
+  "複数出力の jvp ルールが、個数や aval の違う接線を返すと AUTODIFF-ERROR。"
+  (let* ((avals (list (nb:make-aval '(2 3) :f32) (nb:make-aval '(3) :f32)))
+         (graph (%sg-identity-graph avals)))
+    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule
+                      (lambda (primals outs tangents &key body)
+                        (declare (ignore primals outs body))
+                        (list (first tangents))))
+      (signals nb::autodiff-error (nb::jvp-graph graph)))
+    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule
+                      (lambda (primals outs tangents &key body)
+                        (declare (ignore primals outs body))
+                        (reverse tangents)))
+      (signals nb::autodiff-error (nb::jvp-graph graph)))))
+
+(test subgraph/multiple-output-transpose-rule-receives-cotangent-list
+  "複数出力の transpose ルールは (cts invars &key params) で呼ばれ、ct は出力ごとのリスト。
+出力が使われなければその ct は symbolic zero。"
+  (let ((graph (%sg-identity-graph *subgraph-test-avals*))
+        (first-only (nb::trace-to-graph
+                     (nb:with-tracing (x y)
+                       (first (test-call-subgraph (nb:with-tracing (a b) (values a b)) x y)))
+                     *subgraph-test-avals*)))
+    (%with-test-rule (nb::primitive-transpose nb::set-transpose-rule
+                      (lambda (cts invars &key body)
+                        (declare (ignore body))
+                        (assert (and (= 2 (length cts)) (= 2 (length invars))))
+                        cts))
+      (let ((transposed (nb::transpose-graph graph 0)))
+        (destructuring-bind (c1 c2) (%sg-random-arrays 3 *subgraph-test-avals*)
+          (is (equalp (list c1 c2) (multiple-value-list (nb:eval-graph transposed c1 c2))))))
+      (let ((transposed (nb::transpose-graph first-only 0)))
+        (destructuring-bind (c1) (%sg-random-arrays 4 (list (first *subgraph-test-avals*)))
+          (destructuring-bind (r1 r2) (multiple-value-list (nb:eval-graph transposed c1))
+            (is (equalp c1 r1))
+            (is (allclose r2 (make-array (array-dimensions r2) :element-type (array-element-type r2)
+                                         :initial-element 0.0f0)
+                        :dtype :f32))))))))
