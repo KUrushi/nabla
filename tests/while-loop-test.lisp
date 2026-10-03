@@ -219,7 +219,7 @@ WHILE-LOOP-ARGUMENT-ERROR。"
     (signals nb::tracing-error
       (nb:while-loop *wl-cond* *wl-body* (list stale (%wl-scalar 1.0) (%wl-scalar 1.0))))))
 
-(defun %wl-eqn-with (&key (n-carries 2) body-out-avals cond-in-avals cond-out-aval)
+(defun %wl-eqn-with (&key (n-carries 2) body-out-avals cond-in-avals cond-out-aval not-pass-through pass-all)
   "abstract-eval の検査を直接確かめるための :while-loop の eqn（既定は妥当な組）を作る。
 carry 2 個（f32 の rank 0）。"
   (let* ((a (nb:make-aval '() :f32))
@@ -228,7 +228,10 @@ carry 2 個（f32 の rank 0）。"
          (cond-vars (mapcar #'nb::make-var (or cond-in-avals avals)))
          (cond-out (nb::make-var (or cond-out-aval i1)))
          (body-vars (mapcar #'nb::make-var avals))
-         (body-outs (mapcar #'nb::make-var (or body-out-avals avals)))
+         (body-outs (cond (pass-all body-vars) (not-pass-through
+                        ;; 2番目の出力（n-carries = 1 のとき素通しのはず）を別の var にする
+                        (list (first body-vars) (nb::make-var a)))
+                        (t (mapcar #'nb::make-var (or body-out-avals avals)))))
          (vars (mapcar #'nb::make-var avals)))
     (apply #'nb::make-eqn :while-loop vars
            (list :cond (nb::make-graph cond-vars '() (list cond-out))
@@ -240,10 +243,92 @@ carry 2 個（f32 の rank 0）。"
 params を PRIMITIVE-ERROR にする（GRAPH を手で組んだときの防御）。"
   (let ((a (nb:make-aval '() :f32)) (b (nb:make-aval '(2) :f32)))
     (is (not (null (%wl-eqn-with))))
-    (is (not (null (%wl-eqn-with :n-carries 0))))
+    (is (not (null (%wl-eqn-with :n-carries 0 :pass-all t))))
     (is (not (null (%wl-eqn-with :n-carries 2))))
     (signals nb:primitive-error (%wl-eqn-with :n-carries -1))
     (signals nb:primitive-error (%wl-eqn-with :n-carries 3))
     (signals nb:primitive-error (%wl-eqn-with :cond-in-avals (list a b)))
     (signals nb:primitive-error (%wl-eqn-with :cond-out-aval a))
-    (signals nb:primitive-error (%wl-eqn-with :body-out-avals (list a b)))))
+    (signals nb:primitive-error (%wl-eqn-with :body-out-avals (list a b)))
+    ;; carry 以降の出力は、同じ入力 var の素通しでなければならない
+    (signals nb:primitive-error (%wl-eqn-with :n-carries 1 :not-pass-through t))))
+
+(test while-loop/abstract-eval-requires-pass-through-of-invariant-operands
+  "carry 以降の出力が入力の素通しでない body は PRIMITIVE-ERROR。素通し（同じ var）なら通る。"
+  (let ((a (nb:make-aval '() :f32)))
+    (is (not (null (let* ((x (nb::make-var a)) (y (nb::make-var a))
+                          (c (nb::make-graph (list x y) '() (list (nb::make-var (nb:make-aval '() :i1)))))
+                          (b (nb::make-graph (list x y) '() (list x y))))
+                     (nb::make-eqn :while-loop (list (nb::make-var a) (nb::make-var a))
+                                   :cond c :body b :n-carries 1)))))
+    (signals nb:primitive-error (%wl-eqn-with :n-carries 1 :not-pass-through t))))
+
+;;; ---- 整数・:i1 の carry、入れ子、捕捉値の除去 ----
+
+(defun %wl-i32 (n) (nb::%scalar-array n :i32))
+
+(test while-loop/i32-counter-equals-lisp-loop
+  "整数（:i32）のカウンタでも、結果は Lisp のループと一致する（0回を含む）。"
+  (let ((cond-fn (nb:with-tracing (c) (< (first c) (second c))))
+        (body-fn (nb:with-tracing (c) (list (+ (first c) 1) (second c) (+ (third c) (third c))))))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let* ((init (list (%wl-i32 0) (%wl-i32 (mod seed 7))
+                                       (%wl-seed-array seed '(3) :f32)))
+                           (actual (nb:while-loop cond-fn body-fn init))
+                           (expected (%wl-lisp-loop cond-fn body-fn init)))
+                      (and (equalp (first actual) (first expected))
+                           (allclose (third actual) (third expected) :dtype :f32)))))
+          "i32 カウンタの結果が Lisp のループと一致しなかった")))
+
+(test while-loop/i1-carry-equals-lisp-loop
+  "carry に :i1 の値（フラグ）を持てる。結果が Lisp のループと一致する。"
+  (let ((cond-fn (nb:with-tracing (c) (second c)))
+        (body-fn (nb:with-tracing (c) (list (+ (first c) 1.0) (< (+ (first c) 1.0) 5.0)))))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let* ((n (%wl-scalar (float (mod seed 8) 1.0)))
+                           (init (list n (%wl-flag n)))
+                           (actual (nb:while-loop cond-fn body-fn init))
+                           (expected (%wl-lisp-loop cond-fn body-fn init)))
+                      (and (allclose (first actual) (first expected) :dtype :f32)
+                           (equalp (second actual) (second expected)))))))))
+
+(test while-loop/nested-while-captures-from-grandparent
+  "入れ子の while の内側が、祖父母のトレースの値を捕まえても、外側の結果と一致する。"
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (limit x)
+                  (first
+                   (nb:while-loop
+                    (nb:with-tracing (c) (< (second c) 3.0))
+                    (nb:with-tracing (c)
+                      (list (first (nb:while-loop
+                                    (nb:with-tracing (d) (< (second d) 2.0))
+                                    (nb:with-tracing (d) (list (+ (first d) limit) (+ (second d) 1.0)))
+                                    (list (first c) (%wl-scalar 0.0))))
+                            (+ (second c) 1.0)))
+                    (list x (%wl-scalar 0.0)))))
+                (list (nb:make-aval '() :f32) (nb:make-aval '() :f32)))))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let ((limit (%wl-seed-array seed '() :f32))
+                          (x (%wl-seed-array (1+ seed) '() :f32)))
+                      ;; 外側 3 回 × 内側 2 回 = limit を6回足す
+                      (allclose (nb:eval-graph graph limit x)
+                                (let ((v x)) (dotimes (_ 6 v) (setf v (nb::%t-add v limit))))
+                                :dtype :f32)))))))
+
+(test while-loop/captured-outputs-are-stripped-from-the-result
+  "捕まえた値の素通しの出力は、公開の結果には含まれない（carry の個数だけ返る）。"
+  (nb::trace-to-graph
+   (nb:with-tracing (limit step x)
+     (let ((result (nb:while-loop (nb:with-tracing (c) (< (first c) limit))
+                                  (nb:with-tracing (c) (list (+ (first c) 1.0) (+ (second c) step)))
+                                  (list (%wl-scalar 0.0) x))))
+       (is (= 2 (length result)))
+       (first result)))
+   (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32) (nb:make-aval '(3) :f32))))
+
+(defun %wl-flag (n)
+  "rank 0 の f32 配列 N から、:i1 の rank 0 配列 (n < 5) を作る（eager）。"
+  (funcall (nb:with-tracing (v) (< v 5.0)) n))

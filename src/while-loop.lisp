@@ -16,6 +16,19 @@
 ;;;;   BODY graph = 全オペランドを受け、新しい carry（N 個）+ 捕まえた値の素通しを返す
 ;;;;   出力      = 全オペランドと同じ aval（捕まえた値の分は呼び出し側が捨てる）
 ;;;; こうすると形状推論・eager・StableHLO の3つが同じ規則で書ける。
+;;;; N 番目以降のオペランド（捕まえた値）は loop 不変で、BODY はそれを同じ入力 var のまま
+;;;; 返す（abstract-eval が検査する）。jvp / batch のルールは、これらのオペランドの接線や
+;;;; バッチ軸を具体化せずに済ませてよい。
+;;;;
+;;;; 既知の制限（ある実行系のコンパイラのバグ。詳細は docs/stablehlo-ops.md の制御構造の節。issue #131 のレビューで確認）: 本体の中で
+;;;; 比較（:i1）から作った値（:i1 のフラグ、またはそれを i32 に変換した値）を carry にして、
+;;;; その while の結果を関数の戻り値にすると、その実行系のコンパイラが LLVM の
+;;;; "out of memory" / メモリフォルトでプロセスごと落ちる（i1 を i32 として通す、
+;;;; optimization_barrier を挟む、select で作る、のどれでも直らない）。戻り値にしない場合、
+;;;; および eager は問題ない。nabla 側では防げないので、carry に比較由来のフラグを
+;;;; 持つ while の結果を jit の戻り値にしないこと（フラグは戻り値の前に使い切る）。
+;;;; tests の medium テスト（while-loop-test）の子プロセスのテストが、この制限（バグ）がその実行系に
+;;;; 残っていることを守る。直ったらそのテストが失敗するので、この注意書きごと消す。
 ;;;;
 ;;;; 微分: 逆モード（grad）は対応しない（反復回数が分からず、残差を保存できない）。jvp
 ;;;; ルールを持たないので、接線が流れ込むと NO-JVP-RULE（AUTODIFF-ERROR の子。
@@ -82,6 +95,12 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
     (unless (equalp (mapcar #'var-aval (graph-outvars cond)) (list *%while-cond-aval*))
       (error 'primitive-error :name :while-loop :in-avals in-avals
              :format-control "cond の出力は rank 0 の :i1 が1つでなければならない"))
+    ;; carry 以降（n-carries 番目から）のオペランドは loop 不変: body はそのまま返す。
+    (loop for k from n-carries below (length in-avals)
+          unless (eq (nth k (graph-outvars body)) (nth k (graph-invars body)))
+            do (error 'primitive-error :name :while-loop :in-avals in-avals
+                      :format-control "body の ~D 番目の出力は、loop 不変のオペランドの素通し（同じ入力 var）でなければならない"
+                      :format-arguments (list k)))
     (unless (equalp (mapcar #'var-aval (graph-outvars body)) in-avals)
       (error 'primitive-error :name :while-loop :in-avals in-avals
              :format-control "body の出力の aval が入力（carry + 素通しの値）と一致しない: ~S"
@@ -203,6 +222,9 @@ BODY-FN は外側のトレーサを閉包で捕まえてよい（loop 不変の�
 関数でない、BODY-FN がリストを返さない → WHILE-LOOP-ARGUMENT-ERROR。BODY-FN の
 出力の AVAL が INIT と違う → WHILE-LOOP-CARRY-MISMATCH（トレース時に検出する。0回で
 終わる場合でも）。COND-FN の結果が rank 0 の :i1 でない → WHILE-LOOP-CONDITION-ERROR。
+
+一部の実行系の制限: 本体の中で比較から作ったフラグ（:i1）を carry にした while の結果を jit の
+戻り値にすると、その実行系のコンパイラが落ちる（docs/stablehlo-ops.md の制御構造の節）。
 
 微分: 逆モード（GRAD）は対応しない（反復回数が分からず、残差を保存できない）。
 GRAD を通すと、原因のプリミティブ名 :WHILE-LOOP を持つ NO-JVP-RULE
