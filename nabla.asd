@@ -60,6 +60,7 @@
                (:file "src/ad/jvp")
                (:file "src/ad/rules-elementwise")
                ;; linearize / transpose / vjp（issue #82）
+               (:file "src/ad/partial-eval")
                (:file "src/ad/linearize")
                (:file "src/ad/transpose")
                ;; 形状・縮約・dot-general の jvp ルール（issue #81）
@@ -141,6 +142,7 @@
 
 
                ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-scan-reverse")
 
 
 
@@ -315,6 +317,7 @@
 
 
                ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のテストはこの下に足す
+               (:file "tests/ad/vjp-scan-test")
 
 
 
@@ -504,6 +507,7 @@
 
 
                ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のテストはこの下に足す
+               (:file "tests/iree/vjp-scan-test")
 
 
 
