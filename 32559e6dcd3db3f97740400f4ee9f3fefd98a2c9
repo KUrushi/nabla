@@ -1,0 +1,1 @@
+main(2434e85, #144 整数 dtype) へ再 rebase。broadcast-in-dim/reshape/transpose/reduce-sum/reduce-max の PBT を f64 + *integer-dtypes* に拡張（整数は equalp で厳密比較）。dot-general は浮動小数点のみ。フルスイート通過（medium 1280 checks）。
