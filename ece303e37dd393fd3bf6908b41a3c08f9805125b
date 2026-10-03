@@ -1,0 +1,1 @@
+mutation (src/prng.lisp, src/primitives/bits.lisp, src/ad/rules-batch-rng.lisp, rng.lisp 150-260, --max-per-def 3, small の prng/bits/rng/registry テストのみ): 初回 69/91 -> テスト強化後 82/91。生存9件: 等価(equal/eq, scale=1 の乗算, bits の初期値)、f64 normal の下限 2^-53/2^-52 の差（統計的に区別不能）、fold-in の定数 2^32 -> 3^32 / 2^31（別の有効なオフセット）、rng.lisp:181 の SSA 名（small では見えず IREE/PJRT の medium テストが検出）。
