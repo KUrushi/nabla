@@ -218,7 +218,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### vmap（issue #125）
 
-`(vmap f &key (in-axes 0) (out-axes 0))` は、`f`（`with-tracing` / `defjit` / `jit` が作った関数。`jit` は静的引数なしのもの）を、引数のバッチ軸についてまとめて適用する関数を返す。結果は「バッチ軸で切り出した各要素に `f` を適用して、出力の `out-axes` の位置に積み直したもの」と一致する。`in-axes` は引数ごとの軸（0始まり、負なら末尾から）か `nil`（その引数はバッチせず `f` にそのまま渡す）で、整数か `nil` を1つ渡すと全引数に共通、リストなら引数ごと。`out-axes` は出力ごとの軸か `nil`（出力がバッチに依存しないときだけ。依存しない出力に整数を渡すと複製する）。戻り値はトレースできる関数なので、配列を渡して直接呼ぶ（eager）ほか、`(jit (vmap f))`、`with-tracing` の中、`grad` の対象、別の `vmap` の対象（`(vmap (vmap f))`）として使える。バッチされていない入力だけの演算は、バッチ化ルールを呼ばずにそのまま残る。既知の制限は `grad` と同じ（`f` が外側のトレーサを閉包で捕まえると `tracing-error`）。`f` はリストを返せない（`(with-tracing … (values-list …))` で包む）。`(vmap f)` は呼ぶたびに新しい関数オブジェクトを作るので、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため。ループの外で1回だけ作る）。複数出力の eqn を持つ `f`（制御構造）は #140 まで `vmap-error`。
+`(vmap f &key (in-axes 0) (out-axes 0))` は、`f`（`with-tracing` / `defjit` / `jit` が作った関数。`jit` は静的引数なしのもの）を、引数のバッチ軸についてまとめて適用する関数を返す。結果は「バッチ軸で切り出した各要素に `f` を適用して、出力の `out-axes` の位置に積み直したもの」と一致する。`in-axes` は引数ごとの軸（0始まり、負なら末尾から）か `nil`（その引数はバッチせず `f` にそのまま渡す）で、整数か `nil` を1つ渡すと全引数に共通、リストなら引数ごと。`out-axes` は出力ごとの軸か `nil`（出力がバッチに依存しないときだけ。依存しない出力に整数を渡すと複製する）。戻り値はトレースできる関数なので、配列を渡して直接呼ぶ（eager）ほか、`(jit (vmap f))`、`with-tracing` の中、`grad` の対象、別の `vmap` の対象（`(vmap (vmap f))`）として使える。バッチされていない入力だけの演算は、バッチ化ルールを呼ばずにそのまま残る。既知の制限は `grad` と同じ（`f` が外側のトレーサを閉包で捕まえると `tracing-error`）。`f` はリストを返せない（`(with-tracing … (values-list …))` で包む）。`(vmap f)` は呼ぶたびに新しい関数オブジェクトを作るので、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため。ループの外で1回だけ作る）。`cond*` / `while-loop` / `scan` を含む `f` も `vmap` できる（下の「制御構造のバッチ化」）。
 
 コンディションは `vmap-error`（親。`in-axes` / `out-axes` の個数・型・範囲の不正、軸長の不一致、バッチされた引数が無い、など）と、その子の `no-batch-rule`（バッチ軸を持つ値がバッチ化ルールの無いプリミティブに渡った。`no-batch-rule-name` がプリミティブ名）。バッチ化ルールは `def-batch-rule`（内部。`src/ad/rules-batch-*.lisp`）で書く。この issue で持つルールは `add` と `broadcast-in-dim` だけで、残りは #128 / #129 で揃える。
 
@@ -240,16 +240,20 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #130 -->
 
-**cond\*（条件分岐）**（`src/cond.lisp`、`src/primitives/cond.lisp`、issue #130）: `(cond* pred then-fn else-fn &rest operands)`。`pred` が真なら `(then-fn operands...)`、偽なら `(else-fn operands...)` を評価する高階プリミティブ `:cond` で、eager では選ばれた枝のサブグラフだけを評価する（CL の `cond` と衝突するので名前は `cond*`）。`then-fn` / `else-fn` は `with-tracing` で作った関数で、普通のトレース対象の関数と同じく1つの値か多値を返し、`cond*` も同じ個数の多値を返す。両枝の出力の aval が一致しなければトレース時に `cond-error`（`tracing-error` の子。`pred` がトレーサなのに rank 0 の `:i1` でない場合、枝が `traceable-function` でない場合も）。枝が閉包で捕まえた外側のトレーサも使える（closure conversion。両枝は同一の入力シグネチャ「operands と両枝の捕捉値の和集合」を持ち、片方が使わない捕捉値の位置には使われない入力が置かれる）。operand はトレーサ・実数・dtype を推論できる配列（`:f32` / `:f64` / `:i1` / `:i32` / `:u32` / `:u64`。bf16 / f16 の生の配列はトレーサで渡す。違えば `cond-error`）。枝の引数の個数が operand の個数と違うときも `cond-error`。`pred` が `t` / `nil` / rank 0 の bit 配列なら、選ばれた枝をそのまま呼ぶ（eqn は作らない）。StableHLO は `stablehlo.if`（IREE でコンパイル・実行できることを medium テストで確認）。jvp / transpose / バッチ化ルールはまだ無く（#134 / #140）、`cond*` を通した `grad` は `no-jvp-rule`（名前は `:cond`）になる。**`with-tracing` の `if` は `cond*` に落とさず、これまでどおり `select` のままにする**: `if` の条件は要素ごとの `:i1` 配列でありうるので、`select`（要素ごとの意味）を保つ必要がある。スカラー条件で片枝だけを評価したい（重い計算や、範囲外の値の `log` など片方の枝でしか意味を持たない計算を避けたい）ときに、`cond*` を明示的に呼ぶ。
+**cond\*（条件分岐）**（`src/cond.lisp`、`src/primitives/cond.lisp`、issue #130）: `(cond* pred then-fn else-fn &rest operands)`。`pred` が真なら `(then-fn operands...)`、偽なら `(else-fn operands...)` を評価する高階プリミティブ `:cond` で、eager では選ばれた枝のサブグラフだけを評価する（CL の `cond` と衝突するので名前は `cond*`）。`then-fn` / `else-fn` は `with-tracing` で作った関数で、普通のトレース対象の関数と同じく1つの値か多値を返し、`cond*` も同じ個数の多値を返す。両枝の出力の aval が一致しなければトレース時に `cond-error`（`tracing-error` の子。`pred` がトレーサなのに rank 0 の `:i1` でない場合、枝が `traceable-function` でない場合も）。枝が閉包で捕まえた外側のトレーサも使える（closure conversion。両枝は同一の入力シグネチャ「operands と両枝の捕捉値の和集合」を持ち、片方が使わない捕捉値の位置には使われない入力が置かれる）。operand はトレーサ・実数・dtype を推論できる配列（`:f32` / `:f64` / `:i1` / `:i32` / `:u32` / `:u64`。bf16 / f16 の生の配列はトレーサで渡す。違えば `cond-error`）。枝の引数の個数が operand の個数と違うときも `cond-error`。`pred` が `t` / `nil` / rank 0 の bit 配列なら、選ばれた枝をそのまま呼ぶ（eqn は作らない）。StableHLO は `stablehlo.if`（IREE でコンパイル・実行できることを medium テストで確認）。jvp / transpose / grad のルールは #134（`src/ad/rules-control.lisp`）、バッチ化ルールは下の「制御構造のバッチ化」。**`with-tracing` の `if` は `cond*` に落とさず、これまでどおり `select` のままにする**: `if` の条件は要素ごとの `:i1` 配列でありうるので、`select`（要素ごとの意味）を保つ必要がある。スカラー条件で片枝だけを評価したい（重い計算や、範囲外の値の `log` など片方の枝でしか意味を持たない計算を避けたい）ときに、`cond*` を明示的に呼ぶ。
 
 
 
 <!-- フェーズ3 anchor: issue #131 -->
-**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry のリストを返す（JAX の `lax.while_loop`）。`init` は配列（トレース中はトレーサでもよい）の空でないリストで、`cond-fn` / `body-fn` は carry のリストを1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ aval（個数・shape・dtype）のリストを返す。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` がリストでない・空・要素が配列でない、関数でない、`body-fn` がリストを返さない）、`while-loop-carry-mismatch`（`body-fn` の出力の aval が `init` と違う。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、原因のプリミティブ名 `:while-loop` を持つ `no-jvp-rule`（`autodiff-error` の子）になる。jvp のみの対応は #134。
+**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry のリストを返す（JAX の `lax.while_loop`）。`init` は配列（トレース中はトレーサでもよい）の空でないリストで、`cond-fn` / `body-fn` は carry のリストを1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ aval（個数・shape・dtype）のリストを返す。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` がリストでない・空・要素が配列でない、関数でない、`body-fn` がリストを返さない）、`while-loop-carry-mismatch`（`body-fn` の出力の aval が `init` と違う。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。前進モードの jvp には対応する（`src/ad/rules-control.lisp`、issue #134。接線を持つ carry の接線を carry に足した `while-loop` にする。最初は接線がゼロの carry も本体を通ると非ゼロになりうるので、JAX と同じく不動点まで広げる）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、プリミティブ名 `:while-loop` を含む `autodiff-error` になる。
 
 
 
 <!-- フェーズ3 anchor: issue #132 -->
+
+#### scan（issue #132）
+
+`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。順方向・jvp（#135、下記）・`grad`（#139、下記）に対応し、`vmap` は #140 まで `vmap-error`。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
 
 
 
@@ -264,9 +268,13 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #134 -->
 
+**制御構造の jvp**（`src/ad/rules-control.lisp`、issue #134）: `cond` の jvp ・transpose ルールと `while-loop` の jvp ルール（前進モードのみ）。`cond*` は `grad` / `jvp` を通せる: jvp は主値の `:cond`（残差を枝の出力として出す）と、接線について線形な `:cond` の2つの eqn にし、`grad` は線形な `:cond` の各枝を転置する（JAX の `_cond_partial_eval` / `_cond_transpose` の写し）。公開 API の追加は無い（`grad` の逆モードは `while-loop` を通すと `autodiff-error`）。
+
 
 
 <!-- フェーズ3 anchor: issue #135 -->
+
+**scan の jvp ルール**（`src/ad/rules-scan.lisp`、issue #135。内部のみで export は無い）: `:scan` の jvp ルールは JAX の `_scan_jvp` と同じ形で、本体を `jvp-graph` した「主値と接線を一緒に回す1つの `scan`」を作る（ループを2回回さない）。並びは consts ++ 接線のある consts の接線、carry ++ 接線のある carry の接線、xs ++ 接線のある xs の接線（出力は 最終 carry ++ その接線 ++ ys ++ ys の接線）。symbolic zero の接線は入力にも出力にもならない。carry の接線の有無は本体を通ると変わりうる（初期の接線がゼロでも、本体で非ゼロの接線を受ければ次のステップで非ゼロ）ので、「非ゼロの接線を持つ carry の集合」を増えなくなるまで広げる（不動点）。逆モードは次の段落。
 
 
 
@@ -285,7 +293,7 @@ JAX の `jax.random` と同じ、明示的なキー渡しの PRNG。キーは `:
 | `(normal key shape &key dtype)` | 標準正規分布の乱数（`dtype` は `:f32`（既定）/ `:f64`） |
 | `prng-error` | 不正な引数のコンディション |
 
-eager でも `jit` / `grad` / `vmap` の中でも使える。#140 以降は、`vmap` でキーをバッチすると各要素はそのキーで単独に呼んだ結果とビット単位で一致する（`(vmap (with-tracing (k) (uniform k '(3))))` を `(split key 8)` に適用する、など）。
+eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーをバッチすると各要素はそのキーで単独に呼んだ結果とビット単位で一致する（`(vmap (with-tracing (k) (uniform k '(3))))` を `(split key 8)` に適用する、など）。
 
 決めたこと:
 
@@ -314,13 +322,20 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。#140 以降は、`v
 
 <!-- フェーズ3 anchor: issue #139 -->
 
+**scan の逆モード（partial eval と transpose）**（`src/ad/partial-eval.lisp`、`src/ad/rules-scan-reverse.lisp`、issue #139。内部のみで export は無い）: `linearize-graph` は、jvp した graph を接線への依存で主値側と線形側に分ける前に、プリミティブごとの partial eval ルール（`set-partial-eval-rule`）で eqn を置き換える。`:scan` のルールは JAX の `_scan_partial_eval` と同じで、jvp した1つの scan を「主値と各ステップの残差（`ys` として積む）を計算する scan」と「残差を `xs`、ループ不変な残差を `consts` として受ける、接線について線形な scan」に分ける。未知（接線に依存する）carry の集合は不動点まで広げる。ループ不変な残差（consts と本体の定数だけで決まる値。閉包で捕まえたホストの配列は本体の定数なので不変）は積まず、scan の外で（必要なら計算して）渡す。`:scan` の transpose ルールは JAX の `_scan_transpose` と同じで、線形な scan を `reverse` を反転した scan にし（carry の余接線は carry、`xs` の余接線は `ys`、consts の余接線は carry に足し込む和）、`ys` の余接線が symbolic zero なら `xs` に積まず本体の中でゼロを作る。carry が線形入力に依存しない scan（主値と接線が混ざった scan）の transpose は `autodiff-error`。これで `grad` は scan を通る。
+
+
 
 
 <!-- フェーズ3 anchor: issue #140 -->
 
+**制御構造のバッチ化**（`src/ad/rules-batch-control.lisp`、issue #140。JAX の `_cond_batching_rule` / `_while_loop_batching_rule` に倣う）: 本体のサブグラフを再帰的に `vmap` する（`%vmap-subgraph`）。`cond*`: 条件がバッチされなければ、両枝を同じ入力のバッチ軸でバッチ化した `:cond` のままにし、どちらかの枝でバッチされる出力は両枝でバッチして先頭に揃える。条件がバッチされると、片方の枝だけを評価する性質は失われ、両枝を評価して `select` で選ぶ。`while-loop`: 「バッチされる carry の集合」を、本体の出力でバッチされる carry（最初はバッチされない carry が本体でバッチされる場合）を足しながら不動点まで広げ、バッチされる carry は軸 0 に揃える。loop 不変の（閉包で捕まえた）値は元のバッチ軸のまま素通しする。条件がバッチされると（全 carry がバッチされる）、どれかの要素の条件が真の間回し（`convert` + `reduce-max` + `compare`）、条件が偽になった要素の carry は `select` で据え置く。`scan`: 本体を同じ不動点でバッチ化する。consts は元のバッチ軸のまま、バッチされる carry は軸 0、`xs` のバッチ軸は走査の軸（先頭）とぶつからないよう 1 に動かし、`ys` のバッチ軸も 1 に出る（`out-axes` で動かす）。
+
 
 
 <!-- フェーズ3 anchor: issue #141 -->
+
+**RNN を scan で学習する例**（`examples/rnn.lisp`、issue #141）: Elman RNN（`h' = tanh(h W_h + x_t W_x + b)`、最後の隠れ状態から線形層、損失は平均二乗誤差）を `scan` で書き、`(jit (with-tracing ... (value-and-grad loss :argnums '(0 1 2 3 4))))` をループの外で1回だけ作って SGD で学習する。バッチは `vmap` ではなく `dot` の行方向で持つ（系列は `(T B D)`、T=8 B=4 D=4 H=8 O=2）。`tests/iree/rnn-train-test.lisp` が、JAX（`jax.lax.scan`）のフィクスチャ（`tests/fixtures/rnn/rnn-sgd.lisp`、生成は `generate.py`）との1ステップ目の損失・勾配と30ステップの損失の軌跡の一致、損失の減少、コンパイルが1回だけであることを確かめる。
 
 
 

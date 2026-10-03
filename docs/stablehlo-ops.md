@@ -93,6 +93,17 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 
 既知の制限（IREE 3.11 のコンパイラのバグ。issue #131 のレビューで確認）: 本体の中で比較から作った値（`:i1` のフラグ、またはそれを `i32` に変換・`select` した値）を carry にした while の結果が関数の戻り値になると、コンパイラが LLVM の `out of memory` / メモリフォルトでプロセスごと落ちる（`:i1` を `i32` として通す・`optimization_barrier` を挟む、のどれでも直らない）。戻り値にしない場合（フラグはループの継続判定にだけ使う）は動く。eager と PJRT は影響を受けない。nabla 側では防げないので、このような while の結果は jit の戻り値にしない。`tests/iree/while-loop-test.lisp` の子プロセスのテストが、このバグが IREE に残っていることを守る（直れば失敗するので、この注意書きごと消す）。
 
+もう1つの既知のバグ（IREE 3.11 のコンパイラ。issue #134 の jvp の CI で見つかった。上の `:i1` の carry のバグとは別）: `stablehlo.while` で、cond を駆動する carry（カウンタ）の初期値が `stablehlo.constant` で、ほかに carry が 2 つ以上あり、そのうち少なくとも 1 つが rank 1 以上のとき、コンパイラが非決定的に SIGSEGV / SIGBUS で落ちる（単体の `iree-compile` で 10 回中 6 回、定数の carry を 2 つにした最小の形では 10 回中 10 回）。単純な while の jvp（接線の carry が増える）がこの形になる。バックトレース（`ScheduleAllocationPass` の AffinityAnalysis）:
+
+```
+mlir::iree_compiler::Explorer::getTraversalAction(mlir::Operation*)
+mlir::iree_compiler::Explorer::walkTransitiveUses(mlir::Value, ...)
+mlir::iree_compiler::IREE::Stream::ValueConsumerAffinityPVS::updateValue(mlir::Value, mlir::iree_compiler::DFX::Solver&)
+mlir::iree_compiler::DFX::Solver::updateElement(...)
+```
+
+回避策（nabla 側で入れてある）: while のオペランドのうち graph の定数（`stablehlo.constant` で出す値）のものを、while の前の `stablehlo.optimization_barrier` に通す（`src/while-loop.lisp` の `%while-barrier-lines`。値は変わらない）。実際の jvp の graph と最小の形で 10 回中 0 回に減ることを確かめた（引数のオペランドは通さない）。`tests/iree/while-loop-test.lisp`（medium）の、定数の carry を持つ生の StableHLO が今も落ちることを子プロセスで確かめるテストが、このバグが IREE に残っていることを守り（直れば失敗するので、回避策・このテスト・この注意書きを消す）、barrier 付きの StableHLO が 10 回続けてコンパイルできることを別のテストが確かめる。
+
 ### 制御構造（issue #130）
 
 | op | 形 | nabla プリミティブ名 | 備考 |
@@ -127,6 +138,25 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
   引数として使える（issue #72 の `to-device`）。iree-run-module では
   `4xi8=1,0,1,0` と書けば通り、i1 の返り値は `4xi8=1 0 1 0` と表示される
   （issue #72 で確認）
+
+## scan が使う op（issue #132）
+
+`scan` プリミティブ（`src/scan.lisp`）は、次の op を `:emit` の中だけで使う（IR のプリミティブではない）。IREE（`iree-3.11.0`）が受け付けることは `tests/iree/scan-test.lisp` で確かめている。
+
+| op | 綴り（form） | 用途 |
+| --- | --- | --- |
+| while | `%n, %c, %y = "stablehlo.while"(%i0, %init, %ybuf) ({ ^bb0(...): ... stablehlo.return %p : tensor<i1> }, { ^bb0(...): ... stablehlo.return ... })` | ループ本体。carry の先頭に `tensor<i32>` のカウンタ、末尾に ys のバッファを足す。consts は外側の SSA 名をリージョンの中から直接参照する |
+| compare | `%p = stablehlo.compare LT, %i, %len : (tensor<i32>, tensor<i32>) -> tensor<i1>` | cond: カウンタ < length |
+| dynamic_slice | `%s = stablehlo.dynamic_slice %xs, %idx, %z, sizes = [1, 3] : (tensor<4x3xf32>, tensor<i32>, tensor<i32>) -> tensor<1x3xf32>` | x_t を読む（先頭の軸だけ動的、他の添字は 0） |
+| reshape | `%x = stablehlo.reshape %s : (tensor<1x3xf32>) -> tensor<3xf32>` | 先頭の軸 1 を落とす / y_t に足す |
+| dynamic_update_slice | `%w = stablehlo.dynamic_update_slice %ybuf, %y1, %idx, %z : (tensor<4x3xf32>, tensor<1x3xf32>, tensor<i32>, tensor<i32>) -> tensor<4x3xf32>` | y_t を ys のバッファに書く |
+| subtract / add | `%idx = stablehlo.subtract %last, %i : tensor<i32>` | reverse の添字 `length-1-i` / カウンタの増分 |
+
+IREE 3.11 のコンパイラバグの回避: cond を決める carry が `stablehlo.constant` で初期化された `stablehlo.while`（他に carry が2つ以上、うち1つは rank 1 以上）は、Stream の AffinityAnalysis（ScheduleAllocationPass）が非決定的に segfault する。scan の while はこの形なので、カウンタと ys の0初期値は `stablehlo.optimization_barrier` を通してから while に渡す。ただし長さ 1 の scan は IREE が while を `scf.for` に変換し、barrier があると `stream.resource` の型の不一致でコンパイルに失敗するので、barrier を付けない（長さ 1 ではクラッシュしない）。バグの詳細は制御構造の節（PR #157）を参照。
+
+性能の注意（issue #159）: IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピーするので、ys を持つ scan は長さに対して2乗で遅くなる。実測（IREE local、f32）は n=1000, w=1024 で ys ありが 1638 ms、ys なしが 31 ms、n=4000, w=1024 で約 39.7 s。長い系列の ys は、必要でなければ出さない。改善は #159 で扱う。
+
+長さ 0 の scan は、`dynamic_slice` の切り出し幅 1 が長さ 0 の軸を超えて不正になるので `while` を出さない。carry は入力と同じ型の `stablehlo.reshape` で素通しにし、ys は `stablehlo.constant dense<> : tensor<0x...>` にする（この形を IREE が受け付けることを確認済み）。
 
 ## フィクスチャとテスト
 

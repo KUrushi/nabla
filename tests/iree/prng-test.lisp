@@ -6,7 +6,7 @@
 ;;;; - jit した uniform / normal / split / fold-in が eager と一致する（整数の split / fold-in は
 ;;;;   ビット単位、浮動小数点は許容誤差つき。f32 は exp / log の実装の差と乗加算の融合があり得るので
 ;;;;   rtol 1e-4。normal の裾（erf の逆関数が大きくなる所）で差が増幅される）。
-;;;; - vmap でバッチしたキーの jit（複数出力の eqn を vmap が歩けるようになる #140 まではスキップ）。
+;;;; - vmap でバッチしたキーの jit。
 
 (in-package #:nabla.iree.tests)
 
@@ -104,12 +104,8 @@
     (gc-and-run-finalizers)))
 
 (define-iree-test iree/prng/jit-vmap-over-keys-matches-per-key-calls
-  "(jit (vmap f)) でキーをバッチした結果が、各キーで単独に eager で呼んだ結果と一致する
-（複数出力の eqn を vmap が歩けるようになる #140 まではスキップする）。"
+  "(jit (vmap f)) でキーをバッチした結果が、各キーで単独に eager で呼んだ結果と一致する。"
   (skip-unless-iree :library :both)
-  (unless (vmap-walks-multiple-outputs-p)
-    (fiveam:skip "PENDING-140: vmap はまだ複数出力の eqn を歩けない")
-    (return-from iree-test))
   (let* ((backend (nabla:find-backend :iree))
          (nb:*compile-cache-directory* nil)
          (f (nb:with-tracing (k) (nb:uniform k '(4 3))))

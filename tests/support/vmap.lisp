@@ -73,16 +73,6 @@ TRACEABLE-FUNCTION。トレーサが渡れば eqn を足し、配列だけなら
          (apply (nb::primitive-eager (nb::find-primitive name))
                 args (mapcar #'nb:array-aval args) params)))))
 
-(defun vmap-walks-multiple-outputs-p ()
-  "今の vmap が、複数出力の eqn（rng-bit-generator）を含む関数を歩けるか。歩けない理由が
-「複数の出力」の VMAP-ERROR のときだけ NIL を返し、それ以外のエラーはそのまま signal する。
-複数出力の eqn のバッチ化は #140 で入る。それまで、PRNG のキーのバッチ（issue #136）の
-テストはこれが NIL のときスキップする。"
-  (handler-case
-      (progn (funcall (nb:vmap (nb:with-tracing (k) (nb:uniform k '(2))))
-                      (nb:split (nb:prng-key 0) 2))
-             t)
-    (nb:vmap-error (condition)
-      (if (search "複数の出力" (princ-to-string condition))
-          nil
-          (error condition)))))
+(defun axis-at (shape size axis)
+  "SHAPE の AXIS の位置に長さ SIZE の軸を足した形。"
+  (append (subseq shape 0 axis) (list size) (nthcdr axis shape)))

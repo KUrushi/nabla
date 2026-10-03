@@ -181,12 +181,15 @@ TRACER をそのまま返す。"
       (dim (%vmap-move-axis tracer dim (%vmap-normalize-axis spec rank "OUT-AXES")))
       (t (%vmap-broadcast-batch tracer (%vmap-normalize-axis spec rank "OUT-AXES") size)))))
 
-(defun %vmap-walk (graph tracers dims size out-axes)
+(defun %vmap-walk-values (graph tracers dims size)
   "GRAPH（f をバッチ軸なしでトレースしたもの）の eqn を現在のトレースに、バッチ化して
-発行し直し、出力のトレーサのリストを返す。TRACERS は現在のトレースの GRAPH-INVARS
-に対応するトレーサ（バッチ軸を持つ）、DIMS はその軸（無ければ NIL）、SIZE はバッチ軸の長さ。
-OUT-AXES は出力ごとの軸指定（整数か NIL。正規化前。個数は呼び出し側 %VMAP-CALL が
-%VMAP-PER-ITEM で出力の個数に揃えてある）のリスト。"
+発行し直し、(VALUES OUT-TRACERS OUT-DIMS)（GRAPH-OUTVARS ごとのトレーサと、そのバッチ軸
+（無ければ NIL））を返す。TRACERS は現在のトレースの GRAPH-INVARS に対応するトレーサ
+（バッチ軸を持つ）、DIMS はその軸（無ければ NIL）、SIZE はバッチ軸の長さ。
+複数出力の eqn（制御構造。契約 C1）も扱う: バッチされていない入力だけならそのまま
+%TRACE-EQN* で発行し直し、そうでなければルールが出力ごとのリストを返す。
+cond / while-loop / scan のルールも、本体のサブグラフをこの関数で再帰的に
+バッチ化する（rules-batch-control.lisp の %VMAP-SUBGRAPH）。"
   (let ((env (make-hash-table :test 'eq)))
     (loop for tracer in tracers for dim in dims for invar in (graph-invars graph)
           do (setf (gethash invar env) (cons tracer dim)))
@@ -198,23 +201,29 @@ OUT-AXES は出力ごとの軸指定（整数か NIL。正規化前。個数は�
              (args (mapcar #'car entries))
              (arg-dims (mapcar #'cdr entries))
              (prim (eqn-prim eqn)))
-        (unless (= 1 (length (eqn-outvars eqn)))
-          (%vmap-error "~S は複数の出力を持つ eqn で、vmap はまだ対応していない（制御構造のバッチ化は #140）"
-                       (primitive-name prim)))
         (if (notany #'identity arg-dims)
             ;; バッチされていない入力だけ: ルールを呼ばずにそのまま発行し直す。
-            (let ((result (apply #'%trace-eqn (primitive-name prim) args (eqn-params eqn))))
-              (setf (gethash (first (eqn-outvars eqn)) env) (cons result nil)))
+            (let ((results (apply #'%trace-eqn* (primitive-name prim) args (eqn-params eqn))))
+              (loop for var in (eqn-outvars eqn) for result in results
+                    do (setf (gethash var env) (cons result nil))))
             (multiple-value-bind (outs out-dims)
                 (apply (require-batch-rule prim) args arg-dims (eqn-params eqn))
               (%vmap-check-rule-result eqn outs out-dims size)
               (loop for var in (eqn-outvars eqn) for out in outs for dim in out-dims
                     do (setf (gethash var env) (cons out dim)))))))
-    (let ((outvars (graph-outvars graph)))
-      (loop for var in outvars
-            for spec in out-axes
-            collect (destructuring-bind (tracer . dim) (gethash var env)
-                      (%vmap-finish-output tracer dim var spec size))))))
+    (let ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph))))
+      (values (mapcar #'car entries) (mapcar #'cdr entries)))))
+
+(defun %vmap-walk (graph tracers dims size out-axes)
+  "%VMAP-WALK-VALUES で GRAPH をバッチ化して発行し直し、出力ごとに OUT-AXES（整数か NIL。
+正規化前。個数は呼び出し側 %VMAP-CALL が %VMAP-PER-ITEM で出力の個数に揃えてある）の
+位置へ動かした、出力のトレーサのリストを返す。"
+  (multiple-value-bind (outs out-dims) (%vmap-walk-values graph tracers dims size)
+    (loop for out in outs
+          for dim in out-dims
+          for var in (graph-outvars graph)
+          for spec in out-axes
+          collect (%vmap-finish-output out dim var spec size))))
 
 (defun %vmap-batch-dims (specs avals)
   "引数ごとの IN-AXES 指定 SPECS を、正規化したバッチ軸（無ければ NIL）のリストにする。"
@@ -284,7 +293,7 @@ graph を呼び出し元のトレースへ展開する。バッチされてい�
 既知の制限: F が外側のトレースのトレーサを閉包で捕まえていると TRACING-ERROR になる。
 外側の値は F の引数として渡すこと。F はトレーサ・配列・実数を返す（多値は可）が、リストは
 返せない（必要なら (WITH-TRACING (...) (VALUES-LIST ...)) で包む）。複数出力の eqn を
-持つ F（制御構造）は、#140 までは VMAP-ERROR になる。jit した関数を渡すと、中の
+持つ F（cond* / while-loop / scan）も使える（本体のサブグラフを再帰的にバッチ化する）。jit した関数を渡すと、中の
 TRACEABLE-FUNCTION だけを使い、その JIT の :BACKEND は無視される（GRAD と同じ）。
 
 注意: (VMAP F) は呼ぶたびに新しい関数オブジェクトを作る。JIT キャッシュは関数の同一性が

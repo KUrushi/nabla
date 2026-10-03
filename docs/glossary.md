@@ -286,6 +286,9 @@ pretty form を出力する。
 
 <!-- フェーズ3 anchor: issue #132 -->
 
+**scan（制御構造）**
+: 配列の先頭の軸に沿って、状態（carry）を持ち回しながら関数を回す高階プリミティブ。JAX の `lax.scan` に相当し、RNN のように「前のステップの出力を次のステップの入力にする」計算を、Lisp のループを展開せずに1つの eqn で表す。eqn の params は JAX と同じく `num-consts`（ループ不変な入力の個数）、`num-carry`、`length`、`reverse`、本体のサブグラフ（入力は consts ++ carry ++ x_t、出力は carry ++ y_t）。StableHLO では `:i32` のカウンタを carry に足した `stablehlo.while` に落とし、x_t は `dynamic_slice`、y_t は `dynamic_update_slice` で読み書きする。
+
 
 
 <!-- フェーズ3 anchor: issue #133 -->
@@ -299,9 +302,17 @@ Threefry は、鍵とカウンタから乱数のビット列を作るカウン�
 
 <!-- フェーズ3 anchor: issue #134 -->
 
+### 不動点（fixpoint、while-loop の jvp）
+
+`while-loop` の jvp で、「接線が非ゼロの carry の集合」を求める計算。最初は接線がゼロの carry も、本体を1回通ると他の carry の接線が流れ込んで非ゼロになりうる。そこで、本体を jvp 変換して出力の接線が非ゼロの carry を集合に足す、を集合が変わらなくなるまで繰り返す（集合は増える一方なので有限回で止まる）。JAX の `_while_loop_jvp` と同じ。実装は `src/ad/rules-control.lisp`。
+
 
 
 <!-- フェーズ3 anchor: issue #135 -->
+
+### carry の接線の不動点（fixed point）
+
+`scan` を jvp（前向きモード微分）するとき、どの carry が非ゼロの接線を持つかは、ループの本体を通ると変わりうる。たとえば `g' = 0.9 g + h` の `g` は、初期の接線がゼロでも、`h` の接線が非ゼロなら次のステップの `g` の接線は非ゼロになる。そこで「非ゼロの接線を持つ carry の集合」を、本体を jvp してはその結果で集合を広げる、を集合が増えなくなるまで繰り返す。集合は増えるだけで carry の個数が上限なので必ず止まり、止まった集合（不動点）が、jvp した `scan` の carry の接線の組になる。JAX の `_scan_jvp` の `carry_nz` と同じ。→ `src/ad/rules-scan.lisp`
 
 
 
@@ -334,9 +345,16 @@ nabla の PRNG は JAX と同じ「明示的なキー渡し」で、グローバ
 
 <!-- フェーズ3 anchor: issue #139 -->
 
+### partial eval（部分評価）とループ不変な残差
+
+jvp した graph を、主値だけで決まる部分（既知）と接線に依存する部分（未知）に分けること。`scan` の jvp は主値と接線を1つのループで計算するので、そのままでは「接線について線形」な部分だけを取り出して転置できない。そこで `scan` を、主値と各ステップの残差（接線の係数になる中間値。ステップごとに `ys` として積む）を計算する scan と、残差を `xs` で受けて接線だけを回す線形な scan に分ける（JAX の `_scan_partial_eval`）。残差のうち、ループの外の値（consts や本体の定数）だけで決まるもの（ループ不変な残差）は、ステップごとに積まず、`consts` としてそのまま渡す。線形な scan を `reverse` を反転した scan にしたものが、逆モード（BPTT）の本体になる。→ `src/ad/rules-scan-reverse.lisp`
+
 
 
 <!-- フェーズ3 anchor: issue #140 -->
+
+**バッチされる carry の不動点（制御構造の vmap）**
+: `while-loop`（と `scan`）の本体を `vmap` するとき、最初はバッチされない carry が、本体でバッチされた値と混ざってバッチされることがある。すると次の反復の入力が変わるので、本体を何度かバッチ化し直して「バッチされる carry の集合」が変わらなくなるまで広げる。この変わらなくなった状態が不動点。jvp で「接線が非ゼロの carry の集合」を不動点まで広げるのと同じ形。
 
 
 

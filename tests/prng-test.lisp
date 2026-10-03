@@ -7,9 +7,8 @@
 ;;;;   *PRNG-ALPHA*（シードを選び直したときに誤って落ちる確率）。
 ;;;; - トレースの中（with-tracing の graph を eager 評価）でも、eager と同じ値になる。
 ;;;; - バッチ化: rng-bit-generator のバッチ化ルールが、各要素を単独に呼んだ結果と一致する。
-;;;;   vmap でキーをバッチした結果は、複数出力の eqn を vmap が歩けるようになる（#140）まで
-;;;;   は、そのこと自体を確かめるテスト（prng/vmap-over-keys-matches-per-key-calls）が
-;;;;   PENDING-140 の理由でスキップされる。
+;;;;   vmap でキーをバッチした結果が、各キーで単独に呼んだ結果と一致すること自体は
+;;;;   prng/vmap-over-keys-matches-per-key-calls が確かめる。
 ;;;; eager と IREE / PJRT の一致は tests/iree/prng-test.lisp / tests/pjrt/prng-test.lisp（medium）。
 
 (in-package #:nabla.tests)
@@ -453,7 +452,7 @@ slice も concatenate も出さない。"
                     transposed)))
       (is (equalp result (first flat))))))
 
-;;; vmap（複数出力の eqn を歩けるようになる #140 まではスキップ）
+;;; vmap
 
 (defun %check-vmap-over-keys (name fn-of-key &key (rows 4))
   "(vmap FN-OF-KEY) をキー行列に適用した結果が、各行を単独に FN-OF-KEY した結果と一致する。"
@@ -464,12 +463,9 @@ slice も concatenate も出さない。"
 
 (test prng/vmap-over-keys-matches-per-key-calls
   "vmap でキーをバッチすると、各要素はそのキーで単独に呼んだ結果と一致する
-（uniform / normal / split / fold-in。ビット単位）。複数出力の eqn を vmap が歩けるようになる
-（#140）までは PENDING-140 でスキップする（そのときのルール単体の性質は
-prng/rng-batch-rule-matches-per-state-calls が確かめる）。"
-  (if (not (vmap-walks-multiple-outputs-p))
-      (skip "PENDING-140: vmap はまだ複数出力の eqn を歩けない")
-      (progn
+（uniform / normal / split / fold-in。ビット単位）。入れ子の vmap と、キーをバッチしない引数との
+組み合わせも含む（ルール単体の性質は prng/rng-batch-rule-matches-per-state-calls）。"
+  (progn
         (%check-vmap-over-keys "uniform f32" (nb:with-tracing (k) (nb:uniform k '(3 2))))
         (%check-vmap-over-keys "uniform f64 範囲つき"
                                (nb:with-tracing (k) (nb:uniform k '(5) :dtype :f64 :minval -2 :maxval 3)))
@@ -491,4 +487,4 @@ prng/rng-batch-rule-matches-per-state-calls が確かめる）。"
                (batched (funcall (nb:vmap f :in-axes '(0 0)) keys x)))
           (is (allclose batched
                         (first (reference-vmap f (list keys x)))
-                        :dtype :f32))))))
+                        :dtype :f32)))))

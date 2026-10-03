@@ -157,6 +157,7 @@
 
 
    ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のexportはこの下に足す
+   #:scan #:scan-error #:scan-carry-mismatch #:scan-length-error
 
 
 

@@ -14,7 +14,7 @@
 ;;;; （%STABLEHLO-REGION-LINES の :ARG-NAMES）。
 ;;;;
 ;;;; eager は pred を見て、選ばれた枝のサブグラフだけを EVAL-GRAPH する。
-;;;; jvp / transpose ルールは issue #134。それまでは no-jvp-rule になる。
+;;;; jvp / transpose ルールは src/ad/rules-control.lisp（issue #134）。
 ;;;; 公開 API（COND* と枝の検査）は src/cond.lisp。
 
 (in-package #:nabla)
