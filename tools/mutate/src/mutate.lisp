@@ -92,7 +92,7 @@ keyword やシンボルの比較では常に等価変異体になるだけなの
   '(("PROGN" 1) ("WHEN" 2) ("UNLESS" 2) ("LET" 2) ("LET*" 2) ("FLET" 2)
     ("LABELS" 2) ("DOLIST" 2) ("DOTIMES" 2) ("LAMBDA" 2) ("HANDLER-BIND" 2)
     ("MULTIPLE-VALUE-BIND" 3) ("DESTRUCTURING-BIND" 3) ("DEFUN" 3) ("DEFMACRO" 3)
-    ("DEF-JVP-RULE" 3) ("DEF-TRANSPOSE-RULE" 3)
+    ("DEF-JVP-RULE" 3) ("DEF-TRANSPOSE-RULE" 3) ("DEF-BATCH-RULE" 3)
     ("UNWIND-PROTECT" 2 t))
   ":delete-form が本体とみなす位置。(先頭シンボル名 本体の開始位置
 [最後のフォームも消してよいか])。最後のフォームは返り値なので、

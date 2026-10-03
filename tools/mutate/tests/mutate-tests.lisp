@@ -256,3 +256,18 @@ format の制御文字列）は、出力するトークン（演算名など）�
                (nabla.mutate:mutation-sites
                 (read-from-string "(def-jvp-partials foo (lambda (primals out) (g out) (+ primals)))")
                 :arith-swap)))))
+
+(test batch-rule-definitions-are-mutable-and-bodies-deletable
+  "def-batch-rule（vmap のバッチ化ルール）も def-jvp-rule と同じく変異対象で、
+名前とラムダリスト（args batch-dims &key ...）の後が本体。declare と最後の
+フォームは消さない。ルール本体の式にも変異体ができる。"
+  (is-true (nabla.mutate:mutable-definition-p
+            (list (intern "DEF-BATCH-RULE" :nabla.mutate.tests) 'foo)))
+  (let ((rule (read-from-string
+               "(def-batch-rule foo (args batch-dims &key k) (declare (ignore k)) (g args) (h batch-dims))")))
+    (is (equal (read-from-string
+                "((def-batch-rule foo (args batch-dims &key k) (declare (ignore k)) (h batch-dims)))")
+               (nabla.mutate:mutation-sites rule :delete-form))))
+  (let ((rule (read-from-string "(def-batch-rule foo (args batch-dims) (values (list (+ 1 2)) batch-dims))")))
+    (is (equal (read-from-string "((def-batch-rule foo (args batch-dims) (values (list (- 1 2)) batch-dims)))")
+               (nabla.mutate:mutation-sites rule :arith-swap)))))
