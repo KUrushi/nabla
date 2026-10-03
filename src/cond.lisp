@@ -77,8 +77,9 @@ vmap: PRED がバッチされなければ両枝をバッチ化した :cond の�
 SELECT で選ぶ。JAX と同じ）。重い計算や範囲外の値の log を片枝に隠している場合は、
 バッチされた条件ではその計算が全要素で実行される。
 
-jvp / transpose（grad）のルールはまだ無く、COND* を通した grad は
-NO-JVP-RULE（名前は :COND）になる。"
+微分: jvp / transpose / grad に対応する（src/ad/rules-control.lisp、issue #134）。
+jvp は主値の :cond と接線の線形な :cond の2つの eqn になり、grad は線形な :cond を
+枝ごとに転置する。"
   (flet ((check-branch (branch what)
            (unless (typep branch 'traceable-function)
              (%cond-error "COND* の ~A は TRACEABLE-FUNCTION（WITH-TRACING で作る）でなければならない: ~S"

@@ -258,8 +258,9 @@ carry も ys も無い、で SCAN-ERROR。"
     (signals nb:scan-error
       (nb:scan (nb:with-tracing (c x) c x (values '() '())) '() '() :length 1))))
 
-(test scan/grad-reports-missing-jvp-rule
-  "scan を通る grad は、jvp ルールが無いことを :scan の名前つきの NO-JVP-RULE で報告する。"
+(test scan/grad-reports-missing-transpose-rule
+  "scan を通る grad は、jvp ルールはある（#135）が transpose ルールが無いこと（#139 で足す）を
+:scan の名前つきの NO-TRANSPOSE-RULE で報告する。"
   (let ((f (nb:with-tracing (h0)
              (multiple-value-bind (carry ys)
                  (nb:scan (nb:with-tracing (c x) x (values (list (tanh (first c))) '()))
@@ -267,8 +268,8 @@ carry も ys も無い、で SCAN-ERROR。"
                ys
                (first carry)))))
     (handler-case (funcall (nb:grad f) (%scan-one '()))
-      (nb::no-jvp-rule (c) (is (eq :scan (nb::no-jvp-rule-name c))))
-      (:no-error (&rest r) r (fail "no-jvp-rule が出なかった")))))
+      (nb:no-transpose-rule (c) (is (eq :scan (nb:no-transpose-rule-name c))))
+      (:no-error (&rest r) r (fail "no-transpose-rule が出なかった")))))
 
 ;;; ---- 回帰: carry が入力の x_t をそのまま返す（eager が行バッファを使い回さない） ----
 

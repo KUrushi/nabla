@@ -240,12 +240,12 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #130 -->
 
-**cond\*（条件分岐）**（`src/cond.lisp`、`src/primitives/cond.lisp`、issue #130）: `(cond* pred then-fn else-fn &rest operands)`。`pred` が真なら `(then-fn operands...)`、偽なら `(else-fn operands...)` を評価する高階プリミティブ `:cond` で、eager では選ばれた枝のサブグラフだけを評価する（CL の `cond` と衝突するので名前は `cond*`）。`then-fn` / `else-fn` は `with-tracing` で作った関数で、普通のトレース対象の関数と同じく1つの値か多値を返し、`cond*` も同じ個数の多値を返す。両枝の出力の aval が一致しなければトレース時に `cond-error`（`tracing-error` の子。`pred` がトレーサなのに rank 0 の `:i1` でない場合、枝が `traceable-function` でない場合も）。枝が閉包で捕まえた外側のトレーサも使える（closure conversion。両枝は同一の入力シグネチャ「operands と両枝の捕捉値の和集合」を持ち、片方が使わない捕捉値の位置には使われない入力が置かれる）。operand はトレーサ・実数・dtype を推論できる配列（`:f32` / `:f64` / `:i1` / `:i32` / `:u32` / `:u64`。bf16 / f16 の生の配列はトレーサで渡す。違えば `cond-error`）。枝の引数の個数が operand の個数と違うときも `cond-error`。`pred` が `t` / `nil` / rank 0 の bit 配列なら、選ばれた枝をそのまま呼ぶ（eqn は作らない）。StableHLO は `stablehlo.if`（IREE でコンパイル・実行できることを medium テストで確認）。jvp / transpose ルールはまだ無く（#134）、`cond*` を通した `grad` は `no-jvp-rule`（名前は `:cond`）になる。**`with-tracing` の `if` は `cond*` に落とさず、これまでどおり `select` のままにする**: `if` の条件は要素ごとの `:i1` 配列でありうるので、`select`（要素ごとの意味）を保つ必要がある。スカラー条件で片枝だけを評価したい（重い計算や、範囲外の値の `log` など片方の枝でしか意味を持たない計算を避けたい）ときに、`cond*` を明示的に呼ぶ。
+**cond\*（条件分岐）**（`src/cond.lisp`、`src/primitives/cond.lisp`、issue #130）: `(cond* pred then-fn else-fn &rest operands)`。`pred` が真なら `(then-fn operands...)`、偽なら `(else-fn operands...)` を評価する高階プリミティブ `:cond` で、eager では選ばれた枝のサブグラフだけを評価する（CL の `cond` と衝突するので名前は `cond*`）。`then-fn` / `else-fn` は `with-tracing` で作った関数で、普通のトレース対象の関数と同じく1つの値か多値を返し、`cond*` も同じ個数の多値を返す。両枝の出力の aval が一致しなければトレース時に `cond-error`（`tracing-error` の子。`pred` がトレーサなのに rank 0 の `:i1` でない場合、枝が `traceable-function` でない場合も）。枝が閉包で捕まえた外側のトレーサも使える（closure conversion。両枝は同一の入力シグネチャ「operands と両枝の捕捉値の和集合」を持ち、片方が使わない捕捉値の位置には使われない入力が置かれる）。operand はトレーサ・実数・dtype を推論できる配列（`:f32` / `:f64` / `:i1` / `:i32` / `:u32` / `:u64`。bf16 / f16 の生の配列はトレーサで渡す。違えば `cond-error`）。枝の引数の個数が operand の個数と違うときも `cond-error`。`pred` が `t` / `nil` / rank 0 の bit 配列なら、選ばれた枝をそのまま呼ぶ（eqn は作らない）。StableHLO は `stablehlo.if`（IREE でコンパイル・実行できることを medium テストで確認）。jvp / transpose / grad のルールは #134（`src/ad/rules-control.lisp`）、バッチ化ルールは下の「制御構造のバッチ化」。**`with-tracing` の `if` は `cond*` に落とさず、これまでどおり `select` のままにする**: `if` の条件は要素ごとの `:i1` 配列でありうるので、`select`（要素ごとの意味）を保つ必要がある。スカラー条件で片枝だけを評価したい（重い計算や、範囲外の値の `log` など片方の枝でしか意味を持たない計算を避けたい）ときに、`cond*` を明示的に呼ぶ。
 
 
 
 <!-- フェーズ3 anchor: issue #131 -->
-**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry のリストを返す（JAX の `lax.while_loop`）。`init` は配列（トレース中はトレーサでもよい）の空でないリストで、`cond-fn` / `body-fn` は carry のリストを1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ aval（個数・shape・dtype）のリストを返す。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` がリストでない・空・要素が配列でない、関数でない、`body-fn` がリストを返さない）、`while-loop-carry-mismatch`（`body-fn` の出力の aval が `init` と違う。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、原因のプリミティブ名 `:while-loop` を持つ `no-jvp-rule`（`autodiff-error` の子）になる。jvp のみの対応は #134。
+**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry のリストを返す（JAX の `lax.while_loop`）。`init` は配列（トレース中はトレーサでもよい）の空でないリストで、`cond-fn` / `body-fn` は carry のリストを1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ aval（個数・shape・dtype）のリストを返す。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` がリストでない・空・要素が配列でない、関数でない、`body-fn` がリストを返さない）、`while-loop-carry-mismatch`（`body-fn` の出力の aval が `init` と違う。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。前進モードの jvp には対応する（`src/ad/rules-control.lisp`、issue #134。接線を持つ carry の接線を carry に足した `while-loop` にする。最初は接線がゼロの carry も本体を通ると非ゼロになりうるので、JAX と同じく不動点まで広げる）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、プリミティブ名 `:while-loop` を含む `autodiff-error` になる。
 
 
 
@@ -253,7 +253,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### scan（issue #132）
 
-`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。この issue は順方向だけで、`grad` は `no-jvp-rule`（`:scan`）、`vmap` は #140 まで `vmap-error`。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
+`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。順方向と jvp（#135、下記）に対応し、`grad` は #139 まで `no-transpose-rule`（`:scan`）、`vmap` は #140 まで `vmap-error`。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
 
 
 
@@ -268,9 +268,13 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #134 -->
 
+**制御構造の jvp**（`src/ad/rules-control.lisp`、issue #134）: `cond` の jvp ・transpose ルールと `while-loop` の jvp ルール（前進モードのみ）。`cond*` は `grad` / `jvp` を通せる: jvp は主値の `:cond`（残差を枝の出力として出す）と、接線について線形な `:cond` の2つの eqn にし、`grad` は線形な `:cond` の各枝を転置する（JAX の `_cond_partial_eval` / `_cond_transpose` の写し）。公開 API の追加は無い（`grad` の逆モードは `while-loop` を通すと `autodiff-error`）。
+
 
 
 <!-- フェーズ3 anchor: issue #135 -->
+
+**scan の jvp ルール**（`src/ad/rules-scan.lisp`、issue #135。内部のみで export は無い）: `:scan` の jvp ルールは JAX の `_scan_jvp` と同じ形で、本体を `jvp-graph` した「主値と接線を一緒に回す1つの `scan`」を作る（ループを2回回さない）。並びは consts ++ 接線のある consts の接線、carry ++ 接線のある carry の接線、xs ++ 接線のある xs の接線（出力は 最終 carry ++ その接線 ++ ys ++ ys の接線）。symbolic zero の接線は入力にも出力にもならない。carry の接線の有無は本体を通ると変わりうる（初期の接線がゼロでも、本体で非ゼロの接線を受ければ次のステップで非ゼロ）ので、「非ゼロの接線を持つ carry の集合」を増えなくなるまで広げる（不動点）。`grad`（逆モード）は #139（scan の linearize と transpose）まで未対応で、`:scan` の `no-transpose-rule` になる（`linearize-graph` は、主値と接線を1つの eqn で計算する複数出力の eqn に transpose ルールが無ければ、壊れた graph を作らずこのコンディションで止める）。
 
 
 

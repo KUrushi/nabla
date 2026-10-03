@@ -302,9 +302,17 @@ Threefry は、鍵とカウンタから乱数のビット列を作るカウン�
 
 <!-- フェーズ3 anchor: issue #134 -->
 
+### 不動点（fixpoint、while-loop の jvp）
+
+`while-loop` の jvp で、「接線が非ゼロの carry の集合」を求める計算。最初は接線がゼロの carry も、本体を1回通ると他の carry の接線が流れ込んで非ゼロになりうる。そこで、本体を jvp 変換して出力の接線が非ゼロの carry を集合に足す、を集合が変わらなくなるまで繰り返す（集合は増える一方なので有限回で止まる）。JAX の `_while_loop_jvp` と同じ。実装は `src/ad/rules-control.lisp`。
+
 
 
 <!-- フェーズ3 anchor: issue #135 -->
+
+### carry の接線の不動点（fixed point）
+
+`scan` を jvp（前向きモード微分）するとき、どの carry が非ゼロの接線を持つかは、ループの本体を通ると変わりうる。たとえば `g' = 0.9 g + h` の `g` は、初期の接線がゼロでも、`h` の接線が非ゼロなら次のステップの `g` の接線は非ゼロになる。そこで「非ゼロの接線を持つ carry の集合」を、本体を jvp してはその結果で集合を広げる、を集合が増えなくなるまで繰り返す。集合は増えるだけで carry の個数が上限なので必ず止まり、止まった集合（不動点）が、jvp した `scan` の carry の接線の組になる。JAX の `_scan_jvp` の `carry_nz` と同じ。→ `src/ad/rules-scan.lisp`
 
 
 
