@@ -293,9 +293,18 @@ pretty form を出力する。
 
 <!-- フェーズ3 anchor: issue #133 -->
 
+**Threefry / rng_bit_generator**
+
+Threefry は、鍵とカウンタから乱数のビット列を作るカウンタベースの乱数生成法（Salmon ら 2011。nabla は32ビット2語の Threefry-2x32、20ラウンド）。状態を持たず、同じ鍵とカウンタからは常に同じビットが出るので、JAX と同じ「明示的なキー渡し」の PRNG の土台になる。`stablehlo.rng_bit_generator`（`algorithm = THREE_FRY`）は、状態 `ui64[2]`（鍵とカウンタ）から新しい状態と乱数ビットを返す StableHLO の op で、nabla では `rng-bit-generator` プリミティブが対応する。
+
+
 
 
 <!-- フェーズ3 anchor: issue #134 -->
+
+### 不動点（fixpoint、while-loop の jvp）
+
+`while-loop` の jvp で、「接線が非ゼロの carry の集合」を求める計算。最初は接線がゼロの carry も、本体を1回通ると他の carry の接線が流れ込んで非ゼロになりうる。そこで、本体を jvp 変換して出力の接線が非ゼロの carry を集合に足す、を集合が変わらなくなるまで繰り返す（集合は増える一方なので有限回で止まる）。JAX の `_while_loop_jvp` と同じ。実装は `src/ad/rules-control.lisp`。
 
 
 

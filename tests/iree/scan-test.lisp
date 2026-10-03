@@ -128,3 +128,30 @@ IREE と eager で一致する。"
                     (values (first carry) (first ys) (second ys))))
                 (list (nb:make-aval '(3) :bf16) (nb:make-aval '(4 3) :bf16)))))
     (%with-scan-iree-check (graph "bf16-i1") "IREE の bf16 / i1 の scan の結果が eager と一致しなかった")))
+
+;;; ---- IREE 3.11 の Stream AffinityAnalysis のクラッシュの回避（optimization_barrier） ----
+
+(define-iree-test scan/iree-repeated-jit-compiles-do-not-crash
+    "while のカウンタと ys の0初期値が constant のままだと、IREE 3.11 の Stream の
+AffinityAnalysis が非決定的に落ちる（docs/stablehlo-ops.md）。carry が2つ以上（rank 1 以上を
+含む）と ys を持つ scan を、ディスクキャッシュ無しで5回別々にコンパイルして実行しても
+落ちず、eager と一致する。"
+  (skip-unless-iree :library :both)
+  (let ((nb:*compile-cache-directory* nil)
+        (backend (nabla:find-backend :iree)))
+    (dotimes (i 5)
+      (let* ((f (nb:with-tracing (h s xs)
+                  (multiple-value-bind (carry ys)
+                      (nb:scan (nb:with-tracing (carry x)
+                                 (let ((h (first carry)) (s (second carry)) (u (first x)))
+                                   (values (list (+ (* h 0.5) u) (+ (* s 0.9) 0.9))
+                                           (list (* h 0.5)))))
+                               (list h s) (list xs) :reverse t)
+                    (values (first carry) (second carry) (first ys)))))
+             (h (make-random-array (make-array-spec '(3) :f32) :seed i))
+             (s (make-random-array (make-array-spec '() :f32) :seed (+ i 10)))
+             (xs (make-random-array (make-array-spec '(4 3) :f32) :seed (+ i 20)))
+             (jitted (nb:jit f :backend backend))
+             (actual (multiple-value-list (funcall jitted h s xs)))
+             (expected (multiple-value-list (funcall f h s xs))))
+        (is (every (lambda (a e) (allclose a e :dtype :f32)) actual expected))))))
