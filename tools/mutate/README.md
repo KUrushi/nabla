@@ -79,7 +79,7 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
 実行時間を倍にするだけのため。`eq` → `eql` / `equal` の向きの入れ替えは、
 keyword やシンボルの比較では常に等価変異体になるので入れていない。
 
-1つの変異可能な定義（`defun` / `defmethod` / `defmacro` / `defprimitive`、自動微分の `def-jvp-rule` / `def-transpose-rule` / `def-jvp-partials`）
+1つの変異可能な定義（`defun` / `defmethod` / `defmacro` / `defprimitive`、自動微分の `def-jvp-rule` / `def-transpose-rule` / `def-jvp-partials`、vmap の `def-batch-rule`）
 について、各演算子を適用できる**すべての箇所**に1つずつ変異体を作る
 （issue #70）。並びは演算子の順、同じ演算子の中ではフォームの前順
 （深さ優先）で、同じ入力には常に同じ並びになる。変異後の定義が同じに

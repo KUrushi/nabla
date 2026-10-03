@@ -146,6 +146,13 @@
 
 
    ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のexportはこの下に足す
+   #:while-loop
+   #:while-loop-error
+   #:while-loop-argument-error
+   #:while-loop-carry-mismatch
+   #:while-loop-carry-mismatch-expected
+   #:while-loop-carry-mismatch-actual
+   #:while-loop-condition-error
 
 
 

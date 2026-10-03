@@ -245,6 +245,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 
 <!-- フェーズ3 anchor: issue #131 -->
+**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry のリストを返す（JAX の `lax.while_loop`）。`init` は配列（トレース中はトレーサでもよい）の空でないリストで、`cond-fn` / `body-fn` は carry のリストを1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ aval（個数・shape・dtype）のリストを返す。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` がリストでない・空・要素が配列でない、関数でない、`body-fn` がリストを返さない）、`while-loop-carry-mismatch`（`body-fn` の出力の aval が `init` と違う。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、原因のプリミティブ名 `:while-loop` を持つ `no-jvp-rule`（`autodiff-error` の子）になる。jvp のみの対応は #134。
 
 
 

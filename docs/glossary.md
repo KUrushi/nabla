@@ -278,6 +278,9 @@ pretty form を出力する。
 
 
 <!-- フェーズ3 anchor: issue #131 -->
+### while-loop（ホワイルループ）
+
+反復回数がトレース時に決まらないループを表す高階プリミティブ（issue #131）。条件（cond）と本体（body）をサブグラフとして持ち、StableHLO では `stablehlo.while`（cond と body の2つのリージョン）になる。JAX の `lax.while_loop` に相当する。carry（ループで受け渡す値）の aval は本体の前後で一致しなければならない。逆モードの自動微分には対応しない（反復回数が分からないと、各反復の途中の値＝残差を保存できないため）。
 
 
 

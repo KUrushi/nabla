@@ -104,6 +104,7 @@
 
 
                ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のコンポーネントはこの下に足す
+               (:file "src/while-loop")
 
 
 
@@ -271,6 +272,7 @@
 
 
                ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のテストはこの下に足す
+               (:file "tests/while-loop-test")
 
 
 
@@ -454,6 +456,7 @@
 
 
                ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のテストはこの下に足す
+               (:file "tests/iree/while-loop-test")
 
 
 
