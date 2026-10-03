@@ -309,6 +309,8 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #141 -->
 
+**RNN を scan で学習する例**（`examples/rnn.lisp`、issue #141）: Elman RNN（`h' = tanh(h W_h + x_t W_x + b)`、最後の隠れ状態から線形層、損失は平均二乗誤差）を `scan` で書き、`(jit (with-tracing ... (value-and-grad loss :argnums '(0 1 2 3 4))))` をループの外で1回だけ作って SGD で学習する。バッチは `vmap` ではなく `dot` の行方向で持つ（系列は `(T B D)`、T=8 B=4 D=4 H=8 O=2）。`tests/iree/rnn-train-test.lisp` が、JAX（`jax.lax.scan`）のフィクスチャ（`tests/fixtures/rnn/rnn-sgd.lisp`、生成は `generate.py`）との1ステップ目の損失・勾配と30ステップの損失の軌跡の一致、損失の減少、コンパイルが1回だけであることを確かめる。
+
 
 
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
