@@ -9,9 +9,9 @@
 | 完了条件 | 判定 | 検証方法 |
 | --- | --- | --- |
 | `vmap` があり、`jit` / `grad` / 別の `vmap` と合成できる | 達成 | `tests/vmap-test.lisp` ほか `tests/vmap-*-test.lisp`（PBT: 「各要素に f を適用して積み直した結果」と一致）、`tests/per-example-test.lisp`（`jit (vmap (grad f))`、`grad` の中の `vmap`、`vmap (vmap f)` を eager と IREE で確認） |
-| 全プリミティブにバッチ化ルールがある | 達成 | 要素演算（#128）、形状・縮約・dot-general（#129）、制御構造（#140）、PRNG 関連（#136）。`tests/primitives/registry-test.lisp` が検査 |
+| 全プリミティブにバッチ化ルールがある | 達成 | 要素演算（#128）、形状・縮約・dot-general（#129）、制御構造（#140）、PRNG 関連（#136）。`tests/primitives/registry-test.lisp` の `registry/every-registered-primitive-has-a-batch-rule-or-is-excluded` が検査（#142 で追加。27個すべてがルールを持ち、除外リストは空） |
 | `cond*` / `while-loop` / `scan` が eager・`jit`（IREE）で動く | 達成 | `tests/cond-test.lisp` / `while-loop-test.lisp` / `scan-test.lisp` と `tests/iree/` の medium テスト（eager との一致） |
-| 制御構造を `grad` できる | 達成（`while-loop` の逆モードを除く） | `cond*` の jvp・transpose（#134）、`scan` の jvp（#135）・partial eval と transpose（#139）。中心差分・内積テストの PBT。`while-loop` の逆モードは JAX と同じく対象外（§4） |
+| 制御構造を `grad` できる | 達成（`while-loop` の逆モードを除く） | `cond*` の jvp・transpose（#134）、`scan` の jvp（#135）・partial eval† と transpose（#139）。中心差分・内積テストの PBT。`while-loop` の逆モードは JAX と同じく対象外（§4） |
 | 制御構造を `vmap` できる | 達成 | #140。条件がバッチされる `cond*` / `while-loop` を含む PBT |
 | per-example 勾配が JAX と一致する | 達成 | #138。`tests/fixtures/per-example/`（JAX 0.10.2、x64 無効）と f32 の許容誤差で一致 |
 | 明示的なキー渡しの PRNG が eager・`jit`・`vmap` で動く | 達成 | #133（`rng-bit-generator`）と #136（`prng-key` / `split` / `fold-in` / `uniform` / `normal`）。eager == IREE == PJRT（XLA CPU）のビット一致、統計検定 |
@@ -19,7 +19,7 @@
 | 定型の `do` ループを `scan` に展開する | 達成（`do` のみ。`dotimes` / `loop` / `do*` は対象外） | `tests/loop-scan-test.lisp`（PBT: 展開した `scan` と Lisp の `do` の一致）。§3.11 |
 | GPU（CUDA）での数値一致と計測 | 未測定 | このマシンに GPU が無い（#12 から引き続き） |
 
-結論: CPU 上の完了条件は、#137 を除きすべて達成した。既定スイート（small + medium、IREE・PJRT 必須）は各 PR で通した（最後に計った #136 のブランチで small 140212 checks / medium 1493 checks）。
+結論: CPU 上の完了条件はすべて達成した。既定スイート（small + medium、IREE・PJRT 必須）は各 PR で通した（#136 の PR #156 のブランチで small 140212 checks / medium 1493 checks。このブランチの最終実行は main を merge した後の medium 1500 checks）。
 
 ## 2. 作ったもの
 
@@ -28,7 +28,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **#143**: 並行作業用のアンカーコメント（`src/package.lisp`・`nabla.asd`・README・用語集の共有ファイルに、issue ごとの書き足し場所を置いた。#142 で撤去した）。
 - **#126（PR #144）**: 整数 dtype `:i32` / `:u32` / `:u64`。eager は StableHLO と同じ 2 の補数で折り返す。
 - **#125（PR #145）**: `vmap` の骨格（`src/vmap.lisp`）、`primitive` の `batch` スロットと `def-batch-rule`、`vmap-error` / `no-batch-rule`。
-- **#127（PR #146）**: サブグラフを持つ eqn、複数出力の eqn（`:multiple-outputs`）、closure conversion（`%trace-subgraph`）、StableHLO のリージョン出力。
+- **#127（PR #146）**: サブグラフ†を持つ eqn、複数出力の eqn（`:multiple-outputs`）、closure conversion†（`%trace-subgraph`）、StableHLO のリージョン出力。
 - **#128 / #129（PR #147 / #148）**: 要素演算（`broadcast_batcher` 相当）と、形状・縮約・`dot-general` のバッチ化ルール。
 - **#131（PR #149）**: `while-loop`（`stablehlo.while`）。
 - **#130（PR #150）**: `cond*`（`stablehlo.if`）。
@@ -53,7 +53,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **`vmap` は `grad` と同じ形の graph → graph 変換**として、新しい外側のトレースの中でルールを呼びながら書き直す。バッチされていない値だけを入力とする演算は、バッチ化ルールを呼ばずにそのまま残す（不要な複製をしない）。
 - **複数出力の eqn は、個数ではなくプリミティブのフラグ `:multiple-outputs t` で切り替える**（`primitive` の `multiple-outputs-p`）。フラグがあるとき `abstract-eval` は aval のリスト、`eager` は配列のリスト、`emit` は名前と aval をリストで受けて `%8, %9 = ...` の左辺を自分で書く。`%trace-eqn` は単一出力のまま（複数出力に使うと `tracing-error`）で、`%trace-eqn*` が常にトレーサのリストを返す。inline / jvp / transpose / vmap は `%trace-eqn*` で書く。
 - **複数出力の jvp ルールの規約**は、単一出力と別にした: `(rule primals tangents &rest params)` → `(values primal-outs tangent-outs)`（`%jvp-multiple-output-rule`）。単一出力のルールは変換側が先に作った出力を受け取る形だが、複数出力のルールは主値の eqn も自分で足す（先に足すと `while-loop` / `scan` / `cond*` のような高階プリミティブが2回走る eqn になるため）。
-- **`%jvp-graph-core` に一本化した**: 第2値が本当の「出力の接線が非ゼロか」で、出力は `(or force out-nonzero)`。`while-loop` と `scan` の不動点計算が同じ関数を使う。
+- **`%jvp-graph-core` に一本化した**: 第2値が本当の「出力の接線が非ゼロか」で、出力は `(or force out-nonzero)`。`while-loop` と `scan` の不動点†計算が同じ関数を使う。
 
 ### 3.2 サブグラフと closure conversion
 
@@ -66,10 +66,10 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 
 - 公開名は `cond*`（CL の `cond` と衝突するため）、プリミティブ名は `:cond`。`(cond* pred then-fn else-fn &rest operands)`。
 - **`with-tracing` の `if` は `select` のまま**にした。`if` の条件は要素ごとの `:i1` 配列でありうるので、要素ごとの意味を保つ `select` が要る。`cond*` は rank 0 の `:i1` の条件で片枝だけを実行する（実行時に選ばれなかった枝を評価しない）。使い分けは利用者が明示する。
-- **両枝は同一の入力シグネチャを持つ**（JAX と同じ）: `pred`、operands、両枝の捕捉値の和集合。片方の枝が使わない捕捉値の位置には使われない入力が置かれる。当初は枝ごとに引数を持つ形だったが、`:num-operands` と `%cond-split-args` が要らなくなり、jvp / transpose / vmap のルールが単純になった（#130 のレビュー対応）。
+- **両枝は同一の入力シグネチャを持つ**（JAX と同じ）: eqn の invars は `pred ++ operands ++ captures`（captures は両枝の捕捉値の和集合）で、両枝のサブグラフの invars はどちらも `operands ++ captures`（pred は枝の入力ではない）。片方の枝が使わない捕捉値の位置には使われない入力が置かれる（`%cond-unify-branches`）。当初は枝ごとに引数を持つ形だったが、`:num-operands` と `%cond-split-args` が要らなくなり、jvp / transpose / vmap のルールが単純になった（#130 のレビュー対応）。
 - 条件がバッチされる `vmap` では、片枝だけを実行する性質は失われ、両枝を評価して `select` で選ぶ（JAX の `_cond_batching_rule` と同じ）。
 
-### 3.4 carry の受け渡し
+### 3.4 carry† の受け渡し
 
 - `while-loop` と `scan` の carry・xs・ys は**リスト**で受け渡す。`(while-loop cond-fn body-fn init-list)` → carry のリスト。`(scan f init-list xs-list &key length reverse)` → `(values carry-list ys-list)`で、`f` は `(carry-list x-list) → (values carry-list y-list)`。リストでないものは文書化したコンディションで拒否する。
 - 理由: リストは既定の PyTree なので、フェーズ4で PyTree を入れたとき、リストを PyTree に一般化するだけで API を変えずに済む（§6）。
@@ -99,14 +99,14 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **`rng-bit-generator`（#133）**: `stablehlo.rng_bit_generator`（`THREE_FRY`）に対応する複数出力のプリミティブ。状態は `ui64[2]` で、`[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は鍵を保ち、カウンタを生成した64ビット単位の個数だけ進める。eager は IREE の lowering（`StableHLOToLinalgRandom`）を写した Threefry-2x32 で、**eager == IREE（local）== PJRT（XLA CPU）が23通りの形状 × `:u32` / `:u64` でビット単位で一致する**。XLA 自身の実装ではなく IREE の lowering を写したのは、IREE との一致を保証するため。
 - **キー**: `:u32` の `(2)`。状態 `ui64[2]` への写像は `[k0 | k1<<32, カウンタ]`（`bitcast-convert` で2語を1語にする）。`uniform` / `normal` / `split` はカウンタ 0 から、`fold-in` はカウンタ 2^32 + data から始める（引く量が 2^32 未満なら重ならない）。ビットは常に1次元で作って reshape する（多次元の `:u32` の配置と状態の進みが形に依存するため）。
 - **JAX とビット単位では一致しない**: JAX は `threefry_2x32` を直接呼ぶ（nabla は `rng_bit_generator` の上に組んでいる）。統計的性質（平均・分散・KS 検定・裾・相関）で検査し、JAX 0.10.2 の既知の答え（zero 状態と形 `(3 3 3)` の `:u32`）は `rng-bit-generator` のテストにある。
-- `uniform` は仮数部トリック（f32 は23ビット、f64 は52ビット）。`normal` は erf の逆関数（Giles の単精度近似、JAX の f32 と同じ係数、相対誤差約 1e-7）。**f64 でも同じ近似を使うので、裾の精度は f32 並み**（過小評価がある。docstring に記載）。Box–Muller は sin / cos のプリミティブが無いので採用しなかった。
+- `uniform` は仮数部トリック（f32 は23ビット、f64 は52ビット）。`normal` は erf の逆関数（Giles の単精度近似、JAX の f32 と同じ係数、相対誤差は 1e-6 程度。実測は #166）。**f64 でも同じ近似を使うので、裾の精度は f32 並み**（過小評価がある。docstring に記載）。Box–Muller は sin / cos のプリミティブが無いので採用しなかった。
 - **バッチされた rng の emit は行ごとに展開する**: プリミティブは状態の先頭にバッチ次元を許す（`ui64[..., 2]`、各行は単独呼び出しとビット一致）が、StableHLO は `ui64[2]` しか受けないので、emit は行ごとに slice → `rng_bit_generator` → concatenate に展開する。コンパイル時間は行数で急に増える（IREE local の実測: 32行 4.0 秒、64行 6.9 秒、256行 42.8 秒。入れ子の `vmap` は積）。実用の目安は 64行程度まで。将来の対処は `scan` 化。
 
 ### 3.9 整数 dtype
 
 - `:i32 :u32 :u64`。THREE_FRY の状態が `ui64[2]` のため `:u64` が要る。整数は既存の `*dtypes*`（PBT の浮動小数点用）に入れず、`*integer-dtypes*` を別に作る（整数が exp / log の PBT に流れ込まないように）。
 - 整数の接線は常に symbolic zero。`div` `exp` `log` `tanh` `dot-general` は整数を `primitive-error` で拒否する（暗黙の型昇格もしない）。
-- **float → int の `convert` は、飽和と NaN → 0 を StableHLO 側で明示する**（clamp と select。IREE の `fptosi` は範囲外・NaN が未定義で eager と食い違った）。**整数 → `:bf16` は f32 を経由し、間に `optimization_barrier` を置く**（IREE CPU が `__truncsfbf2` のリンクに失敗する。barrier が無いと2つの convert が最適化で畳まれて同じ失敗になる）。
+- **float → int の `convert` は、飽和と NaN → 0 を StableHLO 側で明示する**（clamp と select。IREE の `fptosi` は範囲外・NaN が未定義で eager と食い違った）。**整数 → `:bf16` は f32 を経由し、間に `optimization_barrier`† を置く**（IREE CPU が `__truncsfbf2` のリンクに失敗する。barrier が無いと2つの convert が最適化で畳まれて同じ失敗になる）。
 
 ### 3.10 PRNG の API
 
@@ -141,23 +141,26 @@ IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピ�
 #### 4.4 mutation testing
 
 `def-batch-rule` を変異対象に加え（PR #151）、ルールを足した PR ごとに実行した。主な結果: #130 は 41 中 34 kill（生存は defun 先頭行の同値のみ）、#131 は 48/48、#135 は 16/16、#133 は `--max-per-def 15` で 58/58、#126 は 255 中 234 kill（生存は SSA 補助名の等価変異）、#136 は 82/91（生存9件は等価か別の有効値）。
-#137 は mutation 55/56（残りは不完全な定義のガードで、テストを追加済み。再実行はしていない）。
+#137 は初回が 47/49（43 kill、4 timeout、生存2件）で、生存は `(signed-byte 32)` → 31 の境界だった（カウンタが 2^31-1 まで届くテストで kill）。レビュー対応後は 55/56 で、生存は不完全な定義のガード1件（テストを足したが mutation は再実行していない）。
 
 ## 5. 既知の制限と積み残し
 
+- 以下のうち、#164 / #165 / #166 は #142 の時点で起こしたフォローアップの issue。
 - **#159: `scan` の `ys` が IREE で O(length × |ys|)**（§4.1）。`dynamic_update_slice` が in-place にならない。
-- **バッチされた rng の emit が行ごとの展開**（§3.8）。行数が数百になるとコンパイルが数十秒。`scan` 化が将来策。
+- **バッチされた rng の emit が行ごとの展開**（§3.8。#164 で `scan` 化を扱う）。行数が数百になるとコンパイルが数十秒。`scan` 化が将来策。
 - **`while-loop` の逆モード（`grad`）は対応しない**（§3.5）。`scan` で書く。
 - **IREE 3.11 の `:i1` carry のバグは回避策が無い**（§3.12 の 2。比較由来の `:i1` の carry を持つ while の結果を jit の戻り値にしない）。
-- **f64 の `normal` の裾は f32 並みの精度**（erf の逆関数の単精度近似を使う。§3.8）。
+- **f64 の `normal` の裾は f32 並みの精度**（erf の逆関数の単精度近似を使う。§3.8。#166）。
 - **PJRT では `:i1` が未対応のまま**（`PRED` に写していない。`unsupported-dtype`）。したがって `:i1` を入力・出力にする PJRT のテストは無い。`cond*` の `pred` の rank 0 `:i1` は graph の内部の値なので動く。
 - **PRNG は JAX とビット単位で一致しない**（§3.8）。`rng_bit_generator` の `:i32` のビットと Philox / `DEFAULT` は未対応。
 - **`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」は変わらない**（`cond*` / `while-loop` / `scan` の本体は closure conversion で捕まえられるが、`grad` / `vmap` の `f` は不可）。
 - **`vmap` / `grad` は `f` がリストを返せない**（`(with-tracing ... (values-list ...))` で包む。フェーズ4の PyTree で解消する見込み）。
 - **`(vmap f)` / `(grad f)` は呼ぶたびに新しい関数オブジェクト**を作り、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため）。
 - **重複した捕捉値の dedupe は見送り**（`while-loop`。同じトレーサを複数の本体が捕まえると、オペランドが重複する。結果は正しい）。
+- **#166 にまとめた小さな積み残し**: f64 `normal` の裾、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe は上の項目のとおり。
 - **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。
-- **#68 / #73**: フェーズ1から引き続き（in-process コンパイラのメモリ破壊の根本原因、IREE 上流への報告）。上の IREE 3.11 のバグ（§3.12 の 1 と 2）も上流への報告は未実施。
+- **#73**: フェーズ1から引き続き（IREE 上流への報告。#68 の in-process コンパイラのメモリ破壊は閉じている）。
+- **#165**: 上の IREE 3.11 の while のバグ2つ（§3.12 の 1 と 2）を上流へ報告し、回避策を消す時期を決める。
 
 ## 6. 進め方の知見（プロセス）
 

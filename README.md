@@ -363,8 +363,8 @@ tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
-docs/                glossary.md, iree-build.md, phase0-report.md, phase1-report.md, phase2-report.md, phase3-report.md
-examples/            add.lisp, jit.lisp, mlp.lisp（この README の使用例）
+docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase3-report.md
+examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
