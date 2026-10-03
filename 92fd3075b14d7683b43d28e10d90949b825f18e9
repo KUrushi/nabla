@@ -1,0 +1,1 @@
+#145 が main に squash merge（f564c69）されたため main へ rebase。%batch-elementwise に全 NIL の batch-dims のガード（vmap-error）と回帰テストを追加。small+medium 全通過（139601 + 1180）。
