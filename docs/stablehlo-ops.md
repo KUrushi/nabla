@@ -75,6 +75,22 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 それ以外のモジュールは従来どおり固定コミットの `iree-lld` で embedded ELF
 にリンクする。
 
+## 制御構造の op（対応表の外。フィクスチャは持たない）
+
+`while-loop`（issue #131）は `stablehlo.while`（generic form）で出す。cond と body はブロック引数を持つリージョンで、cond は `stablehlo.return %c : tensor<i1>`、body は全オペランドと同じ型の値を `stablehlo.return` する。
+
+```
+%r0, %r1 = "stablehlo.while"(%a, %b) ({
+  ^bb0(%x: tensor<f32>, %y: tensor<f32>): ...
+  stablehlo.return %c : tensor<i1>
+}, {
+  ^bb0(%x: tensor<f32>, %y: tensor<f32>): ...
+  stablehlo.return %x1, %y1 : tensor<f32>, tensor<f32>
+}) : (tensor<f32>, tensor<f32>) -> (tensor<f32>, tensor<f32>)
+```
+
+オペランドは carry と、cond / body が閉包で捕まえた値（body は素通しで返す）の全部。IREE でコンパイル・実行できることは `tests/iree/while-loop-test.lisp`（medium）で確かめる。
+
 ## IREE 未対応・要注意の op（代替・備考）
 
 | op | 状況 | 代替 |

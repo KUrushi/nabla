@@ -1,0 +1,249 @@
+;;;; while-loop プリミティブ（issue #131）。
+;;;;
+;;;; 性質: while-loop の結果は、Lisp のループで body-fn を回した結果と一致する
+;;;; （0回で終わる場合を含む）。eager（配列）・トレース中・閉包で外側のトレーサを
+;;;; 捕まえる場合のすべてで確かめる。整数 dtype は未導入なので、カウンタは f32 の
+;;;; rank 0 で持つ（i を 1.0 ずつ増やして limit と比べる）。
+
+(in-package #:nabla.tests)
+
+(in-suite :nabla.small)
+
+(defparameter *wl-shapes* '(() (3) (2 3) (2 1 4)))
+
+(defun %wl-scalar (x &optional (dtype :f32))
+  (nb::%scalar-array x dtype))
+
+(defun %wl-seed-array (seed shape dtype)
+  (make-random-array (make-array-spec shape dtype) :seed seed))
+
+(defparameter *wl-cond*
+  (nb:with-tracing (c) (< (first c) (second c))))
+
+(defparameter *wl-body*
+  (nb:with-tracing (c)
+    (list (+ (first c) 1.0) (second c) (+ (third c) (* (third c) 0.5)))))
+
+(defun %wl-lisp-loop (cond-fn body-fn carries)
+  "while-loop の仕様そのもの: cond-fn が真の間 body-fn を回す。"
+  (loop while (= 1 (aref (funcall cond-fn carries)))
+        do (setf carries (funcall body-fn carries)))
+  carries)
+
+(defun %wl-all-close (actual expected)
+  (and (= (length actual) (length expected))
+       (every (lambda (a e) (allclose a e :dtype :f32))
+              actual expected)))
+
+(test while-loop/eager-equals-lisp-loop
+  "eager の while-loop は、Lisp のループで body-fn を回した結果と一致する。
+limit は 0〜6（0回で終わる場合を含む）。"
+  (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                (lambda (seed)
+                  (let* ((limit (float (mod seed 7) 1.0))
+                         (shape (nth (mod (floor seed 7) 4) *wl-shapes*))
+                         (init (list (%wl-scalar 0.0) (%wl-scalar limit)
+                                     (%wl-seed-array seed shape :f32))))
+                    (%wl-all-close (nb:while-loop *wl-cond* *wl-body* init)
+                                   (%wl-lisp-loop *wl-cond* *wl-body* init))))
+                :regression-id while-loop/eager-equals-lisp-loop
+                :regression-file (regression-path "while-loop-eager-equals-lisp-loop"))))
+
+(test while-loop/zero-iterations-return-init
+  "条件が最初から偽なら、init の値がそのまま返る。"
+  (let* ((x (%wl-seed-array 3 '(2 3) :f32))
+         (result (nb:while-loop *wl-cond* *wl-body*
+                                (list (%wl-scalar 0.0) (%wl-scalar 0.0) x))))
+    (is (= 3 (length result)))
+    (is (equalp x (third result)))))
+
+(test while-loop/carries-of-different-shapes-and-dtypes
+  "形も dtype も違う carry（f32 の配列と f64 の配列）を同時に持てる。"
+  (let ((cond-fn (nb:with-tracing (c) (< (first c) 4.0)))
+        (body-fn (nb:with-tracing (c)
+                   (list (+ (first c) 1.0) (+ (second c) (second c)) (* (third c) (third c))))))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let* ((init (list (%wl-scalar (float (mod seed 6) 1.0))
+                                       (%wl-seed-array seed '(2 3) :f32)
+                                       (%wl-seed-array (1+ seed) '(4) :f64)))
+                           (actual (nb:while-loop cond-fn body-fn init))
+                           (expected (%wl-lisp-loop cond-fn body-fn init)))
+                      (and (allclose (first actual) (first expected) :dtype :f32)
+                           (allclose (second actual) (second expected) :dtype :f32)
+                           (allclose (third actual) (third expected) :dtype :f64))))
+                  )
+          "形・dtype の違う carry の結果が Lisp のループと一致しなかった")))
+
+(defun %wl-traced-graph ()
+  "limit・step・x を引数に、limit を閉包で（cond から）、step を閉包で（body から）
+捕まえる while-loop をトレースした graph。"
+  (nb::trace-to-graph
+   (nb:with-tracing (limit step x)
+     (let ((result (nb:while-loop
+                    (nb:with-tracing (c) (< (first c) limit))
+                    (nb:with-tracing (c) (list (+ (first c) 1.0) (+ (second c) step)))
+                    (list (%wl-scalar 0.0) x))))
+       (values (first result) (second result))))
+   (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32) (nb:make-aval '(3) :f32))))
+
+(defun %wl-while-eqns (graph)
+  (remove-if-not (lambda (e) (eq :while-loop (nb::primitive-name (nb:eqn-prim e))))
+                 (nb:graph-eqns graph)))
+
+(test while-loop/traced-graph-has-one-while-eqn-with-captured-operands
+  "トレース中の while-loop は :while-loop の eqn を1つ足し、閉包で捕まえた外側の
+値（limit と step）は loop 不変の追加のオペランドとして eqn の入力の末尾に並ぶ。"
+  (let* ((graph (%wl-traced-graph))
+         (eqns (%wl-while-eqns graph)))
+    (is (= 1 (length eqns)))
+    ;; carry 2 + captured 2（limit は cond、step は body）
+    (is (= 4 (length (nb:eqn-invars (first eqns)))))
+    (is (= 4 (length (nb:eqn-outvars (first eqns)))))))
+
+(test while-loop/traced-equals-lisp-loop-with-closure-capture
+  "閉包で外側のトレーサを捕まえた while-loop をトレースして eval-graph した結果は、
+Lisp のループの結果と一致する（limit が 0 の場合を含む）。"
+  (let ((graph (%wl-traced-graph)))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let* ((n (mod seed 7))
+                           (limit (%wl-scalar (float n 1.0)))
+                           (step (%wl-seed-array seed '(3) :f32))
+                           (x (%wl-seed-array (1+ seed) '(3) :f32))
+                           (actual (multiple-value-list (nb:eval-graph graph limit step x)))
+                           (expected-x (let ((v x))
+                                         (dotimes (_ n v) (setf v (nb::%t-add v step))))))
+                      (and (allclose (first actual) (%wl-scalar (float n 1.0)) :dtype :f32)
+                           (allclose (second actual) expected-x :dtype :f32))))
+                  :regression-id while-loop/traced-closure
+                  :regression-file (regression-path "while-loop-traced-closure")))))
+
+(test while-loop/array-init-inside-a-trace
+  "外側のトレースの中で、init が配列（定数）のときも while-loop をトレースできる。"
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (x)
+                  (second (nb:while-loop *wl-cond* *wl-body*
+                                         (list (%wl-scalar 0.0) (%wl-scalar 2.0) x))))
+                (list (nb:make-aval '(2) :f32)))))
+    (is (= 1 (length (%wl-while-eqns graph))))
+    (let ((x (%wl-seed-array 5 '(2) :f32)))
+      (is (allclose (nb:eval-graph graph x)
+                    (second (%wl-lisp-loop *wl-cond* *wl-body*
+                                           (list (%wl-scalar 0.0) (%wl-scalar 2.0) x)))
+                    :dtype :f32)))))
+
+(test while-loop/emits-stablehlo-while-with-regions
+  "StableHLO は stablehlo.while の2つのリージョン（cond と body）で、ブロック引数を持つ。"
+  (let ((text (nb:emit-stablehlo (%wl-traced-graph))))
+    (is (search "\"stablehlo.while\"" text))
+    (is (= 2 (count-if (lambda (l) (search "^bb0(" l)) (%sg-lines text))))
+    (is (= 2 (count-if (lambda (l) (search "stablehlo.return" l)) (%sg-lines text))))))
+
+;;; ---- 厳格な検査（文書化したコンディション） ----
+
+(test while-loop/rejects-non-list-init
+  "init がリストでない・空・要素が配列でない、または関数でないものを渡すと
+WHILE-LOOP-ARGUMENT-ERROR。"
+  (signals nb:while-loop-argument-error
+    (nb:while-loop *wl-cond* *wl-body* (%wl-scalar 0.0)))
+  (signals nb:while-loop-argument-error
+    (nb:while-loop *wl-cond* *wl-body* (vector (%wl-scalar 0.0))))
+  (signals nb:while-loop-argument-error
+    (nb:while-loop *wl-cond* *wl-body* '()))
+  (signals nb:while-loop-argument-error
+    (nb:while-loop *wl-cond* *wl-body* (list 1.0 2.0 3.0)))
+  (signals nb:while-loop-argument-error
+    (nb:while-loop *wl-cond* 3 (list (%wl-scalar 0.0))))
+  ;; dtype を決められない配列（生の (unsigned-byte 16) = bf16 / f16）も同じコンディション
+  (signals nb:while-loop-argument-error
+    (nb:while-loop *wl-cond* *wl-body*
+                   (list (make-array '() :element-type '(unsigned-byte 16)) (%wl-scalar 1.0)
+                         (%wl-scalar 1.0)))))
+
+(test while-loop/signals-carry-mismatch-at-trace-time
+  "body-fn の出力の aval（個数・shape・dtype）が init と違えば WHILE-LOOP-CARRY-MISMATCH。
+本体が1回も実行されない場合（cond が最初から偽）でも、トレース時に検出する。"
+  (let ((cond-fn (nb:with-tracing (c) (< (first c) 0.0)))
+        (init (list (%wl-scalar 0.0) (%wl-seed-array 1 '(3) :f32))))
+    (signals nb:while-loop-carry-mismatch
+      (nb:while-loop cond-fn (nb:with-tracing (c) (list (first c))) init))
+    (signals nb:while-loop-carry-mismatch
+      (nb:while-loop cond-fn (nb:with-tracing (c) (list (first c) (nb:reduce-sum (second c)))) init))
+    (signals nb:while-loop-carry-mismatch
+      (nb:while-loop cond-fn (nb:with-tracing (c) (list (first c) (nb:convert (second c) :f64))) init))
+    (signals nb:while-loop-carry-mismatch
+      (nb:while-loop cond-fn (nb:with-tracing (c) (list (first c) (second c) (second c))) init))
+    (signals nb:while-loop-argument-error
+      (nb:while-loop cond-fn (nb:with-tracing (c) (first c)) init))))
+
+(test while-loop/signals-condition-error-when-cond-is-not-scalar-i1
+  "cond-fn の結果が rank 0 の :i1 でなければ WHILE-LOOP-CONDITION-ERROR。"
+  (let ((init (list (%wl-scalar 0.0) (%wl-seed-array 1 '(3) :f32)))
+        (body (nb:with-tracing (c) (list (+ (first c) 1.0) (second c)))))
+    (signals nb:while-loop-condition-error
+      (nb:while-loop (nb:with-tracing (c) (first c)) body init))
+    (signals nb:while-loop-condition-error
+      (nb:while-loop (nb:with-tracing (c) (< (second c) 1.0)) body init))))
+
+(test while-loop/all-conditions-are-while-loop-errors
+  "引数・carry・cond の3つのコンディションは WHILE-LOOP-ERROR の子で、ERROR である。"
+  (dolist (name '(nb:while-loop-argument-error nb:while-loop-carry-mismatch nb:while-loop-condition-error))
+    (is (subtypep name 'nb:while-loop-error)))
+  (is (subtypep 'nb:while-loop-error 'error)))
+
+(test while-loop/grad-signals-no-jvp-rule-naming-the-primitive
+  "grad が while-loop を通ると（jvp ルールが無いので）AUTODIFF-ERROR の子の NO-JVP-RULE が
+出て、原因のプリミティブ名 :WHILE-LOOP を報告する（jvp のみの対応は別 issue）。"
+  (let ((f (nb:with-tracing (x)
+             (nb:reduce-sum (second (nb:while-loop *wl-cond* *wl-body*
+                                                (list (%wl-scalar 0.0) (%wl-scalar 2.0) x)))))))
+    (handler-case (funcall (nb:grad f) (%wl-seed-array 1 '(3) :f32))
+      (nb:no-jvp-rule (c)
+        (is (eq :while-loop (nb:no-jvp-rule-name c)))
+        (is (typep c 'nb:autodiff-error)))
+      (:no-error (&rest values)
+        (declare (ignore values))
+        (fail "grad が while-loop を通ったのにエラーにならなかった")))))
+
+(test while-loop/rejects-non-function-cond-fn
+  "COND-FN が関数でなければ WHILE-LOOP-ARGUMENT-ERROR。"
+  (signals nb:while-loop-argument-error
+    (nb:while-loop 3 *wl-body* (list (%wl-scalar 0.0) (%wl-scalar 1.0) (%wl-scalar 1.0)))))
+
+(test while-loop/rejects-tracer-of-a-finished-trace
+  "終わったトレースのトレーサを init に混ぜると、トレースの外から呼んでも TRACING-ERROR。"
+  (let* ((stale nil)
+         (remember (lambda (x) (setf stale x))))
+    (nb::trace-to-graph (nb:with-tracing (x) (funcall remember x) x) (list (nb:make-aval '() :f32)))
+    (signals nb::tracing-error
+      (nb:while-loop *wl-cond* *wl-body* (list stale (%wl-scalar 1.0) (%wl-scalar 1.0))))))
+
+(defun %wl-eqn-with (&key (n-carries 2) body-out-avals cond-in-avals cond-out-aval)
+  "abstract-eval の検査を直接確かめるための :while-loop の eqn（既定は妥当な組）を作る。
+carry 2 個（f32 の rank 0）。"
+  (let* ((a (nb:make-aval '() :f32))
+         (i1 (nb:make-aval '() :i1))
+         (avals (list a a))
+         (cond-vars (mapcar #'nb::make-var (or cond-in-avals avals)))
+         (cond-out (nb::make-var (or cond-out-aval i1)))
+         (body-vars (mapcar #'nb::make-var avals))
+         (body-outs (mapcar #'nb::make-var (or body-out-avals avals)))
+         (vars (mapcar #'nb::make-var avals)))
+    (apply #'nb::make-eqn :while-loop vars
+           (list :cond (nb::make-graph cond-vars '() (list cond-out))
+                 :body (nb::make-graph body-vars '() body-outs)
+                 :n-carries n-carries))))
+
+(test while-loop/abstract-eval-validates-its-params
+  "abstract-eval は、cond / body の入出力の aval と n-carries が eqn の入力と整合しない
+params を PRIMITIVE-ERROR にする（GRAPH を手で組んだときの防御）。"
+  (let ((a (nb:make-aval '() :f32)) (b (nb:make-aval '(2) :f32)))
+    (is (not (null (%wl-eqn-with))))
+    (is (not (null (%wl-eqn-with :n-carries 0))))
+    (is (not (null (%wl-eqn-with :n-carries 2))))
+    (signals nb:primitive-error (%wl-eqn-with :n-carries -1))
+    (signals nb:primitive-error (%wl-eqn-with :n-carries 3))
+    (signals nb:primitive-error (%wl-eqn-with :cond-in-avals (list a b)))
+    (signals nb:primitive-error (%wl-eqn-with :cond-out-aval a))
+    (signals nb:primitive-error (%wl-eqn-with :body-out-avals (list a b)))))
