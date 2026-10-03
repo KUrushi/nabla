@@ -1,0 +1,1 @@
+レビュー対応: 両枝を同一入力シグネチャ（pred, operands, captures=捕捉値の和集合）に正規化、:num-operands と %cond-split-args を削除。整数配列 operand を許可（bf16/f16 生配列は cond-error）。枝の引数個数不一致・出力ゼロを cond-error + テスト。ネストした eqn の全行をインデント。main をマージ（registry の除外リストは :while-loop :cond の両方）。mutation: 41 中 34 kill、生存は defun 先頭行（docstring・同値）のみ。
