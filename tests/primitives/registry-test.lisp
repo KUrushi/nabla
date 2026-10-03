@@ -74,7 +74,8 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 ;;; --- 自動微分のルール（issue #86。フェーズ2の全ルール検査） ---
 
-(defparameter *non-differentiable-primitive-names* '(:rng-bit-generator)
+(defparameter *non-differentiable-primitive-names* '(:rng-bit-generator
+    :shift-right-logical :bitwise-or :bitcast-convert)
   "意図的に :jvp を持たない本物のプリミティブ。:jvp の無い defprimitive を足すときは、
 ここに理由つきで足すか、jvp ルールを書く。
   - :rng-bit-generator（issue #133）: 状態もビットも整数で接線が常に symbolic zero なので、
