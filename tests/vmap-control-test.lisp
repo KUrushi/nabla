@@ -25,7 +25,7 @@
 
 (defun %vc-array (inner-shape size axis seed)
   (make-random-array
-   (make-array-spec (if axis (%axis-at inner-shape size axis) inner-shape) :f64)
+   (make-array-spec (if axis (axis-at inner-shape size axis) inner-shape) :f64)
    :seed seed))
 
 (defun %vc-limit (inner-shape size axis seed)
@@ -194,3 +194,106 @@ x だけをバッチしても carry a がバッチされる（出力の形が [B
                       (every (lambda (a e) (allclose a e :dtype :f64)) actual expected))))
                 :regression-id vmap-control/nested-vmap-of-while-with-cond-matches-reference
                 :regression-file (regression-path "vmap-control"))))
+
+;;; --- scan ---
+
+(defun %vc-scan-fn (reverse)
+  "(w h0 xs) → (最終 h, 最終 c, ys の (h*x) と c)。w は本体が閉包で捕まえる const、
+h は [3] の carry、c は定数 0 から始まる（バッチされない）スカラーの carry、xs は [L, 3]。"
+  (nb:with-tracing (w h0 xs)
+    (multiple-value-bind (carry ys)
+        (nb:scan (nb:with-tracing (carry x)
+                   (let ((h (first carry)) (c (second carry)) (u (first x)))
+                     (values (list (+ (* h 0.5) (+ u w)) (+ c 1.0))
+                             (list (* h u) c))))
+                 (list h0 (nb::%scalar-array 0d0 :f64)) (list xs) :reverse reverse)
+      (values (first carry) (second carry) (first ys) (second ys)))))
+
+(defun %vc-scan-property (reverse)
+  "(w h0 xs) の in-axes（NIL・0・1、xs は 2 も）をランダムにした vmap が参照実装と一致する。"
+  (let ((f (%vc-scan-fn reverse)))
+    (lambda (case)
+      (destructuring-bind (size seed length code-w code-h code-x) case
+        (let* ((aw (%vc-axis code-w))
+               (ah (%vc-axis code-h))
+               (ax (nth (mod code-x 4) '(nil 0 1 2)))
+               (axes (if (or aw ah ax) (list aw ah ax) (list nil 0 ax)))
+               (w (%vc-array '(3) size (first axes) seed))
+               (h (%vc-array '(3) size (second axes) (+ seed 1)))
+               (xs (%vc-array (list length 3) size (third axes) (+ seed 2)))
+               (expected (reference-vmap f (list w h xs) :in-axes axes))
+               (actual (multiple-value-list (funcall (nb:vmap f :in-axes axes :out-axes 0) w h xs))))
+          (and (= (length actual) (length expected))
+               (every (lambda (a e) (allclose a e :dtype :f64)) actual expected)))))))
+
+(defun %vc-scan-generator ()
+  (generator (tuple (uniform-integer :lo 1 :hi 3)       ; バッチの長さ
+                    (uniform-integer :lo 0 :hi 100000)  ; seed
+                    (uniform-integer :lo 0 :hi 3)       ; scan の長さ（0 を含む）
+                    (uniform-integer :lo 0 :hi 99)
+                    (uniform-integer :lo 0 :hi 99)
+                    (uniform-integer :lo 0 :hi 99))))
+
+(test vmap-control/scan-forward-matches-reference
+  "scan: const・carry・xs のバッチされ方（xs のバッチ軸は走査の軸の前後どちらでも）と長さ
+（0 と 1 を含む）をランダムにしても、参照実装と一致する。h0 がバッチされず const か xs だけが
+バッチされる場合は、最初はバッチされない carry が本体でバッチされる回帰になる。"
+  (is (check-it (%vc-scan-generator) (%vc-scan-property nil)
+                :regression-id vmap-control/scan-forward-matches-reference
+                :regression-file (regression-path "vmap-control"))))
+
+(test vmap-control/scan-reverse-matches-reference
+  "reverse の scan も参照実装と一致する（ys[t] には添字 t のステップの y が入る）。"
+  (is (check-it (%vc-scan-generator) (%vc-scan-property t)
+                :regression-id vmap-control/scan-reverse-matches-reference
+                :regression-file (regression-path "vmap-control"))))
+
+(test vmap-control/scan-unbatched-carry-becomes-batched
+  "回帰: h0 も w もバッチされず xs だけがバッチされるとき、carry h は本体で x を足されてバッチされる。
+定数から始まる carry c はバッチされないまま（出力の形はスカラー、ys の c は [L]）。ys の h*x は
+バッチ軸が 1 の [L, B, 3] で、out-axes で軸 0 に移る。"
+  (let* ((g (nb:vmap (%vc-scan-fn nil) :in-axes '(nil nil 1) :out-axes '(0 nil 0 nil)))
+         (graph (nb:trace-to-graph g (list (nb:make-aval '(3) :f64) (nb:make-aval '(3) :f64)
+                                           (nb:make-aval '(2 4 3) :f64))))
+         (shapes (mapcar (lambda (v) (nb:aval-shape (nb::var-aval v))) (nb:graph-outvars graph))))
+    (is (equal '((4 3) () (4 2 3) (2)) shapes))))
+
+(test vmap-control/nested-vmap-of-scan-matches-reference
+  "(vmap (vmap f)) の f が scan を使っても、2重に切り出した参照実装と一致する。"
+  (let ((f (%vc-scan-fn nil)))
+    (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 3)
+                                    (uniform-integer :lo 0 :hi 100000)))
+                  (lambda (case)
+                    (destructuring-bind (b1 b2 seed) case
+                      (let* ((w (make-random-array (make-array-spec (list b1 3) :f64) :seed seed))
+                             (h (make-random-array (make-array-spec (list b1 b2 3) :f64) :seed (+ seed 1)))
+                             (xs (make-random-array (make-array-spec (list b1 2 b2 3) :f64) :seed (+ seed 2)))
+                             (inner (lambda (w h xs) (values-list (reference-vmap f (list w h xs) :in-axes '(nil 0 1)))))
+                             (expected (reference-vmap inner (list w h xs) :in-axes '(0 0 0)))
+                             (actual (multiple-value-list
+                                      (funcall (nb:vmap (nb:vmap f :in-axes '(nil 0 1)) :in-axes '(0 0 0))
+                                               w h xs))))
+                        (every (lambda (a e) (allclose a e :dtype :f64)) actual expected))))
+                  :regression-id vmap-control/nested-vmap-of-scan-matches-reference
+                  :regression-file (regression-path "vmap-control")))))
+
+(test vmap-control/select-by-batched-pred-skips-identity-broadcast
+  "バッチされた条件で select に落ちる cond* は、出力の形が [B] のときは条件をそのまま使って
+broadcast-in-dim を作らず、形が [B, 3] の出力が複数あっても、その形のための broadcast は1つだけ。"
+  (let* ((then (nb:with-tracing (u) (values (nb:reduce-sum u :axes '(0)) (* u 2.0) (* u 3.0))))
+         (else (nb:with-tracing (u) (values (nb:reduce-sum u :axes '(0)) (+ u 1.0) (+ u 2.0))))
+         (f (nb:with-tracing (x)
+              (multiple-value-bind (a b c)
+                  (nb:cond* (< (nb:reduce-sum x :axes '(0)) 0.0) then else x)
+                (values a b c))))
+         (graph (nb:trace-to-graph (nb:vmap f) (list (nb:make-aval '(2 3) :f64))))
+         (eqns (nb:graph-eqns graph))
+         (prims (mapcar (lambda (e) (nb::primitive-name (nb:eqn-prim e))) eqns))
+         ;; 条件 [2] を [2, 3] へ広げる broadcast（他の broadcast は定数のリテラルなど）
+         (pred-broadcasts (remove-if-not
+                           (lambda (e)
+                             (and (eq :broadcast-in-dim (nb::primitive-name (nb:eqn-prim e)))
+                                  (equal '(2) (nb:aval-shape (nb::var-aval (first (nb:eqn-invars e)))))))
+                           eqns)))
+    (is (= 3 (count :select prims)))
+    (is (= 1 (length pred-broadcasts)))))

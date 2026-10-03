@@ -40,6 +40,21 @@
                             (list (nb::%scalar-array 0.0 :f32) y))))
       (values (first r) (second r)))))
 
+(defun %vc-scan-fn (reverse)
+  "carry が2つ（h: [3]、c: 定数 0 から始まるスカラー）と ys が2つの scan。carry が2つ以上で
+rank 1 以上を含むので、scan の StableHLO が optimization_barrier を通す経路を通る。"
+  (nb:with-tracing (w h0 xs)
+    (multiple-value-bind (carry ys)
+        (nb:scan (nb:with-tracing (carry x)
+                   (let ((h (first carry)) (c (second carry)) (u (first x)))
+                     (values (list (+ (* h 0.5) (+ u w)) (+ c 1.0))
+                             (list (* h u) c))))
+                 (list h0 (nb::%scalar-array 0.0 :f32)) (list xs) :reverse reverse)
+      (values (first carry) (second carry) (first ys) (second ys)))))
+
+(defparameter *vc-scan-forward* (%vc-scan-fn nil))
+(defparameter *vc-scan-reverse* (%vc-scan-fn t))
+
 (defparameter *vmap-control-cases*
   ;; (名前 関数 引数の形（バッチ軸込み）in-axes)。反復回数 limit は 0〜4 の整数値にする。
   `((cond-batched-pred ,*vc-cond* ((4 3) (3)) (0 nil))
@@ -48,7 +63,11 @@
     (cond-unbatched-pred-y-batched ,*vc-cond-y-pred* ((3) (3 4)) (nil 1))
     (while-batched-pred ,*vc-while-count* ((3) (4)) (nil 0) :limit)
     (while-batched-pred-both ,*vc-while-count* ((4 3) (4)) (0 0) :limit)
-    (while-carry-becomes-batched ,*vc-while-captured* ((4 3) (3)) (0 nil))))
+    (while-carry-becomes-batched ,*vc-while-captured* ((4 3) (3)) (0 nil))
+    ;; scan: xs のバッチ軸は走査の軸の後ろ（1 / 2）、h0 がバッチされず本体でバッチされる、reverse
+    (scan-xs-batched ,*vc-scan-forward* ((3) (3) (4 5 3)) (nil nil 1))
+    (scan-all-batched-reverse ,*vc-scan-reverse* ((5 3) (3 5) (4 3 5)) (0 1 2))
+    (scan-const-batched ,*vc-scan-forward* ((5 3) (3) (4 3)) (0 nil nil))))
 
 (define-iree-test vmap-control/jit-matches-eager
     "cond* / while-loop のバッチ化ルールを通した (jit (vmap f)) の結果が、jit しない (vmap f) と
