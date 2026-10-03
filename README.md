@@ -276,6 +276,26 @@ sbcl --non-interactive --load examples/jit.lisp
 <!-- フェーズ3 anchor: issue #137 -->
 
 
+#### with-tracing の do ループ（issue #137）
+
+`with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
+
+```lisp
+(nb:with-tracing (h0 w)
+  (do ((i 0 (1+ i))                    ; カウンタ。step は (1+ i) / (+ i 1) / (+ 1 i)
+       (h h0 (tanh (+ (* h s) 0.1)))   ; carry。step は純粋な式（全 step が古い値を見る）
+       (s w))                          ; step が無い変数は不変
+      ((>= i n) h)))                   ; 終了条件は (>= i n) か (= i n)。結果形式は最終値で評価
+```
+
+- カウンタの初期値と上限 `n` はトレース時に決まる整数（閉包で捕まえた Lisp の整数など）。上限は `do` 変数を参照できない。整数でないと `scan-error`。反復回数は `(>= i n)` なら `max(0, n - 初期値)`、`(= i n)` なら `n - 初期値`（`n` が初期値より小さいと Lisp では止まらないので `scan-length-error`）
+- カウンタは step の中では `:i32` のスカラーのトレーサ、結果形式の中では最終値の Lisp の整数。carry の dtype・shape は init と step で一致しなければならない（`scan-carry-mismatch`）
+- 本体のフォーム（`do` の body）は書けない（宣言だけ可）。この形に合わない `do`（終了条件が無い、step が別の形、本体にフォームがある、など）は、原因の `do` フォームを持つ `unsupported-form`（`path` は `nil`）
+- `do*` / `dotimes` / `loop` は展開しない。従来どおり、展開後の `block` で `unsupported-form` になる。`dotimes` は carry を `setq` でしか渡せず、`loop` の `for ... = ... then` は更新と終了判定の順序が `do` と違って同じ意味に写せないため。ユーザー定義のマクロが `do` に展開されるものも、展開前のフォームだけを見るので対象外
+- 展開は `src/loop-scan.lisp`（`%expand-do-loops`。`with-tracing` が `macroexpand-all` の前に呼ぶ）。`%walk` / `*rewrite-table*` は変えない
+- 新しい export はない
+
+
 
 <!-- フェーズ3 anchor: issue #138 -->
 
