@@ -93,3 +93,39 @@ DIRECT-GRAPH（本体を直接呼ぶ graph）の eval-graph の結果と一致�
         (direct (nb::trace-to-graph (nb:with-tracing (x y) (+ x y)) *subgraph-iree-avals*)))
     (%with-subgraph-iree-check (backend graph direct "nested-regions")
       "IREE の実行結果が本体を直接評価した結果と一致しなかった")))
+
+;;; ---- while 形のリージョン: carry はブロック引数、閉包で捕まえた値は外側の名前 ----
+
+(define-iree-test subgraph/iree-while-region-mixes-block-args-and-outer-names
+    "stablehlo.while の cond / body が、carry をブロック引数、閉包で捕まえた値を外側の
+SSA 名として使うリージョンを IREE が受け付け、eager の結果と一致する。"
+  (skip-unless-iree :library :both)
+  (let* ((backend (nabla:find-backend :iree))
+         (avals (list (nb:make-aval '() :f32) (nb:make-aval '() :f32)))
+         (graph (nb::trace-to-graph
+                 (nb:with-tracing (x s)
+                   (test-while-capture (nb:with-tracing (c) (< c (+ s 10.0)))
+                                       (nb:with-tracing (c) (+ c s))
+                                       x))
+                 avals))
+         (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph)))))
+    (unwind-protect
+         (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                       (lambda (seed)
+                         ;; 刻み s は 0.5 以上にして、反復回数を有限に保つ。
+                         (let* ((x (make-random-array (make-array-spec '() :f32) :seed seed :domain :positive))
+                                (s (make-array '() :element-type 'single-float
+                                                   :initial-element
+                                                   (+ 0.5f0 (row-major-aref
+                                                             (make-random-array (make-array-spec '() :f32)
+                                                                                :seed (1+ seed) :domain :positive)
+                                                             0)))))
+                           (with-device-arrays ((dx (to-device x backend :dtype :f32))
+                                                (ds (to-device s backend :dtype :f32)))
+                             (with-device-arrays ((result (nabla:backend-invoke backend module "main" dx ds)))
+                               (allclose (to-host result) (nb:eval-graph graph x s) :dtype :f32)))))
+                       :regression-id subgraph/iree-while-region
+                       :regression-file (regression-path "iree-subgraph-while-region"
+                                                         :package "NABLA.IREE.TESTS"))
+             "IREE の while の結果が eager と一致しなかった")
+      (nabla:backend-unload backend module))))

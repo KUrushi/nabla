@@ -110,7 +110,10 @@ DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。
     で、出力の名前と AVAL を「リスト」で受け取り、\"%8, %9 = ...\" のような
     左辺を自分で書く。
   - :EAGER は配列の「リスト」を返す。
-  - :JVP は (primals outs tangents &key <params>) → 接線のリスト、
+  - :JVP は (primals tangents &key <params>) → (VALUES 主値の出力のリスト 接線のリスト)。
+    jvp-graph は主値の eqn を事前に足さず、ルールが自分で足す（足さないと、
+    while / scan / cond のような高階プリミティブが2回走る）。全入力の接線が
+    ゼロのときだけ、ルールを呼ばず主値を再発行する。
     :TRANSPOSE は (cts invars &key <params>) で、CTS は余接線のリスト
     （SYMBOLIC-ZERO 可）、返り値は invar ごとのリスト。
   - トレースには %TRACE-EQN ではなく %TRACE-EQN*（常にトレーサのリストを返す）

@@ -156,22 +156,28 @@ rank 0 は角括弧無し、要素数0は \"dense<>\"、rank ≥ 1 は行優先�
         (t
          (error "emit-stablehlo: 単一出力のプリミティブの eqn の outvars が1つでない: ~S" eqn))))))
 
-(defun %stablehlo-eqn-lines (numbers eqn index)
-  "EQN の出力行に \" loc(\\\"eqn-INDEX\\\")\" を付けたリストを返す。普通は全ての行に
-付ける（複数行を返す :EMIT でも、その全ての行に付ける。契約 §3 のピットフォール(3):
-補助 SSA 名の行に loc が付いても無害）。INDEX が NIL なら loc を付けない
-（リージョンの中の eqn。外側の GRAPH-EQNS の位置と対応しないため）。
+(defun %brace-balance (line)
+  "LINE の中の \"{\" の個数から \"}\" の個数を引いた値（リージョンの深さの増減）。"
+  (- (count #\{ line) (count #\} line)))
 
-params にサブグラフを持つ eqn（リージョンを持つ演算）は、loc を演算の最後の行
-（\"}) : ... -> ...\"）にだけ付ける。リージョンの途中の行には loc を置けない。"
-  (let* ((lines (%split-lines (%stablehlo-eqn-emit-text numbers eqn)))
-         (last-line-only (%eqn-subgraphs eqn)))
+(defun %stablehlo-eqn-lines (numbers eqn index)
+  "EQN の出力行に \" loc(\\\"eqn-INDEX\\\")\" を付けたリストを返す。リージョンの
+外（深さ 0 で終わる行）の全ての行に付ける（複数行を返す :EMIT でも、補助 SSA 名の
+行（\"%idx = stablehlo.constant ...\" など）まで付けて、実行系の診断から eqn を逆引き
+できるようにする。契約 §3 のピットフォール(3)）。リージョンの途中の行（\"{\" で開いた
+まま終わる行や、リージョンの中身）には付けない。MLIR の loc は演算の後にしか置けず、
+リージョンを閉じる最後の行（\"}) : ... -> ...\"）に付ければ演算全体に効くため。
+INDEX が NIL なら loc を付けない（リージョンの中の eqn。外側の GRAPH-EQNS の位置と
+対応しないため）。"
+  (let ((lines (%split-lines (%stablehlo-eqn-emit-text numbers eqn)))
+        (depth 0))
     (if (null index)
         lines
-        (loop for (line . rest) on lines
-              collect (if (and last-line-only rest)
-                          line
-                          (format nil "~A loc(\"eqn-~D\")" line index))))))
+        (loop for line in lines
+              do (incf depth (%brace-balance line))
+              collect (if (zerop depth)
+                          (format nil "~A loc(\"eqn-~D\")" line index)
+                          line)))))
 
 ;;; ---- 本体 ----
 
@@ -193,42 +199,53 @@ params にサブグラフを持つ eqn（リージョンを持つ演算）は、
 （入れ子のリージョンや、同じ graph から出す複数のリージョンの名前が衝突しない）。")
 
 (defun %stablehlo-region-return-line (numbers outvars)
-  (format nil "stablehlo.return ~{~A~^, ~} : ~{~A~^, ~}"
-          (mapcar (lambda (v) (%var-name numbers v)) outvars)
-          (mapcar (lambda (v) (tensor-type-string (var-aval v))) outvars)))
+  "リージョンの終わりの stablehlo.return。OUTVARS が無ければ裸の \"stablehlo.return\"。"
+  (if outvars
+      (format nil "stablehlo.return ~{~A~^, ~} : ~{~A~^, ~}"
+              (mapcar (lambda (v) (%var-name numbers v)) outvars)
+              (mapcar (lambda (v) (tensor-type-string (var-aval v))) outvars))
+      "stablehlo.return"))
 
-(defun %stablehlo-region-lines (graph &key arg-names)
+(defun %stablehlo-region-lines (graph &key (arg-names nil arg-names-p))
   "サブグラフ GRAPH を StableHLO のリージョンの中身として出した行のリストを返す
 （契約 C1。リージョンを持つ演算を出す :EMIT が、\"{\" と \"}\" の間に置く）。
-先頭と末尾の波括弧は含まない。リージョンは stablehlo.return で終わる。
+先頭と末尾の波括弧は含まない。リージョンは stablehlo.return で終わる
+（出力が無ければ裸の stablehlo.return）。
 
-ARG-NAMES（GRAPH の invars と同じ長さの外側の SSA 名のリスト）を渡すと、
-invars をその名前に結びつけ、ブロック引数を出さない（stablehlo.if / case の枝用。
-リージョンは外側の値を直接参照できる）。渡さないと、先頭に
-\"^bb0(%s<k>_0: tensor<...>, ...):\" を出し、invars をそのブロック引数にする
-（stablehlo.while の cond / body 用）。
+ARG-NAMES は GRAPH の invars と同じ長さのリストで、要素ごとに invar の扱いを決める。
+  - 文字列: その invar を外側の SSA 名に結びつける（ブロック引数にしない。
+    stablehlo.if / case の枝用。リージョンは外側の値を直接参照できる）。
+  - NIL: その invar をブロック引数にする。
+ブロック引数になる invar が1つでもあれば、先頭に \"^bb0(%s<k>_0: tensor<...>, ...):\"
+を出し、ブロック引数を invars の順に並べる（stablehlo.while の cond / body 用。
+carry をブロック引数、閉包で捕まえた値を外側の名前にするなら
+(nil nil \"%7\" \"%3\") のように渡す）。全て文字列なら ^bb0 の行は出さない。
+ARG-NAMES を渡さないと、全ての invar がブロック引数になる。
 
 リージョンの中の SSA 名には、EMIT-STABLEHLO ごとの *STABLEHLO-REGION-COUNTER*
 から作る接頭辞 \"%s<k>_\" を付ける。定数はリージョンの中で出す。リージョンの中の
 eqn の行には loc を付けない。サブグラフは外側の var を参照しない閉じた graph
-なので、外側の名前に結びつくのは ARG-NAMES だけ。"
+なので、外側の名前に結びつくのは ARG-NAMES の文字列だけ。"
   (unless *stablehlo-region-counter*
     (error "%stablehlo-region-lines は EMIT-STABLEHLO の中（*STABLEHLO-REGION-COUNTER* が束縛されている間）でしか呼べない"))
-  (when (and arg-names (/= (length arg-names) (length (graph-invars graph))))
+  (when (and arg-names-p (/= (length arg-names) (length (graph-invars graph))))
     (error "%stablehlo-region-lines: arg-names の個数 ~D が graph の入力の個数 ~D と一致しない"
            (length arg-names) (length (graph-invars graph))))
   (let* ((k (incf *stablehlo-region-counter*))
          (*var-name-prefix* (format nil "%s~D_" k))
-         (*var-name-overrides* (and arg-names (make-hash-table :test 'eq)))
-         (numbers (%assign-var-numbers graph)))
-    (when arg-names
-      (loop for var in (graph-invars graph)
-            for name in arg-names
-            do (setf (gethash var *var-name-overrides*) name)))
+         (*var-name-overrides* (make-hash-table :test 'eq))
+         (numbers (%assign-var-numbers graph))
+         (names (if arg-names-p arg-names (make-list (length (graph-invars graph)))))
+         (block-args '()))
+    (loop for var in (graph-invars graph)
+          for name in names
+          do (if name
+                 (setf (gethash var *var-name-overrides*) name)
+                 (push var block-args)))
     (append
-     (unless arg-names
+     (when block-args
        (list (format nil "^bb0(~{~A~^, ~}):"
-                     (mapcar (lambda (v) (%stablehlo-arg-string numbers v)) (graph-invars graph)))))
+                     (mapcar (lambda (v) (%stablehlo-arg-string numbers v)) (reverse block-args)))))
      (mapcar (lambda (entry) (%stablehlo-constant-line numbers (car entry) (cdr entry)))
              (graph-constants graph))
      (loop for eqn in (graph-eqns graph)
@@ -254,7 +271,7 @@ FUNCTION-NAME（既定 \"main\"）という1つの func.func を出す（BACKEND
 その全ての行に同じ loc を付ける。
 
 複数出力のプリミティブ（契約 C1）の :EMIT には出力の名前と AVAL をリストで渡す。
-params にサブグラフを持つ eqn の loc は、演算の最後の行にだけ付く。
+リージョンの外の行にはすべて loc が付き、リージョンの途中の行には付かない。
 
 次の graph はエラーになる: 単一出力のプリミティブで eqn の outvars が1つでない
 もの（ERROR）、:EMIT を持たないプリミティブを使うもの

@@ -48,3 +48,53 @@
   (multiple-value-bind (graph captured)
       (nabla::%trace-subgraph body (mapcar #'nabla::tracer-aval args))
     (nabla::%trace-eqn* :%test-call-subgraph (append args captured) :body graph)))
+
+;;; ---- while 形のリージョン（ブロック引数と外側の名前の混在）の確認用 ----
+;;;
+;;; %TEST-WHILE-CAPTURE は carry を1つと、閉包で捕まえた値を1つ持つ。cond / body の
+;;; サブグラフの invars は (carry captured)。StableHLO では carry をブロック引数
+;;; (^bb0)、captured を外側の SSA 名にした stablehlo.while として出す
+;;; （%STABLEHLO-REGION-LINES の :ARG-NAMES に (nil "%名前") を渡す形）。
+
+(nabla:defprimitive %test-while-capture (:cond :body)
+  :multiple-outputs t
+  :abstract-eval
+  (lambda (in-avals &key cond body)
+    (declare (ignore cond))
+    (unless (equalp in-avals (mapcar #'nabla:var-aval (nabla:graph-invars body)))
+      (error 'nabla:primitive-error :name :%test-while-capture :in-avals in-avals
+             :format-control "入力の aval が本体の入力と一致しない: ~S"
+             :format-arguments (list in-avals)))
+    (list (first in-avals)))
+  :emit
+  (lambda (in-names in-avals out-names out-avals &key cond body)
+    (declare (ignore in-avals))
+    (let ((arg-names (list nil (second in-names)))
+          (type (nabla::tensor-type-string (first out-avals))))
+      (format nil "~A = \"stablehlo.while\"(~A) ({~%~{  ~A~^~%~}~%}, {~%~{  ~A~^~%~}~%}) : (~A) -> ~A"
+              (first out-names)
+              (first in-names)
+              (nabla::%stablehlo-region-lines cond :arg-names arg-names)
+              (nabla::%stablehlo-region-lines body :arg-names arg-names)
+              type type)))
+  :eager
+  (lambda (arrays in-avals &key cond body)
+    (declare (ignore in-avals))
+    (let ((carry (first arrays))
+          (captured (second arrays)))
+      (loop while (= 1 (row-major-aref (nabla:eval-graph cond carry captured) 0))
+            do (setf carry (nabla:eval-graph body carry captured)))
+      (list carry))))
+
+(defun test-while-capture (cond-fn body-fn carry)
+  "COND-FN / BODY-FN（どちらも WITH-TRACING で作った TRACEABLE-FUNCTION。引数は carry
+1つ）を CARRY の aval でサブグラフにし、%TEST-WHILE-CAPTURE の eqn を足して、結果の
+トレーサを返す。2つの本体が閉包で捕まえた外側のトレーサは同じ1つでなければならない。"
+  (let ((avals (list (nabla::tracer-aval carry))))
+    (multiple-value-bind (cond-graph cond-captured) (nabla::%trace-subgraph cond-fn avals)
+      (multiple-value-bind (body-graph body-captured) (nabla::%trace-subgraph body-fn avals)
+        (unless (and (= 1 (length cond-captured)) (equal cond-captured body-captured))
+          (error "test-while-capture: cond と body は同じ外側の値を1つだけ捕まえること: ~S / ~S"
+                 cond-captured body-captured))
+        (first (nabla::%trace-eqn* :%test-while-capture (cons carry cond-captured)
+                                   :cond cond-graph :body body-graph))))))

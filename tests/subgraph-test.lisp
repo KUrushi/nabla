@@ -266,7 +266,7 @@ eqn の invars の末尾に足される。同じトレーサは1回だけ持ち�
 
 (test subgraph/emit-stablehlo-emits-region-with-prefixed-names
   "サブグラフはリージョンとして出る。リージョン内の SSA 名は %s<k>_ 接頭辞を持ち、
-loc は演算の最後の行にだけ付く。"
+loc はリージョンの外の行（補助の定数行と演算を閉じる最後の行）に付き、中には付かない。"
   (let* ((text (nb:emit-stablehlo (%sg-call-graph)))
          (lines (%sg-lines text)))
     (is (search "\"stablehlo.case\"" text))
@@ -274,6 +274,10 @@ loc は演算の最後の行にだけ付く。"
     (is (= 1 (%sg-count-lines-matching "stablehlo.return %s1_" text)))
     (is (= 1 (count-if (lambda (l) (search "loc(\"eqn-0\")" l))
                        (remove-if-not (lambda (l) (search "tensor<i32>) ->" l)) lines))))
+    (is (= 1 (count-if (lambda (l) (and (search "%idx_" l) (search "stablehlo.constant" l)
+                                        (search "loc(\"eqn-0\")" l)))
+                       lines)))
+    (is (null (find-if (lambda (l) (and (search "\"stablehlo.case\"(" l) (search "loc(" l))) lines)))
     (is (null (find-if (lambda (l) (and (search "%s1_" l) (search "loc(" l))) lines)))))
 
 (test subgraph/region-counter-gives-each-region-distinct-names
@@ -346,35 +350,50 @@ loc は演算の最後の行にだけ付く。"
        (values (first r) (second r))))
    avals))
 
-(test subgraph/multiple-output-jvp-rule-receives-lists-and-returns-tangent-list
-  "複数出力の jvp ルールは (primals outs tangents &key params) → 接線のリストで呼ばれる。"
+(defun %sg-test-jvp-rule (&key (drop nil) (reverse-tangents nil))
+  "テスト用の複数出力の jvp ルール。主値の HOP の eqn を自分で足し、接線は入力の
+接線をそのまま返す（恒等の本体の接線）。DROP なら接線を1つ落とし、REVERSE-TANGENTS
+なら逆順に返す（検査のテスト用）。"
+  (lambda (primals tangents &key body)
+    (assert (and (listp primals) (listp tangents) (= 2 (length tangents))))
+    (values (nb::%trace-eqn* :%test-call-subgraph primals :body body)
+            (cond (drop (list (first tangents)))
+                  (reverse-tangents (reverse tangents))
+                  (t tangents)))))
+
+(test subgraph/multiple-output-jvp-rule-emits-primal-eqn-itself
+  "複数出力の jvp ルールは (primals tangents &key params) → (values 主値のリスト 接線のリスト)
+で呼ばれ、jvp-graph は主値の eqn を事前に足さない（HOP の eqn は1つだけ）。"
   (let ((graph (%sg-identity-graph *subgraph-test-avals*)))
-    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule
-                      (lambda (primals outs tangents &key body)
-                        (declare (ignore body))
-                        (assert (and (listp primals) (listp outs) (listp tangents)
-                                     (= 2 (length outs))))
-                        tangents))
+    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule (%sg-test-jvp-rule))
       (let ((jvp (nb::jvp-graph graph)))
+        (is (= 1 (count :%test-call-subgraph (%sg-prim-names jvp))))
         (is (= 4 (length (nb:graph-outvars jvp))))
         (destructuring-bind (x y tx ty) (%sg-random-arrays 7 (append *subgraph-test-avals*
                                                                       *subgraph-test-avals*))
           (is (equalp (list x y tx ty)
                       (multiple-value-list (nb:eval-graph jvp x y tx ty)))))))))
 
+(test subgraph/multiple-output-jvp-rule-not-called-for-zero-tangents
+  "全入力の接線がゼロなら、複数出力でもルールを呼ばず主値を再発行する。"
+  (let ((graph (%sg-identity-graph *subgraph-test-avals*))
+        (called nil))
+    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule
+                      (lambda (primals tangents &key body)
+                        (declare (ignore tangents))
+                        (setf called t)
+                        (values (nb::%trace-eqn* :%test-call-subgraph primals :body body) nil)))
+      (let ((jvp (nb::jvp-graph graph :nonzero '(nil nil))))
+        (is (null called))
+        (is (= 1 (count :%test-call-subgraph (%sg-prim-names jvp))))))))
+
 (test subgraph/multiple-output-jvp-rule-result-is-checked
   "複数出力の jvp ルールが、個数や aval の違う接線を返すと AUTODIFF-ERROR。"
   (let* ((avals (list (nb:make-aval '(2 3) :f32) (nb:make-aval '(3) :f32)))
          (graph (%sg-identity-graph avals)))
-    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule
-                      (lambda (primals outs tangents &key body)
-                        (declare (ignore primals outs body))
-                        (list (first tangents))))
+    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule (%sg-test-jvp-rule :drop t))
       (signals nb::autodiff-error (nb::jvp-graph graph)))
-    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule
-                      (lambda (primals outs tangents &key body)
-                        (declare (ignore primals outs body))
-                        (reverse tangents)))
+    (%with-test-rule (nb::primitive-jvp nb::set-jvp-rule (%sg-test-jvp-rule :reverse-tangents t))
       (signals nb::autodiff-error (nb::jvp-graph graph)))))
 
 (test subgraph/multiple-output-transpose-rule-receives-cotangent-list
@@ -400,3 +419,34 @@ loc は演算の最後の行にだけ付く。"
             (is (allclose r2 (make-array (array-dimensions r2) :element-type (array-element-type r2)
                                          :initial-element 0.0f0)
                         :dtype :f32))))))))
+
+;;; ---- リージョンの引数: ブロック引数と外側の名前の混在 ----
+
+(test subgraph/region-lines-mixes-block-args-and-outer-names
+  "arg-names の NIL の要素はブロック引数に、文字列の要素は外側の名前になる。
+ブロック引数は invars の順に ^bb0 に並ぶ。"
+  (let* ((graph (%sg-body-graph))
+         (mixed (let ((nb::*stablehlo-region-counter* 0))
+                  (nb::%stablehlo-region-lines graph :arg-names (list nil "%7"))))
+         (mixed-text (format nil "~{~A~^~%~}" mixed))
+         (all-strings (let ((nb::*stablehlo-region-counter* 0))
+                        (nb::%stablehlo-region-lines graph :arg-names (list "%7" "%3"))))
+         (all-nil (let ((nb::*stablehlo-region-counter* 0))
+                    (nb::%stablehlo-region-lines graph :arg-names (list nil nil)))))
+    (is (string= "^bb0(%s1_0: tensor<2x3xf32>):" (first mixed)))
+    (is (search "stablehlo.add %s1_0, %7" mixed-text))
+    (is (null (find-if (lambda (l) (search "^bb0" l)) all-strings)))
+    (is (search "stablehlo.add %7, %3" (format nil "~{~A~^~%~}" all-strings)))
+    (is (string= "^bb0(%s1_0: tensor<2x3xf32>, %s1_1: tensor<2x3xf32>):" (first all-nil)))))
+
+(test subgraph/region-lines-empty-arg-names-means-no-block-args
+  "invars が無いサブグラフに空の arg-names を渡すと ^bb0 の行は出ない。"
+  (let* ((graph (nb::make-graph '() '() '()))
+         (lines (let ((nb::*stablehlo-region-counter* 0))
+                  (nb::%stablehlo-region-lines graph :arg-names '()))))
+    (is (null (find-if (lambda (l) (search "^bb0" l)) lines)))
+    (is (equal '("stablehlo.return") lines))))
+
+(test subgraph/region-return-line-without-outvars-is-bare
+  "出力の無いリージョンは、裸の stablehlo.return で終わる。"
+  (is (string= "stablehlo.return" (nb::%stablehlo-region-return-line (make-hash-table :test 'eq) '()))))

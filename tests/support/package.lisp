@@ -95,4 +95,5 @@
    #:scalar-loss-function
    #:scalar-loss-oracle
    ;; テスト専用の高階プリミティブ（issue #127）
-   #:test-call-subgraph))
+   #:test-call-subgraph
+   #:test-while-capture))
