@@ -1,0 +1,1 @@
+main をマージ(#153 rng)。IREE 3.11 の Stream AffinityAnalysis クラッシュ回避として while の定数オペランド(カウンタ・ys 0初期値)を optimization_barrier 経由に。長さ1は scf.for 化で barrier があると型不一致でコンパイル失敗するため barrier 無し。反復コンパイルのテスト追加。ys 性能(#159)と %scan-trace-body のコメントを追記。
