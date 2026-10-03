@@ -82,6 +82,10 @@
 
 
                ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のコンポーネントはこの下に足す
+               (:file "src/vmap")
+               ;; バッチ化ルール（add と broadcast-in-dim。残りは #128 / #129）
+               (:file "src/ad/rules-batch-elementwise")
+               (:file "src/ad/rules-batch-shape")
 
 
 
@@ -159,6 +163,8 @@
                ;; StableHLO emitter の medium PBT が使うレシピ生成器（issue #33、s1）
                (:file "tests/support/primitive-recipes")
                (:file "tests/support/autodiff")
+               ;; vmap の参照実装（issue #125）
+               (:file "tests/support/vmap")
                (:file "tests/support/run-tests")))
 
 (defsystem "nabla/tests"
@@ -239,6 +245,7 @@
 
 
                ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のテストはこの下に足す
+               (:file "tests/vmap-test")
 
 
 
@@ -415,6 +422,7 @@
 
 
                ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のテストはこの下に足す
+               (:file "tests/iree/vmap-test")
 
 
 

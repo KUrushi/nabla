@@ -69,11 +69,11 @@ shape をずらす）。"
                       :abstract-eval (lambda (in-avals &key shape) (declare (ignore shape)) (first in-avals))))))
 
 (test primitive/defprimitive-rejects-unknown-keys
-  "ABSTRACT-EVAL / EMIT / EAGER / JVP / TRANSPOSE 以外のキー（例 :BATCH）を渡すとエラーになる。"
+  "ABSTRACT-EVAL / EMIT / EAGER / JVP / TRANSPOSE / BATCH 以外のキー（例 :UNKNOWN）を渡すとエラーになる。"
   (signals error
     (macroexpand-1 '(nb:defprimitive %test-unknown-key ()
                       :abstract-eval (lambda (in-avals) (first in-avals))
-                      :batch (lambda () nil)))))
+                      :unknown (lambda () nil)))))
 
 (test primitive/tensor-type-string-matches-shape-and-dtype
   "TENSOR-TYPE-STRING は \"tensor<\" + shape の各次元と dtype 名を x で
