@@ -415,8 +415,13 @@ primitive-error を signal する。"
   (let ((text (nb:print-graph (nb:trace-to-graph (nb:with-tracing (x) (+ x 1))
                                                  (list (nb:make-aval '(2) :i32))))))
     (is (stringp text))
-    (signals nb::graph-syntax-error (nb::read-graph (substitute-string text "i32" "q99")))
-    (signals nb::graph-syntax-error (nb::read-graph (substitute-string text "i32" "7")))))
+    ;; 後段の検査でも graph-syntax-error になりうるので、%PARSE-DTYPE 自身の
+    ;; 検査が働いていること（メッセージ）まで確かめる
+    (flet ((message (text)
+             (handler-case (progn (nb::read-graph text) "")
+               (nb::graph-syntax-error (c) (princ-to-string c)))))
+      (is (search "未知の dtype" (message (substitute-string text "i32" "q99"))))
+      (is (search "dtype が symbol でない" (message (substitute-string text "i32" "7")))))))
 
 (defun substitute-string (text old new)
   (let ((position (search old text)))
@@ -434,3 +439,20 @@ primitive-error を signal する。"
   (is (equal "0xFFF0000000000000" (nb::%reduce-init-literal :max :f64)))
   (is (equal "0xFF80" (nb::%reduce-init-literal :max :bf16)))
   (is (equal "0xFC00" (nb::%reduce-init-literal :max :f16))))
+
+(test integer-dtype/reduce-sum-emit-accumulates-half-precision-in-f32
+  "reduce-sum の StableHLO は、bf16 / f16 では f32 に convert して累積する4行、
+f32 と整数では直接の2行（整数は f32 を経由しない。init は整数のリテラル 0）。"
+  (flet ((emit-lines (dtype)
+           (let ((text (funcall (nb::primitive-emit (nb::find-primitive :reduce-sum))
+                                '("%a") (list (nb:make-aval '(4) dtype)) "%7" (nb:make-aval '() dtype)
+                                :axes '(0))))
+             (with-input-from-string (in text)
+               (loop for line = (read-line in nil) while line collect line)))))
+    (dolist (dtype '(:bf16 :f16))
+      (let ((lines (emit-lines dtype)))
+        (is (= 4 (length lines)))
+        (is (search "-> tensor<4xf32>" (first lines)))))
+    (dolist (dtype '(:f32 :i32 :u32 :u64))
+      (is (= 2 (length (emit-lines dtype)))))
+    (is (search "dense<0> :" (first (emit-lines :i32))))))
