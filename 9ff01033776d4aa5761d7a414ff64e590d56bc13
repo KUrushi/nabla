@@ -1,0 +1,1 @@
+追記: ブランチを #148 のマージ前の main から切っていたため shape ファイルの def-batch-rule が1つだけに見えた(ツールの不具合ではない)。main をマージして 7定義・40変異体、実走 36 killed / 4 survived(dot-general 68行 off-by-one)。生き残りの正確なフォームは mutation ロックの待ち行列が長く未取得(scratchpad/shape-full.txt に出力予定)。force push は拒否されたので merge + cherry-pick で通常 push。
