@@ -1,0 +1,1 @@
+Fable の追加ケース（rank 1 の xs、xs 無し、const を y に通す）を PBT に追加。scan の in-dims を %vmap-scan-body-in-dims に共通化。scan.lisp の docstring を折り返し。フルスイート通過。
