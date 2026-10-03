@@ -95,4 +95,4 @@ jit は呼び出しごとではなくここで1回だけ作る（2回目以降�
 
 (let ((losses (train)))
   (format t "~&loss[0] = ~,4F~%" (first losses))
-  (format t "~&final loss = ~,4F~%" (car (last losses))))
+  (format t "~&final loss = ~,3E~%" (car (last losses))))

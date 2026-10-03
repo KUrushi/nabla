@@ -62,8 +62,13 @@ value-and-grad）が JAX（jax.lax.scan）のフィクスチャと f32 の許容
     "学習ステップ全体（jit した value-and-grad と SGD の更新）を30ステップ回すと、各ステップの損失・
 5ステップ後と30ステップ後のパラメータが JAX の SGD の軌跡と一致し、損失が減る（最後が最初の
 1/10 未満）。学習ステップの jit は最初の1回だけコンパイルされ、2ステップ目以降は *jit-miss-count*
-が増えない。許容誤差は損失とパラメータの f32 の既定値のまま（総和・tanh の実装差が30ステップで
-累積するが、この大きさでは既定の rtol 1e-5 / atol 1e-6 に収まることを確かめてある）。"
+が増えない。
+許容誤差: 1ステップ目の損失・勾配と5ステップ後のパラメータは既定の f32（rtol 1e-5 / atol 1e-6、
+実測の最大相対誤差 1.2e-7 以下）。10ステップ目以降の損失と30ステップ後のパラメータは rtol 3e-5 に
+緩める。理由は SGD の30ステップで丸め誤差が累積するため。実測: JAX の f32 と f64 の損失の相対誤差は
+1e-7 から30ステップ目で 3.3e-7 まで増え、nabla（IREE）と JAX の差は最大 6.8e-7（ステップ29）、
+eager と IREE の差は最大 8.5e-7。3e-5 はこれらの数十倍の余裕があるが、学習率の誤差 1e-4
+（相対誤差 4.7e-5）や勾配の 1e-3 の誤差（7.9e-5 以上）は検出できる値である。"
   (skip-unless-iree :library :both)
   (let* ((nb:*compile-cache-directory* nil)
          (fixture (%rnn-fixture))
@@ -78,7 +83,7 @@ value-and-grad）が JAX（jax.lax.scan）のフィクスチャと f32 の許容
     (multiple-value-bind (xs y params) (%rnn-fixture-inputs fixture)
       (dotimes (k steps)
         (multiple-value-bind (loss new-params) (funcall step params xs y)
-          (is (approx= loss (aref expected-losses k) :dtype :f32)
+          (is (approx= loss (aref expected-losses k) :dtype :f32 :rtol (if (>= k 10) 3d-5 1d-5))
               "ステップ ~D の損失が JAX と一致しない: ~S と ~S" k loss (aref expected-losses k))
           (setf params new-params)
           (when (= k 0)
@@ -91,8 +96,9 @@ value-and-grad）が JAX（jax.lax.scan）のフィクスチャと f32 の許容
       (loop for actual in params
             for expected in (%rnn-fixture-arrays (getf fixture :params-final))
             for name in '(wh wx b wo bo)
-            do (is (allclose actual expected :dtype :f32) "~D ステップ後の ~A が JAX と一致しない" steps name))
+            do (is (allclose actual expected :dtype :f32 :rtol 3d-5) "~D ステップ後の ~A が JAX と一致しない" steps name))
       (is (= (1+ before) nb::*jit-miss-count*) "2ステップ目以降で再コンパイルされた")
+      ;; フィクスチャ自身の確認: 再生成したフィクスチャの損失が減らなくなったら気づくための検査
       (is (< (aref expected-losses (1- steps)) (* 0.1 (aref expected-losses 0))))
       (multiple-value-bind (loss new-params) (funcall step params xs y)
         (declare (ignore new-params))
