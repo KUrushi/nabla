@@ -220,7 +220,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 `(vmap f &key (in-axes 0) (out-axes 0))` は、`f`（`with-tracing` / `defjit` / `jit` が作った関数。`jit` は静的引数なしのもの）を、引数のバッチ軸についてまとめて適用する関数を返す。結果は「バッチ軸で切り出した各要素に `f` を適用して、出力の `out-axes` の位置に積み直したもの」と一致する。`in-axes` は引数ごとの軸（0始まり、負なら末尾から）か `nil`（その引数はバッチせず `f` にそのまま渡す）で、整数か `nil` を1つ渡すと全引数に共通、リストなら引数ごと。`out-axes` は出力ごとの軸か `nil`（出力がバッチに依存しないときだけ。依存しない出力に整数を渡すと複製する）。戻り値はトレースできる関数なので、配列を渡して直接呼ぶ（eager）ほか、`(jit (vmap f))`、`with-tracing` の中、`grad` の対象、別の `vmap` の対象（`(vmap (vmap f))`）として使える。バッチされていない入力だけの演算は、バッチ化ルールを呼ばずにそのまま残る。既知の制限は `grad` と同じ（`f` が外側のトレーサを閉包で捕まえると `tracing-error`）。`f` はリストを返せない（`(with-tracing … (values-list …))` で包む）。`(vmap f)` は呼ぶたびに新しい関数オブジェクトを作るので、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため。ループの外で1回だけ作る）。`cond*` / `while-loop` / `scan` を含む `f` も `vmap` できる（下の「制御構造のバッチ化」）。
 
-コンディションは `vmap-error`（親。`in-axes` / `out-axes` の個数・型・範囲の不正、軸長の不一致、バッチされた引数が無い、など）と、その子の `no-batch-rule`（バッチ軸を持つ値がバッチ化ルールの無いプリミティブに渡った。`no-batch-rule-name` がプリミティブ名）。バッチ化ルールは `def-batch-rule`（内部。`src/ad/rules-batch-*.lisp`）で書く。この issue で持つルールは `add` と `broadcast-in-dim` だけで、残りは #128 / #129 で揃える。
+コンディションは `vmap-error`（親。`in-axes` / `out-axes` の個数・型・範囲の不正、軸長の不一致、バッチされた引数が無い、など）と、その子の `no-batch-rule`（バッチ軸を持つ値がバッチ化ルールの無いプリミティブに渡った。`no-batch-rule-name` がプリミティブ名）。バッチ化ルールは `def-batch-rule`（内部。`src/ad/rules-batch-*.lisp`）で書く。全プリミティブがバッチ化ルールを持つ（要素演算は #128、形状・縮約・`dot-general` は #129、制御構造は #140）。
 
 
 
@@ -253,7 +253,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### scan（issue #132）
 
-`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。順方向・jvp（#135、下記）・`grad`（#139、下記）に対応し、`vmap` は #140 まで `vmap-error`。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
+`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。順方向・jvp（#135、下記）・`grad`（#139、下記）に対応し、`vmap`（#140、下の「制御構造のバッチ化」）にも対応する。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
 
 
 
@@ -333,7 +333,7 @@ tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
-docs/                glossary.md, iree-build.md, phase0-report.md, phase1-report.md
+docs/                glossary.md, iree-build.md, phase0-report.md, phase1-report.md, phase2-report.md, phase3-report.md
 examples/            add.lisp, jit.lisp, mlp.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
