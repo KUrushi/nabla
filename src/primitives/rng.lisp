@@ -30,18 +30,31 @@
 ;;;; XLA の実装ともビット単位で一致する（実行系ごとの実測結果は docs/stablehlo-ops.md。
 ;;;; core は実行系の名前を知らない）。
 ;;;;
+;;;; 状態の先頭に「バッチ次元」を付けられる（issue #136）。状態の shape が
+;;;; (lead... 2) のとき、各行 [i..., :] が独立した状態で、出力の新しい状態は同じ shape、
+;;;; ビットは (lead... shape...)。各行は、その行だけを ui64[2] として単独に呼んだ結果と
+;;;; ビット単位で一致する（vmap のバッチ化ルールがこれに頼る。vmap の結果は「各要素を
+;;;; 単独に呼んだ結果」と一致しなければならない）。StableHLO の rng_bit_generator は
+;;;; ui64[2] しか受けないので、emit は行ごとに slice して rng_bit_generator を呼び、
+;;;; concatenate で積み直す（行数だけ演算が増える。静的形状のため展開する。
+;;;; スキャンによる圧縮は将来の課題）。
+;;;;
 ;;;; 状態・ビットは整数なので微分しない（jvp ルールは要らない。全入力の接線が
 ;;;; ゼロのとき jvp-graph はルールを呼ばず主値を再発行する）。
 
 (in-package #:nabla)
 
 (defun %rng-check-params (in-avals shape dtype)
-  "RNG-BIT-GENERATOR の入力と params を検査する（満たさなければ PRIMITIVE-ERROR）。"
+  "RNG-BIT-GENERATOR の入力と params を検査する（満たさなければ PRIMITIVE-ERROR）。
+状態は dtype :u64 で、shape の末尾が 2（先頭の次元はバッチ次元。無くてもよい）。"
   (%check-arity :rng-bit-generator in-avals 1)
-  (unless (equalp (first in-avals) (make-aval '(2) :u64))
-    (error 'primitive-error :name :rng-bit-generator :in-avals in-avals
-           :format-control "状態は ui64[2]（shape (2)・dtype :u64）でなければならない"
-           :format-arguments '()))
+  (let ((state (first in-avals)))
+    (unless (and (eq (aval-dtype state) :u64)
+                 (plusp (aval-rank state))
+                 (= 2 (car (last (aval-shape state)))))
+      (error 'primitive-error :name :rng-bit-generator :in-avals in-avals
+             :format-control "状態は ui64[..., 2]（shape の末尾が 2・dtype :u64）でなければならない"
+             :format-arguments '())))
   (unless (member dtype '(:u32 :u64))
     (error 'primitive-error :name :rng-bit-generator :in-avals in-avals
            :format-control "dtype は :u32 か :u64 でなければならない: ~S"
@@ -51,6 +64,10 @@
     (error 'primitive-error :name :rng-bit-generator :in-avals in-avals
            :format-control "shape は正の整数のリストでなければならない: ~S"
            :format-arguments (list shape))))
+
+(defun %rng-lead-shape (state-aval)
+  "状態の aval の、バッチ次元（末尾の 2 を除いた先頭部分）の shape。"
+  (butlast (aval-shape state-aval)))
 
 (defun %threefry-rotl32 (x r)
   (declare (type (unsigned-byte 32) x) (type (integer 1 31) r))
@@ -85,7 +102,7 @@
   (or (position-if #'evenp shape)
       (position (reduce #'max shape) shape)))
 
-(defun %rng-bit-generator-eager (arrays shape dtype)
+(defun %rng-bit-generator-single-eager (arrays shape dtype)
   "状態 ARRAYS（ui64[2] を1つ）から (新しい状態 ビット) を返す。配置は冒頭のコメント。"
   (let* ((state (first arrays))
          (s0 (aref state 0))
@@ -128,20 +145,106 @@
     (setf (aref new-state 0) s0)
     (list new-state bits)))
 
+(defun %rng-bit-generator-eager (arrays shape dtype)
+  "状態 ARRAYS（ui64[..., 2] を1つ）から (新しい状態 ビット) を返す。バッチ次元があれば
+各行を単独の状態として %RNG-BIT-GENERATOR-SINGLE-EAGER に渡し、結果を行ごとに並べる。"
+  (let* ((state (first arrays))
+         (lead (butlast (array-dimensions state))))
+    (if (null lead)
+        (%rng-bit-generator-single-eager arrays shape dtype)
+        (let* ((rows (reduce #'* lead))
+               (bit-size (reduce #'* shape))
+               (new-state (make-array (array-dimensions state) :element-type '(unsigned-byte 64)))
+               (bits (make-array (append lead shape) :element-type (dtype-element-type dtype)))
+               (flat (make-array (array-total-size state) :element-type '(unsigned-byte 64)
+                                                          :displaced-to state)))
+          (dotimes (row rows)
+            (let ((row-state (make-array 2 :element-type '(unsigned-byte 64)
+                                           :initial-contents (list (aref flat (* 2 row))
+                                                                   (aref flat (1+ (* 2 row)))))))
+              (destructuring-bind (row-new row-bits)
+                  (%rng-bit-generator-single-eager (list row-state) shape dtype)
+                (setf (row-major-aref new-state (* 2 row)) (aref row-new 0)
+                      (row-major-aref new-state (1+ (* 2 row))) (aref row-new 1))
+                (dotimes (i bit-size)
+                  (setf (row-major-aref bits (+ (* row bit-size) i)) (row-major-aref row-bits i))))))
+          (list new-state bits)))))
+
+(defun %rng-emit-single (in-name state-aval out-names out-avals)
+  "ui64[2] の状態 IN-NAME（STATE-AVAL）に対する rng_bit_generator 1行。"
+  (format nil "~A, ~A = stablehlo.rng_bit_generator ~A, algorithm = THREE_FRY : (~A) -> (~A, ~A)"
+          (first out-names) (second out-names) in-name
+          (tensor-type-string state-aval)
+          (tensor-type-string (first out-avals))
+          (tensor-type-string (second out-avals))))
+
+(defun %rng-emit-batched (in-name state-aval out-names out-avals shape dtype)
+  "バッチ次元のある状態の StableHLO。状態を (行数 2) にならし、行ごとに slice →
+rng_bit_generator → 積み直し（concatenate）、最後に元の shape に戻す。"
+  (let* ((rows (reduce #'* (%rng-lead-shape state-aval)))
+         (base (subseq (first out-names) 1))
+         (flat-state-aval (make-aval (list rows 2) :u64))
+         (flat-state (format nil "%rng_flat_~A" base))
+         (row-state-aval (make-aval '(2) :u64))
+         (row-bits-aval (make-aval shape dtype))
+         (one-state-aval (make-aval '(1 2) :u64))
+         (one-bits-aval (make-aval (cons 1 shape) dtype))
+         (all-bits-aval (make-aval (cons rows shape) dtype))
+         (lines (list (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
+                              flat-state in-name (tensor-type-string state-aval)
+                              (tensor-type-string flat-state-aval))))
+         (states '()) (bits '()))
+    (flet ((name (tag row) (format nil "%rng_~A~D_~A" tag row base))
+           (add (line) (push line lines)))
+      (dotimes (row rows)
+        (let ((slice (name "slice" row)) (row-state (name "state" row))
+              (new-state (name "newstate" row)) (row-bits (name "bits" row))
+              (one-state (name "onestate" row)) (one-bits (name "onebits" row)))
+          (add (format nil "~A = stablehlo.slice ~A [~D:~D, 0:2] : (~A) -> ~A"
+                       slice flat-state row (1+ row)
+                       (tensor-type-string flat-state-aval) (tensor-type-string one-state-aval)))
+          (add (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
+                       row-state slice (tensor-type-string one-state-aval)
+                       (tensor-type-string row-state-aval)))
+          (add (%rng-emit-single row-state row-state-aval (list new-state row-bits)
+                                 (list row-state-aval row-bits-aval)))
+          (add (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
+                       one-state new-state (tensor-type-string row-state-aval)
+                       (tensor-type-string one-state-aval)))
+          (add (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
+                       one-bits row-bits (tensor-type-string row-bits-aval)
+                       (tensor-type-string one-bits-aval)))
+          (push one-state states)
+          (push one-bits bits)))
+      (let ((all-state (format nil "%rng_allstate_~A" base))
+            (all-bits (format nil "%rng_allbits_~A" base)))
+        (add (format nil "~A = stablehlo.concatenate ~{~A~^, ~}, dim = 0 : (~{~A~^, ~}) -> ~A"
+                     all-state (reverse states)
+                     (make-list rows :initial-element (tensor-type-string one-state-aval))
+                     (tensor-type-string flat-state-aval)))
+        (add (format nil "~A = stablehlo.concatenate ~{~A~^, ~}, dim = 0 : (~{~A~^, ~}) -> ~A"
+                     all-bits (reverse bits)
+                     (make-list rows :initial-element (tensor-type-string one-bits-aval))
+                     (tensor-type-string all-bits-aval)))
+        (add (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
+                     (first out-names) all-state (tensor-type-string flat-state-aval)
+                     (tensor-type-string (first out-avals))))
+        (add (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
+                     (second out-names) all-bits (tensor-type-string all-bits-aval)
+                     (tensor-type-string (second out-avals))))))
+    (format nil "~{~A~^~%~}" (reverse lines))))
+
 (defprimitive rng-bit-generator (:shape :dtype)
   :multiple-outputs t
   :abstract-eval
   (lambda (in-avals &key shape dtype)
     (%rng-check-params in-avals shape dtype)
-    (list (make-aval '(2) :u64) (make-aval shape dtype)))
+    (list (first in-avals) (make-aval (append (%rng-lead-shape (first in-avals)) shape) dtype)))
   :emit
   (lambda (in-names in-avals out-names out-avals &key shape dtype)
-    (declare (ignore shape dtype))
-    (format nil "~A, ~A = stablehlo.rng_bit_generator ~A, algorithm = THREE_FRY : (~A) -> (~A, ~A)"
-            (first out-names) (second out-names) (first in-names)
-            (tensor-type-string (first in-avals))
-            (tensor-type-string (first out-avals))
-            (tensor-type-string (second out-avals))))
+    (if (= 1 (aval-rank (first in-avals)))
+        (%rng-emit-single (first in-names) (first in-avals) out-names out-avals)
+        (%rng-emit-batched (first in-names) (first in-avals) out-names out-avals shape dtype)))
   :eager
   (lambda (arrays in-avals &key shape dtype)
     (%rng-check-params in-avals shape dtype)
@@ -149,7 +252,7 @@
 
 (defgeneric rng-bit-generator (state &key shape dtype)
   (:documentation
-   "STATE（ui64[2] の状態）から乱数ビットを作り、(VALUES 新しい状態 ビット) を返す
+   "STATE（ui64[2] の状態。先頭にバッチ次元を付けた ui64[..., 2] も可で、各行が独立）から乱数ビットを作り、(VALUES 新しい状態 ビット) を返す
 内部関数（公開の PRNG API は issue #136）。ビットは SHAPE・DTYPE（:u32 / :u64）。
 配列を渡すと eager に、トレーサを渡すと :RNG-BIT-GENERATOR の eqn を足す。"))
 

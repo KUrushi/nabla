@@ -104,4 +104,5 @@
    #:reference-vmap
    #:slice-along-axis
    #:stack-along-axis
+   #:vmap-walks-multiple-outputs-p
    #:primitive-function))

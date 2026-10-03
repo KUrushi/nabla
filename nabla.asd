@@ -126,6 +126,9 @@
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のコンポーネントはこの下に足す
+               (:file "src/primitives/bits")
+               (:file "src/ad/rules-batch-rng")
+               (:file "src/prng")
 
 
 
@@ -295,6 +298,8 @@
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+               (:file "tests/primitives/bits-test")
+               (:file "tests/prng-test")
 
 
 
@@ -480,6 +485,7 @@
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+               (:file "tests/iree/prng-test")
 
 
 
@@ -532,4 +538,6 @@
                (:file "tests/pjrt/bench-test")
                (:file "tests/pjrt/integer-test")
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）
-               (:file "tests/pjrt/rng-test")))
+               (:file "tests/pjrt/rng-test")
+               ;; フェーズ3 anchor: issue #136（PRNG の公開 API）
+               (:file "tests/pjrt/prng-test")))

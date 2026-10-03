@@ -173,6 +173,12 @@
 
 
    ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のexportはこの下に足す
+   #:prng-key
+   #:split
+   #:fold-in
+   #:uniform
+   #:normal
+   #:prng-error
 
 
 
