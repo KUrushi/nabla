@@ -61,6 +61,11 @@
 
 ;;; --- 各特殊形式の WALK ---
 
+;;; 設計判断（issue #130）: if はトレーサの :i1 条件でも cond* には落とさず、
+;;; これまでどおり select にする。if の条件は要素ごとの :i1 配列でありうるため、
+;;; 要素ごとの意味（両枝を計算して選ぶ）を保つ必要がある。cond* は rank 0 の
+;;; :i1 の条件でしか使えず、片枝だけを評価する。スカラー条件で片枝だけを
+;;; 評価したいときは cond* を明示的に呼ぶ（src/cond.lisp）。
 (defun %walk-if (form path)
   "(IF TEST THEN [ELSE]) を (%T-IF <test> (LAMBDA () <then>) (LAMBDA () <else>))
 に変換する。ELSE を省略した IF は NIL を ELSE の代わりに使う

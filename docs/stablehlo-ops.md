@@ -93,6 +93,12 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 
 既知の制限（IREE 3.11 のコンパイラのバグ。issue #131 のレビューで確認）: 本体の中で比較から作った値（`:i1` のフラグ、またはそれを `i32` に変換・`select` した値）を carry にした while の結果が関数の戻り値になると、コンパイラが LLVM の `out of memory` / メモリフォルトでプロセスごと落ちる（`:i1` を `i32` として通す・`optimization_barrier` を挟む、のどれでも直らない）。戻り値にしない場合（フラグはループの継続判定にだけ使う）は動く。eager と PJRT は影響を受けない。nabla 側では防げないので、このような while の結果は jit の戻り値にしない。`tests/iree/while-loop-test.lisp` の子プロセスのテストが、このバグが IREE に残っていることを守る（直れば失敗するので、この注意書きごと消す）。
 
+### 制御構造（issue #130）
+
+| op | 形 | nabla プリミティブ名 | 備考 |
+| --- | --- | --- | --- |
+| if | `%o = "stablehlo.if"(%pred) ({ ...; stablehlo.return %r : T }, { ...; stablehlo.return %r : T }) : (tensor<i1>) -> (T)`（generic 形。リージョンは2つで、外側の SSA 値を直接参照する） | `cond`（公開名 `cond*`） | IREE の `llvm-cpu` でコンパイル・実行できる（`tests/iree/cond-test.lisp`）。複数出力は `%a, %b = ...`、入れ子も可。`stablehlo.case` は添え字が `i32` なので、`i1` の pred を変換せずに使える `if` を選んだ |
+
 ## IREE 未対応・要注意の op（代替・備考）
 
 | op | 状況 | 代替 |
