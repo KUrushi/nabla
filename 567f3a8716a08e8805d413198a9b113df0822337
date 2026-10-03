@@ -1,0 +1,1 @@
+def-batch-rule を *mutable-definition-heads* と :delete-form の本体位置表(3)に追加。set-batch-rule は setf なので再 eval で上書き・元の定義の再 eval で復元できる(rules-batch-shape で 6/6 killed を確認)。src に他の新しい def-* は無い。elementwise の def-batch-rule は1行で %batch-elementwise を呼ぶだけなので変異体は増えない。フルスイートは tooling のみの変更のため実行せず(mutate の実走で small+medium が走った)。
