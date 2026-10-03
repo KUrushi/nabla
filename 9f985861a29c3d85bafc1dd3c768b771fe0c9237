@@ -1,0 +1,1 @@
+main(#145 vmap, #144 整数 dtype)を merge（衝突は primitive.lisp / nabla.asd / tests/support/package.lisp のみ、両方残した。primitive は multiple-outputs-p が params の直後、batch が最後。defprimitive の key は :multiple-outputs ... :batch）。vmap は複数出力 eqn を vmap-error で拒否することをテスト追加（#140 で対応）。merge 後フルスイート small 139827 / medium 1276 pass。
