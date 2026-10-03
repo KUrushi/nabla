@@ -101,7 +101,7 @@ tools/mutate/run.sh src/core/foo.lisp:10-40
   （[`tools/mutate/README.md`](../../../../tools/mutate/README.md) 参照）
 - 入力: 対象のファイルと行の範囲（既定は `git diff` で `main` から変わった行のうち、
   `src/` 以下の `.lisp`。`src/iree/` と `src/pjrt/` の CFFI バインディングは除く）
-- ソースを Lisp の reader で読み、変更した行を含むトップレベルの定義（`defun`、`defmethod`、`defmacro`、`defprimitive`、自動微分の `def-jvp-rule` / `def-transpose-rule` / `def-jvp-partials`）を探す。ルール定義は再 `eval` で登録表を上書きし、元の定義の再 `eval` で戻る
+- ソースを Lisp の reader で読み、変更した行を含むトップレベルの定義（`defun`、`defmethod`、`defmacro`、`defprimitive`、自動微分の `def-jvp-rule` / `def-transpose-rule` / `def-jvp-partials`、vmap の `def-batch-rule`）を探す。ルール定義は再 `eval` で登録表を上書きし、元の定義の再 `eval` で戻る
 - 各定義に変異演算子（`nabla.mutate:*mutation-operators*` の順。一覧は [`tools/mutate/README.md`](../../../../tools/mutate/README.md) の「変異演算子」）をかけ、演算子を適用できる箇所ごとに1つの変異体を作る。変異させた定義を image に `eval` してロードする。`--dry-run` でテストを走らせずに変異体の数だけを数えられる
 - 対象のシステムのテストスイートを実行し、落ちれば「殺された」、通れば「生き残った」とする。無限ループに備えてタイムアウトを設け、タイムアウトは「殺された」とみなす
 - 変異体ごとに元の定義をロードし直してから次に進み、変異が他の変異体の結果に混ざらないようにする

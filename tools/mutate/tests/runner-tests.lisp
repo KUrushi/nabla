@@ -210,3 +210,22 @@ plist にも痕跡が残らない（%evaluate-mutant から戻ったあとに元
            (every (lambda (line)
                     (<= (count line plan :key #'nabla.mutate:mutant-line) cap))
                   (mapcar #'nabla.mutate:mutant-line plan)))))))
+
+(test plan-mutants-covers-every-definition-in-a-file-with-several-batch-rules
+  "def-batch-rule と defun が混ざった1つのファイルで、変異体を作れる
+定義がすべて（最初の1つだけでなく）変異される。定義ごとに行番号で数える。"
+  (let ((tmp (uiop:with-temporary-file (:pathname p :type "lisp" :keep t) p)))
+    (unwind-protect
+         (progn
+           (with-open-file (s tmp :direction :output :if-exists :supersede)
+             (write-string
+              (format nil "(in-package #:nabla.mutate.tests)~%~
+(def-batch-rule a (args batch-dims) (values (list (+ 1 2)) batch-dims))~%~
+(defun helper (x) (+ x 1))~%~
+(def-batch-rule b (args batch-dims &key k) (values (list (- k 1)) batch-dims))~%~
+(def-batch-rule c (args batch-dims) (values args (list (* 2 3))))~%")
+              s))
+           (let ((plan (nabla.mutate:plan-mutants :files (list tmp))))
+             (is (equal '(2 3 4 5)
+                        (sort (remove-duplicates (mapcar #'nabla.mutate:mutant-line plan)) #'<)))))
+      (ignore-errors (delete-file tmp)))))
