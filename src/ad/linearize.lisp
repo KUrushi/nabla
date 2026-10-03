@@ -24,6 +24,19 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
           (push eqn primal)))
     (values (nreverse primal) (nreverse linear))))
 
+(defun %linearize-mixed-eqn-p (eqn)
+  "EQN が、主値と接線を1つの eqn で計算する jvp の結果（while-loop / scan の jvp など）か:
+複数出力で transpose ルールを持たない。cond の jvp は主値の cond と線形な cond に分けて出す
+ので当てはまらない（src/ad/rules-control.lisp）。"
+  (and (primitive-multiple-outputs-p (eqn-prim eqn))
+       (null (primitive-transpose (eqn-prim eqn)))))
+
+(defun %linearize-reject-mixed-eqn (eqn)
+  "EQN（%LINEARIZE-MIXED-EQN-P）を線形部分に分けられないので AUTODIFF-ERROR にする。"
+  (error 'autodiff-error
+         :format-control "プリミティブ ~S は主値と接線を1つの eqn で計算する jvp しか持たず、線形部分に分けられないので、逆モード（grad）に対応していない（前進モードの jvp だけ使える）"
+         :format-arguments (list (primitive-name (eqn-prim eqn)))))
+
 (defstruct (linearization (:constructor make-linearization (primal-graph linear-graph n-outputs n-residuals))
                           (:copier nil))
   "LINEARIZE-GRAPH の結果。f の jvp を、主値だけを計算する graph と、接線について
@@ -51,10 +64,15 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
 主値 graph と線形 graph を順に評価すると、JVP-GRAPH を評価した結果（主値 ++ 接線）と
 一致する。線形 graph には DCE-GRAPH をかけ、残差は線形 graph が実際に使うものだけに
 絞る（主値 graph にも DCE をかける）。"
-  (let* ((jvp (if nonzero-p (jvp-graph graph :nonzero nonzero) (jvp-graph graph)))
-         (n-primals (length (graph-invars graph)))
-         (n-outputs (length (graph-outvars graph)))
-         (primal-invars (subseq (graph-invars jvp) 0 n-primals))
+  (%linearize-jvp-graph (if nonzero-p (jvp-graph graph :nonzero nonzero) (jvp-graph graph))
+                        (length (graph-invars graph))
+                        (length (graph-outvars graph))))
+
+(defun %linearize-jvp-graph (jvp n-primals n-outputs)
+  "LINEARIZE-GRAPH の後半。JVP（JVP-GRAPH の結果と同じ形の graph。入力は主値 N-PRIMALS 個に
+続けて接線、出力は主値 N-OUTPUTS 個に続けて接線。接線の個数は入力・出力とも任意）を
+LINEARIZATION に分ける。cond の jvp ルールが、枝ごとに主値と接線を分けるのにも使う。"
+  (let* ((primal-invars (subseq (graph-invars jvp) 0 n-primals))
          (tangent-invars (nthcdr n-primals (graph-invars jvp)))
          (primal-outvars (subseq (graph-outvars jvp) 0 n-outputs))
          (tangent-outvars (nthcdr n-outputs (graph-outvars jvp)))
@@ -64,6 +82,14 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
     (loop for (var . nil) in constants do (setf (gethash var constant-table) t))
     (multiple-value-bind (primal-eqns linear-eqns)
         (partition-eqns-by-dependence (graph-eqns jvp) tangent-invars)
+      ;; 主値の出力そのものが、主値と接線を混ぜた eqn の下流（線形側）にあるときは、DCE の
+      ;; 前に拒否する（主値 graph がその出力を作れない。結果に効かない mixed eqn は
+      ;; 下の DCE の後の検査で見逃す: JAX と同じく消えるだけ）。
+      (let ((mixed (find-if #'%linearize-mixed-eqn-p linear-eqns)))
+        (when (and mixed
+                   (some (lambda (v) (member v primal-outvars :test #'eq))
+                         (loop for eqn in linear-eqns append (eqn-outvars eqn))))
+          (%linearize-reject-mixed-eqn mixed)))
       (let ((linear-defined (make-hash-table :test 'eq))
             (candidates '()))
         (dolist (v tangent-invars) (setf (gethash v linear-defined) t))
@@ -82,6 +108,9 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
         (setf candidates (nreverse candidates))
         (let* ((linear (dce-graph (make-graph (append candidates tangent-invars)
                                               linear-eqns tangent-outvars constants)))
+               ;; DCE 後の線形側に、主値と接線を1つの eqn で計算するものが残っているなら拒否する。
+               (checked (let ((mixed (find-if #'%linearize-mixed-eqn-p (graph-eqns linear))))
+                          (when mixed (%linearize-reject-mixed-eqn mixed))))
                (used (let ((table (make-hash-table :test 'eq)))
                        (dolist (eqn (graph-eqns linear)) (dolist (v (eqn-invars eqn)) (setf (gethash v table) t)))
                        (dolist (v (graph-outvars linear)) (setf (gethash v table) t))
@@ -92,4 +121,5 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
                                                 (graph-constants linear))))
                (primal (dce-graph (make-graph primal-invars primal-eqns
                                               (append primal-outvars residuals) constants))))
+          (declare (ignore checked))
           (make-linearization primal linear n-outputs (length residuals)))))))

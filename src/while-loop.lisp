@@ -30,10 +30,14 @@
 ;;;; tests の medium テスト（while-loop-test）の子プロセスのテストが、この制限（バグ）がその実行系に
 ;;;; 残っていることを守る。直ったらそのテストが失敗するので、この注意書きごと消す。
 ;;;;
-;;;; 微分: 逆モード（grad）は対応しない（反復回数が分からず、残差を保存できない）。jvp
-;;;; ルールを持たないので、接線が流れ込むと NO-JVP-RULE（AUTODIFF-ERROR の子。
-;;;; NO-JVP-RULE-NAME が :WHILE-LOOP）になる。jvp のみの対応は「cond / while-loop の
-;;;; jvp」の issue（#134）。
+;;;; もう1つの既知のバグ（ある実行系のコンパイラ。:i1 の carry とは別）: 定数で初期化したカウンタの carry と
+;;;; ほかの carry 2 つ以上（rank 1 以上を含む）を持つ while はコンパイラが非決定的に落ちるので、
+;;;; emit は定数のオペランドを optimization_barrier に通す（%WHILE-BARRIER-LINES。詳細は
+;;;; docs/stablehlo-ops.md の制御構造の節）。
+;;;;
+;;;; 微分: 前進モード（jvp）だけ対応する（src/ad/rules-control.lisp、issue #134）。
+;;;; 逆モード（grad）は対応しない（反復回数が分からず、残差を保存できない）ので、
+;;;; linearize が AUTODIFF-ERROR（メッセージにプリミティブ名 :WHILE-LOOP を含む）にする。
 
 (in-package #:nabla)
 
@@ -114,6 +118,26 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
         do (setf arrays (multiple-value-list (apply #'eval-graph body arrays))))
   arrays)
 
+(defun %while-barrier-lines (in-names in-avals out-name)
+  "while のオペランド名 IN-NAMES（型は IN-AVALS）のうち、いま出している graph の定数（*STABLEHLO-CONSTANT-NAMES*）
+の名前のものを、まとめて1つの stablehlo.optimization_barrier に通す。
+(VALUES barrier の行のリスト（無ければ NIL） 置き換えたオペランド名のリスト) を返す。
+同じ定数が複数のオペランドに現れてもよい（それぞれ別の barrier の結果になる）。"
+  (let ((positions (loop for name in in-names for i from 0
+                         when (member name *stablehlo-constant-names* :test #'string=)
+                           collect i)))
+    (if (null positions)
+        (values '() in-names)
+        (let* ((results (loop for i in positions
+                              collect (format nil "%wbar~D_~A" i (subseq out-name 1))))
+               (names (copy-list in-names)))
+          (loop for i in positions for r in results do (setf (nth i names) r))
+          (values (list (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
+                                results
+                                (mapcar (lambda (i) (nth i in-names)) positions)
+                                (mapcar (lambda (i) (tensor-type-string (nth i in-avals))) positions)))
+                  names)))))
+
 (defprimitive while-loop (:cond :body :n-carries)
   :multiple-outputs t
   ;; 名前で呼ぶ（関数オブジェクトを捕まえると、再定義した %WHILE-LOOP-ABSTRACT-EVAL が
@@ -122,14 +146,19 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
                    (apply '%while-loop-abstract-eval in-avals params))
   :emit
   (lambda (in-names in-avals out-names out-avals &key cond body n-carries)
-    (declare (ignore in-avals n-carries))
-    ;; リージョンの接頭辞が cond → body の順に振られるよう、先に別々に作る。
-    (let ((cond-lines (%stablehlo-region-lines cond))
-          (body-lines (%stablehlo-region-lines body)))
-      (format nil "~{~A~^, ~} = \"stablehlo.while\"(~{~A~^, ~}) ({~%~{  ~A~^~%~}~%}, {~%~{  ~A~^~%~}~%}) : (~{~A~^, ~}) -> (~{~A~^, ~})"
-              out-names in-names cond-lines body-lines
-              (mapcar #'tensor-type-string (mapcar #'var-aval (graph-invars cond)))
-              (mapcar #'tensor-type-string out-avals))))
+    (declare (ignore n-carries))
+    ;; graph の定数（stablehlo.constant）をそのまま while のオペランドにすると、ある実行系の
+    ;; コンパイラが落ちることがある。定数のオペランドは optimization_barrier を通す
+    ;; （docs/stablehlo-ops.md の制御構造の節。%WHILE-BARRIER-LINES）。
+    (multiple-value-bind (barrier-lines operand-names)
+        (%while-barrier-lines in-names in-avals (first out-names))
+      ;; リージョンの接頭辞が cond → body の順に振られるよう、先に別々に作る。
+      (let ((cond-lines (%stablehlo-region-lines cond))
+            (body-lines (%stablehlo-region-lines body)))
+        (format nil "~{~A~%~}~{~A~^, ~} = \"stablehlo.while\"(~{~A~^, ~}) ({~%~{  ~A~^~%~}~%}, {~%~{  ~A~^~%~}~%}) : (~{~A~^, ~}) -> (~{~A~^, ~})"
+                barrier-lines out-names operand-names cond-lines body-lines
+                (mapcar #'tensor-type-string (mapcar #'var-aval (graph-invars cond)))
+                (mapcar #'tensor-type-string out-avals)))))
   :eager
   (lambda (arrays in-avals &key cond body n-carries)
     (declare (ignore in-avals n-carries))
@@ -226,9 +255,9 @@ BODY-FN は外側のトレーサを閉包で捕まえてよい（loop 不変の�
 一部の実行系の制限: 本体の中で比較から作ったフラグ（:i1）を carry にした while の結果を jit の
 戻り値にすると、その実行系のコンパイラが落ちる（docs/stablehlo-ops.md の制御構造の節）。
 
-微分: 逆モード（GRAD）は対応しない（反復回数が分からず、残差を保存できない）。
-GRAD を通すと、原因のプリミティブ名 :WHILE-LOOP を持つ NO-JVP-RULE
-（AUTODIFF-ERROR の子）になる。jvp のみの対応は別の issue（#134）。"
+微分: 前進モード（jvp）だけ対応する。逆モード（GRAD）は対応しない（反復回数が
+分からず、残差を保存できない）。GRAD を通すと、プリミティブ名 :WHILE-LOOP を含む
+AUTODIFF-ERROR になる。"
   (%while-loop-check-arguments cond-fn body-fn init)
   (let ((traced (or *current-trace* (some (lambda (x) (typep x 'tracer)) init))))
     (when (and traced (null *current-trace*))

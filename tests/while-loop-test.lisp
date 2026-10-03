@@ -192,16 +192,15 @@ WHILE-LOOP-ARGUMENT-ERROR。"
     (is (subtypep name 'nb:while-loop-error)))
   (is (subtypep 'nb:while-loop-error 'error)))
 
-(test while-loop/grad-signals-no-jvp-rule-naming-the-primitive
-  "grad が while-loop を通ると（jvp ルールが無いので）AUTODIFF-ERROR の子の NO-JVP-RULE が
-出て、原因のプリミティブ名 :WHILE-LOOP を報告する（jvp のみの対応は別 issue）。"
+(test while-loop/grad-signals-autodiff-error-naming-the-primitive
+  "grad が while-loop を通ると（逆モードは対応しないので）AUTODIFF-ERROR が出て、原因の
+プリミティブ名 :WHILE-LOOP をメッセージで報告する（前進モードの jvp は #134 で対応済み）。"
   (let ((f (nb:with-tracing (x)
              (nb:reduce-sum (second (nb:while-loop *wl-cond* *wl-body*
                                                 (list (%wl-scalar 0.0) (%wl-scalar 2.0) x)))))))
     (handler-case (funcall (nb:grad f) (%wl-seed-array 1 '(3) :f32))
-      (nb:no-jvp-rule (c)
-        (is (eq :while-loop (nb:no-jvp-rule-name c)))
-        (is (typep c 'nb:autodiff-error)))
+      (nb:autodiff-error (c)
+        (is (search ":WHILE-LOOP" (princ-to-string c))))
       (:no-error (&rest values)
         (declare (ignore values))
         (fail "grad が while-loop を通ったのにエラーにならなかった")))))
@@ -332,3 +331,55 @@ params を PRIMITIVE-ERROR にする（GRAPH を手で組んだときの防御�
 (defun %wl-flag (n)
   "rank 0 の f32 配列 N から、:i1 の rank 0 配列 (n < 5) を作る（eager）。"
   (funcall (nb:with-tracing (v) (< v 5.0)) n))
+
+;;; ---- 定数のオペランドは optimization_barrier を通す（IREE 3.11 のコンパイラのバグの回避。
+;;; docs/stablehlo-ops.md の制御構造の節） ----
+
+(defun %wl-count-subseq (needle haystack)
+  (loop with start = 0
+        for pos = (search needle haystack :start2 start)
+        while pos count t do (setf start (1+ pos))))
+
+(defun %wl-const-operand-graph ()
+  "carry 3 つのうち、カウンタと y の初期値が定数、x だけが引数の while-loop。"
+  (nb::trace-to-graph
+   (nb:with-tracing (limit x)
+     (let ((result (nb:while-loop
+                    (nb:with-tracing (c) (< (first c) limit))
+                    (nb:with-tracing (c)
+                      (list (+ (first c) 1.0) (* (second c) 0.5) (+ (third c) 1.0)))
+                    (list (%wl-scalar 0.0) x (%wl-scalar 0.0)))))
+       (values (third result) (second result))))
+   (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32))))
+
+(test while-loop/emit-routes-constant-operands-through-optimization-barrier
+  "while のオペランドのうち graph の定数（stablehlo.constant）のものだけが、while の前の
+stablehlo.optimization_barrier を通る（引数の x と limit は通らない）。値は変わらない
+（eval-graph の結果は Lisp のループと一致する）。"
+  (let* ((graph (%wl-const-operand-graph))
+         (text (nb:emit-stablehlo graph))
+         (lines (%sg-lines text))
+         (barrier (find-if (lambda (l) (search "stablehlo.optimization_barrier" l)) lines)))
+    (is (not (null barrier)))
+    ;; 定数 2 つ（カウンタと y）の分だけ、barrier は 2 つのオペランドと 2 つの結果を持つ
+    (is (= 2 (count #\% (subseq barrier (1+ (position #\= barrier)) (position #\: barrier)))))
+    (is (= 1 (count-if (lambda (l) (search "stablehlo.optimization_barrier" l)) lines)))
+    (let ((while-line (find-if (lambda (l) (search "\"stablehlo.while\"(" l)) lines)))
+      ;; while のオペランドは、barrier の結果（%wbar...）と引数（%0 = limit、%1 = x）
+      (is (= 2 (%wl-count-subseq "%wbar" while-line)))
+      (is (search "%1" while-line)))
+    (let ((x (%wl-seed-array 3 '(3) :f32)))
+      (is (allclose (second (multiple-value-list (nb:eval-graph graph (%wl-scalar 2.0) x)))
+                    (nb::%t-mul (%wl-seed-array 3 '(3) :f32) (nb::%scalar-array 0.25 :f32))
+                    :dtype :f32)))))
+
+(test while-loop/emit-has-no-barrier-without-constant-operands
+  "オペランドがすべて引数なら、optimization_barrier は出ない。"
+  (let ((text (nb:emit-stablehlo
+               (nb::trace-to-graph
+                (nb:with-tracing (i x)
+                  (first (nb:while-loop (nb:with-tracing (c) (< (first c) 3.0))
+                                        (nb:with-tracing (c) (list (+ (first c) 1.0) (second c)))
+                                        (list i x))))
+                (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32))))))
+    (is (null (search "optimization_barrier" text)))))

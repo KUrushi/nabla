@@ -126,13 +126,14 @@ RETURN-FLAG が真ならフラグも関数の戻り値にする（IREE 3.11 で�
   "IREE 3.11 のコンパイラが落ちる StableHLO: 比較から作った :i1 のフラグが carry で、
 その while の結果が関数の戻り値になる。")
 
-(defun %wl-iree-compile-in-child (text)
-  "TEXT を真っさらな子 SBCL で IREE のコンパイルまで行い、(VALUES 終了コード 出力) を返す。
-コンパイルが最後まで行けば出力に COMPILED が出る。"
+(defun %wl-iree-compile-in-child (text &key (times 1))
+  "TEXT を真っさらな子 SBCL で IREE のコンパイルまで行い（TIMES 回。ディスクキャッシュは
+切るので毎回コンパイルする）、(VALUES 終了コード 出力) を返す。全部のコンパイルが最後まで
+行けば出力に COMPILED が出る。"
   (let* ((forms (list "(require :asdf)"
                       "(asdf:load-system \"nabla/iree\")"
-                      (format nil "(let* ((b (nabla:find-backend :iree)) (text ~S)) (nabla:backend-compile b text) (format t \"COMPILED~~%\") (sb-ext:exit :code 0))"
-                              text)))
+                      (format nil "(let* ((b (nabla:find-backend :iree)) (text ~S) (nabla:*compile-cache-directory* nil)) (dotimes (i ~D) (nabla:backend-compile b text)) (format t \"COMPILED~~%\") (sb-ext:exit :code 0))"
+                              text times)))
          (args (list* "--non-interactive" "--disable-debugger"
                       (loop for form in forms append (list "--eval" form))))
          (env (append (%forward-env-vars (list* "NABLA_IREE_HOME" *child-sbcl-forwarded-env-vars*))
@@ -151,3 +152,71 @@ docs/stablehlo-ops.md の注意書きとこのテストを消す。"
   (multiple-value-bind (code output) (%wl-iree-compile-in-child *wl-iree-known-crash-text*)
     (is (not (and (eql code 0) (search "COMPILED" output)))
         "IREE がクラッシュせずにコンパイルできた（バグが直った？）: ~A" output)))
+
+;;; ---- 定数の carry の初期値を持つ while（IREE 3.11 のコンパイラのもう1つのバグ。
+;;; :i1 の carry のバグとは別。docs/stablehlo-ops.md の制御構造の節） ----
+
+(defparameter *wl-iree-const-carry-crash-text*
+  "module {
+  func.func @main(%0: tensor<f32>, %1: tensor<3xf32>, %2: tensor<3xf32>) -> (tensor<f32>, tensor<3xf32>) {
+    %5 = stablehlo.constant dense<0.0> : tensor<f32>
+    %6 = stablehlo.constant dense<0.0> : tensor<f32>
+    %8, %9, %10, %13, %14 = \"stablehlo.while\"(%5, %2, %6, %0, %1) ({
+      ^bb0(%s1_0: tensor<f32>, %s1_1: tensor<3xf32>, %s1_2: tensor<f32>, %s1_5: tensor<f32>, %s1_6: tensor<3xf32>):
+      %s1_8 = stablehlo.compare LT, %s1_0, %s1_5 : (tensor<f32>, tensor<f32>) -> tensor<i1>
+      stablehlo.return %s1_8 : tensor<i1>
+    }, {
+      ^bb0(%s2_0: tensor<f32>, %s2_1: tensor<3xf32>, %s2_2: tensor<f32>, %s2_5: tensor<f32>, %s2_6: tensor<3xf32>):
+      %s2_8 = stablehlo.constant dense<1.0> : tensor<f32>
+      %s2_9 = stablehlo.constant dense<0.5> : tensor<f32>
+      %s2_10 = stablehlo.constant dense<0.1> : tensor<f32>
+      %s2_11 = stablehlo.constant dense<0.9> : tensor<f32>
+      %s2_14 = stablehlo.add %s2_0, %s2_8 : tensor<f32>
+      %s2_15 = stablehlo.broadcast_in_dim %s2_9, dims = [] : (tensor<f32>) -> tensor<3xf32>
+      %s2_16 = stablehlo.multiply %s2_1, %s2_15 : tensor<3xf32>
+      %s2_18 = stablehlo.broadcast_in_dim %s2_10, dims = [] : (tensor<f32>) -> tensor<3xf32>
+      %s2_19 = stablehlo.multiply %s2_6, %s2_18 : tensor<3xf32>
+      %s2_21 = stablehlo.add %s2_16, %s2_19 : tensor<3xf32>
+      %s2_23 = stablehlo.multiply %s2_2, %s2_11 : tensor<f32>
+      %s2_31 = stablehlo.add %s2_23, %s2_11 : tensor<f32>
+      stablehlo.return %s2_14, %s2_21, %s2_31, %s2_5, %s2_6 : tensor<f32>, tensor<3xf32>, tensor<f32>, tensor<f32>, tensor<3xf32>
+    }) : (tensor<f32>, tensor<3xf32>, tensor<f32>, tensor<f32>, tensor<3xf32>) -> (tensor<f32>, tensor<3xf32>, tensor<f32>, tensor<f32>, tensor<3xf32>)
+    func.return %10, %9 : tensor<f32>, tensor<3xf32>
+  }
+}
+"
+  "IREE 3.11 のコンパイラが（ほぼ毎回）落ちる StableHLO: while のオペランドのうち、cond を
+駆動する carry（カウンタ）が stablehlo.constant で初期化され、ほかに carry が 2 つ以上あり、
+そのうち少なくとも 1 つが rank 1 以上。")
+
+(define-iree-test while-loop/iree-known-bug-constant-carry-crashes-the-compiler
+    "既知のバグの守り: 定数で初期化したカウンタ carry を持つ while をそのまま渡すと、IREE 3.11 の
+コンパイラが（子プロセスごと）落ちる（AffinityAnalysis の walkTransitiveUses。数回のうちに
+落ちる）。このテストが失敗したら IREE のバグが直っているので、src/while-loop.lisp の
+%WHILE-BARRIER-LINES と docs/stablehlo-ops.md の注意書きとこのテストを消す。"
+  (skip-unless-iree :library :both)
+  (multiple-value-bind (code output) (%wl-iree-compile-in-child *wl-iree-const-carry-crash-text* :times 10)
+    (is (not (and (eql code 0) (search "COMPILED" output)))
+        "IREE がクラッシュせずに 10 回コンパイルできた（バグが直った？）: ~A" output)))
+
+(define-iree-test while-loop/iree-constant-carry-with-barrier-compiles-repeatedly
+    "nabla が出す StableHLO は、定数のオペランドを optimization_barrier に通すので、上のバグの形
+（定数のカウンタ + 引数の carry 2 つ + rank 1 の carry）の while でも、IREE が 10 回続けて
+クラッシュせずにコンパイルする。"
+  (skip-unless-iree :library :both)
+  (let* ((graph (nb::trace-to-graph
+                 (nb:with-tracing (limit w x)
+                   (let ((result (nb:while-loop
+                                  (nb:with-tracing (c) (< (first c) limit))
+                                  (nb:with-tracing (c)
+                                    (list (+ (first c) 1.0)
+                                          (+ (* (second c) 0.5) (* w 0.1))
+                                          (+ (* (third c) 0.9) 0.9)))
+                                  (list (nb::%scalar-array 0.0 :f32) x (nb::%scalar-array 0.0 :f32)))))
+                     (values (third result) (second result))))
+                 (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32) (nb:make-aval '(3) :f32))))
+         (text (nb:emit-stablehlo graph)))
+    (is (search "stablehlo.optimization_barrier" text))
+    (multiple-value-bind (code output) (%wl-iree-compile-in-child text :times 10)
+      (is (and (eql code 0) (search "COMPILED" output))
+          "barrier 付きの while が IREE でクラッシュした: ~A" output))))
