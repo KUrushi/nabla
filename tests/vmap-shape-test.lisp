@@ -9,17 +9,6 @@
 
 (in-suite :nabla.small)
 
-(defun %primitive-function (name params arity)
-  "プリミティブ NAME を PARAMS（plist）で1回だけ呼ぶ ARITY 引数の TRACEABLE-FUNCTION。
-トレーサが渡れば eqn を足し、配列だけなら eager 実装を呼ぶ。"
-  (nb::%make-traceable-function
-   (loop for i below arity collect (intern (format nil "X~D" i)))
-   (lambda (&rest args)
-     (if (some (lambda (a) (typep a 'nb::tracer)) args)
-         (apply #'nb::%trace-eqn name args params)
-         (apply (nb::primitive-eager (nb::find-primitive name))
-                args (mapcar #'nb:array-aval args) params)))))
-
 (defun %shuffle-from-seed (items seed)
   "ITEMS を SEED から決まる順に並べ替える（SEED から作る LCG の値でソートする）。"
   (let ((state seed))
@@ -50,7 +39,7 @@
     (destructuring-bind (rank size seed code-axis code-out code) case
       (let ((inner (%vmap-inner-shape (max rank min-rank) seed)))
         (multiple-value-bind (name params out-rank) (funcall build inner seed code)
-          (let* ((f (%primitive-function name params 1))
+          (let* ((f (primitive-function name params 1))
                  (axis (mod code-axis (1+ (length inner))))
                  (out (mod code-out (+ out-rank 1)))
                  (x (%vmap-batched-array inner size axis seed))
@@ -161,7 +150,7 @@ lhs・rhs の各軸は「バッチ・縮約・自由」のどれかで、軸の�
 MODE は 0 lhs だけ / 1 rhs だけ / 2 両方 をバッチする。"
   (destructuring-bind (size seed code mode code-l code-r code-out) case
     (multiple-value-bind (params lhs-shape rhs-shape out-rank) (%dot-case seed code)
-      (let* ((f (%primitive-function :dot-general params 2))
+      (let* ((f (primitive-function :dot-general params 2))
              (al (and (member mode '(0 2)) (mod code-l (1+ (length lhs-shape)))))
              (ar (and (member mode '(1 2)) (mod code-r (1+ (length rhs-shape)))))
              (out (mod code-out (+ out-rank 1)))
@@ -201,7 +190,7 @@ MODE は 0 lhs だけ / 1 rhs だけ / 2 両方 をバッチする。"
 (test vmap-shape/reduce-sum-keeps-natural-batch-position-without-extra-transpose
   "reduce-sum は出力のバッチ軸を自然な位置に置くので、in-axes 1・out-axes 0 でも
 eqn は reduce-sum 1つだけ（余分な transpose を足さない）。"
-  (let* ((f (%primitive-function :reduce-sum '(:axes (0)) 1))
+  (let* ((f (primitive-function :reduce-sum '(:axes (0)) 1))
          (graph (nb:trace-to-graph (nb:vmap f :in-axes 1 :out-axes 0)
                                    (list (nb:make-aval '(3 4) :f64)))))
     (is (equal '(:reduce-sum)

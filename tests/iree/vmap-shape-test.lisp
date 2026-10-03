@@ -6,17 +6,6 @@
 
 (in-package #:nabla.iree.tests)
 
-(defun %shape-rule-function (name params arity)
-  "プリミティブ NAME を PARAMS で1回呼ぶ ARITY 引数の TRACEABLE-FUNCTION
-（配列なら eager 実装、トレーサなら eqn を足す）。"
-  (nb::%make-traceable-function
-   (loop for i below arity collect (intern (format nil "X~D" i)))
-   (lambda (&rest args)
-     (if (some (lambda (a) (typep a 'nb::tracer)) args)
-         (apply #'nb::%trace-eqn name args params)
-         (apply (nb::primitive-eager (nb::find-primitive name))
-                args (mapcar #'nb:array-aval args) params)))))
-
 (defparameter *vmap-shape-cases*
   ;; (名前 params 引数の形 in-axes out-axes)。引数の形はバッチ軸込み。
   '((:transpose (:perm (1 0)) ((3 2 4)) (1) 2)
@@ -40,7 +29,7 @@
         (nb:*compile-cache-directory* nil))
     (loop for (name params shapes in-axes out-axes) in *vmap-shape-cases*
           for k from 1
-          do (let* ((f (%shape-rule-function name params (length shapes)))
+          do (let* ((f (primitive-function name params (length shapes)))
                     (g (nb:vmap f :in-axes in-axes :out-axes out-axes))
                     (jitted (nb:jit g :backend backend))
                     (args (loop for shape in shapes for i from 0

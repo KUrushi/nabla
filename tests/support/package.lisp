@@ -100,4 +100,5 @@
    ;; vmap の参照実装（issue #125）
    #:reference-vmap
    #:slice-along-axis
-   #:stack-along-axis))
+   #:stack-along-axis
+   #:primitive-function))
