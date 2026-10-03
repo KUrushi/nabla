@@ -1,0 +1,1 @@
+wave 0: src/package.lisp, nabla.asd (core / nabla/tests regressions の前 / nabla/iree/tests)、README の公開 API 節、docs/glossary.md に issue #127,126,125,128-141 の anchor コメントを追加（コメントのみ）。anchor 間は空行3行。small テスト通過、nabla/iree/tests のロード確認（既存の undefined function style-warning のみ）。
