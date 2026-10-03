@@ -272,6 +272,12 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #138 -->
 
+#### per-example 勾配（issue #138）
+
+`(vmap (grad loss) :in-axes ...)` で、サンプルごとの勾配を一度に求める。`examples/mlp.lisp` の `make-per-example-grad` は、2層 MLP の1サンプルの損失（`make-mlp-example-loss`。x は `(D)`、y は `(C)` の one-hot）を `grad` し、パラメータはバッチせず（`in-axes` が `nil`）x と y だけを軸 0 でバッチする（`:in-axes '(nil nil nil nil 0 0)`）。各勾配の形は `(N ...パラメータの形)`で、JAX の `jax.vmap(jax.grad(loss), in_axes=(None, 0, 0))` と f32 の許容誤差で一致する（フィクスチャ `tests/fixtures/per-example/`。生成は `generate.py`、jax 0.10.2・x64 無効）。サンプルごとの勾配の平均は、バッチ全体の損失（平均）の `grad` と一致する。`grad` が返す勾配のリストは `vmap` の出力にできないので、`(with-tracing … (values-list …))` で多値に直してから `vmap` に渡す。
+
+合成は次のどれも eager と IREE の `local` で動く: `(jit (vmap (grad f)))`、`(vmap (grad f))`、`(grad (… (vmap f) …))`（`grad` の中の `vmap`。x や y は閉包でなく引数として渡す）、`(vmap (vmap f))`。`vmap` が `jit` した関数をトレース中に呼ぶ場合は `grad` と同じく中の関数だけを使い、その `:backend` は見ない（外側の `jit` の backend で動く）。
+
 
 
 <!-- フェーズ3 anchor: issue #139 -->
