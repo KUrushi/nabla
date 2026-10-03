@@ -182,7 +182,7 @@
   "バッチ次元のある状態の StableHLO。状態を (行数 2) にならし、行ごとに slice →
 rng_bit_generator → 積み直し（concatenate）、最後に元の shape に戻す。
 
-実測のコンパイルコスト（IREE local、バッチ次元つきの rng-bit-generator の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度（vmap するキーの数）で、vmap を入れ子にすると行数は段ごとの積になる（B1×B2 行）ので同じ上限が全段の積にかかる。将来の対策は、行ごとの展開をやめて scan（while）で1行ぶんの本体を回す形にすること。"
+実測のコンパイルコスト（CPU の実行系（README の「PRNG」参照）、バッチ次元つきの rng-bit-generator の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度（vmap するキーの数）で、vmap を入れ子にすると行数は段ごとの積になる（B1×B2 行）ので同じ上限が全段の積にかかる。将来の対策は、行ごとの展開をやめて scan（while）で1行ぶんの本体を回す形にすること。"
   (let* ((rows (reduce #'* (%rng-lead-shape state-aval)))
          (base (subseq (first out-names) 1))
          (flat-state-aval (make-aval (list rows 2) :u64))
