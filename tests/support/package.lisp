@@ -104,4 +104,5 @@
    #:reference-vmap
    #:slice-along-axis
    #:stack-along-axis
-   #:primitive-function))
+   #:primitive-function
+   #:axis-at))

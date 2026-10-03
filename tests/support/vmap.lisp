@@ -72,3 +72,7 @@ TRACEABLE-FUNCTION。トレーサが渡れば eqn を足し、配列だけなら
          (apply #'nb::%trace-eqn name args params)
          (apply (nb::primitive-eager (nb::find-primitive name))
                 args (mapcar #'nb:array-aval args) params)))))
+
+(defun axis-at (shape size axis)
+  "SHAPE の AXIS の位置に長さ SIZE の軸を足した形。"
+  (append (subseq shape 0 axis) (list size) (nthcdr axis shape)))

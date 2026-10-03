@@ -93,6 +93,17 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 
 既知の制限（IREE 3.11 のコンパイラのバグ。issue #131 のレビューで確認）: 本体の中で比較から作った値（`:i1` のフラグ、またはそれを `i32` に変換・`select` した値）を carry にした while の結果が関数の戻り値になると、コンパイラが LLVM の `out of memory` / メモリフォルトでプロセスごと落ちる（`:i1` を `i32` として通す・`optimization_barrier` を挟む、のどれでも直らない）。戻り値にしない場合（フラグはループの継続判定にだけ使う）は動く。eager と PJRT は影響を受けない。nabla 側では防げないので、このような while の結果は jit の戻り値にしない。`tests/iree/while-loop-test.lisp` の子プロセスのテストが、このバグが IREE に残っていることを守る（直れば失敗するので、この注意書きごと消す）。
 
+もう1つの既知のバグ（IREE 3.11 のコンパイラ。issue #134 の jvp の CI で見つかった。上の `:i1` の carry のバグとは別）: `stablehlo.while` で、cond を駆動する carry（カウンタ）の初期値が `stablehlo.constant` で、ほかに carry が 2 つ以上あり、そのうち少なくとも 1 つが rank 1 以上のとき、コンパイラが非決定的に SIGSEGV / SIGBUS で落ちる（単体の `iree-compile` で 10 回中 6 回、定数の carry を 2 つにした最小の形では 10 回中 10 回）。単純な while の jvp（接線の carry が増える）がこの形になる。バックトレース（`ScheduleAllocationPass` の AffinityAnalysis）:
+
+```
+mlir::iree_compiler::Explorer::getTraversalAction(mlir::Operation*)
+mlir::iree_compiler::Explorer::walkTransitiveUses(mlir::Value, ...)
+mlir::iree_compiler::IREE::Stream::ValueConsumerAffinityPVS::updateValue(mlir::Value, mlir::iree_compiler::DFX::Solver&)
+mlir::iree_compiler::DFX::Solver::updateElement(...)
+```
+
+回避策（nabla 側で入れてある）: while のオペランドのうち graph の定数（`stablehlo.constant` で出す値）のものを、while の前の `stablehlo.optimization_barrier` に通す（`src/while-loop.lisp` の `%while-barrier-lines`。値は変わらない）。実際の jvp の graph と最小の形で 10 回中 0 回に減ることを確かめた（引数のオペランドは通さない）。`tests/iree/while-loop-test.lisp`（medium）の、定数の carry を持つ生の StableHLO が今も落ちることを子プロセスで確かめるテストが、このバグが IREE に残っていることを守り（直れば失敗するので、回避策・このテスト・この注意書きを消す）、barrier 付きの StableHLO が 10 回続けてコンパイルできることを別のテストが確かめる。
+
 ### 制御構造（issue #130）
 
 | op | 形 | nabla プリミティブ名 | 備考 |
@@ -104,7 +115,15 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 | op | 状況 | 代替 |
 | --- | --- | --- |
 | `stablehlo.custom_call` | `failed to legalize operation` でコンパイル不可（IREE の入力パイプラインが明示的に illegal にしている） | 使わない |
-| `stablehlo.rng_bit_generator` | 対応済み（issue #133、`rng-bit-generator` プリミティブ）。`%s2, %b = stablehlo.rng_bit_generator %s, algorithm = THREE_FRY : (tensor<2xui64>) -> (tensor<2xui64>, tensor<…xui32>)` の形で、rank 0 と rank 4、奇数の次元、`ui64` の出力でもコンパイル・実行できる。**IREE（local）と PJRT（XLA CPU）は同じ状態から同じ結果（新しい状態とビット）をビット単位で返し、eager 実装とも一致する**（rank 0〜4・23通りの形状・`ui32` / `ui64`・64ビット全域の状態で確認。`tests/iree/rng-test.lisp` と `tests/pjrt/rng-test.lisp`） | 使える。状態 `ui64[2]` は `[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は `[0]` を保ち `[1]` を生成した64ビット単位の個数だけ進める。アルゴリズムの写し元と配置は `src/primitives/rng.lisp` の冒頭。`ui32` は Threefry-2x32 の2出力を別の要素にし、最初の偶数の次元（無ければ最大の次元）を半分にして並べる（要素数が偶数なら count は要素数の半分）。公開の PRNG API は issue #136 |
+| `stablehlo.rng_bit_generator` | 対応済み（issue #133、`rng-bit-generator` プリミティブ）。`%s2, %b = stablehlo.rng_bit_generator %s, algorithm = THREE_FRY : (tensor<2xui64>) -> (tensor<2xui64>, tensor<…xui32>)` の形で、rank 0 と rank 4、奇数の次元、`ui64` の出力でもコンパイル・実行できる。**IREE（local）と PJRT（XLA CPU）は同じ状態から同じ結果（新しい状態とビット）をビット単位で返し、eager 実装とも一致する**（rank 0〜4・23通りの形状・`ui32` / `ui64`・64ビット全域の状態で確認。`tests/iree/rng-test.lisp` と `tests/pjrt/rng-test.lisp`） | 使える。状態 `ui64[2]` は `[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は `[0]` を保ち `[1]` を生成した64ビット単位の個数だけ進める。アルゴリズムの写し元と配置は `src/primitives/rng.lisp` の冒頭。`ui32` は Threefry-2x32 の2出力を別の要素にし、最初の偶数の次元（無ければ最大の次元）を半分にして並べる（要素数が偶数なら count は要素数の半分）。公開の PRNG API は issue #136（`prng-key` / `split` / `uniform` など。README の「PRNG」） |
+
+## PRNG が使う op（issue #136。IREE（local）と PJRT（XLA CPU）の両方で実測）
+
+| op | 状況 |
+| --- | --- |
+| `stablehlo.bitcast_convert` | 同じ幅（`ui32` ⇄ `f32` / `i32`、`ui64` ⇄ `f64`）に加え、幅が違う `tensor<2xui32>` → `tensor<ui64>`（末尾の次元が消える）と、その逆（`tensor<…xui64>` → `tensor<…x2xui32>`）もコンパイル・実行できる。並びはリトルエンディアン（先頭の要素が下位32ビット）。eager 実装（`bitcast-convert`）と一致 |
+| `stablehlo.shift_right_logical` / `stablehlo.or`（`ui32` / `ui64`） | 使える。量がビット幅以上のとき 0（eager も同じ） |
+| `stablehlo.slice` / `stablehlo.concatenate`（バッチ次元つきの `rng_bit_generator` の展開に使う） | `stablehlo.slice %x [0:1, 0:2] : (tensor<Nx2xui64>) -> tensor<1x2xui64>` と `stablehlo.concatenate %a, %b, dim = 0` の pretty form がそのまま通る 。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度。vmap の入れ子では行数が段ごとの積になる。将来は scan 化で解消する |
 
 ## その他の確認事項
 

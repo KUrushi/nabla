@@ -160,12 +160,6 @@
     (is (= 2 (count-if (lambda (l) (search "stablehlo.return" l))
                        (%sg-lines text))))))
 
-(test cond/jvp-reports-no-jvp-rule-naming-cond
-  "grad / jvp は、#134 まで :cond に jvp ルールが無いことを no-jvp-rule で報告する。"
-  (let ((graph (%cond-graph '(2 3))))
-    (handler-case (progn (nb::jvp-graph graph) (fail "no-jvp-rule が出なかった"))
-      (nb::no-jvp-rule (c) (is (eq :cond (nb::no-jvp-rule-name c)))))))
-
 (test cond/array-and-number-operands-are-lifted-under-a-tracer-pred
   "pred がトレーサのとき、operand に配列・実数を渡すと定数としてリフトされる。"
   (let* ((arr (make-random-array (make-array-spec '(2) :f32) :seed 5))

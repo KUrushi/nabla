@@ -62,6 +62,7 @@
                (:file "src/ad/jvp")
                (:file "src/ad/rules-elementwise")
                ;; linearize / transpose / vjp（issue #82）
+               (:file "src/ad/partial-eval")
                (:file "src/ad/linearize")
                (:file "src/ad/transpose")
                ;; 形状・縮約・dot-general の jvp ルール（issue #81）
@@ -121,14 +122,19 @@
 
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-control")
 
 
 
                ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-scan")
 
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のコンポーネントはこの下に足す
+               (:file "src/primitives/bits")
+               (:file "src/ad/rules-batch-rng")
+               (:file "src/prng")
 
 
 
@@ -141,10 +147,12 @@
 
 
                ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-scan-reverse")
 
 
 
                ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-batch-control")
 
 
 
@@ -291,14 +299,19 @@
 
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
+               (:file "tests/ad/while-loop-jvp-test")
+               (:file "tests/ad/cond-jvp-test")
 
 
 
                ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のテストはこの下に足す
+               (:file "tests/ad/jvp-scan-test")
 
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+               (:file "tests/primitives/bits-test")
+               (:file "tests/prng-test")
 
 
 
@@ -313,10 +326,12 @@
 
 
                ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のテストはこの下に足す
+               (:file "tests/ad/vjp-scan-test")
 
 
 
                ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/vmap-control-test")
 
 
 
@@ -478,14 +493,18 @@
 
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
+               (:file "tests/iree/while-loop-jvp-test")
+               (:file "tests/iree/cond-jvp-test")
 
 
 
                ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のテストはこの下に足す
+               (:file "tests/iree/jvp-scan-test")
 
 
 
                ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+               (:file "tests/iree/prng-test")
 
 
 
@@ -500,14 +519,17 @@
 
 
                ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のテストはこの下に足す
+               (:file "tests/iree/vjp-scan-test")
 
 
 
                ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/iree/vmap-control-test")
 
 
 
                ;; フェーズ3 anchor: issue #141（RNN の e2e）。この issue のテストはこの下に足す
+               (:file "tests/iree/rnn-train-test")
                ))
 
 (defsystem "nabla/pjrt"
@@ -539,4 +561,6 @@
                (:file "tests/pjrt/bench-test")
                (:file "tests/pjrt/integer-test")
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）
-               (:file "tests/pjrt/rng-test")))
+               (:file "tests/pjrt/rng-test")
+               ;; フェーズ3 anchor: issue #136（PRNG の公開 API）
+               (:file "tests/pjrt/prng-test")))
