@@ -345,3 +345,92 @@ primitive-error を signal する。"
              (result (%trace-eval (nb:with-tracing (x) (nb:reduce-max x :axes '(0)))
                                   (list (nb:make-aval '(3) dtype)) array)))
         (is (= lo (aref result)))))))
+
+;;; --- StableHLO の出力（IREE の medium テストで実行して確かめたものの、
+;;; 構造を small で固定する。mutation testing は small だけで走るため） ---
+
+(defun %convert-emit-lines (from to)
+  "FROM → TO の convert の emit を、(shape (4)) で行のリストにして返す。"
+  (let ((text (nb::%convert-emit '("%a") (list (nb:make-aval '(4) from)) "%7" (nb:make-aval '(4) to))))
+    (with-input-from-string (in text)
+      (loop for line = (read-line in nil) while line collect (string-trim " " line)))))
+
+(defun %defined-names (lines)
+  (mapcar (lambda (line) (subseq line 0 (position #\Space line))) lines))
+
+(test integer-dtype/convert-emit/int-to-bf16-goes-through-f32-with-a-barrier
+  "整数 → bf16 は f32 への convert、optimization_barrier、bf16 への convert の3行で、
+各行が前の行の結果を使い、最後の行が出力名を定義する。"
+  (dolist (from *integer-dtypes*)
+    (let ((lines (%convert-emit-lines from :bf16)))
+      (is (= 3 (length lines)))
+      (is (= 3 (length (remove-duplicates (%defined-names lines) :test #'string=))))
+      (is (search "stablehlo.convert %a" (first lines)))
+      (is (search "-> tensor<4xf32>" (first lines)))
+      (is (search "stablehlo.optimization_barrier" (second lines)))
+      (is (search (first (%defined-names lines)) (second lines)))
+      (is (search (second (%defined-names lines)) (third lines)))
+      (is (string= "%7" (third (%defined-names lines))))
+      (is (search "-> tensor<4xbf16>" (third lines))))))
+
+(test integer-dtype/convert-emit/other-int-conversions-are-one-line
+  "整数 → f32 / f16、整数どうし、:i1 との convert は1行のまま。"
+  (is (= 1 (length (%convert-emit-lines :i32 :f32))))
+  (is (= 1 (length (%convert-emit-lines :u64 :f16))))
+  (is (= 1 (length (%convert-emit-lines :i32 :u32))))
+  (is (= 1 (length (%convert-emit-lines :i1 :i32))))
+  (is (= 1 (length (%convert-emit-lines :f32 :i1)))))
+
+(test integer-dtype/convert-emit/float-to-int-saturates-in-stablehlo
+  "浮動小数点 → 整数は、NaN 判定・clamp・convert・上端の select・NaN → 0 の select を
+含み、f32 / f64 は入力型のまま、f16 / bf16 は先頭で f32 に convert してから進める。
+各行の定義名はすべて違い、最後の行が出力名を定義する。"
+  (dolist (from '(:f32 :f64 :f16 :bf16))
+    (let* ((lines (%convert-emit-lines from :i32))
+           (names (%defined-names lines))
+           (float-type (if (eq from :f64) "tensor<4xf64>" "tensor<4xf32>"))
+           (joined (format nil "~{~A~^~%~}" lines)))
+      (is (= (length names) (length (remove-duplicates names :test #'string=))))
+      (is (string= "%7" (car (last names))))
+      (is (search "stablehlo.compare NE" joined))
+      (is (search "stablehlo.clamp" joined))
+      (is (search "stablehlo.compare GE" joined))
+      (is (= 2 (count-if (lambda (l) (search "stablehlo.select" l)) lines)))
+      (is (search (format nil "~A" float-type) joined))
+      (if (member from '(:f16 :bf16))
+          (progn
+            (is (search "stablehlo.convert %a" (first lines)))
+            (is (search "-> tensor<4xf32>" (first lines)))
+            (is (search "stablehlo.compare NE" (second lines))))
+          (progn
+            (is (search "stablehlo.compare NE" (first lines)))
+            (is (not (search "stablehlo.convert %a" joined)))
+            (is (search "stablehlo.convert" (find-if (lambda (l) (search "stablehlo.convert" l)) lines)))))
+      ;; 上端: f32 では 2^31 の1つ下の 2147483520（最短の10進で 2.1474835e9）、f64 では 2147483647 そのもの
+      (is (search (if (eq from :f64) "dense<2.147483647e9> : tensor<4xf64>" "dense<2.1474835e9> : tensor<4xf32>") joined))
+      (is (search "dense<2147483647> : tensor<4xi32>" joined)))))
+
+(test integer-dtype/read-graph-rejects-bad-dtypes
+  "read-graph は、dtype として symbol でないもの・未知の symbol を graph-syntax-error にする。"
+  (let ((text (nb:print-graph (nb:trace-to-graph (nb:with-tracing (x) (+ x 1))
+                                                 (list (nb:make-aval '(2) :i32))))))
+    (is (stringp text))
+    (signals nb::graph-syntax-error (nb::read-graph (substitute-string text "i32" "q99")))
+    (signals nb::graph-syntax-error (nb::read-graph (substitute-string text "i32" "7")))))
+
+(defun substitute-string (text old new)
+  (let ((position (search old text)))
+    (concatenate 'string (subseq text 0 position) new (subseq text (+ position (length old))))))
+
+(test integer-dtype/lifting-a-number-to-i1-is-a-tracing-error
+  "数を :i1 のトレーサにリフトしようとすると tracing-error（整数 dtype へのリフトの
+追加後も、:i1 は数値との対応を持たないので拒否したまま）。"
+  (signals nb:tracing-error
+    (nb:trace-to-graph (nb:with-tracing (x) (+ x 1)) (list (nb:make-aval '(2) :i1)))))
+
+(test integer-dtype/reduce-max-init-literals-for-floats
+  "reduce-max の初期値のリテラルは、浮動小数点では -inf の16進ビット列。"
+  (is (equal "0xFF800000" (nb::%reduce-init-literal :max :f32)))
+  (is (equal "0xFFF0000000000000" (nb::%reduce-init-literal :max :f64)))
+  (is (equal "0xFF80" (nb::%reduce-init-literal :max :bf16)))
+  (is (equal "0xFC00" (nb::%reduce-init-literal :max :f16))))
