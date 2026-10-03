@@ -74,8 +74,9 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 ;;; --- 自動微分のルール（issue #86。フェーズ2の全ルール検査） ---
 
-(defparameter *non-differentiable-primitive-names* '()
-  "意図的に :jvp を持たない本物のプリミティブ（現状は無い）。:jvp の無い defprimitive を
+(defparameter *non-differentiable-primitive-names* '(:cond)
+  "意図的に :jvp を持たない本物のプリミティブ。:cond は jvp ルールが issue #134 で入る
+までの暫定（#134 でここから外す）。:jvp の無い defprimitive を
 足すときは、ここに理由つきで足すか、jvp ルールを書く。")
 
 (defun %registered-real-primitives ()

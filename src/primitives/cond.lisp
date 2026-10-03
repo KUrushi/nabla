@@ -7,8 +7,8 @@
 ;;;; の invars は「operands、else の捕捉値」。パラメタ :NUM-OPERANDS が N。
 ;;;;
 ;;;; StableHLO は stablehlo.if（リージョンが2つ）。stablehlo.case は添え字が
-;;;; i32 なので pred の変換が要る。IREE が stablehlo.if を受け付けることは
-;;;; tests/iree/cond-test.lisp で確かめる。枝のリージョンは外側の SSA 値を直接
+;;;; i32 なので pred の変換が要る。実行系が stablehlo.if を受け付けることは
+;;;; 実行系の medium テスト（cond-test） で確かめる。枝のリージョンは外側の SSA 値を直接
 ;;;; 参照できるので、枝の invars は外側の入力の名前に結びつける
 ;;;; （%STABLEHLO-REGION-LINES の :ARG-NAMES）。
 ;;;;
