@@ -104,7 +104,7 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 | op | 状況 | 代替 |
 | --- | --- | --- |
 | `stablehlo.custom_call` | `failed to legalize operation` でコンパイル不可（IREE の入力パイプラインが明示的に illegal にしている） | 使わない |
-| `stablehlo.rng_bit_generator` | `%s, algorithm = THREE_FRY : (tensor<2xui64>) -> (tensor<2xui64>, tensor<4xui32>)` の形でコンパイルは通る（計画時の懸念と異なる） | フェーズ3で確認する。`ui64` / `ui32` の device 表現（to-device）が前提になるため、フェーズ1では扱わない |
+| `stablehlo.rng_bit_generator` | 対応済み（issue #133、`rng-bit-generator` プリミティブ）。`%s2, %b = stablehlo.rng_bit_generator %s, algorithm = THREE_FRY : (tensor<2xui64>) -> (tensor<2xui64>, tensor<…xui32>)` の形で、rank 0 と rank 4、奇数の次元、`ui64` の出力でもコンパイル・実行できる。**IREE（local）と PJRT（XLA CPU）は同じ状態から同じ結果（新しい状態とビット）をビット単位で返し、eager 実装とも一致する**（rank 0〜4・23通りの形状・`ui32` / `ui64`・64ビット全域の状態で確認。`tests/iree/rng-test.lisp` と `tests/pjrt/rng-test.lisp`） | 使える。状態 `ui64[2]` は `[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は `[0]` を保ち `[1]` を生成した64ビット単位の個数だけ進める。アルゴリズムの写し元と配置は `src/primitives/rng.lisp` の冒頭。`ui32` は Threefry-2x32 の2出力を別の要素にし、最初の偶数の次元（無ければ最大の次元）を半分にして並べる（要素数が偶数なら count は要素数の半分）。公開の PRNG API は issue #136 |
 
 ## その他の確認事項
 
