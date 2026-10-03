@@ -165,3 +165,63 @@
   (let ((graph (%cond-graph '(2 3))))
     (handler-case (progn (nb::jvp-graph graph) (fail "no-jvp-rule が出なかった"))
       (nb::no-jvp-rule (c) (is (eq :cond (nb::no-jvp-rule-name c)))))))
+
+(test cond/array-and-number-operands-are-lifted-under-a-tracer-pred
+  "pred がトレーサのとき、operand に配列・実数を渡すと定数としてリフトされる。"
+  (let* ((arr (make-random-array (make-array-spec '(2) :f32) :seed 5))
+         (graph (nb::trace-to-graph
+                 (nb:with-tracing (p x)
+                   (nb:cond* p
+                             (nb:with-tracing (u a n) (+ (+ u a) n))
+                             (nb:with-tracing (u a n) (- (- u a) n))
+                             x arr 2.0))
+                 (list (nb:make-aval '() :i1) (nb:make-aval '(2) :f32))))
+         (x (make-random-array (make-array-spec '(2) :f32) :seed 6))
+         (two (make-array 2 :element-type 'single-float :initial-element 2f0)))
+    (is (allclose (nb:eval-graph graph (%cond-pred 1) x)
+                  (reference-add (reference-add x arr) two) :dtype :f32))
+    (is (allclose (nb:eval-graph graph (%cond-pred 0) x)
+                  (reference-sub (reference-sub x arr) two) :dtype :f32))
+    (signals nb:cond-error
+      (nb::trace-to-graph
+       (nb:with-tracing (p x) (nb:cond* p (nb:with-tracing (u v) u) (nb:with-tracing (u v) u) x "bad"))
+       (list (nb:make-aval '() :i1) (nb:make-aval '(2) :f32))))))
+
+(test cond/bad-non-tracer-pred-is-rejected
+  "トレーサでない pred は T / NIL / rank 0 の bit 配列だけ。rank 1 の bit 配列、:f32 の配列、
+その他の値は cond-error。bit 配列の 0 は else を選ぶ。"
+  (let ((then (nb:with-tracing (u) (+ u u)))
+        (else (nb:with-tracing (u) (* u u)))
+        (x (make-random-array (make-array-spec '(2) :f32) :seed 3)))
+    (is (allclose (nb:cond* (%cond-pred 0) then else x) (reference-mul x x) :dtype :f32))
+    (signals nb:cond-error (nb:cond* (make-array 2 :element-type 'bit) then else x))
+    (signals nb:cond-error (nb:cond* (make-array '() :element-type 'single-float) then else x))
+    (signals nb:cond-error (nb:cond* 1 then else x))))
+
+(defun %cond-eqn-avals-error-p (in-avals &rest params)
+  (handler-case (progn (apply #'nb::make-eqn :cond (mapcar #'nb::make-var in-avals) params) nil)
+    (nb::primitive-error () t)))
+
+(test cond/primitive-abstract-eval-rejects-inconsistent-eqns
+  "make-eqn で直接 :cond の eqn を作ったときも、不整合は primitive-error になる
+（pred の型・枝の入力 aval・出力 aval の不一致・num-operands）。"
+  (let* ((f32 (nb:make-aval '(2) :f32))
+         (one (nb::trace-to-graph (nb:with-tracing (u) (+ u u)) (list f32)))
+         (two (nb::trace-to-graph (nb:with-tracing (u) (values u u)) (list f32)))
+         (i1 (nb:make-aval '() :i1)))
+    (is (not (%cond-eqn-avals-error-p (list i1 f32) :then one :else one :num-operands 1)))
+    (is (%cond-eqn-avals-error-p (list f32 f32) :then one :else one :num-operands 1))
+    (is (%cond-eqn-avals-error-p (list (nb:make-aval '(1) :i1) f32) :then one :else one :num-operands 1))
+    (is (%cond-eqn-avals-error-p (list i1 f32) :then one :else two :num-operands 1))
+    (is (%cond-eqn-avals-error-p (list i1 (nb:make-aval '(3) :f32)) :then one :else one :num-operands 1))
+    (is (%cond-eqn-avals-error-p (list i1 f32) :then one :else one :num-operands 0))
+    (is (%cond-eqn-avals-error-p (list i1 f32) :then 1 :else one :num-operands 1))))
+
+(test cond/zero-operands-with-captured-values-only
+  "operand が0個でも、枝が閉包で捕まえた外側の値だけで動く。"
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (p x y)
+                  (nb:cond* p (nb:with-tracing () (+ x y)) (nb:with-tracing () (* x y))))
+                (%cond-avals '(2)))))
+    (destructuring-bind (p x y) (%cond-arrays 4 '(2))
+      (is (allclose (nb:eval-graph graph p x y) (reference-sub x y) :dtype :f32)))))

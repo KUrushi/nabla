@@ -78,6 +78,9 @@ ELSE-ARGS は else のサブグラフの invars に対応する。"
 
 (defprimitive cond (:then :else :num-operands)
   :multiple-outputs t
-  :abstract-eval #'%cond-abstract-eval
-  :emit #'%cond-emit
-  :eager #'%cond-eager)
+  ;; #'関数 を直接渡すと、関数オブジェクトがロード時に固定されて再定義
+  ;; （mutation testing）が効かなくなるので、名前で呼ぶ lambda で包む。
+  :abstract-eval (lambda (in-avals &rest params) (apply #'%cond-abstract-eval in-avals params))
+  :emit (lambda (in-names in-avals out-names out-avals &rest params)
+          (apply #'%cond-emit in-names in-avals out-names out-avals params))
+  :eager (lambda (arrays in-avals &rest params) (apply #'%cond-eager arrays in-avals params)))

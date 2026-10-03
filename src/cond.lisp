@@ -21,10 +21,11 @@ pred が rank 0 の :i1 でない、枝が TRACEABLE-FUNCTION でない、両枝
   (and (arrayp pred) (null (array-dimensions pred)) (eq (aval-dtype (array-aval pred)) :i1)))
 
 (defun %cond-lift-operand (operand)
-  "OPERAND（トレーサ・配列・実数）を現在のトレースのトレーサにする。"
+  "OPERAND（トレーサ・:f32 / :f64 / :i1 の配列・実数）を現在のトレースのトレーサにする。
+bf16 / f16 の生の配列は dtype を推論できないので受け付けない（トレーサで渡す）。"
   (typecase operand
     (tracer operand)
-    (array (%lift-array-to operand (aval-dtype (array-aval operand))))
+    ((or (array single-float) (array double-float) (array bit)) (%lift-array-to operand (aval-dtype (array-aval operand))))
     (real (%lift-number-to operand (if (typep operand 'double-float) :f64 :f32) '()))
     (t (%cond-error "COND* の operand はトレーサ・配列・実数でなければならない: ~S" operand))))
 
