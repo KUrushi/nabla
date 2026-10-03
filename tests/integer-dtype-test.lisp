@@ -219,6 +219,16 @@ select は条件どおりに生の値を選ぶ。"
                 (conv (vec '(signed-byte 32) -1 0 1) :i32 :u32)))
     (is (equalp (vec '(signed-byte 32) -1)
                 (conv (vec '(unsigned-byte 64) 18446744073709551615) :u64 :i32)))
+    ;; 範囲外・無限大は端に飽和、NaN は 0（どのバックエンドでも同じ）
+    (is (equalp (vec '(signed-byte 32) -2147483648 2147483647 0 2147483647 -2147483648)
+                (conv (vec 'single-float -1f10 1f10 (nb::%quiet-nan 'single-float)
+                           sb-ext:single-float-positive-infinity
+                           sb-ext:single-float-negative-infinity)
+                      :f32 :i32)))
+    (is (equalp (vec '(unsigned-byte 32) 0 4294967295 4294967295)
+                (conv (vec 'double-float -5d0 1d12 4294967296d0) :f64 :u32)))
+    (is (equalp (vec '(unsigned-byte 64) 0 18446744073709551615 0)
+                (conv (vec 'single-float -3f0 1f30 -0.9f0) :f32 :u64)))
     (is (equalp (vec 'bit 1 0 1)
                 (conv (vec '(signed-byte 32) -5 0 9) :i32 :i1)))
     (is (equalp (vec 'bit 0 1)
@@ -294,3 +304,44 @@ primitive-error を signal する。"
       (let ((result (nb:eval-graph graph)))
         (is (equalp (nb:array-aval result dtype) aval))
         (is (every #'zerop (loop for i below 6 collect (row-major-aref result i))))))))
+
+(test integer-dtype/clamp-upper-bound-is-the-largest-float-not-above-the-maximum
+  "StableHLO の clamp の上限（%FLOAT-CLAMP-UPPER-BOUND）は、整数の最大値以下で
+表せる最大の浮動小数点数: 最大値を超えず、1つ上の浮動小数点数は最大値を超える
+（f32 の i32 では 2^31 - 128、f64 の i32 では最大値そのもの）。"
+  (dolist (dtype *integer-dtypes*)
+    (dolist (float-type '(single-float double-float))
+      (multiple-value-bind (lo hi) (nb::%integer-range dtype)
+        (declare (ignore lo))
+        (let* ((bound (nb::%float-clamp-upper-bound hi float-type))
+               ;; 1つ上の浮動小数点数（仮数部を1進める）を有理数で
+               (next (multiple-value-bind (mantissa exponent) (integer-decode-float bound)
+                       (* (1+ mantissa) (expt 2 exponent)))))
+          (is (<= (rational bound) hi) "~A ~A" dtype float-type)
+          (is (> next hi) "~A ~A" dtype float-type)))))
+  (is (= 2147483520 (nb::%float-clamp-upper-bound 2147483647 'single-float)))
+  (is (= 2147483647 (nb::%float-clamp-upper-bound 2147483647 'double-float))))
+
+(test integer-dtype/integer-range-and-wrap-agree
+  "整数の範囲の端 ±1 は WRAP-INTEGER で反対の端に折り返す。"
+  (dolist (dtype *integer-dtypes*)
+    (multiple-value-bind (lo hi) (nb::%integer-range dtype)
+      (is (= lo (nb::wrap-integer lo dtype)))
+      (is (= hi (nb::wrap-integer hi dtype)))
+      (is (= lo (nb::wrap-integer (1+ hi) dtype)))
+      (is (= hi (nb::wrap-integer (1- lo) dtype))))))
+
+(test integer-dtype/reduce-max-init-and-literals-are-the-dtype-minimum
+  "reduce-max の初期値（eager・StableHLO のリテラルとも）は整数 dtype の最小値。
+最小値だけの配列でも最大値が最小値のまま返る。"
+  (dolist (dtype *integer-dtypes*)
+    (multiple-value-bind (lo hi) (nb::%integer-range dtype)
+      (declare (ignore hi))
+      (is (= lo (nb::%reduce-integer-init :max dtype)))
+      (is (= 0 (nb::%reduce-integer-init :add dtype)))
+      (is (equal (format nil "~D" lo) (nb::%reduce-init-literal :max dtype)))
+      (is (equal "0" (nb::%reduce-init-literal :add dtype)))
+      (let* ((array (make-array 3 :element-type (nb:dtype-element-type dtype) :initial-element lo))
+             (result (%trace-eval (nb:with-tracing (x) (nb:reduce-max x :axes '(0)))
+                                  (list (nb:make-aval '(3) dtype)) array)))
+        (is (= lo (aref result)))))))

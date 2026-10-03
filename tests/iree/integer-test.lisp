@@ -55,7 +55,8 @@ SHAPE で、端の値（折り返す値）を含むランダムな整数配列�
                                                       (make-array-spec (nb:aval-shape aval) dtype)
                                                       :seed (+ seed k)))))
                            (multiple-value-bind (iree eager) (%run-graph-on-iree-and-eager graph arrays)
-                             (equalp iree eager))))
+                             (and (equal (array-element-type iree) (array-element-type eager))
+                                  (equalp iree eager)))))
                        :regression-id ,test-name
                        :regression-file (regression-path
                                          ,(format nil "iree-integer-~(~A~)"
@@ -100,14 +101,27 @@ SHAPE で、端の値（折り返す値）を含むランダムな整数配列�
     "整数リテラルを含む式（定数の i32 / ui32 / ui64）が一致する。"
   (x) (+ (* x 3) 1) (3 5))
 
+(defun %float-vec (dtype &rest values)
+  "VALUES（single-float。NaN と無限大も可）を DTYPE（:f32 :f64 :f16 :bf16）の配列にする。"
+  (let ((array (make-array (length values) :element-type (nb:dtype-element-type dtype))))
+    (loop for v in values for i from 0
+          do (setf (aref array i)
+                   (ecase dtype
+                     (:f32 v)
+                     (:f64 (sb-int:with-float-traps-masked (:invalid :overflow) (coerce v 'double-float)))
+                     ((:f16 :bf16) (sb-int:with-float-traps-masked (:invalid :overflow)
+                                     (nb::encode-float16 v dtype))))))
+    array))
+
 (define-iree-test iree/integer/convert/matches-eager
-    "整数 ⇔ 浮動小数点 ⇔ :i1 の convert が IREE と eager で一致する（浮動小数点 →
-整数は範囲内の値、整数 → :i1 は 0 以外が 1）。"
+    "整数 ⇔ 浮動小数点 ⇔ :i1 の convert が IREE と eager で一致する（整数 → bf16 は
+f32 を経由する2段の convert。:u64 → bf16 を含む）。"
   (skip-unless-iree :library :both)
   (flet ((check (from to array)
            (let ((graph (nb:trace-to-graph (nb:with-tracing (x) (nb:convert x to))
                                            (list (nb:make-aval (array-dimensions array) from)))))
              (multiple-value-bind (iree eager) (%run-graph-on-iree-and-eager graph (list array))
+               (is (equal (array-element-type iree) (array-element-type eager)) "~A -> ~A" from to)
                (is (equalp iree eager) "~A -> ~A" from to))))
          (vec (type &rest xs) (make-array (length xs) :element-type type :initial-contents xs)))
     (let ((i32 (vec '(signed-byte 32) -2147483648 -7 0 7 2147483647))
@@ -118,13 +132,37 @@ SHAPE で、端の値（折り返す値）を含むランダムな整数配列�
       (check :i32 :f32 i32)
       (check :i32 :u32 i32)
       (check :i32 :i1 i32)
+      (check :i32 :bf16 i32)
+      (check :i32 :f16 i32)
       (check :u32 :i32 u32)
       (check :u32 :f64 u32)
       (check :u32 :i1 u32)
+      (check :u32 :bf16 u32)
       (check :u64 :u32 u64)
       (check :u64 :i1 u64)
+      (check :u64 :bf16 u64)
       (check :f32 :i32 f32)
       (check :f32 :i1 f32)
       (check :i1 :i32 bit)
       (check :i1 :u32 bit)
       (check :i1 :f32 bit))))
+
+(define-iree-test iree/integer/convert/float-to-integer-saturates-like-eager
+    "浮動小数点 → 整数の convert は、範囲外・±無限大は整数の端に飽和し、NaN は 0
+になる（IREE の fptosi は範囲外と NaN が未定義なので、StableHLO 側で飽和と
+NaN → 0 を明示している。issue #126）。f32 / f64 / f16 / bf16 のどの入力でも
+IREE と eager が一致する。"
+  (skip-unless-iree :library :both)
+  (let ((nan (nb::%quiet-nan 'single-float))
+        (inf sb-ext:single-float-positive-infinity)
+        (-inf sb-ext:single-float-negative-infinity))
+    (dolist (from '(:f32 :f64 :f16 :bf16))
+      (dolist (to *integer-dtypes*)
+        (let* ((array (%float-vec from -1e10 1e10 -3e9 3e9 2147483520.0 2147483648.0 -2147483648.0
+                                  4294967040.0 4294967296.0 1.8446742974197924e19 1.8446744073709552e19
+                                  -1.0 -0.5 0.5 1.5 -2.7 0.0 30000.0 nan inf -inf))
+               (graph (nb:trace-to-graph (nb:with-tracing (x) (nb:convert x to))
+                                         (list (nb:make-aval (array-dimensions array) from)))))
+          (multiple-value-bind (iree eager) (%run-graph-on-iree-and-eager graph (list array))
+            (is (equal (array-element-type iree) (array-element-type eager)) "~A -> ~A" from to)
+            (is (equalp iree eager) "~A -> ~A: iree=~A eager=~A" from to iree eager)))))))

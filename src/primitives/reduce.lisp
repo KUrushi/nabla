@@ -20,7 +20,7 @@
 
 (in-package #:nabla)
 
-(defun %reduce-float-dtype-p (dtype)
+(defun %reduce-dtype-p (dtype)
   "DTYPE が reduce の入力として許される dtype（浮動小数点 :f32 :f64 :bf16
 :f16 と、整数 :i32 :u32 :u64。issue #126）のいずれかかどうかを返す。"
   (and (member dtype '(:f32 :f64 :bf16 :f16 :i32 :u32 :u64)) t))
@@ -63,7 +63,7 @@ PRIMITIVE-ERROR を signal する。"
   (let* ((in-aval (first in-avals))
          (dtype (aval-dtype in-aval))
          (shape (aval-shape in-aval)))
-    (unless (%reduce-float-dtype-p dtype)
+    (unless (%reduce-dtype-p dtype)
       (error 'primitive-error :name name :in-avals in-avals
              :format-control "reduce は浮動小数点か整数 dtype の入力しか受け付けない: ~S"
              :format-arguments (list dtype)))
