@@ -519,6 +519,7 @@
 
 
                ;; フェーズ3 anchor: issue #141（RNN の e2e）。この issue のテストはこの下に足す
+               (:file "tests/iree/rnn-train-test")
                ))
 
 (defsystem "nabla/pjrt"
