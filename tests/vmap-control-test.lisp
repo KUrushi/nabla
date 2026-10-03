@@ -297,3 +297,89 @@ broadcast-in-dim を作らず、形が [B, 3] の出力が複数あっても、�
                            eqns)))
     (is (= 3 (count :select prims)))
     (is (= 1 (length pred-broadcasts)))))
+
+;;; --- scan の追加ケース（xs が rank 1、xs 無し、const をそのまま y に返す） ---
+
+(defun %vc-matches-reference-p (f args axes)
+  "F の vmap（in-axes AXES、out-axes 0）が参照実装と一致するか（f64）。"
+  (let ((expected (reference-vmap f args :in-axes axes))
+        (actual (multiple-value-list (apply (nb:vmap f :in-axes axes :out-axes 0) args))))
+    (and (= (length actual) (length expected))
+         (every (lambda (a e) (allclose a e :dtype :f64)) actual expected))))
+
+(defparameter *vc-scan-scalar-x*
+  ;; xs が rank 1（x_t は rank 0）、carry はスカラー。
+  (nb:with-tracing (h0 xs)
+    (multiple-value-bind (carry ys)
+        (nb:scan (nb:with-tracing (carry x)
+                   (let ((h (first carry)) (u (first x)))
+                     (values (list (+ (* h 0.5) u)) (list (* h u)))))
+                 (list h0) (list xs))
+      (values (first carry) (first ys)))))
+
+(test vmap-control/scan-with-rank-1-xs-batched-at-axis-0-and-1
+  "scan: xs が rank 1（x_t が rank 0）で、バッチ軸が走査の軸の前（0）でも後（1）でも、
+h0 がバッチされてもされなくても、参照実装と一致する（長さ 0 を含む）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 0 :hi 100000)
+                                  (uniform-integer :lo 0 :hi 3) (uniform-integer :lo 0 :hi 1)
+                                  (uniform-integer :lo 0 :hi 1)))
+                (lambda (case)
+                  (destructuring-bind (size seed length axis h-batched) case
+                    (let ((h (if (= 1 h-batched)
+                                 (%vc-array '() size 0 seed)
+                                 (%vc-array '() size nil seed)))
+                          (xs (%vc-array (list length) size axis (+ seed 1))))
+                      (%vc-matches-reference-p *vc-scan-scalar-x* (list h xs)
+                                               (list (and (= 1 h-batched) 0) axis)))))
+                :regression-id vmap-control/scan-with-rank-1-xs-batched-at-axis-0-and-1
+                :regression-file (regression-path "vmap-control"))))
+
+(defparameter *vc-scan-no-xs*
+  ;; xs 無し（:length だけ）。const w を足して carry h を更新し、各ステップの h を y にする。
+  (nb:with-tracing (w h0)
+    (multiple-value-bind (carry ys)
+        (nb:scan (nb:with-tracing (carry x)
+                   x
+                   (values (list (+ (* (first carry) 0.5) w)) (list (first carry))))
+                 (list h0) '() :length 3)
+      (values (first carry) (first ys)))))
+
+(test vmap-control/scan-without-xs-with-batched-carry-or-const
+  "scan: xs が無い（:length だけ）とき、carry だけ・const だけ・両方がバッチされる場合も
+（バッチ軸は 0 か 1）参照実装と一致する。const だけのバッチは、carry が本体でバッチされる回帰でもある。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 0 :hi 100000)
+                                  (uniform-integer :lo 0 :hi 99) (uniform-integer :lo 0 :hi 99)))
+                (lambda (case)
+                  (destructuring-bind (size seed code-w code-h) case
+                    (destructuring-bind (aw ah) (%vc-in-axes code-w code-h)
+                      (%vc-matches-reference-p *vc-scan-no-xs*
+                                               (list (%vc-array '(3) size aw seed)
+                                                     (%vc-array '(3) size ah (+ seed 1)))
+                                               (list aw ah)))))
+                :regression-id vmap-control/scan-without-xs-with-batched-carry-or-const
+                :regression-file (regression-path "vmap-control"))))
+
+(defparameter *vc-scan-const-as-y*
+  ;; const w をそのまま y として返す（y が本体の入力そのもの）。carry は h + x。
+  (nb:with-tracing (w h0 xs)
+    (multiple-value-bind (carry ys)
+        (nb:scan (nb:with-tracing (carry x)
+                   (values (list (+ (first carry) (first x))) (list w)))
+                 (list h0) (list xs))
+      (values (first carry) (first ys)))))
+
+(test vmap-control/scan-const-batched-at-axis-1-passed-through-as-y
+  "scan: 軸 1 でバッチされた const を y としてそのまま返しても、ys のバッチ軸が正しい位置（本体で
+先頭に揃えられ、scan の出力で軸 1）になり、参照実装と一致する。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 0 :hi 100000)
+                                  (uniform-integer :lo 0 :hi 3) (uniform-integer :lo 0 :hi 1)))
+                (lambda (case)
+                  (destructuring-bind (size seed length axis-w) case
+                    (let ((w-axis (if (= 1 axis-w) 1 0)))
+                      (%vc-matches-reference-p *vc-scan-const-as-y*
+                                               (list (%vc-array '(3) size w-axis seed)
+                                                     (%vc-array '(3) size nil (+ seed 1))
+                                                     (%vc-array (list length 3) size nil (+ seed 2)))
+                                               (list w-axis nil nil)))))
+                :regression-id vmap-control/scan-const-batched-at-axis-1-passed-through-as-y
+                :regression-file (regression-path "vmap-control"))))

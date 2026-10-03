@@ -170,18 +170,21 @@ reduce-max が正かで調べる。"
 
 ;;; --- scan ---
 
+(defun %vmap-scan-body-in-dims (batch-dims num-consts num-carry carry-batched)
+  "scan の本体の入力のバッチ軸（consts ++ carry ++ x_t）。consts は元のまま、carry は
+バッチされるなら 0、x_t は xs のバッチ軸を 1 に動かすので（走査の軸 0 を除くと）0。"
+  (append (subseq batch-dims 0 num-consts)
+          (mapcar (lambda (b) (and b 0)) carry-batched)
+          (mapcar (lambda (d) (and d 0)) (nthcdr (+ num-consts num-carry) batch-dims))))
+
 (defun %vmap-scan-fixpoint (body num-consts num-carry batch-dims size)
   "scan のバッチされる carry の集合の不動点。(VALUES CARRY-BATCHED YS-BATCHED)。
-本体の入力のバッチ軸は、consts は元のまま、carry はバッチされるなら 0、x_t は xs の
-バッチ軸を 1 に動かすので（走査の軸 0 を除くと）0。入力のバッチされ方から始め、
+本体の入力のバッチ軸は %VMAP-SCAN-BODY-IN-DIMS。入力のバッチされ方から始め、
 本体の出力でバッチされる carry を足して、変化しなくなるまで繰り返す。"
-  (let* ((const-dims (subseq batch-dims 0 num-consts))
-         (xs-dims (nthcdr (+ num-consts num-carry) batch-dims))
-         (batched (mapcar (lambda (d) (and d t))
+  (let* ((batched (mapcar (lambda (d) (and d t))
                           (subseq batch-dims num-consts (+ num-consts num-carry)))))
     (loop
-      (let* ((in-dims (append const-dims (mapcar (lambda (b) (and b 0)) batched)
-                              (mapcar (lambda (d) (and d 0)) xs-dims)))
+      (let* ((in-dims (%vmap-scan-body-in-dims batch-dims num-consts num-carry batched))
              (out-dims (nth-value 1 (%vmap-subgraph body in-dims size
                                                     (make-list (length (graph-outvars body))))))
              (next (loop for b in batched for d in out-dims collect (or b (and d t)))))
@@ -203,10 +206,7 @@ reduce-max が正かで調べる。"
              (xs (loop for arg in (nthcdr (+ num-consts num-carry) args)
                        for dim in (nthcdr (+ num-consts num-carry) batch-dims)
                        collect (if dim (%vmap-move-axis arg dim 1) arg)))
-             (in-dims (append (subseq batch-dims 0 num-consts)
-                              (mapcar (lambda (b) (and b 0)) carry-batched)
-                              (mapcar (lambda (d) (and d 0))
-                                      (nthcdr (+ num-consts num-carry) batch-dims))))
+             (in-dims (%vmap-scan-body-in-dims batch-dims num-consts num-carry carry-batched))
              (body-b (%vmap-subgraph body in-dims size (append carry-batched ys-batched))))
         (values (%trace-eqn* :scan (append consts inits xs)
                              :num-consts num-consts :num-carry num-carry
