@@ -32,3 +32,28 @@
                  (list (nb:make-aval '(3 3) :f32) (nb:make-aval '(3 3) :f32) (nb:make-aval '(3) :f32)
                        (nb:make-aval '(3) :f32) (nb:make-aval '(5 3) :f32)))))
     (%with-scan-iree-check (graph "elman-grad") "IREE の RNN の grad graph の結果が eager と一致しなかった")))
+
+(define-iree-test vjp-scan/iree-elman-grad-at-size-matches-eager
+    "中くらいの大きさ（H=16、T=30、入力は ±0.3 に収める）の Elman RNN の grad graph が IREE と eager で一致する（積んだ残差と逆向きの while の lowering を大きさのあるものでも確かめる）。"
+  (skip-unless-iree :library :both)
+  (let* ((h 16) (steps 30)
+         (f (nb:with-tracing (w u b h0 xs)
+              (nb:reduce-sum
+               (first (nb:scan (nb:with-tracing (carry x)
+                                 (values (list (tanh (+ (+ (nb:dot w (first carry)) (nb:dot u (first x))) b)))
+                                         '()))
+                               (list h0) (list xs) :length steps)))))
+         (graph (nb::trace-to-graph
+                 (let ((g (nb:grad f :argnums '(0 1 2 3 4))))
+                   (nb:with-tracing (w u b h0 xs) (values-list (funcall g w u b h0 xs))))
+                 (list (nb:make-aval (list h h) :f32) (nb:make-aval (list h h) :f32) (nb:make-aval (list h) :f32)
+                       (nb:make-aval (list h) :f32) (nb:make-aval (list steps h) :f32)))))
+    ;; 乱数の seed は固定の数個（100 試行の PBT では、f32 の足し込みの順序の差が許容誤差を超える
+    ;; seed が稀にあった。大きさのある1つの graph の lowering を確かめるのが目的なので固定にする）。
+    (let* ((backend (nabla:find-backend :iree))
+           (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph)))))
+      (unwind-protect
+           (dolist (seed '(0 1 2 3 4))
+             (is (%scan-iree-matches-eager-p backend module graph seed)
+                 "IREE の大きさのある RNN の grad graph の結果が eager と一致しなかった (seed ~D)" seed))
+        (nabla:backend-unload backend module)))))

@@ -99,8 +99,8 @@
            (linear-scans (%scan-eqns (nb::linearization-linear-graph lin))))
       (is (= 1 (length primal-scans)))
       (is (= 1 (length linear-scans)))
-      ;; 最終 carry 1 + ys 1 + 積んだ残差（tanh の微分。w に接線があれば d(h exp(w)) の h も）
-      (is (= (if (first nonzero) 4 3) (length (nb::eqn-outvars (first primal-scans)))))
+      ;; 最終 carry 1 + ys 1 + 積んだ残差（tanh の微分。h は既知の ys と同じ var なので積み直さない）
+      (is (= 3 (length (nb::eqn-outvars (first primal-scans)))))
       (is (equal '(5 3) (nb:aval-shape (nb:var-aval (third (nb::eqn-outvars (first primal-scans)))))))
       (let ((params (nb::eqn-params (first linear-scans))))
         (is (= 1 (getf params :num-carry)))
@@ -203,3 +203,18 @@ h' = tanh(h exp(c) + x)（c はホストの配列）。中心差分と一致す�
          (linear-scan (first (%scan-eqns (nb::linearization-linear-graph lin)))))
     (is (= 2 (length (nb::eqn-outvars primal-scan))))
     (is (= 0 (getf (nb::eqn-params linear-scan) :num-consts)))))
+
+(test vjp-scan/known-ys-residual-is-forwarded-not-restacked
+  "残差が既知の ys の出力と同じ var（Elman の h は ys にも出し、W の接線の係数にも使う）なら、
+積み直さず既存の外側の ys を線形な scan に渡す: 主値側の scan の出力は 最終 carry・ys・tanh の微分の3つ。"
+  (let* ((graph (nb::trace-to-graph
+                 (nb:with-tracing (w h xs)
+                   (multiple-value-bind (carry ys)
+                       (nb:scan (nb:with-tracing (carry x)
+                                  (values (list (tanh (+ (* (first carry) w) (first x)))) (list (first carry))))
+                                (list h) (list xs) :length 4)
+                     (values (first carry) (first ys))))
+                 (list (nb:make-aval '(3) :f64) (nb:make-aval '(3) :f64) (nb:make-aval '(4 3) :f64))))
+         (lin (nb::linearize-graph graph :nonzero '(t t nil)))
+         (primal-scan (first (%scan-eqns (nb::linearization-primal-graph lin)))))
+    (is (= 3 (length (nb::eqn-outvars primal-scan))))))
