@@ -1,0 +1,5 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME PRIMITIVES/RNG/STATE-ADVANCES-AND-KEY-IS-PRESERVED
+                 :DATUM
+                 "(#S(NABLA.TESTS.SUPPORT::ARRAY-SPEC% :SHAPE (3 5 1) :DTYPE :F32) 0)"
+                 :TIMESTAMP 3999997273)

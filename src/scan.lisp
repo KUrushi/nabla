@@ -318,6 +318,11 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
   "F を (carry-list x-list) で呼ぶ本体をサブグラフにトレースして、
 (values GRAPH CAPTURED) を返す。GRAPH の invars は carry ++ x ++ captured、
 outvars は carry ++ ys。"
+  ;; %TRACE-SUBGRAPH ではなく %CALL-WITH-TRACE を直接使う。公開の f は
+  ;; (carry-list x-list) の2引数（リストを受ける）で、%TRACE-SUBGRAPH が要求する
+  ;; 「avals と同じ個数の引数を取る TRACEABLE-FUNCTION」と形が合わないため、
+  ;; トレース用の平らな lambda でリストに詰め直してから f を呼ぶ。親トレースは
+  ;; %TRACE-SUBGRAPH と同じ *CURRENT-TRACE*（閉包の closure conversion も同じ）。
   (let ((n-carry (length carry-avals)))
     (%call-with-trace
      (append carry-avals x-avals)

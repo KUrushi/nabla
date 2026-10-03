@@ -114,6 +114,7 @@
 
 
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のコンポーネントはこの下に足す
+               (:file "src/primitives/rng")
 
 
 
@@ -283,6 +284,7 @@
 
 
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のテストはこの下に足す
+               (:file "tests/primitives/rng-test")
 
 
 
@@ -468,6 +470,7 @@
 
 
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のテストはこの下に足す
+               (:file "tests/iree/rng-test")
 
 
 
@@ -530,4 +533,6 @@
                (:file "tests/pjrt/executable-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
                (:file "tests/pjrt/bench-test")
-               (:file "tests/pjrt/integer-test")))
+               (:file "tests/pjrt/integer-test")
+               ;; フェーズ3 anchor: issue #133（rng-bit-generator）
+               (:file "tests/pjrt/rng-test")))
