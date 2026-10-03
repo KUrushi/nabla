@@ -1,0 +1,1 @@
+#144（整数 dtype）が main に入ったため 2434e85 へ再 rebase。整数を受ける add sub mul max min neg compare select convert stop-gradient の PBT を *integer-dtypes*（i32 u32 u64）にも拡張（div exp log tanh は除外）。small 139842 + medium 1273 通過。
