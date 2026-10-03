@@ -1,0 +1,1 @@
+#155(#140) 取り込み: main を merge、registry の除外リストは main 版+bit 演算3つ。PENDING-140 スキップと vmap-walks-multiple-outputs-p を削除、#140 修飾子を除去。vmap over keys テスト(small/IREE)が無条件で通る。full suite small+medium skip 0。
