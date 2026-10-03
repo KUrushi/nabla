@@ -124,6 +124,10 @@
 
 
    ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のexportはこの下に足す
+   #:vmap
+   #:vmap-error
+   #:no-batch-rule
+   #:no-batch-rule-name
 
 
 

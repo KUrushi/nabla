@@ -4,8 +4,8 @@
 ;;;; eager 用の CPU 実装（eager）の3つを束ねた PRIMITIVE 構造体として
 ;;;; DEFPRIMITIVE で登録する。jvp / transpose のルールは可変スロットで、
 ;;;; DEFPRIMITIVE の任意キー :JVP / :TRANSPOSE か、後から DEF-JVP-RULE /
-;;;; DEF-TRANSPOSE-RULE（src/ad/rules.lisp）で設定する。batch のルールは
-;;;; フェーズ3 以降に足す（CLAUDE.md「設計上の約束」）。
+;;;; DEF-TRANSPOSE-RULE（src/ad/rules.lisp）で設定する。batch のルール（vmap）は
+;;;; :BATCH か DEF-BATCH-RULE（src/vmap.lisp）で設定する。
 
 (in-package #:nabla)
 
@@ -13,9 +13,10 @@
   "1つの演算（プリミティブ）を表す。NAME は :ADD のようなキーワード、
 PARAMS は宣言順に並んだパラメタ名（キーワード）のリスト。ABSTRACT-EVAL /
 EMIT / EAGER の呼び出し規約は DEFPRIMITIVE の docstring を見る。JVP と
-TRANSPOSE は自動微分のルール（無ければ NIL）で、他のスロットと違って後から
-設定できる。呼び出し規約は src/ad/rules.lisp の DEF-JVP-RULE /
-DEF-TRANSPOSE-RULE を見る。MULTIPLE-OUTPUT-P が真のプリミティブは複数の
+TRANSPOSE は自動微分のルール、BATCH は vmap のバッチ化ルール（どれも無ければ
+NIL）で、他のスロットと違って後から設定できる。呼び出し規約は
+src/ad/rules.lisp の DEF-JVP-RULE / DEF-TRANSPOSE-RULE と、src/vmap.lisp の
+DEF-BATCH-RULE を見る。MULTIPLE-OUTPUT-P が真のプリミティブは複数の
 出力を持てる（契約 C1。呼び出し規約が単一出力と変わる点は DEFPRIMITIVE の
 docstring を見る）。"
   (name nil :type keyword :read-only t)
@@ -25,7 +26,9 @@ docstring を見る）。"
   (emit nil :type (or null function) :read-only t)
   (eager nil :type (or null function) :read-only t)
   (jvp nil :type (or null function))
-  (transpose nil :type (or null function)))
+  (transpose nil :type (or null function))
+  ;; バッチ化ルール（vmap。DEF-BATCH-RULE、src/vmap.lisp）。常に最後のスロット
+  (batch nil :type (or null function)))
 
 (defvar *primitives* (make-hash-table :test 'eq)
   "プリミティブ名（キーワード）から PRIMITIVE への表。DEFPRIMITIVE の
@@ -68,7 +71,7 @@ AVAL のリスト（分からなければ NIL）。"))
 
 (defun %existing-rule (name accessor)
   "NAME の既に登録されている PRIMITIVE から ACCESSOR（PRIMITIVE-JVP /
-PRIMITIVE-TRANSPOSE）でルールを取り出す。未登録なら NIL。DEFPRIMITIVE の
+PRIMITIVE-TRANSPOSE / PRIMITIVE-BATCH）でルールを取り出す。未登録なら NIL。DEFPRIMITIVE の
 再評価がルールを引き継ぐために使う。"
   (let ((old (find-primitive name)))
     (and old (funcall accessor old))))
@@ -78,7 +81,7 @@ PRIMITIVE-TRANSPOSE）でルールを取り出す。未登録なら NIL。DEFPRI
     (unless (keywordp k)
       (error "DEFPRIMITIVE ~S: パラメタ ~S はキーワードでなければならない" name k))))
 
-(defmacro defprimitive (name (&rest param-keywords) &key multiple-outputs abstract-eval emit eager jvp transpose)
+(defmacro defprimitive (name (&rest param-keywords) &key multiple-outputs abstract-eval emit eager jvp transpose batch)
   "NAME（シンボル）を名前に持つプリミティブを宣言し、
 *PRIMITIVES* に登録する。登録名は (INTERN (SYMBOL-NAME NAME) :KEYWORD)。
 
@@ -101,7 +104,8 @@ PARAM-KEYWORDS はこのプリミティブが受け取るパラメタ名を宣�
 
 :JVP / :TRANSPOSE は省略でき、自動微分のルール関数（呼び出し規約は
 DEF-JVP-RULE / DEF-TRANSPOSE-RULE の docstring）。省略すると NIL で、後から
-DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。
+DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。:BATCH はバッチ化ルール（vmap。
+呼び出し規約は DEF-BATCH-RULE の docstring。常に最後のキー）。
 
 :MULTIPLE-OUTPUTS（評価されない真偽値。既定 NIL）が真のプリミティブは、
 出力の個数ではなくこのフラグで複数出力の規約に切り替わる（契約 C1）:
@@ -124,7 +128,7 @@ DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。
 新しい PRIMITIVE 構造体で置き換える（EQ ではなくなる）。ただし jvp /
 transpose のルールは引き継ぐ: :JVP / :TRANSPOSE を明示しなければ、古い
 PRIMITIVE のルール（DEF-JVP-RULE などで後から設定したものを含む）がそのまま
-新しい PRIMITIVE に載る。明示すればそちらで上書きする（NIL で消すことは
+新しい PRIMITIVE に載る（batch も同じ）。明示すればそちらで上書きする（NIL で消すことは
 できない）。"
   (%check-param-keywords name param-keywords)
   (unless abstract-eval
@@ -139,7 +143,8 @@ PRIMITIVE のルール（DEF-JVP-RULE などで後から設定したものを含
                           :emit ,emit
                           :eager ,eager
                           :jvp (or ,jvp (%existing-rule ,keyword #'primitive-jvp))
-                          :transpose (or ,transpose (%existing-rule ,keyword #'primitive-transpose))))
+                          :transpose (or ,transpose (%existing-rule ,keyword #'primitive-transpose))
+                          :batch (or ,batch (%existing-rule ,keyword #'primitive-batch))))
        ,keyword)))
 
 (defun dtype-mlir-name (dtype)

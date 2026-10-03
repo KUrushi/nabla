@@ -96,4 +96,8 @@
    #:scalar-loss-oracle
    ;; テスト専用の高階プリミティブ（issue #127）
    #:test-call-subgraph
-   #:test-while-capture))
+   #:test-while-capture
+   ;; vmap の参照実装（issue #125）
+   #:reference-vmap
+   #:slice-along-axis
+   #:stack-along-axis))
