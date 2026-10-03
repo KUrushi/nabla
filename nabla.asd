@@ -98,6 +98,8 @@
 
 
                ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のコンポーネントはこの下に足す
+               (:file "src/primitives/cond")
+               (:file "src/cond")
 
 
 
@@ -263,6 +265,7 @@
 
 
                ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のテストはこの下に足す
+               (:file "tests/cond-test")
 
 
 
@@ -443,6 +446,7 @@
 
 
                ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のテストはこの下に足す
+               (:file "tests/iree/cond-test")
 
 
 

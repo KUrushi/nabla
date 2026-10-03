@@ -140,6 +140,8 @@
 
 
    ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のexportはこの下に足す
+   #:cond*
+   #:cond-error
 
 
 

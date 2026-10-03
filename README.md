@@ -238,6 +238,8 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #130 -->
 
+**cond\*（条件分岐）**（`src/cond.lisp`、`src/primitives/cond.lisp`、issue #130）: `(cond* pred then-fn else-fn &rest operands)`。`pred` が真なら `(then-fn operands...)`、偽なら `(else-fn operands...)` を評価する高階プリミティブ `:cond` で、eager では選ばれた枝のサブグラフだけを評価する（CL の `cond` と衝突するので名前は `cond*`）。`then-fn` / `else-fn` は `with-tracing` で作った関数で、普通のトレース対象の関数と同じく1つの値か多値を返し、`cond*` も同じ個数の多値を返す。両枝の出力の aval が一致しなければトレース時に `cond-error`（`tracing-error` の子。`pred` がトレーサなのに rank 0 の `:i1` でない場合、枝が `traceable-function` でない場合も）。枝が閉包で捕まえた外側のトレーサも使える（closure conversion）。`pred` が `t` / `nil` / rank 0 の bit 配列なら、選ばれた枝をそのまま呼ぶ（eqn は作らない）。StableHLO は `stablehlo.if`（IREE でコンパイル・実行できることを medium テストで確認）。jvp / transpose / バッチ化ルールはまだ無く（#134 / #140）、`cond*` を通した `grad` は `no-jvp-rule`（名前は `:cond`）になる。**`with-tracing` の `if` は `cond*` に落とさず、これまでどおり `select` のままにする**: `if` の条件は要素ごとの `:i1` 配列でありうるので、`select`（要素ごとの意味）を保つ必要がある。スカラー条件で片枝だけを評価したい（重い計算や、範囲外の値の `log` など片方の枝でしか意味を持たない計算を避けたい）ときに、`cond*` を明示的に呼ぶ。
+
 
 
 <!-- フェーズ3 anchor: issue #131 -->
