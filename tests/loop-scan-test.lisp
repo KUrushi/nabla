@@ -255,3 +255,8 @@ UNSUPPORTED-FORM が signal されること。"
   (dolist (op '(flet labels macrolet))
     (let ((form `(,op ((do (a b) (+ a b))) (do 1 2))))
       (is (equal form (nb::%expand-do-loops form))))))
+
+(test loop-scan/malformed-local-function-definitions-pass-through
+  "不完全な局所関数の定義（名前だけ）も、そのまま通す（エラーは後段の macroexpand-all が出す）。"
+  (let ((form '(flet ((f)) 1)))
+    (is (equal form (nb::%expand-do-loops form)))))
