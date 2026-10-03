@@ -51,9 +51,7 @@ EQN の outvars と合わなければ AUTODIFF-ERROR。"
   "JVP-GRAPH の本体。(VALUES JVP-GRAPH OUT-NONZERO) を返す。OUT-NONZERO は GRAPH の
 出力ごとに、接線が SYMBOLIC-ZERO でなければ T のリスト（JVP-GRAPH は出力のゼロの
 接線を実体化して隠すが、while-loop / scan の不動点の計算はどの出力が非ゼロかを要る）。"
-  (let ((out-nonzero '()))
-    (values (%jvp-graph-1 graph nonzero (lambda (flags) (setf out-nonzero flags)))
-            out-nonzero)))
+  (%jvp-graph-core graph nonzero (make-list (length (graph-outvars graph)) :initial-element t)))
 
 (defun jvp-graph (graph &key (nonzero (mapcar (lambda (v) (and (%float-dtype-p (aval-dtype (var-aval v))) t))
                                               (graph-invars graph))))
@@ -79,11 +77,18 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
 事前に足さず、ルールを (apply rule primals tangents params) で呼んで
 (VALUES 主値の出力のリスト 接線のリスト) を受け取る（ルールが主値の eqn を足す。
 全入力の接線がゼロなら、複数出力でもルールを呼ばず主値だけ再発行する）。定数の接線はゼロ。"
-  (values (%jvp-graph-1 graph nonzero nil)))
+  (values (%jvp-graph-core graph nonzero (make-list (length (graph-outvars graph)) :initial-element t))))
 
-(defun %jvp-graph-1 (graph nonzero report-out-nonzero)
-  "JVP-GRAPH の実体。REPORT-OUT-NONZERO が関数なら、出力ごとの「接線が非ゼロか」の
-リストを渡して呼ぶ。"
+(defun %jvp-graph-core (graph nonzero force)
+  "JVP-GRAPH の本体。(VALUES JVP-GRAPH OUT-NONZERO) を返す。
+
+FORCE は GRAPH-OUTVARS と同じ長さの真偽値のリストで、出力にする接線を選ぶ: 真の出力の
+接線は（ゼロでも）INSTANTIATE-ZERO で必ず graph の出力にし、偽の出力の接線は、ゼロで
+ないときだけ出力にする（ゼロと分かっていれば出力から外す）。新しい graph の出力は
+「主値 ++ 出力にした接線（出力の順）」で、出力にするのは (OR FORCE OUT-NONZERO) の出力。
+OUT-NONZERO は FORCE に関係なく、各出力の接線が本当に非ゼロ（SYMBOLIC-ZERO でない）かの
+真偽値のリスト（scan / while-loop の jvp が carry の接線の不動点を求めるのに使う）。"
+  (assert (= (length force) (length (graph-outvars graph))))
   (let ((invars (graph-invars graph)))
     (unless (= (length nonzero) (length invars))
       (error 'autodiff-error
@@ -95,6 +100,8 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
             do (error 'autodiff-error
                       :format-control "浮動小数点でない入力 ~S には接線を渡せない（nonzero は NIL にする）"
                       :format-arguments (list invar)))
+    (let ((out-nonzero '()))
+     (values
     (%call-with-fresh-trace
      (append (mapcar #'var-aval invars)
              (loop for invar in invars for flag in nonzero
@@ -135,9 +142,10 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
                      for out in outs
                      for tangent in out-tangents
                      do (setf (gethash var env) (cons out tangent))))))
-         (let ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph))))
-           (when report-out-nonzero
-             (funcall report-out-nonzero
-                      (mapcar (lambda (entry) (not (symbolic-zero-p (cdr entry)))) entries)))
+         (let* ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph)))
+                (nonzero-flags (mapcar (lambda (entry) (not (symbolic-zero-p (cdr entry)))) entries)))
+           (setf out-nonzero nonzero-flags)
            (values-list (append (mapcar #'car entries)
-                                (mapcar (lambda (entry) (instantiate-zero (cdr entry))) entries)))))))))
+                                (loop for entry in entries for flag in force for nz in nonzero-flags
+                                      when (or flag nz) collect (instantiate-zero (cdr entry)))))))))
+     (copy-list out-nonzero)))))

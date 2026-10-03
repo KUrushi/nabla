@@ -32,10 +32,14 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
        (null (primitive-transpose (eqn-prim eqn)))))
 
 (defun %linearize-reject-mixed-eqn (eqn)
-  "EQN（%LINEARIZE-MIXED-EQN-P）を線形部分に分けられないので AUTODIFF-ERROR にする。"
-  (error 'autodiff-error
-         :format-control "プリミティブ ~S は主値と接線を1つの eqn で計算する jvp しか持たず、線形部分に分けられないので、逆モード（grad）に対応していない（前進モードの jvp だけ使える）"
-         :format-arguments (list (primitive-name (eqn-prim eqn)))))
+  "EQN（%LINEARIZE-MIXED-EQN-P）を線形部分に分けられないので NO-TRANSPOSE-RULE
+（AUTODIFF-ERROR の子。REQUIRE-TRANSPOSE-RULE が出す）にする。
+
+注意: 主値と接線を1つの eqn で計算する高階プリミティブ（scan / while-loop）は、transpose
+ルールを足しただけでは足りない。linearize が eqn を主値の高階プリミティブと線形の高階
+プリミティブに分ける（JAX の partial eval。scan は #139）必要がある。分ける実装を入れる
+までは、この検査が壊れた graph（MALFORMED-GRAPH）の代わりに止める。"
+  (require-transpose-rule (eqn-prim eqn)))
 
 (defstruct (linearization (:constructor make-linearization (primal-graph linear-graph n-outputs n-residuals))
                           (:copier nil))

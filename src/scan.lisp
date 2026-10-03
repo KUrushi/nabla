@@ -369,7 +369,7 @@ ys は先頭の軸が 0 の空の配列になる。REVERSE が真なら添字 N-
 
 F が閉包で捕まえた外側の値は、ループ不変な入力（consts）になる。トレース中
 （with-tracing・jit の中）でもその場（eager）でも使える。grad・vmap は未対応で、
-grad は :SCAN の NO-JVP-RULE を signal する。引数や F の戻り値の形が不正なときは
+grad は :SCAN の NO-TRANSPOSE-RULE を signal する（jvp は #135、逆モードは #139）。引数や F の戻り値の形が不正なときは
 SCAN-ERROR。"
   (unless (and (typep f 'traceable-function)
                (= 2 (length (traceable-function-lambda-list f))))
