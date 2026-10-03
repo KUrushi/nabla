@@ -83,7 +83,7 @@
 
                ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のコンポーネントはこの下に足す
                (:file "src/vmap")
-               ;; バッチ化ルール（add と broadcast-in-dim。残りは #128 / #129）
+               ;; バッチ化ルール（要素演算は #128、形状演算は #129）
                (:file "src/ad/rules-batch-elementwise")
                (:file "src/ad/rules-batch-shape")
 
@@ -251,6 +251,7 @@
 
 
                ;; フェーズ3 anchor: issue #128（要素演算のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/vmap-elementwise-test")
 
 
 
@@ -429,6 +430,7 @@
 
 
                ;; フェーズ3 anchor: issue #128（要素演算のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/iree/vmap-elementwise-test")
 
 
 

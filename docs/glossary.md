@@ -252,6 +252,9 @@ pretty form を出力する。
 
 <!-- フェーズ3 anchor: issue #128 -->
 
+**broadcast_batcher（要素演算のバッチ化）**
+: JAX の `broadcast_batcher` に倣った、要素演算のバッチ化ルール†の共通の実装。バッチ軸がすべて同じ位置のときは何も動かさず、違うときは先頭へ `transpose` で揃え、バッチされていない引数は `broadcast-in-dim` でバッチ軸を足してから、元のプリミティブを1つ適用する。
+
 
 
 <!-- フェーズ3 anchor: issue #129 -->
