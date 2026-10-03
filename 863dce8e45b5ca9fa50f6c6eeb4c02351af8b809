@@ -1,0 +1,1 @@
+main(#154,#157) を merge。jvp.lisp は %jvp-graph-core に一本化（第2値は本当の out-nonzero、出力は (or force out-nonzero)、force 長の assert）。#157 の %jvp-graph-with-out-nonzero は1行ラッパー、%jvp-graph-1 は削除。linearize の拒否は型つき no-transpose-rule（require-transpose-rule）。mutation trials 20: 16/16。
