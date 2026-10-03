@@ -334,6 +334,8 @@ nabla の PRNG は JAX と同じ「明示的なキー渡し」で、グローバ
 
 <!-- フェーズ3 anchor: issue #137 -->
 
+**do ループの scan への展開**（issue #137）: `with-tracing` の中の定型の `do`（カウンタ・carry・不変な変数、終了条件 `(>= i n)` / `(= i n)`）を、反復回数だけ展開せずに1つの `scan`† にする変換。`do` はマクロ展開されると `block` / `tagbody` / `setq` になって形が分からなくなるので、`macroexpand-all` の前の、展開前のフォームに対して行う。`do` の step 式は純粋で、`setq` なしで carry を更新できるので scan の本体にそのまま写せる。定型でない `do` は原因のフォームを示す `unsupported-form`、`dotimes` / `loop` / `do*` は従来どおり展開後の `block` で `unsupported-form`。
+
 
 
 <!-- フェーズ3 anchor: issue #138 -->
