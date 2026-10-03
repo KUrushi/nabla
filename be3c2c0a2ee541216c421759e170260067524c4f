@@ -1,0 +1,1 @@
+main へ rebase（#145 の squash f564c69 上）。Fable レビュー: 正しさの欠陥なし。tests/regressions/vmap-shape.lisp を削除（red 段階の no-batch-rule の縮小例）、重複した helper を tests/support/vmap.lisp の primitive-function に統合。mutation の限界: tools/mutate は def-batch-rule を定義として扱わず、5 変異体は helper の defun だけ。Fable が手で入れたルール本体の変異 5 個は 4 kill・1 等価。tools の修正は別 PR。
