@@ -113,7 +113,74 @@
    #:jit-compile-error-eqn
    #:jit-compile-error-eqn-index
    #:use-eager
-   #:recompile)
+   #:recompile
+
+   ;; フェーズ3 anchor: issue #127（サブグラフを持つ eqn）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #126（整数 dtype）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #128（要素演算のバッチ化ルール）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #129（形状演算・縮約・dot-general のバッチ化ルール）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #138（per-example 勾配）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のexportはこの下に足す
+
+
+
+   ;; フェーズ3 anchor: issue #141（RNN の e2e）。この issue のexportはこの下に足す
+   )
   (:documentation
    "nabla のコアパッケージ。JAX 相当のトレース・IR・変換（jit / grad / vmap）を持つ。
 ニックネームは NB。公開シンボルの一覧は README.md の「公開 API」を正とする。"))

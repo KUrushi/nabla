@@ -205,6 +205,74 @@ sbcl --non-interactive --load examples/jit.lisp
 
 `defjit`（`name-and-options (&rest lambda-list) &body body`。マクロ）は `body` を `with-tracing` でトレース対象にしてから `jit` した、通常の関数として呼べるものを `name` に定義する。`name-and-options` は `name` か `(name :static-args positions)` で、`positions` は評価されて `jit` の `:static-args` と同じ意味になる（例: `(nb:defjit (f :static-args '(1)) (a axis) ...)`。ドキュメント文字列は未対応）。同じ `defjit` フォームを再評価するたびに新しい `traceable-function` を作り直し、古いキャッシュエントリはその場で捨てて、読み込んだモジュールを `backend-unload` する（Lisp の関数を再定義したときの直感どおり、古いキャッシュを使い続けない）。`jit` に渡した関数が GC で回収されたときも、そのキャッシュのモジュールは finalizer で `backend-unload` される。キャッシュのロックは関数ごとで、トレース・コンパイルの間は持たないので、別々の関数の jit は複数のスレッドから並行してコンパイルでき、同じ関数・同じキーへの同時の呼び出しは1回だけコンパイルして結果を共有する。jit した関数を別の関数のトレース中にトレーサを引数にして呼ぶと、コンパイルせずに呼び出し元の graph に展開する（JAX の jit の入れ子と同じ）。`jit-compile-error`（`jit-error` のサブタイプ。`backend-compile` / `backend-load` が `backend-error` を signal したときに、失敗した `graph` と、可能なら原因の eqn（`jit-compile-error-eqn` / `-eqn-index`。見つからなければ NIL）を添えて signal する）, `jit-compile-error-condition`（元の `backend-error`）, `jit-compile-error-graph`, `jit-compile-error-eqn`, `jit-compile-error-eqn-index`。`jit-compile-error` を待ち受けるキャッシュミスの経路には2つのリスタートがある: `use-eager`（この呼び出しだけ `eval-graph` で eager 実行し、何もキャッシュしない）, `recompile`（もう一度コンパイルをやり直す。再帰ではなくループでやり直すので、ハンドラが何度選んでもスタックは深くならない）。`use-eager` はコンパイルに失敗した graph をそのまま評価し、本体をトレースし直さない。使い方は `(handler-bind ((nb:jit-compile-error (lambda (c) (invoke-restart 'nb:use-eager)))) (funcall jitted ...))` のように `invoke-restart` で選ぶ。
 
+<!-- フェーズ3 anchor: issue #127 -->
+
+
+
+<!-- フェーズ3 anchor: issue #126 -->
+
+
+
+<!-- フェーズ3 anchor: issue #125 -->
+
+
+
+<!-- フェーズ3 anchor: issue #128 -->
+
+
+
+<!-- フェーズ3 anchor: issue #129 -->
+
+
+
+<!-- フェーズ3 anchor: issue #130 -->
+
+
+
+<!-- フェーズ3 anchor: issue #131 -->
+
+
+
+<!-- フェーズ3 anchor: issue #132 -->
+
+
+
+<!-- フェーズ3 anchor: issue #133 -->
+
+
+
+<!-- フェーズ3 anchor: issue #134 -->
+
+
+
+<!-- フェーズ3 anchor: issue #135 -->
+
+
+
+<!-- フェーズ3 anchor: issue #136 -->
+
+
+
+<!-- フェーズ3 anchor: issue #137 -->
+
+
+
+<!-- フェーズ3 anchor: issue #138 -->
+
+
+
+<!-- フェーズ3 anchor: issue #139 -->
+
+
+
+<!-- フェーズ3 anchor: issue #140 -->
+
+
+
+<!-- フェーズ3 anchor: issue #141 -->
+
+
+
 `nabla.iree` パッケージからは、上の総称関数の IREE 向けメソッドに加えて次を使う:
 
 - `iree-backend`（`(nb:make-backend :iree :target :local | :cuda :cuda-arch "sm_80")`）

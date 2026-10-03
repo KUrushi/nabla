@@ -71,7 +71,74 @@
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "src/jit")
                ;; grad / value-and-grad（issue #86。jitted-function を受けるので jit の後）
-               (:file "src/ad/grad"))
+               (:file "src/ad/grad")
+
+               ;; フェーズ3 anchor: issue #127（サブグラフを持つ eqn）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #126（整数 dtype）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #128（要素演算のバッチ化ルール）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #129（形状演算・縮約・dot-general のバッチ化ルール）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #138（per-example 勾配）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のコンポーネントはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #141（RNN の e2e）。この issue のコンポーネントはこの下に足す
+               )
   :in-order-to ((test-op (test-op "nabla/tests"))))
 
 (defsystem "nabla/test-support"
@@ -163,6 +230,72 @@
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
                (:file "tests/jit-cache-test")
+               ;; フェーズ3 anchor: issue #127（サブグラフを持つ eqn）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #126（整数 dtype）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #128（要素演算のバッチ化ルール）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #129（形状演算・縮約・dot-general のバッチ化ルール）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #138（per-example 勾配）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #141（RNN の e2e）。この issue のテストはこの下に足す
+
                (:file "tests/regressions"))
   :perform (test-op (op c)
              (declare (ignore op c))
@@ -271,7 +404,74 @@
                ;; 2層 MLP の学習 end-to-end（issue #88）
                (:file "tests/iree/mlp-train-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
-               (:file "tests/iree/bench-test")))
+               (:file "tests/iree/bench-test")
+
+               ;; フェーズ3 anchor: issue #127（サブグラフを持つ eqn）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #126（整数 dtype）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #125（vmap の骨格）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #128（要素演算のバッチ化ルール）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #129（形状演算・縮約・dot-general のバッチ化ルール）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #130（cond プリミティブ）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #131（while-loop プリミティブ）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #132（scan プリミティブ）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #136（PRNG の公開 API）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #137（dotimes / loop を scan に展開）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #138（per-example 勾配）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #139（scan の linearize と transpose）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のテストはこの下に足す
+
+
+
+               ;; フェーズ3 anchor: issue #141（RNN の e2e）。この issue のテストはこの下に足す
+               ))
 
 (defsystem "nabla/pjrt"
   :description "PJRT 連携（プラグインの .so を dlopen し、クライアント・デバイス・device-array を扱い、StableHLO のコンパイル・ロード・実行を行う）"
