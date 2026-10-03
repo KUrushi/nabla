@@ -1,0 +1,1 @@
+レビュー対応: quote / sb-int:quasiquote の中は見ない、flet/labels/macrolet の定義は名前と仮引数を見ない（呼び出し側が do 構文に読めると do 扱いになる制限は README に記載）、README に i32 カウンタの convert・整数 carry は f32 rank 0・上限は1回だけ評価、CLAUDE.md と asd / package.lisp のアンカー文言と loop-scan.lisp の文言を修正。SBCL は CL:DO の局所束縛をパッケージロックで拒否するので、flet のテストは前処理の出力だけを見る。mutation 55/56（残りは不完全な定義のガード。テスト追加、再実行はしていない）。全スイート small+medium ok。
