@@ -112,6 +112,18 @@ tanh / compare / reduce-max / stop-gradient の jvp は接線について線形�
       (is (or (nb::primitive-jvp prim) (member name *non-differentiable-primitive-names*))
           (format nil "~S に jvp ルールが無い（除外するなら *non-differentiable-primitive-names* に足す）" name)))))
 
+(defparameter *no-batch-rule-primitive-names* '()
+  "バッチ化ルール（:batch）を持たなくてよいプリミティブ。フェーズ3の終わりの時点では空
+（登録済みのすべてのプリミティブがルールを持つ）。")
+
+(test registry/every-registered-primitive-has-a-batch-rule-or-is-excluded
+  "登録されたすべての（テスト専用でない）プリミティブが :batch を持つか、
+*NO-BATCH-RULE-PRIMITIVE-NAMES* に入っている（vmap が no-batch-rule で落ちない）。"
+  (dolist (prim (%registered-real-primitives))
+    (let ((name (nb::primitive-name prim)))
+      (is (or (nb::primitive-batch prim) (member name *no-batch-rule-primitive-names*))
+          (format nil "~S にバッチ化ルールが無い（除外するなら *no-batch-rule-primitive-names* に足す）" name)))))
+
 (test registry/every-primitive-with-a-transpose-rule-is-listed-as-linear
   "逆向きの検査: :transpose を持つ（テスト専用でない）プリミティブはすべて *LINEAR-PRIMITIVE-NAMES* に入っている。"
   (dolist (prim (%registered-real-primitives))
