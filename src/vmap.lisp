@@ -154,14 +154,21 @@ TRACER をそのまま返す。"
     (loop for out in outs
           for dim in out-dims
           for outvar in outvars
-          for shape = (aval-shape (tracer-aval out))
-          for expected = (aval-shape (var-aval outvar))
-          do (unless (if dim
-                         (and (integerp dim) (< -1 dim (length shape)) (= (nth dim shape) size)
-                              (equal (append (subseq shape 0 dim) (nthcdr (1+ dim) shape)) expected))
-                         (equal shape expected))
-               (%vmap-error "~S のバッチ化ルールの出力の形 ~S・軸 ~S が、元の出力の形 ~S と整合しない（バッチ軸の長さ ~D）"
-                            (primitive-name (eqn-prim eqn)) shape dim expected size)))))
+          do (unless (typep out 'tracer)
+               (%vmap-error "~S のバッチ化ルールの出力はトレーサでなければならない: ~S"
+                            (primitive-name (eqn-prim eqn)) out))
+             (let ((shape (aval-shape (tracer-aval out)))
+                   (expected (aval-shape (var-aval outvar))))
+               (unless (eq (aval-dtype (tracer-aval out)) (aval-dtype (var-aval outvar)))
+                 (%vmap-error "~S のバッチ化ルールの出力の dtype ~S が、元の出力の dtype ~S と一致しない"
+                              (primitive-name (eqn-prim eqn)) (aval-dtype (tracer-aval out))
+                              (aval-dtype (var-aval outvar))))
+               (unless (if dim
+                           (and (integerp dim) (< -1 dim (length shape)) (= (nth dim shape) size)
+                                (equal (append (subseq shape 0 dim) (nthcdr (1+ dim) shape)) expected))
+                           (equal shape expected))
+                 (%vmap-error "~S のバッチ化ルールの出力の形 ~S・軸 ~S が、元の出力の形 ~S と整合しない（バッチ軸の長さ ~D）"
+                              (primitive-name (eqn-prim eqn)) shape dim expected size))))))
 
 (defun %vmap-finish-output (tracer dim var spec size)
   "出力 TRACER（バッチ軸 DIM。無ければ NIL。元の出力の var は VAR）を OUT-AXES の
@@ -191,10 +198,12 @@ OUT-AXES は出力ごとの軸指定（整数か NIL。正規化前。個数は�
              (args (mapcar #'car entries))
              (arg-dims (mapcar #'cdr entries))
              (prim (eqn-prim eqn)))
+        (unless (= 1 (length (eqn-outvars eqn)))
+          (%vmap-error "~S は複数の出力を持つ eqn で、vmap はまだ対応していない（制御構造のバッチ化は #140）"
+                       (primitive-name prim)))
         (if (notany #'identity arg-dims)
             ;; バッチされていない入力だけ: ルールを呼ばずにそのまま発行し直す。
             (let ((result (apply #'%trace-eqn (primitive-name prim) args (eqn-params eqn))))
-              (assert (= 1 (length (eqn-outvars eqn))))
               (setf (gethash (first (eqn-outvars eqn)) env) (cons result nil)))
             (multiple-value-bind (outs out-dims)
                 (apply (require-batch-rule prim) args arg-dims (eqn-params eqn))
@@ -273,8 +282,14 @@ graph を呼び出し元のトレースへ展開する。バッチされてい�
 （バッチ化ルールを呼ばずに）残る。
 
 既知の制限: F が外側のトレースのトレーサを閉包で捕まえていると TRACING-ERROR になる。
-外側の値は F の引数として渡すこと。jit した関数を渡すと、中の TRACEABLE-FUNCTION だけを使い、
-その JIT の :BACKEND は無視される（GRAD と同じ）。"
+外側の値は F の引数として渡すこと。F はトレーサ・配列・実数を返す（多値は可）が、リストは
+返せない（必要なら (WITH-TRACING (...) (VALUES-LIST ...)) で包む）。複数出力の eqn を
+持つ F（制御構造）は、#140 までは VMAP-ERROR になる。jit した関数を渡すと、中の
+TRACEABLE-FUNCTION だけを使い、その JIT の :BACKEND は無視される（GRAD と同じ）。
+
+注意: (VMAP F) は呼ぶたびに新しい関数オブジェクトを作る。JIT キャッシュは関数の同一性が
+キーなので、ループの中で (JIT (VMAP F)) を作ると毎回コンパイルされる。ループの外で
+1回だけ作ること（GRAD と同じ）。"
   (let* ((fn (%vmap-traceable f))
          (lambda-list (traceable-function-lambda-list fn)))
     (%vmap-per-item in-axes (length lambda-list) "IN-AXES")

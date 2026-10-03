@@ -216,7 +216,7 @@ out-axes -2 は出力（バッチ軸を含む rank 2）の軸 0）。"
   (let ((x (%vec 1d0 2d0)))
     (is (equalp (%vec 2d0 4d0) (funcall (nb:vmap (nb:jit *vmap-add*)) x x)))
     (signals nb:vmap-error
-      (nb:vmap (nb:jit (nb:with-tracing (x n) (declare (ignorable n)) x) :static-args '(1))))))
+      (nb:vmap (nb:jit (nb:with-tracing (x n) (progn n x)) :static-args '(1))))))
 
 (test vmap/wrong-call-arity-signals-vmap-error
   "vmap した関数を引数の個数が違う形で呼ぶと vmap-error。"
@@ -263,6 +263,28 @@ out-axes -2 は出力（バッチ軸を含む rank 2）の軸 0）。"
          (declare (ignore batch-dims))
          (values (list (nb::%trace-eqn :broadcast-in-dim (list (first args)) :shape '(3 2) :dims '(0)))
                  '(0)))))
+    ;; dtype が違う（f32 に変換した値を返す）
+    (signals nb:vmap-error
+      (%vmap-with-bad-rule
+       (lambda (args batch-dims)
+         (declare (ignore batch-dims))
+         (values (list (nb::%trace-eqn :convert (list (first args)) :dtype :f32)) '(0)))))
+    ;; トレーサでない
+    (signals nb:vmap-error (%vmap-with-bad-rule (bad (lambda (x) (declare (ignore x)) 1) '(0))))
     ;; 正しい結果は通る
     (is (equalp (%vec 1d0 2d0 3d0)
                 (%vmap-with-bad-rule (bad #'list '(0)))))))
+
+(test vmap/rule-may-return-unbatched-output-of-rank-above-zero
+  "ルールがバッチされない出力（軸 nil）を、rank 1 の元の形のまま返すとき vmap は成功し、
+out-axes 0 でバッチ軸に複製される。"
+  (let ((f (nb:with-tracing (x) (nb::%trace-eqn :%vmap-test-without-rule (list x))))
+        (rule (lambda (args batch-dims)
+                (declare (ignore args batch-dims))
+                (values (list (nb::%lift-constant (%vec 5d0 6d0) (nb:make-aval '(2) :f64) nb::*current-trace*))
+                        '(nil)))))
+    (nb::set-batch-rule :%vmap-test-without-rule rule)
+    (unwind-protect
+         (is (equalp (%mat '((5d0 6d0) (5d0 6d0) (5d0 6d0)))
+                     (funcall (nb:vmap f) (%mat '((1d0 2d0) (3d0 4d0) (5d0 6d0))))))
+      (setf (nb::primitive-batch (nb::find-primitive :%vmap-test-without-rule)) nil))))
