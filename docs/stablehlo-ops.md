@@ -112,7 +112,7 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 | --- | --- |
 | `stablehlo.bitcast_convert` | 同じ幅（`ui32` ⇄ `f32` / `i32`、`ui64` ⇄ `f64`）に加え、幅が違う `tensor<2xui32>` → `tensor<ui64>`（末尾の次元が消える）と、その逆（`tensor<…xui64>` → `tensor<…x2xui32>`）もコンパイル・実行できる。並びはリトルエンディアン（先頭の要素が下位32ビット）。eager 実装（`bitcast-convert`）と一致 |
 | `stablehlo.shift_right_logical` / `stablehlo.or`（`ui32` / `ui64`） | 使える。量がビット幅以上のとき 0（eager も同じ） |
-| `stablehlo.slice` / `stablehlo.concatenate`（バッチ次元つきの `rng_bit_generator` の展開に使う） | `stablehlo.slice %x [0:1, 0:2] : (tensor<Nx2xui64>) -> tensor<1x2xui64>` と `stablehlo.concatenate %a, %b, dim = 0` の pretty form がそのまま通る |
+| `stablehlo.slice` / `stablehlo.concatenate`（バッチ次元つきの `rng_bit_generator` の展開に使う） | `stablehlo.slice %x [0:1, 0:2] : (tensor<Nx2xui64>) -> tensor<1x2xui64>` と `stablehlo.concatenate %a, %b, dim = 0` の pretty form がそのまま通る 。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度。vmap の入れ子では行数が段ごとの積になる。将来は scan 化で解消する |
 
 ## その他の確認事項
 

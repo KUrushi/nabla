@@ -160,7 +160,9 @@ rng-bit-generator の :u32 の出力は多次元だと配置が形に依存す�
   "DATA（u32 / i32 の rank 0 のトレーサ）を KEY に混ぜた新しいキー。"
   (let* ((as-u32 (if (eq (aval-dtype (tracer-aval data)) :u32)
                      data
-                     (%trace-eqn :convert (list data) :dtype :u32)))
+                     ;; i32 → u32 はビット列の再解釈（負の値は 2 の補数。convert の飽和・折り返しに
+                     ;; 依らず、実行系によらず定義される）
+                     (%trace-eqn :bitcast-convert (list data) :dtype :u32)))
          (wide (%trace-eqn :convert (list as-u32) :dtype :u64))
          (counter (%trace-eqn :add (list wide (%lift-number-to (expt 2 32) :u64 '())))))
     (second (%trace-eqn* :rng-bit-generator
@@ -210,7 +212,7 @@ KEY は :u32 の (2) の配列かトレーサ。eager・JIT・VMAP の中のど�
   "KEY に整数 DATA を混ぜた新しいキー（:u32 の (2)）を返す。ループの反復番号のように、
 同じ KEY から別々のキーを順に作るときに使う。DATA は Lisp の整数（0 以上 2^32 未満）か、
 :u32 / :i32 の rank 0 の配列・トレーサ（トレースされた反復番号でもよい）。同じ引数からは
-常に同じキーになる。"
+常に同じキーになる。i32 の負の値はビット列を u32 として読む（-1 は 2^32-1。配列でもトレーサでも同じ）。"
   (%prng-check-key "fold-in" key)
   (let ((data-aval (%prng-value-aval data)))
     (cond
@@ -236,12 +238,17 @@ eager・JIT・VMAP の中のどこでも使え、VMAP でキーをバッチす�
   (%prng-check-float-dtype dtype)
   (unless (and (realp minval) (realp maxval) (< minval maxval))
     (%prng-error "MINVAL < MAXVAL の実数でなければならない: ~S ~S" minval maxval))
+  (let ((limit (rational (if (eq dtype :f64) most-positive-double-float most-positive-single-float))))
+    (unless (and (<= (abs (rational minval)) limit) (<= (abs (rational maxval)) limit)
+                 (<= (- (rational maxval) (rational minval)) limit))
+      (%prng-error "MINVAL / MAXVAL と幅 (MAXVAL - MINVAL) は ~S に収まらなければならない: ~S ~S"
+                   dtype minval maxval)))
   (%prng-dispatch (list key) (lambda (k) (%prng-uniform k shape dtype minval maxval))))
 
 (defun normal (key shape &key (dtype :f32))
   "KEY から、標準正規分布 N(0, 1) に従う乱数の配列（またはトレーサ）を返す。SHAPE は正の整数の
 リスト、DTYPE は :f32 か :f64。方式は JAX と同じ、(-1, 1) の一様乱数に erf の逆関数
-（Giles の単精度近似）をかけて √2 倍する（精度は f64 でも f32 並み）。値は有限（上限は
+（Giles の単精度近似）をかけて √2 倍する（精度は f64 でも f32 並み）。:f64 の極端な裾は過小評価される（f32 用の近似を使うため、u = ±(1 - 2^-53) でも約 ±7.32 で、真の分位点は約 8.2）。値は有限（上限は
 f32 で約 5.4）。同じ KEY・SHAPE・DTYPE からは常に同じ値になる。
 eager・JIT・VMAP の中のどこでも使える。"
   (%prng-check-key "normal" key)

@@ -285,15 +285,15 @@ JAX の `jax.random` と同じ、明示的なキー渡しの PRNG。キーは `:
 | `(normal key shape &key dtype)` | 標準正規分布の乱数（`dtype` は `:f32`（既定）/ `:f64`） |
 | `prng-error` | 不正な引数のコンディション |
 
-eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーをバッチすると、各要素はそのキーで単独に呼んだ結果とビット単位で一致する（`(vmap (with-tracing (k) (uniform k '(3))))` を `(split key 8)` に適用する、など）。
+eager でも `jit` / `grad` / `vmap` の中でも使える。#140 以降は、`vmap` でキーをバッチすると各要素はそのキーで単独に呼んだ結果とビット単位で一致する（`(vmap (with-tracing (k) (uniform k '(3))))` を `(split key 8)` に適用する、など）。
 
 決めたこと:
 
 - **キー → 状態**: キー `[k0 k1]` を `rng-bit-generator` の状態 `ui64[2] = [k0 | k1 << 32, カウンタ]` にする（`bitcast-convert` で2語を1語にまとめる）。`uniform` / `normal` / `split` はカウンタ 0 から引き、`fold-in` はカウンタ `2^32 + data` の2語を新しいキーにする（引く量が 2^32 要素未満なら、`fold-in` の出力が `uniform` / `split` の列と重なることはない）。
 - **JAX とビット単位では一致しない**: JAX の既定は `threefry_2x32` を直接呼ぶ実装で `rng_bit_generator` を使わないため、同じシードでも値が違う。nabla は `stablehlo.rng_bit_generator`（THREE_FRY）を使い、IREE・PJRT・eager が互いにビット単位で一致する（`docs/stablehlo-ops.md`）。分布としては同じ（統計検定で確かめている）。
 - **uniform**: 乱数ビットの仮数部だけを取り出して `[1, 2)` の浮動小数点数にし、1 を引いて範囲に伸ばす（JAX と同じ。`:f32` は 23 ビット、`:f64` は 52 ビットの粒度）。丸めのため `maxval` にちょうど等しい値が出うる。
-- **normal**: JAX と同じく、`(-1, 1)` の一様乱数に erf の逆関数をかけて √2 倍する。Box–Muller は `sin` / `cos` のプリミティブが無いため採らなかった。erf の逆関数は Giles の単精度多項式近似（JAX の f32 と同じ係数。相対誤差 約 1e-7）で、`:f64` でも同じ近似を使うので精度は f32 並み。
-- **バッチ化**: バッチ次元を持つ状態 `ui64[..., 2]` を `rng-bit-generator` が受け付け、各行は単独に呼んだ結果とビット単位で一致する。StableHLO の `rng_bit_generator` は `ui64[2]` しか受けないので、行ごとに slice → `rng_bit_generator` → concatenate に展開して出力する（行数だけ演算が増える。静的形状のため）。
+- **normal**: JAX と同じく、`(-1, 1)` の一様乱数に erf の逆関数をかけて √2 倍する。Box–Muller は `sin` / `cos` のプリミティブが無いため採らなかった。erf の逆関数は Giles の単精度多項式近似（JAX の f32 と同じ係数。相対誤差 約 1e-7）で、`:f64` でも同じ近似を使うので精度は f32 並みで、極端な裾は過小評価される（`u = ±(1 - 2^-53)` で約 ±7.32、真の分位点は約 8.2）。
+- **バッチ化**: バッチ次元を持つ状態 `ui64[..., 2]` を `rng-bit-generator` が受け付け、各行は単独に呼んだ結果とビット単位で一致する。StableHLO の `rng_bit_generator` は `ui64[2]` しか受けないので、行ごとに slice → `rng_bit_generator` → concatenate に展開して出力する（行数だけ演算が増える。静的形状のため）。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度で、`vmap` を入れ子にすると行数は段ごとの積になる。将来は scan（while）で1行ぶんの本体を回す形にして解消する。
 - 新しいビット演算プリミティブ（内部）: `:shift-right-logical`、`:bitwise-or`（整数専用の2入力の要素演算）と、ビット列を再解釈する `:bitcast-convert`（`:f32 :f64 :i32 :u32 :u64`。幅が違うときは StableHLO と同じく末尾の次元が増減し、並びはリトルエンディアン）。どれも整数・ビット列の演算なので微分しない。
 
 

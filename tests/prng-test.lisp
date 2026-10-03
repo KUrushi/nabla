@@ -71,6 +71,11 @@
     (signals nb:prng-error (nb:uniform key '(3) :minval 2 :maxval 1))
     (signals nb:prng-error (nb:normal key '(3) :dtype :bf16))
     (signals nb:prng-error (nb:split key 0))
+    ;; 範囲の幅がその dtype に収まらない（f32 の最大は約 3.4e38）
+    (signals nb:prng-error (nb:uniform key '(3) :minval -3d38 :maxval 3d38))
+    (signals nb:prng-error (nb:uniform key '(3) :minval 0 :maxval 1d39))
+    (signals nb:prng-error (nb:uniform key '(3) :minval -1d39 :maxval 0))
+    (signals nb:prng-error (nb:uniform key '(3) :dtype :f64 :minval -1d308 :maxval 1d308))
     (signals nb:prng-error (nb:split #(1 2) 2))
     (signals nb:prng-error (nb:normal #(1 2) '(3)))
     (signals nb:prng-error (nb:normal key '(0)))
@@ -162,6 +167,20 @@ normal は shape・dtype どおりで全要素が有限。"
                                        (list (nb:make-aval '(2) :u32) (nb:make-aval '() dtype))))
              (data (make-array '() :element-type (nb:dtype-element-type dtype) :initial-element 12)))
         (is (equalp (nb:fold-in key 12) (nb:eval-graph graph key data)))))))
+
+(test prng/fold-in-negative-i32-data-is-its-u32-bit-pattern
+  "トレースされた :i32 のデータは、負の値もビット列を u32 として読む（-1 は 2^32-1）。配列で呼んだ
+結果と graph を eager 評価した結果が一致し、-1 のキーは u32 の 4294967295 のキーと等しい。"
+  (let* ((key (nb:prng-key 4))
+         (graph (nb:trace-to-graph (nb:with-tracing (k i) (nb:fold-in k i))
+                                   (list (nb:make-aval '(2) :u32) (nb:make-aval '() :i32))))
+         (as-u32 (lambda (v) (make-array '() :element-type '(unsigned-byte 32) :initial-element v)))
+         (as-i32 (lambda (v) (make-array '() :element-type '(signed-byte 32) :initial-element v))))
+    (dolist (v '(-1 -2147483648 -7))
+      (is (equalp (nb:eval-graph graph key (funcall as-i32 v))
+                  (nb:fold-in key (funcall as-i32 v))))
+      (is (equalp (nb:fold-in key (funcall as-i32 v))
+                  (nb:fold-in key (funcall as-u32 (+ v (expt 2 32)))))))))
 
 (test prng/fold-in-does-not-overlap-the-sampling-stream
   "fold-in(key, 0) は、同じキーから uniform / split で引く列の先頭（カウンタ 0 の2語）と一致しない
