@@ -71,6 +71,10 @@
     (signals nb:prng-error (nb:uniform key '(3) :minval 2 :maxval 1))
     (signals nb:prng-error (nb:normal key '(3) :dtype :bf16))
     (signals nb:prng-error (nb:split key 0))
+    (signals nb:prng-error (nb:split #(1 2) 2))
+    (signals nb:prng-error (nb:normal #(1 2) '(3)))
+    (signals nb:prng-error (nb:normal key '(0)))
+    (signals nb:prng-error (nb:normal key 3))
     (signals nb:prng-error (nb:split key 1.5))
     (signals nb:prng-error (nb:fold-in key -1))
     (signals nb:prng-error (nb:fold-in key (expt 2 32)))
@@ -158,6 +162,14 @@ normal は shape・dtype どおりで全要素が有限。"
                                        (list (nb:make-aval '(2) :u32) (nb:make-aval '() dtype))))
              (data (make-array '() :element-type (nb:dtype-element-type dtype) :initial-element 12)))
         (is (equalp (nb:fold-in key 12) (nb:eval-graph graph key data)))))))
+
+(test prng/fold-in-does-not-overlap-the-sampling-stream
+  "fold-in(key, 0) は、同じキーから uniform / split で引く列の先頭（カウンタ 0 の2語）と一致しない
+（fold-in はカウンタ 2^32 + data を使う）。"
+  (let* ((key (nb:prng-key 11))
+         (head (nb:split key 1))
+         (folded (nb:fold-in key 0)))
+    (is (not (and (= (aref head 0 0) (aref folded 0)) (= (aref head 0 1) (aref folded 1)))))))
 
 (test prng/different-keys-give-different-uniform-values
   "別のシードのキーからは、別の値が出る（シード 0..19 の先頭 8 個の列がすべて異なる）。"
@@ -326,6 +338,39 @@ n = 200000。"
         (values-list (first result))))
     (list (nb:array-aval states :u64)))
    states))
+
+(test prng/rng-batch-rule-output-axes-are-zero
+  "ルールが返す出力の軸は、新しい状態もビットも 0（出力の個数 2 に対して (0 0)）。"
+  (let ((axes nil))
+    (flet ((call (s)
+             ;; with-tracing の中では setq できないので、トレース対象の外の関数で記録する
+             (let ((result (%batch-rule-call :rng-bit-generator (list s) (list 0) :shape '(3) :dtype :u32)))
+               (setf axes (second result))
+               (values-list (first result)))))
+      (nb:trace-to-graph (nb:with-tracing (s) (call s)) (list (nb:make-aval '(4 2) :u64))))
+    (is (equal '(0 0) axes))))
+
+(test prng/rng-batched-emit-structure
+  "バッチ次元つきの状態の StableHLO は、行数ぶんの slice と rng_bit_generator、2 回の concatenate、
+行ごと 3 回 + 前後 3 回の reshape を持ち、SSA 名が不正（%%）にならない。バッチ次元の無い状態は
+slice も concatenate も出さない。"
+  (flet ((count-of (needle text)
+           (loop with start = 0 for pos = (search needle text :start2 start)
+                 while pos count t do (setf start (1+ pos))))
+         (emit (state-shape)
+           (nb:emit-stablehlo
+            (nb:trace-to-graph (nb:with-tracing (s) (nb::rng-bit-generator s :shape '(4) :dtype :u32))
+                               (list (nb:make-aval state-shape :u64))))))
+    (let ((batched (emit '(3 2)))
+          (single (emit '(2))))
+      (is (= 3 (count-of "stablehlo.rng_bit_generator" batched)))
+      (is (= 3 (count-of "stablehlo.slice" batched)))
+      (is (= 2 (count-of "stablehlo.concatenate" batched)))
+      (is (= 12 (count-of "stablehlo.reshape" batched)))
+      (is (zerop (count-of "%%" batched)))
+      (is (= 1 (count-of "stablehlo.rng_bit_generator" single)))
+      (is (zerop (count-of "stablehlo.slice" single)))
+      (is (zerop (count-of "stablehlo.concatenate" single))))))
 
 (defun %prng-states (rows seed)
   (let ((rs (sb-ext:seed-random-state seed))

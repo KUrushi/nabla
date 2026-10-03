@@ -125,7 +125,12 @@ u64 から u32 へ戻すと末尾に長さ2の次元が付いて元の配列に�
     (is (= #xC0000000 (cast -2f0 :f32 :u32)))
     (is (= #x3FF0000000000000 (cast 1d0 :f64 :u64)))
     (is (= 1f0 (cast #x3F800000 :u32 :f32)))
-    (is (= 1.5d0 (cast #x3FF8000000000000 :u64 :f64)))))
+    (is (= 1.5d0 (cast #x3FF8000000000000 :u64 :f64)))
+    ;; 符号ビットと、下位 32 ビットが 0 でない f64（0.1d0 = 0x3FB999999999999A）
+    (is (= #xC000000000000000 (cast -2d0 :f64 :u64)))
+    (is (= #x3FB999999999999A (cast 0.1d0 :f64 :u64)))
+    (is (= 0.1d0 (cast #x3FB999999999999A :u64 :f64)))
+    (is (= -2d0 (cast #xC000000000000000 :u64 :f64)))))
 
 (test primitives/bits/abstract-eval-shapes-and-errors
   "bitcast-convert の形状推論: 同じ幅は同じ形、広い → 狭いは末尾に次元が付き、狭い → 広いは
@@ -143,6 +148,12 @@ shift-right-logical / bitwise-or の浮動小数点・dtype 不一致は PRIMITI
     (signals nb:primitive-error (out :bitcast-convert (list (nb:make-aval '(2) :i1)) :dtype :u32))
     (signals nb:primitive-error (out :shift-right-logical (list (nb:make-aval '(2) :f32) (nb:make-aval '(2) :f32))))
     (signals nb:primitive-error (out :bitwise-or (list (nb:make-aval '(2) :u32) (nb:make-aval '(2) :i32))))
+    (signals nb:primitive-error (out :shift-right-logical (list (nb:make-aval '(2) :u32))))
+    (signals nb:primitive-error (out :bitwise-or (list (nb:make-aval '(2) :u32) (nb:make-aval '(2) :u32)
+                                                       (nb:make-aval '(2) :u32))))
+    (signals nb:primitive-error (out :bitcast-convert '() :dtype :u32))
+    (signals nb:primitive-error (out :bitcast-convert (list (nb:make-aval '(2) :u32) (nb:make-aval '(2) :u32))
+                                     :dtype :f32))
     (signals nb:primitive-error (out :bitwise-or (list (nb:make-aval '(2) :u32) (nb:make-aval '(3) :u32))))))
 
 (test primitives/bits/emit-stablehlo
