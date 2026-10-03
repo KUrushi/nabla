@@ -291,6 +291,10 @@ pretty form を出力する。
 
 <!-- フェーズ3 anchor: issue #134 -->
 
+### 不動点（fixpoint、while-loop の jvp）
+
+`while-loop` の jvp で、「接線が非ゼロの carry の集合」を求める計算。最初は接線がゼロの carry も、本体を1回通ると他の carry の接線が流れ込んで非ゼロになりうる。そこで、本体を jvp 変換して出力の接線が非ゼロの carry を集合に足す、を集合が変わらなくなるまで繰り返す（集合は増える一方なので有限回で止まる）。JAX の `_while_loop_jvp` と同じ。実装は `src/ad/rules-control.lisp`。
+
 
 
 <!-- フェーズ3 anchor: issue #135 -->

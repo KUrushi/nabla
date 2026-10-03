@@ -64,6 +64,16 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
     (loop for (var . nil) in constants do (setf (gethash var constant-table) t))
     (multiple-value-bind (primal-eqns linear-eqns)
         (partition-eqns-by-dependence (graph-eqns jvp) tangent-invars)
+      ;; 複数出力の eqn が線形側に入り、transpose ルールを持たないのは、主値と接線を
+      ;; 1つの eqn で計算している（while-loop の jvp など）とき。主値の部分を
+      ;; 主値 graph へ分けられず壊れた graph になるので、どのプリミティブか分かる
+      ;; エラーにする（cond は後で partial eval で分けてからここに来る）。
+      (dolist (eqn linear-eqns)
+        (when (and (primitive-multiple-outputs-p (eqn-prim eqn))
+                   (null (primitive-transpose (eqn-prim eqn))))
+          (error 'autodiff-error
+                 :format-control "プリミティブ ~S の jvp は主値と接線を1つの eqn で計算するので、線形部分に分けられない（逆モードは対応していない。前進モードの jvp だけ使える）"
+                 :format-arguments (list (primitive-name (eqn-prim eqn))))))
       (let ((linear-defined (make-hash-table :test 'eq))
             (candidates '()))
         (dolist (v tangent-invars) (setf (gethash v linear-defined) t))

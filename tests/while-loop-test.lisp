@@ -192,16 +192,15 @@ WHILE-LOOP-ARGUMENT-ERROR。"
     (is (subtypep name 'nb:while-loop-error)))
   (is (subtypep 'nb:while-loop-error 'error)))
 
-(test while-loop/grad-signals-no-jvp-rule-naming-the-primitive
-  "grad が while-loop を通ると（jvp ルールが無いので）AUTODIFF-ERROR の子の NO-JVP-RULE が
-出て、原因のプリミティブ名 :WHILE-LOOP を報告する（jvp のみの対応は別 issue）。"
+(test while-loop/grad-signals-autodiff-error-naming-the-primitive
+  "grad が while-loop を通ると（逆モードは対応しないので）AUTODIFF-ERROR が出て、原因の
+プリミティブ名 :WHILE-LOOP をメッセージで報告する（前進モードの jvp は #134 で対応済み）。"
   (let ((f (nb:with-tracing (x)
              (nb:reduce-sum (second (nb:while-loop *wl-cond* *wl-body*
                                                 (list (%wl-scalar 0.0) (%wl-scalar 2.0) x)))))))
     (handler-case (funcall (nb:grad f) (%wl-seed-array 1 '(3) :f32))
-      (nb:no-jvp-rule (c)
-        (is (eq :while-loop (nb:no-jvp-rule-name c)))
-        (is (typep c 'nb:autodiff-error)))
+      (nb:autodiff-error (c)
+        (is (search ":WHILE-LOOP" (princ-to-string c))))
       (:no-error (&rest values)
         (declare (ignore values))
         (fail "grad が while-loop を通ったのにエラーにならなかった")))))

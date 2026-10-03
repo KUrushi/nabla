@@ -47,6 +47,14 @@ EQN の outvars と合わなければ AUTODIFF-ERROR。"
                         :format-arguments (list name (tangent-aval tangent) (var-aval var)))))
       (values outs tangents-out))))
 
+(defun %jvp-graph-with-out-nonzero (graph nonzero)
+  "JVP-GRAPH の本体。(VALUES JVP-GRAPH OUT-NONZERO) を返す。OUT-NONZERO は GRAPH の
+出力ごとに、接線が SYMBOLIC-ZERO でなければ T のリスト（JVP-GRAPH は出力のゼロの
+接線を実体化して隠すが、while-loop / scan の不動点の計算はどの出力が非ゼロかを要る）。"
+  (let ((out-nonzero '()))
+    (values (%jvp-graph-1 graph nonzero (lambda (flags) (setf out-nonzero flags)))
+            out-nonzero)))
+
 (defun jvp-graph (graph &key (nonzero (mapcar (lambda (v) (and (%float-dtype-p (aval-dtype (var-aval v))) t))
                                               (graph-invars graph))))
   "GRAPH を jvp 変換した新しい GRAPH を CHECK-GRAPH して返す。GRAPH 自体は
@@ -71,6 +79,11 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
 事前に足さず、ルールを (apply rule primals tangents params) で呼んで
 (VALUES 主値の出力のリスト 接線のリスト) を受け取る（ルールが主値の eqn を足す。
 全入力の接線がゼロなら、複数出力でもルールを呼ばず主値だけ再発行する）。定数の接線はゼロ。"
+  (values (%jvp-graph-1 graph nonzero nil)))
+
+(defun %jvp-graph-1 (graph nonzero report-out-nonzero)
+  "JVP-GRAPH の実体。REPORT-OUT-NONZERO が関数なら、出力ごとの「接線が非ゼロか」の
+リストを渡して呼ぶ。"
   (let ((invars (graph-invars graph)))
     (unless (= (length nonzero) (length invars))
       (error 'autodiff-error
@@ -123,5 +136,8 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
                      for tangent in out-tangents
                      do (setf (gethash var env) (cons out tangent))))))
          (let ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph))))
+           (when report-out-nonzero
+             (funcall report-out-nonzero
+                      (mapcar (lambda (entry) (not (symbolic-zero-p (cdr entry)))) entries)))
            (values-list (append (mapcar #'car entries)
                                 (mapcar (lambda (entry) (instantiate-zero (cdr entry))) entries)))))))))

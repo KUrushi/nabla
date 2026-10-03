@@ -30,10 +30,9 @@
 ;;;; tests の medium テスト（while-loop-test）の子プロセスのテストが、この制限（バグ）がその実行系に
 ;;;; 残っていることを守る。直ったらそのテストが失敗するので、この注意書きごと消す。
 ;;;;
-;;;; 微分: 逆モード（grad）は対応しない（反復回数が分からず、残差を保存できない）。jvp
-;;;; ルールを持たないので、接線が流れ込むと NO-JVP-RULE（AUTODIFF-ERROR の子。
-;;;; NO-JVP-RULE-NAME が :WHILE-LOOP）になる。jvp のみの対応は「cond / while-loop の
-;;;; jvp」の issue（#134）。
+;;;; 微分: 前進モード（jvp）だけ対応する（src/ad/rules-control.lisp、issue #134）。
+;;;; 逆モード（grad）は対応しない（反復回数が分からず、残差を保存できない）ので、
+;;;; linearize が AUTODIFF-ERROR（メッセージにプリミティブ名 :WHILE-LOOP を含む）にする。
 
 (in-package #:nabla)
 
@@ -226,9 +225,9 @@ BODY-FN は外側のトレーサを閉包で捕まえてよい（loop 不変の�
 一部の実行系の制限: 本体の中で比較から作ったフラグ（:i1）を carry にした while の結果を jit の
 戻り値にすると、その実行系のコンパイラが落ちる（docs/stablehlo-ops.md の制御構造の節）。
 
-微分: 逆モード（GRAD）は対応しない（反復回数が分からず、残差を保存できない）。
-GRAD を通すと、原因のプリミティブ名 :WHILE-LOOP を持つ NO-JVP-RULE
-（AUTODIFF-ERROR の子）になる。jvp のみの対応は別の issue（#134）。"
+微分: 前進モード（jvp）だけ対応する。逆モード（GRAD）は対応しない（反復回数が
+分からず、残差を保存できない）。GRAD を通すと、プリミティブ名 :WHILE-LOOP を含む
+AUTODIFF-ERROR になる。"
   (%while-loop-check-arguments cond-fn body-fn init)
   (let ((traced (or *current-trace* (some (lambda (x) (typep x 'tracer)) init))))
     (when (and traced (null *current-trace*))

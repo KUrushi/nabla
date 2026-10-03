@@ -74,11 +74,10 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 ;;; --- 自動微分のルール（issue #86。フェーズ2の全ルール検査） ---
 
-(defparameter *non-differentiable-primitive-names* '(:while-loop)
+(defparameter *non-differentiable-primitive-names* '()
   "意図的に :jvp を持たない本物のプリミティブ。:jvp の無い defprimitive を足すときは、
-ここに理由つきで足すか、jvp ルールを書く。
-  - :while-loop（issue #131）: 逆モードは反復回数が分からず対応しない。jvp は #134 で足す
-    （足したらここから外す）。それまでは grad を通すと NO-JVP-RULE になる。")
+ここに理由つきで足すか、jvp ルールを書く。現在は無い（while-loop は前進モードの jvp を
+持つ。issue #134。逆モードは対応せず、linearize が autodiff-error にする）。")
 
 (defun %registered-real-primitives ()
   "登録済みのプリミティブのうち、テスト専用でない（名前が % で始まらない）ものの
