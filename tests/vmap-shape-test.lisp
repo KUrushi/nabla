@@ -32,6 +32,25 @@
   (let ((mask (1+ (mod seed (1- (expt 2 rank))))))
     (loop for i below rank when (logbitp i mask) collect i)))
 
+(defun %dtype-from-seed (seed)
+  "SEED から f64 か整数 dtype（*INTEGER-DTYPES*）のどれかを選ぶ（4つに1つが f64）。
+dot-general は整数を受け付けないので使わない。"
+  (nth (mod (floor seed 11) (1+ (length *integer-dtypes*))) (cons :f64 *integer-dtypes*)))
+
+(defun %axis-at (shape size axis)
+  "SHAPE の AXIS の位置に長さ SIZE の軸を足した形。"
+  (append (subseq shape 0 axis) (list size) (nthcdr axis shape)))
+
+(defun %random-batched-array (inner-shape size axis seed dtype)
+  "INNER-SHAPE の形に AXIS の位置へ長さ SIZE の軸を足した DTYPE の乱数配列。"
+  (make-random-array (make-array-spec (%axis-at inner-shape size axis) dtype) :seed seed))
+
+(defun %arrays-match (actual expected dtype)
+  "浮動小数点は許容誤差つきで、整数は（折り返しも含めて）厳密に一致するか。"
+  (if (eq dtype :f64)
+      (allclose actual expected :dtype :f64)
+      (equalp actual expected)))
+
 (defun %unary-vmap-property (build &key (min-rank 0))
   "BUILD: (inner-shape seed code) → (values primitive-name params out-inner-rank)。
 1引数のプリミティブの vmap が参照実装と一致する性質。内側の rank は MIN-RANK 以上にする。"
@@ -42,10 +61,11 @@
           (let* ((f (primitive-function name params 1))
                  (axis (mod code-axis (1+ (length inner))))
                  (out (mod code-out (+ out-rank 1)))
-                 (x (%vmap-batched-array inner size axis seed))
+                 (dtype (%dtype-from-seed seed))
+                 (x (%random-batched-array inner size axis seed dtype))
                  (expected (reference-vmap f (list x) :in-axes axis :out-axes out))
                  (actual (funcall (nb:vmap f :in-axes axis :out-axes out) x)))
-            (allclose actual (first expected) :dtype :f64)))))))
+            (%arrays-match actual (first expected) dtype)))))))
 
 (defmacro def-unary-vmap-test (test-name doc (&key (min-rank 0)) build-lambda)
   `(test ,test-name
