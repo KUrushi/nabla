@@ -218,7 +218,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### vmap（issue #125）
 
-`(vmap f &key (in-axes 0) (out-axes 0))` は、`f`（`with-tracing` / `defjit` / `jit` が作った関数。`jit` は静的引数なしのもの）を、引数のバッチ軸についてまとめて適用する関数を返す。結果は「バッチ軸で切り出した各要素に `f` を適用して、出力の `out-axes` の位置に積み直したもの」と一致する。`in-axes` は引数ごとの軸（0始まり、負なら末尾から）か `nil`（その引数はバッチせず `f` にそのまま渡す）で、整数か `nil` を1つ渡すと全引数に共通、リストなら引数ごと。`out-axes` は出力ごとの軸か `nil`（出力がバッチに依存しないときだけ。依存しない出力に整数を渡すと複製する）。戻り値はトレースできる関数なので、配列を渡して直接呼ぶ（eager）ほか、`(jit (vmap f))`、`with-tracing` の中、`grad` の対象、別の `vmap` の対象（`(vmap (vmap f))`）として使える。バッチされていない入力だけの演算は、バッチ化ルールを呼ばずにそのまま残る。既知の制限は `grad` と同じ（`f` が外側のトレーサを閉包で捕まえると `tracing-error`）。`f` はリストを返せない（`(with-tracing … (values-list …))` で包む）。`(vmap f)` は呼ぶたびに新しい関数オブジェクトを作るので、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため。ループの外で1回だけ作る）。複数出力の eqn を持つ `f`（制御構造）は #140 まで `vmap-error`。
+`(vmap f &key (in-axes 0) (out-axes 0))` は、`f`（`with-tracing` / `defjit` / `jit` が作った関数。`jit` は静的引数なしのもの）を、引数のバッチ軸についてまとめて適用する関数を返す。結果は「バッチ軸で切り出した各要素に `f` を適用して、出力の `out-axes` の位置に積み直したもの」と一致する。`in-axes` は引数ごとの軸（0始まり、負なら末尾から）か `nil`（その引数はバッチせず `f` にそのまま渡す）で、整数か `nil` を1つ渡すと全引数に共通、リストなら引数ごと。`out-axes` は出力ごとの軸か `nil`（出力がバッチに依存しないときだけ。依存しない出力に整数を渡すと複製する）。戻り値はトレースできる関数なので、配列を渡して直接呼ぶ（eager）ほか、`(jit (vmap f))`、`with-tracing` の中、`grad` の対象、別の `vmap` の対象（`(vmap (vmap f))`）として使える。バッチされていない入力だけの演算は、バッチ化ルールを呼ばずにそのまま残る。既知の制限は `grad` と同じ（`f` が外側のトレーサを閉包で捕まえると `tracing-error`）。`f` はリストを返せない（`(with-tracing … (values-list …))` で包む）。`(vmap f)` は呼ぶたびに新しい関数オブジェクトを作るので、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため。ループの外で1回だけ作る）。`cond*` / `while-loop` / `scan` を含む `f` も `vmap` できる（下の「制御構造のバッチ化」）。
 
 コンディションは `vmap-error`（親。`in-axes` / `out-axes` の個数・型・範囲の不正、軸長の不一致、バッチされた引数が無い、など）と、その子の `no-batch-rule`（バッチ軸を持つ値がバッチ化ルールの無いプリミティブに渡った。`no-batch-rule-name` がプリミティブ名）。バッチ化ルールは `def-batch-rule`（内部。`src/ad/rules-batch-*.lisp`）で書く。この issue で持つルールは `add` と `broadcast-in-dim` だけで、残りは #128 / #129 で揃える。
 
@@ -240,7 +240,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 <!-- フェーズ3 anchor: issue #130 -->
 
-**cond\*（条件分岐）**（`src/cond.lisp`、`src/primitives/cond.lisp`、issue #130）: `(cond* pred then-fn else-fn &rest operands)`。`pred` が真なら `(then-fn operands...)`、偽なら `(else-fn operands...)` を評価する高階プリミティブ `:cond` で、eager では選ばれた枝のサブグラフだけを評価する（CL の `cond` と衝突するので名前は `cond*`）。`then-fn` / `else-fn` は `with-tracing` で作った関数で、普通のトレース対象の関数と同じく1つの値か多値を返し、`cond*` も同じ個数の多値を返す。両枝の出力の aval が一致しなければトレース時に `cond-error`（`tracing-error` の子。`pred` がトレーサなのに rank 0 の `:i1` でない場合、枝が `traceable-function` でない場合も）。枝が閉包で捕まえた外側のトレーサも使える（closure conversion。両枝は同一の入力シグネチャ「operands と両枝の捕捉値の和集合」を持ち、片方が使わない捕捉値の位置には使われない入力が置かれる）。operand はトレーサ・実数・dtype を推論できる配列（`:f32` / `:f64` / `:i1` / `:i32` / `:u32` / `:u64`。bf16 / f16 の生の配列はトレーサで渡す。違えば `cond-error`）。枝の引数の個数が operand の個数と違うときも `cond-error`。`pred` が `t` / `nil` / rank 0 の bit 配列なら、選ばれた枝をそのまま呼ぶ（eqn は作らない）。StableHLO は `stablehlo.if`（IREE でコンパイル・実行できることを medium テストで確認）。jvp / transpose / grad のルールは #134（`src/ad/rules-control.lisp`）、バッチ化ルールは #140 で足す。**`with-tracing` の `if` は `cond*` に落とさず、これまでどおり `select` のままにする**: `if` の条件は要素ごとの `:i1` 配列でありうるので、`select`（要素ごとの意味）を保つ必要がある。スカラー条件で片枝だけを評価したい（重い計算や、範囲外の値の `log` など片方の枝でしか意味を持たない計算を避けたい）ときに、`cond*` を明示的に呼ぶ。
+**cond\*（条件分岐）**（`src/cond.lisp`、`src/primitives/cond.lisp`、issue #130）: `(cond* pred then-fn else-fn &rest operands)`。`pred` が真なら `(then-fn operands...)`、偽なら `(else-fn operands...)` を評価する高階プリミティブ `:cond` で、eager では選ばれた枝のサブグラフだけを評価する（CL の `cond` と衝突するので名前は `cond*`）。`then-fn` / `else-fn` は `with-tracing` で作った関数で、普通のトレース対象の関数と同じく1つの値か多値を返し、`cond*` も同じ個数の多値を返す。両枝の出力の aval が一致しなければトレース時に `cond-error`（`tracing-error` の子。`pred` がトレーサなのに rank 0 の `:i1` でない場合、枝が `traceable-function` でない場合も）。枝が閉包で捕まえた外側のトレーサも使える（closure conversion。両枝は同一の入力シグネチャ「operands と両枝の捕捉値の和集合」を持ち、片方が使わない捕捉値の位置には使われない入力が置かれる）。operand はトレーサ・実数・dtype を推論できる配列（`:f32` / `:f64` / `:i1` / `:i32` / `:u32` / `:u64`。bf16 / f16 の生の配列はトレーサで渡す。違えば `cond-error`）。枝の引数の個数が operand の個数と違うときも `cond-error`。`pred` が `t` / `nil` / rank 0 の bit 配列なら、選ばれた枝をそのまま呼ぶ（eqn は作らない）。StableHLO は `stablehlo.if`（IREE でコンパイル・実行できることを medium テストで確認）。jvp / transpose / grad のルールは #134（`src/ad/rules-control.lisp`）、バッチ化ルールは下の「制御構造のバッチ化」。**`with-tracing` の `if` は `cond*` に落とさず、これまでどおり `select` のままにする**: `if` の条件は要素ごとの `:i1` 配列でありうるので、`select`（要素ごとの意味）を保つ必要がある。スカラー条件で片枝だけを評価したい（重い計算や、範囲外の値の `log` など片方の枝でしか意味を持たない計算を避けたい）ときに、`cond*` を明示的に呼ぶ。
 
 
 
@@ -304,6 +304,8 @@ sbcl --non-interactive --load examples/jit.lisp
 
 
 <!-- フェーズ3 anchor: issue #140 -->
+
+**制御構造のバッチ化**（`src/ad/rules-batch-control.lisp`、issue #140。JAX の `_cond_batching_rule` / `_while_loop_batching_rule` に倣う）: 本体のサブグラフを再帰的に `vmap` する（`%vmap-subgraph`）。`cond*`: 条件がバッチされなければ、両枝を同じ入力のバッチ軸でバッチ化した `:cond` のままにし、どちらかの枝でバッチされる出力は両枝でバッチして先頭に揃える。条件がバッチされると、片方の枝だけを評価する性質は失われ、両枝を評価して `select` で選ぶ。`while-loop`: 「バッチされる carry の集合」を、本体の出力でバッチされる carry（最初はバッチされない carry が本体でバッチされる場合）を足しながら不動点まで広げ、バッチされる carry は軸 0 に揃える。loop 不変の（閉包で捕まえた）値は元のバッチ軸のまま素通しする。条件がバッチされると（全 carry がバッチされる）、どれかの要素の条件が真の間回し（`convert` + `reduce-max` + `compare`）、条件が偽になった要素の carry は `select` で据え置く。`scan`: 本体を同じ不動点でバッチ化する。consts は元のバッチ軸のまま、バッチされる carry は軸 0、`xs` のバッチ軸は走査の軸（先頭）とぶつからないよう 1 に動かし、`ys` のバッチ軸も 1 に出る（`out-axes` で動かす）。
 
 
 

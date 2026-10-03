@@ -37,13 +37,9 @@
 dot-general は整数を受け付けないので使わない。"
   (nth (mod (floor seed 11) (1+ (length *integer-dtypes*))) (cons :f64 *integer-dtypes*)))
 
-(defun %axis-at (shape size axis)
-  "SHAPE の AXIS の位置に長さ SIZE の軸を足した形。"
-  (append (subseq shape 0 axis) (list size) (nthcdr axis shape)))
-
 (defun %random-batched-array (inner-shape size axis seed dtype)
   "INNER-SHAPE の形に AXIS の位置へ長さ SIZE の軸を足した DTYPE の乱数配列。"
-  (make-random-array (make-array-spec (%axis-at inner-shape size axis) dtype) :seed seed))
+  (make-random-array (make-array-spec (axis-at inner-shape size axis) dtype) :seed seed))
 
 (defun %arrays-match (actual expected dtype)
   "浮動小数点は許容誤差つきで、整数は（折り返しも含めて）厳密に一致するか。"

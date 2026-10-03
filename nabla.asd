@@ -147,6 +147,7 @@
 
 
                ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-batch-control")
 
 
 
@@ -322,6 +323,7 @@
 
 
                ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/vmap-control-test")
 
 
 
@@ -512,6 +514,7 @@
 
 
                ;; フェーズ3 anchor: issue #140（制御構造のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/iree/vmap-control-test")
 
 
 
