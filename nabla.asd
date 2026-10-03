@@ -122,6 +122,7 @@
 
 
                ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-scan")
 
 
 
@@ -291,6 +292,7 @@
 
 
                ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のテストはこの下に足す
+               (:file "tests/ad/jvp-scan-test")
 
 
 
@@ -476,6 +478,7 @@
 
 
                ;; フェーズ3 anchor: issue #135（scan の jvp）。この issue のテストはこの下に足す
+               (:file "tests/iree/jvp-scan-test")
 
 
 

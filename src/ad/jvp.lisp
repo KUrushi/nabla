@@ -71,6 +71,14 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
 事前に足さず、ルールを (apply rule primals tangents params) で呼んで
 (VALUES 主値の出力のリスト 接線のリスト) を受け取る（ルールが主値の eqn を足す。
 全入力の接線がゼロなら、複数出力でもルールを呼ばず主値だけ再発行する）。定数の接線はゼロ。"
+  (values (%jvp-graph-core graph nonzero (make-list (length (graph-outvars graph)) :initial-element t))))
+
+(defun %jvp-graph-core (graph nonzero force)
+  "JVP-GRAPH の本体。FORCE は GRAPH-OUTVARS と同じ長さの真偽値のリストで、真の出力の
+接線は（ゼロでも）INSTANTIATE-ZERO で必ず graph の出力にし、偽の出力の接線は、
+ゼロでないときだけ出力にする（ゼロと分かっていれば出力から外す）。新しい graph の
+出力は「主値 ++ 出力にした接線（出力の順）」。第2値は、各出力の接線を出力にしたかの
+真偽値のリスト（scan の jvp が carry の接線の不動点を求めるのに使う）。"
   (let ((invars (graph-invars graph)))
     (unless (= (length nonzero) (length invars))
       (error 'autodiff-error
@@ -82,6 +90,8 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
             do (error 'autodiff-error
                       :format-control "浮動小数点でない入力 ~S には接線を渡せない（nonzero は NIL にする）"
                       :format-arguments (list invar)))
+    (let ((included '()))
+     (values
     (%call-with-fresh-trace
      (append (mapcar #'var-aval invars)
              (loop for invar in invars for flag in nonzero
@@ -122,6 +132,11 @@ T を渡すと AUTODIFF-ERROR。出力は GRAPH の出力の主値に続けて�
                      for out in outs
                      for tangent in out-tangents
                      do (setf (gethash var env) (cons out tangent))))))
-         (let ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph))))
+         (let* ((entries (mapcar (lambda (v) (gethash v env)) (graph-outvars graph)))
+                (flags (mapcar (lambda (entry flag) (or flag (not (symbolic-zero-p (cdr entry)))))
+                               entries force)))
+           (setf included flags)
            (values-list (append (mapcar #'car entries)
-                                (mapcar (lambda (entry) (instantiate-zero (cdr entry))) entries)))))))))
+                                (loop for entry in entries for flag in flags
+                                      when flag collect (instantiate-zero (cdr entry)))))))))
+     (copy-list included)))))

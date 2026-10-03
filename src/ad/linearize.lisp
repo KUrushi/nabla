@@ -64,6 +64,13 @@ eqn（線形側）と、依存しない eqn（主値側）に分け、(values �
     (loop for (var . nil) in constants do (setf (gethash var constant-table) t))
     (multiple-value-bind (primal-eqns linear-eqns)
         (partition-eqns-by-dependence (graph-eqns jvp) tangent-invars)
+      ;; 主値と接線を1つの eqn で計算する複数出力の eqn（scan の jvp など）は、丸ごと線形側に
+      ;; 入ってしまい、主値側に主値が残らない。主値と線形の部分に分ける partial eval を書く
+      ;; まで（#139）は、transpose ルールが無ければここで NO-TRANSPOSE-RULE にして、
+      ;; 壊れた graph（MALFORMED-GRAPH）を作らない。
+      (dolist (eqn linear-eqns)
+        (when (primitive-multiple-outputs-p (eqn-prim eqn))
+          (require-transpose-rule (eqn-prim eqn))))
       (let ((linear-defined (make-hash-table :test 'eq))
             (candidates '()))
         (dolist (v tangent-invars) (setf (gethash v linear-defined) t))
