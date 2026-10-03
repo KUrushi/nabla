@@ -70,8 +70,11 @@ value-and-grad）が JAX（jax.lax.scan）のフィクスチャと f32 の許容
          (lr (nb::%make-single-float (getf fixture :lr)))
          (steps (getf fixture :steps))
          (expected-losses (%rnn-fixture-array (list "losses" (list steps) (getf fixture :losses))))
+         ;; examples/rnn.lisp の load は末尾で train を回して jit を1回使うので、
+         ;; *jit-miss-count* を読む前に load を済ませる
+         (make-step (%rnn-example-fn "MAKE-RNN-TRAIN-STEP"))
          (before nb::*jit-miss-count*)
-         (step (funcall (%rnn-example-fn "MAKE-RNN-TRAIN-STEP") :lr lr)))
+         (step (funcall make-step :lr lr)))
     (multiple-value-bind (xs y params) (%rnn-fixture-inputs fixture)
       (dotimes (k steps)
         (multiple-value-bind (loss new-params) (funcall step params xs y)
