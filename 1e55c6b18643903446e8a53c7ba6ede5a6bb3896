@@ -1,0 +1,1 @@
+Fable 指摘の事実誤りを修正（cond の invars、mutation 記録、#68 クローズ、フォローアップ #164-166 の引用、† 、README の docs/examples 一覧）。registry に全プリミティブのバッチ化ルール検査を追加（:add のルールを外すと失敗することを確認して復元）。full suite small 140473 / medium 1587 通過。
