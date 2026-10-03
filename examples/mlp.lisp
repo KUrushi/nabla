@@ -17,6 +17,32 @@
              (logp (- shifted (nb:broadcast-in-dim lse (list n c) '(0)))))
         (* (nb:reduce-sum (* y logp)) scale)))))
 
+(defun make-mlp-example-loss (c)
+  "1サンプル（x: (D)、y: (C) の one-hot）の損失 (w1 b1 w2 b2 x y) → スカラー。
+MAKE-MLP-LOSS の N = 1 のとき（バッチ軸なし）と同じ式で、(/ -1.0 n) の係数は掛けない
+（サンプルごとの損失の平均がバッチ全体の損失になる）。per-example 勾配（VMAP の対象）に使う。"
+  (nb:with-tracing (w1 b1 w2 b2 x y)
+    (let* ((hidden (tanh (+ (nb:dot x w1) b1)))
+           (logits (+ (nb:dot hidden w2) b2))
+           (m (nb:stop-gradient (nb:reduce-max logits :axes '(0))))
+           (shifted (- logits (nb:broadcast-in-dim m (list c) '())))
+           (lse (log (nb:reduce-sum (exp shifted) :axes '(0))))
+           (logp (- shifted (nb:broadcast-in-dim lse (list c) '()))))
+      (- (nb:reduce-sum (* y logp))))))
+
+(defun make-per-example-grad (&key (c 2))
+  "サンプルごとの勾配を求める関数 (w1 b1 w2 b2 x y) → (w1の勾配 b1の勾配 w2の勾配 b2の勾配)
+の多値を返す。x (N D) と y (N C) だけを軸 0 でバッチし（in-axes は (nil nil nil nil 0 0)）、
+パラメータはバッチしない。各勾配の形は (N ...パラメータの形)。JAX の
+(jax.vmap (jax.grad loss) :in_axes (None, 0, 0)) に相当する。
+合成は (JIT ...)・VMAP の中の VMAP・GRAD の中の VMAP でも使える
+（tests/iree/per-example-test.lisp）。"
+  (let ((g (nb:grad (make-mlp-example-loss c) :argnums '(0 1 2 3))))
+    ;; 勾配のリストは vmap の出力にできない（jit と同じ）ので多値に直す
+    (nb:vmap (nb:with-tracing (w1 b1 w2 b2 x y)
+               (values-list (funcall g w1 b1 w2 b2 x y)))
+             :in-axes '(nil nil nil nil 0 0))))
+
 (defun sgd-update (param grad lr)
   "PARAM - LR * GRAD（f32 の配列）を新しい配列で返す。"
   (let ((new (make-array (array-dimensions param) :element-type 'single-float)))

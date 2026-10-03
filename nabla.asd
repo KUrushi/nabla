@@ -261,6 +261,7 @@
 
 
                ;; フェーズ3 anchor: issue #129（形状演算・縮約・dot-general のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/vmap-shape-test")
 
 
 
@@ -298,6 +299,7 @@
 
 
                ;; フェーズ3 anchor: issue #138（per-example 勾配）。この issue のテストはこの下に足す
+               (:file "tests/per-example-test")
 
 
 
@@ -442,6 +444,7 @@
 
 
                ;; フェーズ3 anchor: issue #129（形状演算・縮約・dot-general のバッチ化ルール）。この issue のテストはこの下に足す
+               (:file "tests/iree/vmap-shape-test")
 
 
 
@@ -479,6 +482,7 @@
 
 
                ;; フェーズ3 anchor: issue #138（per-example 勾配）。この issue のテストはこの下に足す
+               (:file "tests/iree/per-example-test")
 
 
 
