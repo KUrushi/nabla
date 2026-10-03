@@ -114,10 +114,12 @@
 
 
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のコンポーネントはこの下に足す
+               (:file "src/primitives/rng")
 
 
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のコンポーネントはこの下に足す
+               (:file "src/ad/rules-control")
 
 
 
@@ -284,10 +286,13 @@
 
 
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のテストはこの下に足す
+               (:file "tests/primitives/rng-test")
 
 
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
+               (:file "tests/ad/while-loop-jvp-test")
+               (:file "tests/ad/cond-jvp-test")
 
 
 
@@ -470,10 +475,13 @@
 
 
                ;; フェーズ3 anchor: issue #133（rng-bit-generator）。この issue のテストはこの下に足す
+               (:file "tests/iree/rng-test")
 
 
 
                ;; フェーズ3 anchor: issue #134（cond / while-loop の jvp）。この issue のテストはこの下に足す
+               (:file "tests/iree/while-loop-jvp-test")
+               (:file "tests/iree/cond-jvp-test")
 
 
 
@@ -533,4 +541,6 @@
                (:file "tests/pjrt/executable-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
                (:file "tests/pjrt/bench-test")
-               (:file "tests/pjrt/integer-test")))
+               (:file "tests/pjrt/integer-test")
+               ;; フェーズ3 anchor: issue #133（rng-bit-generator）
+               (:file "tests/pjrt/rng-test")))

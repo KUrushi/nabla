@@ -95,7 +95,7 @@
   "scan の jvp は接線について線形: jvp(3v) = 3 jvp(v)、jvp(v + w) = jvp(v) + jvp(w)
 （接線を持つ入力の部分集合は固定）。"
   (is (check-it
-       (generator (tuple (integer 0 100000) (integer 1 4) (integer 1 3) (integer 0 1) (integer 1 31)))
+       (generator (tuple (integer 0 100000) (integer 0 4) (integer 1 3) (integer 0 1) (integer 1 31)))
        (lambda (case)
          (destructuring-bind (seed length n reverse-code mask) case
            (let* ((graph (%scan-jvp-graph n length (= 1 reverse-code)))

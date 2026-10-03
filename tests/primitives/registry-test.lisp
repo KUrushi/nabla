@@ -74,13 +74,13 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 ;;; --- 自動微分のルール（issue #86。フェーズ2の全ルール検査） ---
 
-(defparameter *non-differentiable-primitive-names* '(:while-loop :cond)
+(defparameter *non-differentiable-primitive-names* '(:rng-bit-generator)
   "意図的に :jvp を持たない本物のプリミティブ。:jvp の無い defprimitive を足すときは、
 ここに理由つきで足すか、jvp ルールを書く。
-  - :while-loop（issue #131）: 逆モードは反復回数が分からず対応しない。jvp は #134 で足す
-    （足したらここから外す）。それまでは grad を通すと NO-JVP-RULE になる。
-  - :cond（issue #130）: jvp は #134 で足す（足したらここから外す）。
-  ※ :scan（issue #132）は jvp を #135 で足したので外した。逆モード（linearize / transpose）は #139。")
+  - :rng-bit-generator（issue #133）: 状態もビットも整数で接線が常に symbolic zero なので、
+    jvp-graph が全入力ゼロのときにルールを呼ばず主値を再発行する。ルールは要らない。
+  （while-loop と cond は issue #134、scan は issue #135 で jvp を持った。while-loop と scan の
+  逆モードは対応せず、linearize が NO-TRANSPOSE-RULE にする。）")
 
 (defun %registered-real-primitives ()
   "登録済みのプリミティブのうち、テスト専用でない（名前が % で始まらない）ものの
@@ -94,9 +94,9 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 (defparameter *linear-primitive-names*
   '(:add :sub :neg :convert :reshape :transpose :broadcast-in-dim :reduce-sum
-    :select :mul :div :dot-general)
+    :select :mul :div :dot-general :cond)
   "接線について線形に使われうる（:transpose を持つべき）プリミティブ。mul / div /
-dot-general は片側だけが線形、select は条件以外の分岐が線形。max / min / exp / log /
+dot-general は片側だけが線形、select は条件以外の分岐が線形、cond は pred 以外の入力が線形（枝が線形な cond だけが transpose される。issue #134）。max / min / exp / log /
 tanh / compare / reduce-max / stop-gradient の jvp は接線について線形な式（mul、select
 など）だけを出すので、transpose ルールは要らない。")
 

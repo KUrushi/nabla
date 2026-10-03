@@ -72,8 +72,9 @@ with-tracing の if は、トレーサの条件のとき COND* ではなく sele
 （要素ごとの意味を保つため）。スカラー条件で片枝だけを評価したいときに COND*
 を明示的に呼ぶ。
 
-jvp / transpose（grad / vmap）のルールはまだ無く、COND* を通した grad は
-NO-JVP-RULE（名前は :COND）になる。"
+微分: jvp / transpose / grad に対応する（src/ad/rules-control.lisp、issue #134）。
+jvp は主値の :cond と接線の線形な :cond の2つの eqn になり、grad は線形な :cond を
+枝ごとに転置する。vmap のルールは別の issue。"
   (flet ((check-branch (branch what)
            (unless (typep branch 'traceable-function)
              (%cond-error "COND* の ~A は TRACEABLE-FUNCTION（WITH-TRACING で作る）でなければならない: ~S"
