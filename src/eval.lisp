@@ -76,34 +76,48 @@ signal する（CHECK-GRAPH を通らなかった graph が use-before-def を�
              :format-arguments (list var)))
     array))
 
+(defun %eval-graph-check-result (prim in-avals out-var result)
+  "EAGER の結果 RESULT の aval が OUT-VAR の aval と一致することを確かめる。
+#31 が保証する「abstract-eval の出力 aval と eager の出力 aval が一致する」性質を、
+graph 評価の中でも検査する（issue #39 の推奨する不変量。壊れたプリミティブの
+eager をここで検出する）。ARRAY-AVAL 自身が（RESULT の要素型が OUT-AVAL の dtype
+と食い違って）DTYPE-MISMATCH を signal することがあるので、それも「aval が一致
+しない」場合として PRIMITIVE-ERROR にまとめる（生の DTYPE-MISMATCH を漏らさない）。"
+  (let* ((out-aval (var-aval out-var))
+         (result-aval (and (arrayp result) (%array-aval-or-nil result (aval-dtype out-aval)))))
+    (unless (equalp result-aval out-aval)
+      (error 'primitive-error :name (primitive-name prim) :in-avals in-avals
+             :format-control "eager の結果の aval が out-aval ~S と一致しない"
+             :format-arguments (list out-aval)))))
+
 (defun %eval-graph-step (graph env eqn)
-  "1つの EQN を :EAGER で評価し、その唯一の outvar を ENV に束縛する。"
+  "1つの EQN を :EAGER で評価し、その outvars を ENV に束縛する。複数出力の
+プリミティブ（契約 C1）の :EAGER は配列のリストを返し、個数と各 aval を
+outvars と照合する。"
   (let* ((prim (eqn-prim eqn))
          (eager (primitive-eager prim))
          (outvars (eqn-outvars eqn)))
     (unless eager
       (error 'primitive-not-evaluable :name (primitive-name prim)))
-    (unless (= (length outvars) 1)
-      (error "EVAL-GRAPH は複数（または0個の）outvars を持つ eqn を扱わない（フェーズ1）: ~S" eqn))
     (let* ((invars (eqn-invars eqn))
            (in-arrays (mapcar (lambda (v) (%eval-graph-lookup graph env v)) invars))
            (in-avals (mapcar #'var-aval invars))
-           (out-var (first outvars))
-           (out-aval (var-aval out-var))
-           (result (apply eager in-arrays in-avals (eqn-params eqn)))
-           ;; #31 が保証する「abstract-eval の出力 aval と eager の出力 aval
-           ;; が一致する」性質を、graph 評価の中でも検査する（issue #39 の
-           ;; 推奨する不変量。壊れたプリミティブの eager をここで検出する）。
-           ;; ARRAY-AVAL 自身が（RESULT の要素型が OUT-AVAL の dtype と
-           ;; 食い違って）DTYPE-MISMATCH を signal することがあるので、
-           ;; それも「aval が一致しない」場合として PRIMITIVE-ERROR に
-           ;; まとめる（生の DTYPE-MISMATCH を漏らさない）。
-           (result-aval (%array-aval-or-nil result (aval-dtype out-aval))))
-      (unless (equalp result-aval out-aval)
-        (error 'primitive-error :name (primitive-name prim) :in-avals in-avals
-               :format-control "eager の結果の aval が out-aval ~S と一致しない"
-               :format-arguments (list out-aval)))
-      (setf (gethash out-var env) result))))
+           (result (apply eager in-arrays in-avals (eqn-params eqn))))
+      (if (primitive-multiple-outputs-p prim)
+          (progn
+            (unless (and (listp result) (= (length result) (length outvars)))
+              (error 'primitive-error :name (primitive-name prim) :in-avals in-avals
+                     :format-control "複数出力の eager は出力と同じ長さ ~D の配列のリストを返さなければならない: ~S"
+                     :format-arguments (list (length outvars) result)))
+            (loop for out-var in outvars
+                  for array in result
+                  do (%eval-graph-check-result prim in-avals out-var array)
+                     (setf (gethash out-var env) array)))
+          (progn
+            (unless (= (length outvars) 1)
+              (error "EVAL-GRAPH は複数（または0個の）outvars を持つ単一出力の eqn を扱わない: ~S" eqn))
+            (%eval-graph-check-result prim in-avals (first outvars) result)
+            (setf (gethash (first outvars) env) result))))))
 
 (defun eval-graph (graph &rest arrays)
   "GRAPH（GRAPH 構造体）を ARRAYS で eager 評価し、GRAPH-OUTVARS に対応する
@@ -120,9 +134,9 @@ signal する（CHECK-GRAPH を通らなかった graph が use-before-def を�
 3. INVARS と GRAPH-CONSTANTS の var を、それぞれの配列に束縛する
    （コピーはしない。EAGER は入力を書き換えない前提）。
 4. GRAPH-EQNS を順に評価する。(PRIMITIVE-EAGER (EQN-PRIM EQN)) が NIL なら
-   PRIMITIVE-NOT-EVALUABLE を signal する。eqn の outvars がちょうど1つで
-   なければ（フェーズ1では常に1つのはずなので）ERROR を signal する。
-   invars を環境から引いて EAGER に渡し（未束縛の var があれば
+   PRIMITIVE-NOT-EVALUABLE を signal する。単一出力のプリミティブの eqn の
+   outvars がちょうど1つでなければ ERROR を signal する。複数出力のプリミティブ
+   （契約 C1）の EAGER は配列のリストを返す。invars を環境から引いて EAGER に渡し（未束縛の var があれば
    MALFORMED-GRAPH）、結果の aval が出力 var の aval と一致することを
    確かめてから（違えば PRIMITIVE-ERROR）、outvar に束縛する。
 5. GRAPH-OUTVARS に対応する配列を多値で返す。

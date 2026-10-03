@@ -16,7 +16,8 @@
 GRAPH-CONSTANTS の配列は（コピーせず）%LIFT-CONSTANT で現在のトレースの
 定数として登録し直し、GRAPH-EQNS は順に %TRACE-EQN で発行し直す。var は
 そのたびに新しく作られるので、同じ GRAPH を何度インライン化してもよい
-（GRAPH 自体は書き換えない）。同じ var が出力に複数回現れれば、同じ
+（GRAPH 自体は書き換えない）。eqn の params が持つサブグラフは中身を書き換えず
+そのまま（同じ GRAPH を）再発行する eqn に渡す。同じ var が出力に複数回現れれば、同じ
 （EQ な）TRACER が複数回返る。"
   (unless *current-trace*
     (error 'tracing-error
@@ -40,12 +41,14 @@ GRAPH-CONSTANTS の配列は（コピーせず）%LIFT-CONSTANT で現在のト�
       (loop for (var . array) in (graph-constants graph)
             do (setf (gethash var env) (%lift-constant array (var-aval var) *current-trace*)))
       (dolist (eqn (graph-eqns graph))
-        (let ((result (apply #'%trace-eqn (primitive-name (eqn-prim eqn))
-                             (mapcar (lambda (v) (gethash v env)) (eqn-invars eqn))
-                             (eqn-params eqn))))
-          ;; フェーズ1では eqn の outvars は常に1つ（src/ir.lisp の EQN を参照）。
-          (assert (= 1 (length (eqn-outvars eqn))))
-          (setf (gethash (first (eqn-outvars eqn)) env) result)))
+        ;; 複数出力の eqn（契約 C1）も %TRACE-EQN* で扱う。params が持つ
+        ;; サブグラフ（閉じた graph。契約 C2）は変換せず、そのまま共有する。
+        (let ((results (apply #'%trace-eqn* (primitive-name (eqn-prim eqn))
+                              (mapcar (lambda (v) (gethash v env)) (eqn-invars eqn))
+                              (eqn-params eqn))))
+          (loop for out in (eqn-outvars eqn)
+                for result in results
+                do (setf (gethash out env) result))))
       (mapcar (lambda (v) (gethash v env)) (graph-outvars graph)))))
 
 (defun dce-graph (graph)

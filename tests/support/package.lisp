@@ -93,4 +93,6 @@
    #:random-tangent
    #:random-cotangent
    #:scalar-loss-function
-   #:scalar-loss-oracle))
+   #:scalar-loss-oracle
+   ;; テスト専用の高階プリミティブ（issue #127）
+   #:test-call-subgraph))

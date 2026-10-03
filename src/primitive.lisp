@@ -15,9 +15,12 @@ PARAMS は宣言順に並んだパラメタ名（キーワード）のリスト�
 EMIT / EAGER の呼び出し規約は DEFPRIMITIVE の docstring を見る。JVP と
 TRANSPOSE は自動微分のルール（無ければ NIL）で、他のスロットと違って後から
 設定できる。呼び出し規約は src/ad/rules.lisp の DEF-JVP-RULE /
-DEF-TRANSPOSE-RULE を見る。"
+DEF-TRANSPOSE-RULE を見る。MULTIPLE-OUTPUT-P が真のプリミティブは複数の
+出力を持てる（契約 C1。呼び出し規約が単一出力と変わる点は DEFPRIMITIVE の
+docstring を見る）。"
   (name nil :type keyword :read-only t)
   (params nil :type list :read-only t)
+  (multiple-outputs-p nil :read-only t)
   (abstract-eval nil :type function :read-only t)
   (emit nil :type (or null function) :read-only t)
   (eager nil :type (or null function) :read-only t)
@@ -75,7 +78,7 @@ PRIMITIVE-TRANSPOSE）でルールを取り出す。未登録なら NIL。DEFPRI
     (unless (keywordp k)
       (error "DEFPRIMITIVE ~S: パラメタ ~S はキーワードでなければならない" name k))))
 
-(defmacro defprimitive (name (&rest param-keywords) &key abstract-eval emit eager jvp transpose)
+(defmacro defprimitive (name (&rest param-keywords) &key multiple-outputs abstract-eval emit eager jvp transpose)
   "NAME（シンボル）を名前に持つプリミティブを宣言し、
 *PRIMITIVES* に登録する。登録名は (INTERN (SYMBOL-NAME NAME) :KEYWORD)。
 
@@ -100,6 +103,20 @@ PARAM-KEYWORDS はこのプリミティブが受け取るパラメタ名を宣�
 DEF-JVP-RULE / DEF-TRANSPOSE-RULE の docstring）。省略すると NIL で、後から
 DEF-JVP-RULE / DEF-TRANSPOSE-RULE で設定できる。
 
+:MULTIPLE-OUTPUTS（評価されない真偽値。既定 NIL）が真のプリミティブは、
+出力の個数ではなくこのフラグで複数出力の規約に切り替わる（契約 C1）:
+  - :ABSTRACT-EVAL は AVAL の「リスト」を返す。
+  - :EMIT は (lambda (in-names in-avals out-names out-avals &key <params>) ...)
+    で、出力の名前と AVAL を「リスト」で受け取り、\"%8, %9 = ...\" のような
+    左辺を自分で書く。
+  - :EAGER は配列の「リスト」を返す。
+  - :JVP は (primals outs tangents &key <params>) → 接線のリスト、
+    :TRANSPOSE は (cts invars &key <params>) で、CTS は余接線のリスト
+    （SYMBOLIC-ZERO 可）、返り値は invar ごとのリスト。
+  - トレースには %TRACE-EQN ではなく %TRACE-EQN*（常にトレーサのリストを返す）
+    を使う。
+既存の（単一出力の）プリミティブはこのフラグを付けず、何も変わらない。
+
 このマクロは NAME のキーワードを評価値として返す。再評価は登録を
 新しい PRIMITIVE 構造体で置き換える（EQ ではなくなる）。ただし jvp /
 transpose のルールは引き継ぐ: :JVP / :TRANSPOSE を明示しなければ、古い
@@ -114,6 +131,7 @@ PRIMITIVE のルール（DEF-JVP-RULE などで後から設定したものを含
        (register-primitive
         (%make-primitive :name ,keyword
                           :params ',param-keywords
+                          :multiple-outputs-p ,(and multiple-outputs t)
                           :abstract-eval ,abstract-eval
                           :emit ,emit
                           :eager ,eager

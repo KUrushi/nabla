@@ -13,7 +13,10 @@
 (defstruct (eqn (:constructor %make-eqn (prim params invars outvars)) (:copier nil))
   "1つの演算の適用。PRIM は PRIMITIVE 構造体そのもの、PARAMS は
 PRIMITIVE-PARAMS の宣言順に正規化した plist、INVARS / OUTVARS は VAR の
-リスト。フェーズ1では OUTVARS は常に長さ1。"
+リスト。OUTVARS は、単一出力のプリミティブでは長さ1、
+MULTIPLE-OUTPUTS-P が真のプリミティブ（契約 C1）では ABSTRACT-EVAL が返した
+AVAL の個数。PARAMS の値には、サブグラフ（閉じた GRAPH。契約 C2）や、その
+リストを持たせてよい。"
   (prim nil :type primitive :read-only t)
   (params nil :type list :read-only t)
   (invars nil :type list :read-only t)
@@ -66,7 +69,9 @@ SB-INT:SIMPLE-PROGRAM-ERROR になってしまい、この関数の本体（step
 3. 宣言順に並べ直した plist を作る。
 4. (APPLY ABSTRACT-EVAL (MAPCAR #'VAR-AVAL INVARS) PLIST) で出力 AVAL を
    計算し、AVAL 型であることを CHECK-TYPE で確かめる。
-5. (MAKE-VAR OUT-AVAL) を1つ作り、EQN を返す。
+5. (MAKE-VAR OUT-AVAL) を1つ作り、EQN を返す。MULTIPLE-OUTPUTS-P が真の
+   プリミティブでは、ABSTRACT-EVAL は AVAL のリストを返し、その要素ごとに
+   VAR を作る（OUTVARS はその順）。
 
 SSA（各 var はちょうど1回だけ定義される）は、この関数がその都度新しい
 VAR を作ることによって構成的に保証される。"
@@ -74,9 +79,32 @@ VAR を作ることによって構成的に保証される。"
                   (error 'unknown-primitive :name prim-name))))
     (let* ((plist (%normalize-params prim-name (primitive-params prim) params))
            (in-avals (mapcar #'var-aval invars))
-           (out-aval (apply (primitive-abstract-eval prim) in-avals plist)))
-      (check-type out-aval aval)
-      (%make-eqn prim plist invars (list (make-var out-aval))))))
+           (result (apply (primitive-abstract-eval prim) in-avals plist)))
+      (if (primitive-multiple-outputs-p prim)
+          (progn
+            (unless (listp result)
+              (error 'primitive-error :name prim-name :in-avals in-avals
+                     :format-control "複数出力のプリミティブの abstract-eval は aval のリストを返さなければならない: ~S"
+                     :format-arguments (list result)))
+            (dolist (out-aval result) (check-type out-aval aval))
+            (%make-eqn prim plist invars (mapcar #'make-var result)))
+          (progn
+            (check-type result aval)
+            (%make-eqn prim plist invars (list (make-var result))))))))
+
+(defun %param-subgraphs (params)
+  "PARAMS（eqn の params の plist）の値のどこか（値そのもの、またはそのリストの
+要素、入れ子のリストの要素）にある GRAPH（サブグラフ）を、出現順のリストにして返す。"
+  (let ((found '()))
+    (labels ((walk (form)
+               (cond ((graph-p form) (push form found))
+                     ((consp form) (walk (car form)) (walk (cdr form))))))
+      (loop for (nil value) on params by #'cddr do (walk value)))
+    (nreverse found)))
+
+(defun %eqn-subgraphs (eqn)
+  "EQN の params が持つサブグラフ（GRAPH）のリスト。無ければ NIL。"
+  (%param-subgraphs (eqn-params eqn)))
 
 (define-condition malformed-graph (error)
   ((graph :initarg :graph :reader malformed-graph-graph)
@@ -101,7 +129,8 @@ VAR を作ることによって構成的に保証される。"
 (a) GRAPH-INVARS・GRAPH-CONSTANTS の var・各 eqn の outvars が、EQ で
     重複なく、ちょうど1回ずつ定義される。
 (b) 各 eqn の invars と GRAPH-OUTVARS は、その時点までに定義済みの var
-    だけを参照する。
+    だけを参照する。eqn の params が持つサブグラフも、それ自身が
+    CHECK-GRAPH を通る（閉じた graph。外側の var は参照できない）。
 (c) GRAPH-CONSTANTS の各 (var . array) について、ARRAY から作った AVAL
     が VAR-AVAL と EQUALP で一致する。ARRAY の要素型が VAR-AVAL の dtype と
     そもそも矛盾していて AVAL が作れない場合（ARRAY-AVAL が DTYPE-MISMATCH
@@ -136,6 +165,9 @@ VAR を作ることによって構成的に保証される。"
                      :format-arguments (list var))))))
       (dolist (eqn eqns)
         (dolist (v (eqn-invars eqn)) (check-defined v))
+        ;; サブグラフは閉じた graph なので、それ自身の不変量を再帰的に検査する
+        ;; （外側の var への参照は、そもそも未定義参照として検出される）。
+        (dolist (sub (%eqn-subgraphs eqn)) (check-graph sub))
         (dolist (v (eqn-outvars eqn)) (mark-defined v)))
       (dolist (v (graph-outvars graph)) (check-defined v))))
   graph)
