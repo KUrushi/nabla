@@ -151,7 +151,7 @@ IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピ�
 - **`while-loop` の逆モード（`grad`）は対応しない**（§3.5）。`scan` で書く。
 - **IREE 3.11 の `:i1` carry のバグは回避策が無い**（§3.12 の 2。比較由来の `:i1` の carry を持つ while の結果を jit の戻り値にしない）。
 - **f64 の `normal` の裾は f32 並みの精度**（erf の逆関数の単精度近似を使う。§3.8。#166）。
-- **PJRT では `:i1` が未対応のまま**（`PRED` に写していない。`unsupported-dtype`）。したがって `:i1` を入力・出力にする PJRT のテストは無い。`cond*` の `pred` の rank 0 `:i1` は graph の内部の値なので動く。
+- ~~**PJRT では `:i1` が未対応のまま**~~ → #166 (b) で対応した（`:i1` を `PRED` に写し、ホストの BIT 配列と1要素1バイトの間を IREE と同じく詰め直す）。`:i1` の往復、jit の `:i1` の入出力、`cond*` の `pred` を引数で渡す形と比較由来の `:i1` の carry を返す `while-loop`（IREE 3.11 では落ちる形）を `tests/pjrt/i1-test.lisp` が PJRT と eager の一致で確かめる。
 - **PRNG は JAX とビット単位で一致しない**（§3.8）。`rng_bit_generator` の `:i32` のビットと Philox / `DEFAULT` は未対応。
 - **`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」は変わらない**（`cond*` / `while-loop` / `scan` の本体は closure conversion で捕まえられるが、`grad` / `vmap` の `f` は不可）。
 - **`vmap` / `grad` は `f` がリストを返せない**（`(with-tracing ... (values-list ...))` で包む。フェーズ4の PyTree で解消する見込み）。
