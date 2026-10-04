@@ -245,7 +245,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### scan（issue #132）
 
-`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` をそのまま返し、`ys` は先頭の軸が 0 の空の配列になる。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なときは `scan-error`（親）。順方向・jvp（#135、下記）・`grad`（#139、下記）に対応し、`vmap`（#140、下の「制御構造のバッチ化」）にも対応する。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
+`(scan f init xs &key length reverse)` は、`xs`（配列のリスト）の先頭の軸に沿って `f` を回し、`(values 最終の carry のリスト ys のリスト)` を返す（JAX の `lax.scan` 相当）。`f` は `with-tracing` で作った2引数の関数 `(carry-list x-list)` で、`(values 新しい carry のリスト y のリスト)` を返す。`ys` は各ステップの `y` を先頭の軸に積んだ配列のリスト。carry は `init` と個数・shape・dtype が同じでなければならない（違うと `scan-carry-mismatch`）。`xs` が空のときは `length` が必須で、そうでなければ `xs` の先頭の軸の長さと一致しなければならない（`scan-length-error`）。長さ 0 の scan は `init` と同じ値の carry を返し、`ys` は先頭の軸が 0 の空の配列になる。eager の結果は新しく確保した配列で、`init`・`xs`・`f` が閉包で捕まえた配列と `eq` にならない。`reverse` が真なら添字 `length-1` から 0 へ辿る（`ys[t]` にはそのときも添字 `t` のステップの `y` が入る）。`f` が閉包で捕まえた外側の値はループ不変な入力（consts）になる。eager でも `with-tracing` / `jit` の中でも使える。引数や `f` の戻り値の形が不正なとき（`init` / `xs` に生の `(unsigned-byte 16)` の bf16 / f16 配列を渡したときも。トレーサで渡す）は `scan-error`（親）。順方向・jvp（#135、下記）・`grad`（#139、下記）に対応し、`vmap`（#140、下の「制御構造のバッチ化」）にも対応する。StableHLO では `:i32` のカウンタを持つ `stablehlo.while` に落ちる。
 
 
 
@@ -369,7 +369,7 @@ third_party/         iree.lock（固定した IREE のコミットとホイー�
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
 
-ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。docs/pjrt-setup.md）の9つに加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
+ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）の9つに加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
 
 ## 開発の進め方
 

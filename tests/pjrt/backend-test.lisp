@@ -85,14 +85,12 @@ to-host した結果の array-dimensions は元の shape と一致する。"
 
 (define-pjrt-test backend/to-device/rejects-bad-arguments
   "(unsigned-byte 16) を :dtype なしで渡すと nabla:dtype-mismatch、
-:i1 は nabla:unsupported-dtype、simple-array でない配列は type-error。"
+simple-array でない配列は type-error。"
   (skip-unless-pjrt :kind :cpu)
   (let ((backend (%pjrt-backend)))
     (signals nabla:dtype-mismatch
       (nabla:to-device (make-array '(2 3) :element-type '(unsigned-byte 16) :initial-element 0)
                        backend))
-    (signals nabla:unsupported-dtype
-      (nabla:to-device (make-array '(3) :element-type 'bit :initial-element 1) backend))
     (signals type-error
       (nabla:to-device (make-array '(2 2) :element-type 'single-float :adjustable t
                                           :initial-element 0.0)

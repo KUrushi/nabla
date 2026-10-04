@@ -116,6 +116,12 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
     (dotimes (j size)
       (setf (row-major-aref target (+ (* index size) j)) (row-major-aref row j)))))
 
+(defun %scan-copy-array (array)
+  "ARRAY と同じ形・要素型・中身の、新しく確保した配列を返す。"
+  (let ((copy (make-array (array-dimensions array) :element-type (array-element-type array))))
+    (dotimes (j (array-total-size array) copy)
+      (setf (row-major-aref copy j) (row-major-aref array j)))))
+
 (defun %scan-eager (arrays in-avals &key num-consts num-carry length reverse body)
   (let ((out-avals (%scan-abstract-eval in-avals :num-consts num-consts :num-carry num-carry
                                                  :length length :reverse reverse :body body)))
@@ -133,7 +139,10 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
             (loop for target in ys
                   for y in (nthcdr num-carry results)
                   do (%scan-store-row target i y))))
-        (append carry ys)))))
+        ;; carry は init・本体の定数（閉包で捕まえたホストの配列）・consts をそのまま
+        ;; 返すことがある（長さ 0 なら init そのもの）。結果を書き換えて入力が変わらない
+        ;; よう、新しい配列に写して返す（ys は上で新しく確保している）。
+        (append (mapcar #'%scan-copy-array carry) ys)))))
 
 ;;; ---- StableHLO ----
 
@@ -181,6 +190,41 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
                    for aval in (nthcdr num-carry out-avals)
                    collect (%scan-zero-constant-line out aval))))))
 
+(defun %scan-ys-init-lines (counter names avals)
+  "長さ 2 以上の scan（と、同じ形の while を出すバッチされた rng）の、ループのカウンタ COUNTER
+（:i32 の 0）と ys バッファ NAMES（形は AVALS。無くてもよい）の初期値を作る行。
+本体は ys のバッファを optimization_barrier に通して in-place に書き換え、カウンタも carry として
+in-place に進められうるので、次を守る（破ると、特定の版のバックエンドのコンパイラで結果が壊れる。
+記録は docs/stablehlo-ops.md、issue #159）。
+- ループごと・ys ごとに別のバッファにする。同じ型の 0 の constant は CSE で1つにまとめられ、
+  オペランドが同じ optimization_barrier どうしもまとめられる。2つの ys や、同じモジュールの
+  2つのループ（同じ入力の順方向と逆方向の scan など）のカウンタが同じバッファになると、
+  先のループが書き換えた値から次のループが始まる（逆方向の scan が1回も回らない）。そこで
+  カウンタとスカラーの 0 を、モジュールの中で一意な整数（%STABLEHLO-UNIQUE-ID）の constant と
+  一緒に1つの多出力の optimization_barrier に通し（結果はそれぞれ別の値になる）、ys の 0 を
+  それぞれ broadcast_in_dim で広げる
+- 広げたバッファをそれぞれ optimization_barrier に通してから while に渡す。通さないと
+  初期値のバッファが1つの確保にまとめられ、ループの中で使っているのに while の前で
+  解放される
+while のオペランドが constant にならないので、定数で初期化された carry の回避も兼ねる。"
+  (let ((scalars (mapcar (lambda (aval) (make-aval '() (aval-dtype aval))) avals))
+        (consts (mapcar (lambda (name) (format nil "~A_c" name)) names))
+        (kept (mapcar (lambda (name) (format nil "~A_s" name)) names))
+        (salt (format nil "~A_u" counter)))
+    (append
+     (list (format nil "~A_c = stablehlo.constant dense<0> : tensor<i32>" counter))
+     (mapcar #'%scan-zero-constant-line consts scalars)
+     (list (format nil "~A_c = stablehlo.constant dense<~D> : tensor<i32>" salt (%stablehlo-unique-id))
+           (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
+                   (append (list counter) kept (list salt))
+                   (append (list (format nil "~A_c" counter)) consts (list (format nil "~A_c" salt)))
+                   (append (list "tensor<i32>") (mapcar #'tensor-type-string scalars) (list "tensor<i32>"))))
+     (loop for name in names for scalar in kept for scalar-aval in scalars for aval in avals
+           append (list (format nil "~A_b = stablehlo.broadcast_in_dim ~A, dims = [] : (~A) -> ~A"
+                                name scalar (tensor-type-string scalar-aval) (tensor-type-string aval))
+                        (format nil "~A = stablehlo.optimization_barrier ~A_b : ~A"
+                                name name (tensor-type-string aval)))))))
+
 (defun %scan-emit (in-names in-avals out-names out-avals &key num-consts num-carry length reverse body)
   (when (zerop length)
     (return-from %scan-emit (%scan-emit-empty in-names in-avals out-names out-avals num-consts num-carry)))
@@ -202,6 +246,7 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
                (cond-ys (names "cy" (length ys-avals)))
                (body-carry (names "bc" num-carry))
                (body-ys (names "by" (length ys-avals)))
+               (body-kept (names "bk" (length ys-avals)))
                (x-names (names "x" (length xs-avals)))
                (idx (if reverse (format nil "~A_idx" p) (format nil "~A_bi" p)))
                (zero (format nil "~A_z" p))
@@ -222,15 +267,10 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
                    ;; 失敗するので、barrier を付けない（constant のまま。この長さでは
                    ;; クラッシュしない）。
                    (if (= length 1)
-                       (list (format nil "~A = stablehlo.constant dense<0> : ~A" counter i32))
-                       (list (format nil "~A_c = stablehlo.constant dense<0> : ~A" counter i32)
-                             (format nil "~A = stablehlo.optimization_barrier ~A_c : ~A" counter counter i32)))
-                   (loop for name in ys-init for aval in ys-avals
-                         append (if (= length 1)
-                                    (list (%scan-zero-constant-line name aval))
-                                    (list (%scan-zero-constant-line (format nil "~A_c" name) aval)
-                                          (format nil "~A = stablehlo.optimization_barrier ~A_c : ~A"
-                                                  name name (tensor-type-string aval)))))
+                       (cons (format nil "~A = stablehlo.constant dense<0> : ~A" counter i32)
+                             (loop for name in ys-init for aval in ys-avals
+                                   collect (%scan-zero-constant-line name aval)))
+                       (%scan-ys-init-lines counter ys-init ys-avals))
                    (list
                     (format nil "~{~A~^, ~} = \"stablehlo.while\"(~{~A~^, ~}) ({"
                             (cons (format nil "~A_n" p) out-names)
@@ -243,6 +283,17 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
                     "}, {"
                     ;; body
                     (block-args (append (list (format nil "~A_bi" p)) body-carry body-ys) all-types))
+                   ;; ys のバッファは optimization_barrier を通してから dynamic_update_slice に渡す
+                   ;; （issue #159）。特定の版のバックエンドのコンパイラ（記録は docs/stablehlo-ops.md）は
+                   ;; ループの carry（ブロック引数）の配置先を引けず、本体で使うたびに carry を
+                   ;; 丸ごとコピーする。barrier の結果からは配置先が引けるので、ys の書き込みが
+                   ;; 1行ぶんのコピーで済む。初期値の作り方の約束は %scan-ys-init-lines。
+                   ;; 長さ 1 は1回しか書かないので付けない（初期値も constant のままで、
+                   ;; in-place に書き換えないので、同じ constant を共有しても壊れない）。
+                   (unless (= length 1)
+                     (loop for buffer in body-ys for kept in body-kept for aval in ys-avals
+                           collect (format nil "~A = stablehlo.optimization_barrier ~A : ~A"
+                                           kept buffer (tensor-type-string aval))))
                    (when reverse
                      (list (format nil "~A_last = stablehlo.constant dense<~D> : ~A" p (1- length) i32)
                            (format nil "~A = stablehlo.subtract ~A_last, ~A_bi : ~A" idx p p i32)))
@@ -264,7 +315,8 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
                    ;; 本体（最後の stablehlo.return は外す）
                    (butlast inner)
                    ;; y_t を書き込む
-                   (loop for y in y-values for buffer in body-ys for aval in ys-avals for j from 0
+                   (loop for y in y-values for buffer in (if (= length 1) body-ys body-kept)
+                         for aval in ys-avals for j from 0
                          for rank = (aval-rank aval)
                          for row = (make-aval (rest (aval-shape aval)) (aval-dtype aval))
                          for one-row = (make-aval (cons 1 (rest (aval-shape aval))) (aval-dtype aval))
@@ -305,7 +357,14 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
     (t (%scan-error 'scan-error "~A はトレーサ・配列・実数でなければならない: ~S" what value))))
 
 (defun %scan-value-aval (value)
-  (if (typep value 'tracer) (tracer-aval value) (array-aval value)))
+  (if (typep value 'tracer)
+      (tracer-aval value)
+      ;; dtype が一意に決まらない配列（生の (unsigned-byte 16) の bf16 / f16）は
+      ;; aval を作れない。トレーサ（dtype を持つ）で渡してもらう。
+      (handler-case (array-aval value)
+        (dtype-mismatch ()
+          (%scan-error 'scan-error "配列の dtype を決められない（bf16 / f16 はトレーサで渡す）: ~S"
+                       value)))))
 
 (defun %scan-resolve-length (xs-avals length)
   "XS-AVALS の先頭の軸と LENGTH から繰り返し回数を決める（不整合は SCAN-LENGTH-ERROR）。"
@@ -363,15 +422,17 @@ XS は走査する配列（トレーサ・配列・実数）のリストで、�
 INIT と個数・shape・dtype が同じでなければならない（違えば SCAN-CARRY-MISMATCH）。
 
 LENGTH は繰り返し回数。XS が空のときは必須で、そうでなければ XS の先頭の軸の長さと
-一致しなければならない（SCAN-LENGTH-ERROR）。長さ 0 の scan は INIT をそのまま返し、
-ys は先頭の軸が 0 の空の配列になる。REVERSE が真なら添字 N-1 から 0 へ辿る
+一致しなければならない（SCAN-LENGTH-ERROR）。長さ 0 の scan は INIT と同じ値の carry を返し、
+ys は先頭の軸が 0 の空の配列になる。eager の結果の配列はどれも新しく確保したもので、
+INIT・XS・F が閉包で捕まえた配列と EQ にならない（結果を書き換えても入力は変わらない）。REVERSE が真なら添字 N-1 から 0 へ辿る
 （ys[t] には、そのときも添字 t のステップの y が入る）。
 
 F が閉包で捕まえた外側の値は、ループ不変な入力（consts）になる。トレース中
 （with-tracing・jit の中）でもその場（eager）でも使える。grad は scan を通る（jvp は #135、
 partial eval と transpose は #139。src/ad/rules-scan-reverse.lisp）。vmap は本体を再帰的に
 バッチ化する（xs / ys のバッチ軸は走査の軸の次、1）。引数や F の戻り値の形が不正なときは
-SCAN-ERROR。"
+SCAN-ERROR（INIT / XS に生の (unsigned-byte 16) の bf16 / f16 配列を渡したときも。
+トレーサで渡す）。"
   (unless (and (typep f 'traceable-function)
                (= 2 (length (traceable-function-lambda-list f))))
     (%scan-error 'scan-error "f は WITH-TRACING で作った2引数 (carry x) の関数でなければならない: ~S" f))

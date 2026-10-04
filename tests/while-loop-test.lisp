@@ -119,6 +119,55 @@ Lisp のループの結果と一致する（limit が 0 の場合を含む）。
                   :regression-id while-loop/traced-closure
                   :regression-file (regression-path "while-loop-traced-closure")))))
 
+;;; ---- cond と body が同じ外側の値を捕まえる（issue #166 の d）。捕捉値は重複なく
+;;; 1回だけオペランドになる ----
+
+(defun %wl-shared-capture-graph ()
+  "limit を cond と body の両方が、step を body だけが閉包で捕まえる while-loop の graph。
+body は limit を2回使う。"
+  (nb::trace-to-graph
+   (nb:with-tracing (limit step x)
+     (let ((result (nb:while-loop
+                    (nb:with-tracing (c) (< (first c) limit))
+                    (nb:with-tracing (c)
+                      (list (+ (first c) 1.0) (+ (second c) (* step limit) limit)))
+                    (list (%wl-scalar 0.0) x))))
+       (values (first result) (second result))))
+   (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32) (nb:make-aval '(3) :f32))))
+
+(test while-loop/shared-capture-is-one-operand
+  "cond と body が同じ外側のトレーサを捕まえても、eqn のオペランド（と StableHLO の
+while の carry）にはその値が1回だけ現れる: carry 2 + 捕捉値 2（limit と step）。"
+  (let* ((graph (%wl-shared-capture-graph))
+         (eqn (first (%wl-while-eqns graph)))
+         (operands (nb:eqn-invars eqn)))
+    (is (= 4 (length operands)))
+    (is (= 4 (length (remove-duplicates operands :test #'eq))))
+    (is (= 4 (length (nb:eqn-outvars eqn))))
+    (is (= 4 (length (nb:graph-invars (getf (nb:eqn-params eqn) :cond)))))
+    (is (= 4 (length (nb:graph-invars (getf (nb:eqn-params eqn) :body)))))
+    (is (search "-> (tensor<f32>, tensor<3xf32>, tensor<f32>, tensor<3xf32>)"
+                (nb:emit-stablehlo graph)))))
+
+(test while-loop/shared-capture-equals-lisp-loop
+  "cond と body が同じ外側の値を捕まえる while-loop をトレースして eval-graph した
+結果は、Lisp のループの結果（x に step*limit + limit を limit 回足す）と一致する。"
+  (let ((graph (%wl-shared-capture-graph)))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let* ((n (mod seed 7))
+                           (limit (%wl-scalar (float n 1.0)))
+                           (step (%wl-seed-array seed '(3) :f32))
+                           (x (%wl-seed-array (1+ seed) '(3) :f32))
+                           (actual (multiple-value-list (nb:eval-graph graph limit step x)))
+                           (delta (funcall (nb:with-tracing (s l) (+ (* s l) l)) step limit))
+                           (expected-x (let ((v x))
+                                         (dotimes (_ n v) (setf v (nb::%t-add v delta))))))
+                      (and (allclose (first actual) limit :dtype :f32)
+                           (allclose (second actual) expected-x :dtype :f32))))
+                  :regression-id while-loop/shared-capture
+                  :regression-file (regression-path "while-loop-shared-capture")))))
+
 (test while-loop/array-init-inside-a-trace
   "外側のトレースの中で、init が配列（定数）のときも while-loop をトレースできる。"
   (let ((graph (nb::trace-to-graph
