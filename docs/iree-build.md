@@ -436,6 +436,23 @@ scripts/build-iree.sh --cuda
 NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh
 ```
 
+### Colab の GPU で実行する
+
+手元に NVIDIA GPU が無いときは、Colab CLI（google-colab-cli）で Colab の GPU VM を
+借りて上の手順を実行できる。開発用のクラウド環境からは Colab に接続できない
+（ネットワーク方針で拒否される）ので、手元のマシンで実行する。
+
+```sh
+uv tool install google-colab-cli      # 初回のみ。初回の colab 実行で OAuth の認証がある
+scripts/colab-gpu-check.sh            # T4。--gpu L4 などで変える。--keep で VM を残す
+```
+
+`git archive HEAD` を VM に送り、`scripts/colab/remote-gpu-check.sh` が
+`build-iree.sh --cuda` → `verify-iree.sh --cuda` → large テスト
+（`NABLA_REQUIRE_CUDA=1`）→ 最大誤差の実測（`scripts/colab/measure-cross-device.lisp`）
+を順に実行する。ログと要約（`summary.md`）は `colab-gpu-out/<セッション名>/` に
+持ち帰る。下の結果表は `summary.md` の数字で埋める。
+
 `tests/iree/cross-device-test.lisp` は add / matmul / reduce_sum のそれぞれ
 f32 版・bf16 版（計6テスト）で、`local` と `cuda`（cuda-arch は指定せず
 IREE の既定に任せる）に同じ乱数入力を渡し、結果を dtype ごとの既定の許容

@@ -35,6 +35,10 @@ NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/ru
 # nabla/pjrt の medium テストは PJRT プラグイン（NABLA_PJRT_HOME 配下）が無いと
 # 自動でスキップされる。CI では NABLA_REQUIRE_PJRT=1 を立てて失敗にする
 
+# Colab の GPU で local / cuda の一致を確かめる（issue #12）。手元のマシンで実行する
+# （このクラウド環境からは Colab に接続できない）。詳細は docs/iree-build.md
+scripts/colab-gpu-check.sh --gpu T4
+
 # PJRT プラグイン（CPU。--cuda で CUDA も）を third_party/pjrt.lock の wheel から
 # 取得・sha256 検査・展開する。インストール先は NABLA_PJRT_HOME（既定
 # ~/.local/share/nabla/pjrt-0.0.1）。詳細は docs/pjrt-setup.md
