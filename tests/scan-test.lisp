@@ -98,7 +98,7 @@ ys の形・dtype が混ざる（[n]、[k]、i32 スカラー）。")
        :regression-file (regression-path "scan-matches-lisp-loop"))))
 
 (test scan/length-zero-returns-init-and-empty-ys
-  "長さ 0 の scan は init をそのまま返し、ys は先頭の軸が 0 の空の配列になる。"
+  "長さ 0 の scan は init と同じ値（新しい配列）を返し、ys は先頭の軸が 0 の空の配列になる。"
   (multiple-value-bind (init xs) (%scan-mixed-case 3 0 2 3 :f32)
     (multiple-value-bind (carry ys) (nb:scan *scan-mixed* init xs)
       (is (every #'equalp carry init))
@@ -282,6 +282,62 @@ carry を壊さない（ys は1ステップ前の x、最終の carry は最後�
     (multiple-value-bind (carry ys) (nb:scan f init xs)
       (is (equalp #(5.0 6.0) (first carry)))
       (is (equalp #2A((0.0 0.0) (1.0 2.0) (3.0 4.0)) (first ys))))))
+
+;;; ---- eager の結果は入力と領域を共有しない（issue #166 (c)） ----
+
+(defparameter *scan-host-constant*
+  (make-array 2 :element-type 'single-float :initial-contents '(7.0 8.0))
+  "*SCAN-ALIAS-BODIES* の本体が閉包で捕まえるホストの配列（本体のサブグラフの定数になる）。")
+
+(defparameter *scan-alias-bodies*
+  (list
+   ;; carry をそのまま返す（長さ 0 でも 1 以上でも、結果の carry は init と同じ値）
+   (nb:with-tracing (carry x) x (values carry (list (first carry))))
+   ;; 捕まえたホストの配列を carry にする
+   (nb:with-tracing (carry x) carry (values (list *scan-host-constant*) x))
+   ;; x_t をそのまま carry にする
+   (nb:with-tracing (carry x) (values (list (first x)) (list (first carry)))))
+  "本体が入力（init・捕捉した配列・x_t）をそのまま出力に回す scan の本体。
+どれも carry = ([2] の f32)、x = ([2] の f32)。")
+
+(defun %scan-snapshot (arrays)
+  "ARRAYS の各配列の中身を写した新しい配列のリスト。"
+  (mapcar (lambda (a)
+            (let ((copy (make-array (array-dimensions a) :element-type (array-element-type a))))
+              (dotimes (j (array-total-size a) copy)
+                (setf (row-major-aref copy j) (row-major-aref a j)))))
+          arrays))
+
+(test scan/eager-results-never-share-storage-with-inputs
+  "eager の scan が返す carry と ys は、init・xs・本体が捕まえたホストの配列のどれとも
+EQ にならず、結果を書き換えても入力は変わらない（長さ 0 を含む）。"
+  (is (check-it
+       (generator (tuple (integer 0 100000) (integer 0 3) (integer 0 2)))
+       (lambda (case)
+         (destructuring-bind (seed length body-index) case
+           (let* ((init (list (make-random-array (make-array-spec '(2) :f32) :seed seed)))
+                  (xs (list (make-random-array (make-array-spec (list length 2) :f32) :seed (1+ seed))))
+                  (inputs (append init xs (list *scan-host-constant*)))
+                  (before (%scan-snapshot inputs)))
+             (multiple-value-bind (carry ys) (nb:scan (nth body-index *scan-alias-bodies*) init xs)
+               (let ((outputs (append carry ys)))
+                 (dolist (out outputs)
+                   (fill (make-array (array-total-size out) :element-type (array-element-type out)
+                                                           :displaced-to out)
+                         -1.0))
+                 (and (notany (lambda (out) (member out inputs :test #'eq)) outputs)
+                      (every #'equalp before inputs)))))))
+       :regression-id scan/eager-results-never-share-storage-with-inputs
+       :regression-file (regression-path "scan-eager-results-fresh"))))
+
+(test scan/rejects-raw-16-bit-arrays
+  "dtype が一意に決まらない生の (unsigned-byte 16) の配列（bf16 / f16）を init や xs に
+渡すと SCAN-ERROR（トレーサで渡す）。"
+  (let ((body (nb:with-tracing (c x) x (values c '())))
+        (raw-carry (make-array 2 :element-type '(unsigned-byte 16) :initial-element 0))
+        (raw-xs (make-array '(3 2) :element-type '(unsigned-byte 16) :initial-element 0)))
+    (signals nb:scan-error (nb:scan body (list raw-carry) '() :length 1))
+    (signals nb:scan-error (nb:scan body (list (%scan-one '(2))) (list raw-xs)))))
 
 ;;; ---- 実数リテラル、ys の形、eqn の整合性検査（primitive-error） ----
 

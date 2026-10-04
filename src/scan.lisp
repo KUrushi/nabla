@@ -116,6 +116,12 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
     (dotimes (j size)
       (setf (row-major-aref target (+ (* index size) j)) (row-major-aref row j)))))
 
+(defun %scan-copy-array (array)
+  "ARRAY と同じ形・要素型・中身の、新しく確保した配列を返す。"
+  (let ((copy (make-array (array-dimensions array) :element-type (array-element-type array))))
+    (dotimes (j (array-total-size array) copy)
+      (setf (row-major-aref copy j) (row-major-aref array j)))))
+
 (defun %scan-eager (arrays in-avals &key num-consts num-carry length reverse body)
   (let ((out-avals (%scan-abstract-eval in-avals :num-consts num-consts :num-carry num-carry
                                                  :length length :reverse reverse :body body)))
@@ -133,7 +139,10 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
             (loop for target in ys
                   for y in (nthcdr num-carry results)
                   do (%scan-store-row target i y))))
-        (append carry ys)))))
+        ;; carry は init・本体の定数（閉包で捕まえたホストの配列）・consts をそのまま
+        ;; 返すことがある（長さ 0 なら init そのもの）。結果を書き換えて入力が変わらない
+        ;; よう、新しい配列に写して返す（ys は上で新しく確保している）。
+        (append (mapcar #'%scan-copy-array carry) ys)))))
 
 ;;; ---- StableHLO ----
 
@@ -343,7 +352,14 @@ while のオペランドが constant にならないので、定数で初期化�
     (t (%scan-error 'scan-error "~A はトレーサ・配列・実数でなければならない: ~S" what value))))
 
 (defun %scan-value-aval (value)
-  (if (typep value 'tracer) (tracer-aval value) (array-aval value)))
+  (if (typep value 'tracer)
+      (tracer-aval value)
+      ;; dtype が一意に決まらない配列（生の (unsigned-byte 16) の bf16 / f16）は
+      ;; aval を作れない。トレーサ（dtype を持つ）で渡してもらう。
+      (handler-case (array-aval value)
+        (dtype-mismatch ()
+          (%scan-error 'scan-error "配列の dtype を決められない（bf16 / f16 はトレーサで渡す）: ~S"
+                       value)))))
 
 (defun %scan-resolve-length (xs-avals length)
   "XS-AVALS の先頭の軸と LENGTH から繰り返し回数を決める（不整合は SCAN-LENGTH-ERROR）。"
@@ -401,15 +417,17 @@ XS は走査する配列（トレーサ・配列・実数）のリストで、�
 INIT と個数・shape・dtype が同じでなければならない（違えば SCAN-CARRY-MISMATCH）。
 
 LENGTH は繰り返し回数。XS が空のときは必須で、そうでなければ XS の先頭の軸の長さと
-一致しなければならない（SCAN-LENGTH-ERROR）。長さ 0 の scan は INIT をそのまま返し、
-ys は先頭の軸が 0 の空の配列になる。REVERSE が真なら添字 N-1 から 0 へ辿る
+一致しなければならない（SCAN-LENGTH-ERROR）。長さ 0 の scan は INIT と同じ値の carry を返し、
+ys は先頭の軸が 0 の空の配列になる。eager の結果の配列はどれも新しく確保したもので、
+INIT・XS・F が閉包で捕まえた配列と EQ にならない（結果を書き換えても入力は変わらない）。REVERSE が真なら添字 N-1 から 0 へ辿る
 （ys[t] には、そのときも添字 t のステップの y が入る）。
 
 F が閉包で捕まえた外側の値は、ループ不変な入力（consts）になる。トレース中
 （with-tracing・jit の中）でもその場（eager）でも使える。grad は scan を通る（jvp は #135、
 partial eval と transpose は #139。src/ad/rules-scan-reverse.lisp）。vmap は本体を再帰的に
 バッチ化する（xs / ys のバッチ軸は走査の軸の次、1）。引数や F の戻り値の形が不正なときは
-SCAN-ERROR。"
+SCAN-ERROR（INIT / XS に生の (unsigned-byte 16) の bf16 / f16 配列を渡したときも。
+トレーサで渡す）。"
   (unless (and (typep f 'traceable-function)
                (= 2 (length (traceable-function-lambda-list f))))
     (%scan-error 'scan-error "f は WITH-TRACING で作った2引数 (carry x) の関数でなければならない: ~S" f))
