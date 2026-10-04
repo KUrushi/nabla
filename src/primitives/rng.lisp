@@ -185,7 +185,12 @@ dynamic_slice → rng_bit_generator → dynamic_update_slice を回して、最�
 reshape して rng_bit_generator を1回呼ぶ。
 
 while の定数オペランド（カウンタとビットのバッファの 0 初期値）は optimization_barrier を
-通す（特定の版のバックエンドのコンパイラが落ちる回避策。docs/stablehlo-ops.md の制御構造の節）。"
+通す（特定の版のバックエンドのコンパイラが落ちる回避策。docs/stablehlo-ops.md の制御構造の節）。
+ビットのバッファは scan の ys と同じく扱う（issue #159）。本体の先頭で optimization_barrier に
+通してから dynamic_update_slice に渡し（通さないと、バックエンドのコンパイラがループの carry を
+本体で使うたびに丸ごとコピーする）、カウンタとビットのバッファの初期値は %SCAN-YS-INIT-LINES
+（カウンタの 0・スカラーの 0・モジュールの中で一意な整数を1つの barrier に通し、スカラーを
+broadcast_in_dim で広げてもう一度 barrier）で作る。状態の carry は小さいので barrier に通さない。"
   (let* ((rows (reduce #'* (%rng-lead-shape state-aval)))
          (p (format nil "%rng_~A" (subseq (first out-names) 1)))
          (flat-state-aval (make-aval (list rows 2) :u64))
@@ -207,12 +212,11 @@ while の定数オペランド（カウンタとビットのバッファの 0 �
                                           (list row-state-aval row-bits-aval))
                         (reshape (first out-names) (n "new") row-state-aval (first out-avals))
                         (reshape (second out-names) (n "bits") row-bits-aval (second out-avals)))
+                  (append
+                   (list
+                    (reshape (n "flat") in-name state-aval flat-state-aval))
+                  (%scan-ys-init-lines (n "i0") (list (n "b0")) (list all-bits-aval))
                   (list
-                   (reshape (n "flat") in-name state-aval flat-state-aval)
-                   (format nil "~A = stablehlo.constant dense<0> : ~A" (n "i0_c") i32)
-                   (%scan-zero-constant-line (n "b0_c") all-bits-aval)
-                   (format nil "~A, ~A = stablehlo.optimization_barrier ~A, ~A : ~A, ~A"
-                           (n "i0") (n "b0") (n "i0_c") (n "b0_c") (first types) (third types))
                    (format nil "~A, ~A, ~A = \"stablehlo.while\"(~A, ~A, ~A) ({"
                            (n "n") (n "states") (n "allbits") (n "i0") (n "flat") (n "b0"))
                    ;; cond: カウンタ < 行数
@@ -226,6 +230,7 @@ while の定数オペランド（カウンタとビットのバッファの 0 �
                    ;; body: i 行目の状態を読み、rng_bit_generator の結果を i 行目に書く
                    (format nil "^bb0(~A: ~A, ~A: ~A, ~A: ~A):"
                            (n "i") (first types) (n "s") (second types) (n "b") (third types))
+                   (format nil "~A = stablehlo.optimization_barrier ~A : ~A" (n "bk") (n "b") (third types))
                    (format nil "~A = stablehlo.constant dense<0> : ~A" (n "z") i32)
                    (format nil "~A = stablehlo.dynamic_slice ~A, ~A, ~A, sizes = [1, 2] : (~A, ~A, ~A) -> ~A"
                            (n "slice") (n "s") (n "i") (n "z") (second types) i32 i32
@@ -239,7 +244,7 @@ while の定数オペランド（カウンタとビットのバッファの 0 �
                            (n "s2") (n "s") (n "onestate") (n "i") (n "z")
                            (second types) (tensor-type-string one-state-aval) i32 i32 (second types))
                    (format nil "~A = stablehlo.dynamic_update_slice ~A, ~A, ~A~{, ~A~} : (~A, ~A, ~A) -> ~A"
-                           (n "b2") (n "b") (n "onebits") (n "i")
+                           (n "b2") (n "bk") (n "onebits") (n "i")
                            (make-list (length shape) :initial-element (n "z"))
                            (third types) (tensor-type-string one-bits-aval)
                            (%scan-index-types (1+ (length shape))) (third types))
@@ -248,7 +253,7 @@ while の定数オペランド（カウンタとビットのバッファの 0 �
                    (format nil "stablehlo.return ~A, ~A, ~A : ~{~A~^, ~}" (n "next") (n "s2") (n "b2") types)
                    (format nil "}) : (~{~A~^, ~}) -> (~{~A~^, ~})" types types)
                    (reshape (first out-names) (n "states") flat-state-aval (first out-avals))
-                   (reshape (second out-names) (n "allbits") all-bits-aval (second out-avals))))))))
+                   (reshape (second out-names) (n "allbits") all-bits-aval (second out-avals)))))))))
 
 (defprimitive rng-bit-generator (:shape :dtype)
   :multiple-outputs t

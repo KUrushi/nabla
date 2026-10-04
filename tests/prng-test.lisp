@@ -394,6 +394,36 @@ n = 200000。"
     (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" single)))
     (is (zerop (%prng-count-of "stablehlo.while" single)))))
 
+(test prng/rng-batched-emit-passes-bits-through-barriers
+  "2行以上の状態の StableHLO は、ビットのバッファを scan の ys と同じく扱う（issue #159）。本体の先頭で
+carry のバッファ（<p>_b）を optimization_barrier に通し、その結果（<p>_bk）を dynamic_update_slice に
+渡す。初期値は、カウンタの 0 とスカラーの 0 を一意な整数と一緒に1つの barrier に通し、スカラーを
+broadcast_in_dim で広げてもう一度 barrier に通す。状態の carry（<p>_s）は barrier に通さない。
+1行の状態には barrier が無い。"
+  (let* ((text (%prng-emit-rng '(3 2) '(4) :u32))
+         (lines (mapcar (lambda (line) (string-trim " " line))
+                        (uiop:split-string text :separator '(#\Newline))))
+         (rng-line (find-if (lambda (line) (search "stablehlo.rng_bit_generator" line)) lines))
+         (p (subseq rng-line 0 (search "new," rng-line))))
+    (flet ((has-prefix (prefix)
+             (find-if (lambda (line) (eql 0 (search prefix line))) lines)))
+      (is (has-prefix (format nil "~Abk = stablehlo.optimization_barrier ~Ab :" p p))
+          "本体でビットのバッファが barrier を通っていない")
+      (is (has-prefix (format nil "~Ab2 = stablehlo.dynamic_update_slice ~Abk," p p))
+          "ビットの dynamic_update_slice が barrier の結果を受け取っていない")
+      (is-true (let ((line (has-prefix (format nil "~Ai0, ~Ab0_s, ~Ai0_u = stablehlo.optimization_barrier " p p p))))
+                 (and line (search (format nil "~Ai0_c, ~Ab0_c, ~Ai0_u_c :" p p p) line)))
+               "カウンタとビットの初期値のスカラーが一意な整数と一緒に1つの barrier を通っていない")
+      (is (has-prefix (format nil "~Ab0_b = stablehlo.broadcast_in_dim ~Ab0_s," p p))
+          "ビットの初期値が barrier を通したスカラーの broadcast_in_dim で作られていない")
+      (is (has-prefix (format nil "~Ab0 = stablehlo.optimization_barrier ~Ab0_b :" p p))
+          "広げたビットの初期値が barrier を通っていない")
+      (is (has-prefix (format nil "~As2 = stablehlo.dynamic_update_slice ~As," p p))
+          "状態の dynamic_update_slice が carry をそのまま受け取っていない")
+      (is (= 3 (%prng-count-of "stablehlo.optimization_barrier" text))
+          "barrier は初期値の2つと本体の1つだけ（状態の carry には付けない）")))
+  (is (zerop (%prng-count-of "stablehlo.optimization_barrier" (%prng-emit-rng '(1 2) '(4) :u32)))))
+
 (def-prng-property prng/rng-batched-emit-size-is-independent-of-rows
   "バッチ次元つきの状態の StableHLO の行数は、行数（2行以上。バッチ次元が1段でも2段でも）に
 依らない（issue #164: 行ごとに展開するとコンパイル時間が行数とともに伸びる）。"

@@ -51,6 +51,55 @@
                 "状態の shape ~S・bits の shape ~S・dtype ~S: IREE が eager と一致しなかった"
                 state-shape shape dtype)))))))
 
+;; ビットのバッファは本体で optimization_barrier を通して in-place に書き換える（issue #159 と同じ
+;; 回避）。入力のデバイス配列や前の呼び出しの出力と記憶を共有してしまうと、2回目の呼び出しで
+;; 結果が変わる。それを同じデバイス配列で2回呼んで確かめる。
+(define-iree-test iree/prng/batched-rng-same-device-input-twice-gives-identical-bits
+  "同じデバイス上の状態で、バッチされた rng-bit-generator のモジュールを2回呼ぶと、2回とも
+同じ（eager と一致する）状態とビットを返し、入力の状態も書き換わらない。"
+  (skip-unless-iree :library :both)
+  (let* ((backend (nabla:find-backend :iree))
+         (nb:*compile-cache-directory* nil)
+         (states (%prng-iree-states '(5 2) 11))
+         (graph (%prng-iree-batched-graph '(5 2) '(3 4) :u32))
+         (eager (multiple-value-list (nb:eval-graph graph states)))
+         (module (nabla:backend-load
+                  backend (nabla:backend-compile backend (nb:emit-stablehlo graph)))))
+    (unwind-protect
+         (let ((device (to-device states backend :dtype :u64)))
+           (unwind-protect
+                (flet ((call ()
+                         (let ((outputs (multiple-value-list
+                                         (nabla:backend-invoke backend module "main" device))))
+                           (unwind-protect (mapcar #'to-host outputs)
+                             (mapc #'release-device-array outputs)))))
+                  (let* ((first-call (call))
+                         (second-call (call)))
+                    (is (equalp first-call second-call) "2回目の呼び出しの結果が1回目と違う")
+                    (is (equalp first-call eager) "1回目の呼び出しの結果が eager と違う")
+                    (is (equalp (to-host device) states) "入力の状態が書き換わった")))
+             (release-device-array device)))
+      (nabla:backend-unload backend module))))
+
+(define-iree-test iree/prng/two-batched-rngs-on-the-same-state-do-not-share-a-buffer
+  "同じ状態からバッチされた rng-bit-generator を2回呼ぶ graph（ビットのバッファの型も同じ）でも、
+2つの出力がそれぞれ eager と一致する。ビットのバッファの初期値の barrier が CSE でまとめられると、
+2つのループが同じバッファに書き込む（scan の ys と同じ。docs/stablehlo-ops.md）。"
+  (skip-unless-iree :library :both)
+  (let* ((backend (nabla:find-backend :iree))
+         (nb:*compile-cache-directory* nil)
+         (states (%prng-iree-states '(4 2) 12))
+         (graph (nb:trace-to-graph
+                 (nb:with-tracing (s)
+                   (multiple-value-bind (s1 b1) (nb::rng-bit-generator s :shape '(5) :dtype :u32)
+                     (multiple-value-bind (s2 b2) (nb::rng-bit-generator s1 :shape '(5) :dtype :u32)
+                       (multiple-value-bind (s3 b3) (nb::rng-bit-generator s :shape '(5) :dtype :u32)
+                         (values s2 b1 b2 s3 b3)))))
+                 (list (nb:make-aval '(4 2) :u64))))
+         (iree (%prng-iree-run backend graph states))
+         (eager (multiple-value-list (nb:eval-graph graph states))))
+    (is (equalp iree eager) "同じ状態から2回・続けて1回呼んだバッチされた rng が eager と一致しなかった")))
+
 (defun %prng-iree-jit-matches-eager (name fn args &key (rtol 1d-4) (atol 1d-5) exact)
   (let* ((backend (nabla:find-backend :iree))
          (nb:*compile-cache-directory* nil)
