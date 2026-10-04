@@ -99,7 +99,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **`rng-bit-generator`（#133）**: `stablehlo.rng_bit_generator`（`THREE_FRY`）に対応する複数出力のプリミティブ。状態は `ui64[2]` で、`[0]` = 鍵（下位32ビット = key0、上位32ビット = key1）、`[1]` = カウンタ。新しい状態は鍵を保ち、カウンタを生成した64ビット単位の個数だけ進める。eager は IREE の lowering（`StableHLOToLinalgRandom`）を写した Threefry-2x32 で、**eager == IREE（local）== PJRT（XLA CPU）が23通りの形状 × `:u32` / `:u64` でビット単位で一致する**。XLA 自身の実装ではなく IREE の lowering を写したのは、IREE との一致を保証するため。
 - **キー**: `:u32` の `(2)`。状態 `ui64[2]` への写像は `[k0 | k1<<32, カウンタ]`（`bitcast-convert` で2語を1語にする）。`uniform` / `normal` / `split` はカウンタ 0 から、`fold-in` はカウンタ 2^32 + data から始める（引く量が 2^32 未満なら重ならない）。ビットは常に1次元で作って reshape する（多次元の `:u32` の配置と状態の進みが形に依存するため）。
 - **JAX とビット単位では一致しない**: JAX は `threefry_2x32` を直接呼ぶ（nabla は `rng_bit_generator` の上に組んでいる）。統計的性質（平均・分散・KS 検定・裾・相関）で検査し、JAX 0.10.2 の既知の答え（zero 状態と形 `(3 3 3)` の `:u32`）は `rng-bit-generator` のテストにある。
-- `uniform` は仮数部トリック（f32 は23ビット、f64 は52ビット）。`normal` は erf の逆関数（Giles の単精度近似、JAX の f32 と同じ係数、相対誤差は 1e-6 程度。実測は #166）。**f64 でも同じ近似を使うので、裾の精度は f32 並み**（過小評価がある。docstring に記載）。Box–Muller は sin / cos のプリミティブが無いので採用しなかった。
+- `uniform` は仮数部トリック（f32 は23ビット、f64 は52ビット）。`normal` は erf の逆関数（Giles の近似。f32 は JAX の f32 と同じ単精度用の係数、f64 は XLA の f64 と同じ倍精度用の係数）。相対誤差の実測は f32 で最大 2.0e-7、f64 で最大 4.9e-16（#166 で f64 用の近似を足した。それまでは f64 でも単精度用を使い、裾で最大 12% 過小評価していた）。Box–Muller は sin / cos のプリミティブが無いので採用しなかった。
 - **バッチされた rng の emit は行ごとに展開する**: プリミティブは状態の先頭にバッチ次元を許す（`ui64[..., 2]`、各行は単独呼び出しとビット一致）が、StableHLO は `ui64[2]` しか受けないので、emit は行ごとに slice → `rng_bit_generator` → concatenate に展開する。コンパイル時間は行数で急に増える（IREE local の実測: 32行 4.0 秒、64行 6.9 秒、256行 42.8 秒。入れ子の `vmap` は積）。実用の目安は 64行程度まで。将来の対処は `scan` 化。
 
 ### 3.9 整数 dtype
@@ -150,14 +150,14 @@ IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピ�
 - **バッチされた rng の emit が行ごとの展開**（§3.8。#164 で `scan` 化を扱う）。行数が数百になるとコンパイルが数十秒。`scan` 化が将来策。
 - **`while-loop` の逆モード（`grad`）は対応しない**（§3.5）。`scan` で書く。
 - **IREE 3.11 の `:i1` carry のバグは回避策が無い**（§3.12 の 2。比較由来の `:i1` の carry を持つ while の結果を jit の戻り値にしない）。
-- **f64 の `normal` の裾は f32 並みの精度**（erf の逆関数の単精度近似を使う。§3.8。#166）。
+- f64 の `normal` の裾が f32 並みの精度だった件は、#166 で倍精度用の erf の逆関数の近似を足して解消した（§3.8）。
 - **PJRT では `:i1` が未対応のまま**（`PRED` に写していない。`unsupported-dtype`）。したがって `:i1` を入力・出力にする PJRT のテストは無い。`cond*` の `pred` の rank 0 `:i1` は graph の内部の値なので動く。
 - **PRNG は JAX とビット単位で一致しない**（§3.8）。`rng_bit_generator` の `:i32` のビットと Philox / `DEFAULT` は未対応。
 - **`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」は変わらない**（`cond*` / `while-loop` / `scan` の本体は closure conversion で捕まえられるが、`grad` / `vmap` の `f` は不可）。
 - **`vmap` / `grad` は `f` がリストを返せない**（`(with-tracing ... (values-list ...))` で包む。フェーズ4の PyTree で解消する見込み）。
 - **`(vmap f)` / `(grad f)` は呼ぶたびに新しい関数オブジェクト**を作り、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため）。
 - **重複した捕捉値の dedupe は見送り**（`while-loop`。同じトレーサを複数の本体が捕まえると、オペランドが重複する。結果は正しい）。
-- **#166 にまとめた小さな積み残し**: f64 `normal` の裾、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe は上の項目のとおり。
+- **#166 にまとめた小さな積み残し**: f64 `normal` の裾（解消済み）、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe は上の項目のとおり。
 - **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。
 - **#73**: フェーズ1から引き続き（IREE 上流への報告。#68 の in-process コンパイラのメモリ破壊は閉じている）。
 - **#165**: 上の IREE 3.11 の while のバグ2つ（§3.12 の 1 と 2）を上流へ報告し、回避策を消す時期を決める。

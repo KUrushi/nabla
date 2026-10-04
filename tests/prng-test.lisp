@@ -488,3 +488,81 @@ slice も concatenate も出さない。"
           (is (allclose batched
                         (first (reference-vmap f (list keys x)))
                         :dtype :f32)))))
+
+;;; --- erf の逆関数の精度（issue #166 (a)） ---
+;;;
+;;; normal の裾（u が ±1 に近い所）は乱数では事実上引けないので、normal が使う erf の逆関数
+;;; （内部関数）を、Lisp の多倍長固定小数点で求めた参照値と直接比べる。
+
+(defconstant +erf-ref-bits+ 256
+  "参照値の固定小数点の小数部のビット数（erf の級数の打ち消し e^(y^2) ≈ 2^52 を吸収して余る）。")
+
+(defun %erf-ref-fixed (r)
+  (round (* r (expt 2 +erf-ref-bits+))))
+
+(defun %erf-ref-sqrt-pi ()
+  "√π の固定小数点（π は Machin の公式 16 atan(1/5) - 4 atan(1/239)）。"
+  (flet ((atan-inv (n)
+           (loop with term = (%erf-ref-fixed (/ 1 n))
+                 for k from 0
+                 until (zerop term)
+                 sum (* (if (evenp k) 1 -1) (round term (1+ (* 2 k))))
+                 do (setf term (round term (* n n))))))
+    (isqrt (* (- (* 16 (atan-inv 5)) (* 4 (atan-inv 239))) (expt 2 +erf-ref-bits+)))))
+
+(defparameter *erf-ref-sqrt-pi* (%erf-ref-sqrt-pi))
+
+(defun %erf-ref (y)
+  "erf(Y)（Y は 0 以上の有理数）の固定小数点。erf(y) = 2/√π Σ (-1)^n y^(2n+1) / (n! (2n+1))。"
+  (loop with term = (%erf-ref-fixed y)
+        for n from 0
+        until (and (> n 2) (zerop term))
+        sum (* (if (evenp n) 1 -1) (round term (1+ (* 2 n)))) into sum
+        do (setf term (round (* term y y) (1+ n)))
+        finally (return (round (* 2 sum (expt 2 +erf-ref-bits+)) *erf-ref-sqrt-pi*))))
+
+(defun %erf-inv-ref (x)
+  "erf の逆関数の参照値（X は (-1, 1) の有理数、結果は有理数）。二分法で近づけてから
+Newton 法 y ← y - (erf(y) - x) √π/2 e^(y^2) で更新が 2^-150 を下回るまで詰める（裾では固定小数点の
+丸めが e^(y^2) ≈ 2^52 倍に増幅されるので、更新は 2^-200 程度より小さくならない）。"
+  (cond ((minusp x) (- (%erf-inv-ref (- x))))
+        ((zerop x) 0)
+        (t (let ((target (%erf-ref-fixed x)) (lo 0) (hi 7))
+             (dotimes (i 40)
+               (let ((mid (/ (+ lo hi) 2)))
+                 (if (< (%erf-ref mid) target) (setf lo mid) (setf hi mid))))
+             (loop with y = lo
+                   for exp-y2 = (loop with term = (%erf-ref-fixed 1)
+                                      for n from 1 until (zerop term)
+                                      sum term
+                                      do (setf term (round (* term y y) n)))
+                   for step = (/ (* (- (%erf-ref y) target) *erf-ref-sqrt-pi* exp-y2)
+                                 (* 2 (expt 2 (* 3 +erf-ref-bits+))))
+                   do (setf y (/ (%erf-ref-fixed (- y step)) (expt 2 +erf-ref-bits+)))
+                   until (< (abs step) (expt 2 -150))
+                   finally (return y))))))
+
+(defparameter *erf-inv-rtol* '((:f32 1d-6) (:f64 2d-15))
+  "erf の逆関数の相対誤差の上限。実測（650 点）の最大は f32 で 2.0e-7、f64 で 4.9e-16
+（src/prng.lisp の冒頭）。f64 の上限は f32 用の近似（u = 1 - 2^-53 で 12% ずれる）を確実に落とす。")
+
+(def-prng-property prng/erf-inv-matches-high-precision-reference
+  "normal が使う erf の逆関数（:f32 / :f64）の相対誤差が *ERF-INV-RTOL* 以内。x = ±(1 - m 2^-k)
+（k は 0 から dtype の仮数部のビット数まで。f64 は u = 1 - 2^-53、√2 倍で約 8.29 の裾まで）。"
+  (f64 sign k m)
+  (generator (tuple (uniform-integer :lo 0 :hi 1) (uniform-integer :lo 0 :hi 1)
+                    (uniform-integer :lo 0 :hi 52) (uniform-real :lo 0.5d0 :hi 1d0)))
+  (let* ((dtype (if (= f64 1) :f64 :f32))
+         (type (if (eq dtype :f64) 'double-float 'single-float))
+         (one (coerce 1 type))
+         (magnitude (- one (coerce (scale-float m (- (min k (if (eq dtype :f64) 52 23)))) type)))
+         (x (if (= sign 1) (- magnitude) magnitude))
+         (y (aref (nb::%prng-dispatch (list (make-array 1 :element-type type :initial-element x))
+                                      #'nb::%prng-erf-inv)
+                  0))
+         (reference (%erf-inv-ref (rational x))))
+    (or (<= (abs (- (rational y) reference))
+            (* (second (assoc dtype *erf-inv-rtol*)) (abs reference)))
+        (progn (format t "~&erf-inv ~S x = ~S: ~S, 参照値 ~S~%" dtype x y
+                       (coerce reference 'double-float))
+               nil))))
