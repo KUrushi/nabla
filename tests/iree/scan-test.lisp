@@ -155,3 +155,66 @@ AffinityAnalysis が非決定的に落ちる（docs/stablehlo-ops.md）。carry 
              (actual (multiple-value-list (funcall jitted h s xs)))
              (expected (multiple-value-list (funcall f h s xs))))
         (is (every (lambda (a e) (allclose a e :dtype :f32)) actual expected))))))
+
+;;; ---- ys の書き込みの性能（issue #159） ----
+
+(define-iree-test scan/iree-same-typed-ys-do-not-share-a-buffer
+    "同じ形と dtype の ys が2つある scan（jvp / vjp の scan はこの形になる）も IREE と eager で一致する。
+ys のバッファは in-place に書き換えるので、0 の初期値が CSE で1つのバッファにまとめられると、
+2つの ys が同じ値になってしまう（issue #159）。"
+  (skip-unless-iree :library :both)
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (h xs)
+                  (multiple-value-bind (carry ys)
+                      (nb:scan (nb:with-tracing (carry x)
+                                 (let ((h (+ (first carry) (first x))))
+                                   (values (list h) (list h (- h)))))
+                               (list h) (list xs))
+                    (values (first carry) (first ys) (second ys))))
+                (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 3) :f32)))))
+    (%with-scan-iree-check (graph "same-typed-ys") "IREE の同じ型の ys が2つある scan の結果が eager と一致しなかった")))
+
+
+(defun %scan-ys-cost-graph (length width with-ys)
+  "carry h:f32 [WIDTH] を LENGTH 回 tanh(h)+h で更新する scan の graph。WITH-YS なら各 h を ys に積んで返す。"
+  (nb::trace-to-graph
+   (nb:with-tracing (h)
+     (multiple-value-bind (carry ys)
+         (nb:scan (nb:with-tracing (carry x)
+                    x
+                    (let ((h (+ (tanh (first carry)) (first carry))))
+                      (values (list h) (if with-ys (list h) '()))))
+                  (list h) '() :length length)
+       (if with-ys (values (first carry) (first ys)) (first carry))))
+   (list (nb:make-aval (list width) :f32))))
+
+(defun %scan-ys-cost-best-ms (backend graph repeats)
+  "GRAPH をコンパイルし、REPEATS 回の backend-invoke（結果はデバイスに置いたまま）の最短時間（ミリ秒）。"
+  (let ((module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph))))
+        (input (to-device (make-random-array (make-array-spec (nb:aval-shape (nb:var-aval (first (nb:graph-invars graph))))
+                                                              :f32)
+                                             :seed 0)
+                          backend :dtype :f32)))
+    (unwind-protect
+         (loop repeat repeats
+               minimize (let* ((start (get-internal-real-time))
+                               (results (multiple-value-list
+                                         (nabla:backend-invoke backend module "main" input)))
+                               (end (get-internal-real-time)))
+                          (mapc #'release-device-array results)
+                          (/ (* 1000.0 (- end start)) internal-time-units-per-second)))
+      (release-device-array input)
+      (nabla:backend-unload backend module))))
+
+(define-iree-test scan/iree-ys-write-cost-is-linear-in-length
+    "ys を積む scan の実行時間は、ys を積まない同じ scan と同程度（ys の書き込みが1行ぶんの
+コピーで済み、ys のバッファ全体を毎ステップコピーしない）。IREE 3.11 は while の carry を
+本体で使うたびに丸ごとコピーするので、何もしないと長さ 1000 × 幅 1024 で約 50 倍遅い
+（docs/stablehlo-ops.md、issue #159）。タイミングの揺れで落ちないよう、最短時間の比較に
+5 倍 + 100 ms の余裕を持たせる。"
+  (skip-unless-iree :library :both)
+  (let* ((backend (nabla:find-backend :iree))
+         (without-ys (%scan-ys-cost-best-ms backend (%scan-ys-cost-graph 1000 1024 nil) 3))
+         (with-ys (%scan-ys-cost-best-ms backend (%scan-ys-cost-graph 1000 1024 t) 3)))
+    (is (<= with-ys (+ (* 5 without-ys) 100))
+        "ys あり ~,1F ms、ys なし ~,1F ms（許容は ys なしの 5 倍 + 100 ms）" with-ys without-ys)))
