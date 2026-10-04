@@ -156,8 +156,8 @@ IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピ�
 - **`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」は変わらない**（`cond*` / `while-loop` / `scan` の本体は closure conversion で捕まえられるが、`grad` / `vmap` の `f` は不可）。
 - **`vmap` / `grad` は `f` がリストを返せない**（`(with-tracing ... (values-list ...))` で包む。フェーズ4の PyTree で解消する見込み）。
 - **`(vmap f)` / `(grad f)` は呼ぶたびに新しい関数オブジェクト**を作り、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため）。
-- **重複した捕捉値の dedupe は見送り**（`while-loop`。同じトレーサを複数の本体が捕まえると、オペランドが重複する。結果は正しい）。
-- **#166 にまとめた小さな積み残し**: f64 `normal` の裾、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe は上の項目のとおり。
+- **`while-loop` の捕捉値の重複は取り除いた**（#166 の d。2026-10-04）。cond と body が同じトレーサを捕まえても、オペランド（StableHLO の while の carry）には1回だけ現れる（`cond*` と同じく、両方のサブグラフの invars を「carry、捕捉値の和集合」に揃える）。
+- **#166 にまとめた小さな積み残し**: f64 `normal` の裾、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe（解消済み）は上の項目のとおり。
 - **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。
 - **#73**: フェーズ1から引き続き（IREE 上流への報告。#68 の in-process コンパイラのメモリ破壊は閉じている）。
 - **#165**: 上の IREE 3.11 の while のバグ2つ（§3.12 の 1 と 2）を上流へ報告し、回避策を消す時期を決める。
