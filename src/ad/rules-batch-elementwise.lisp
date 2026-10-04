@@ -10,11 +10,13 @@
 (defun %elementwise-common-axis (batch-dims)
   "BATCH-DIMS（各引数のバッチ軸か NIL）から、揃える先の軸を多数決で決める。バッチされた
 引数のうち最も多くが共有する軸を選び、transpose する引数の数を最小にする（issue #166）。
-同数の軸が複数あるときは最も小さい軸を選ぶ（引数の順序に依らず決まる）。"
+同数の軸が複数あるときは最も小さい軸を選ぶ（引数の順序に依らず決まる）。
+REMOVE / REMOVE-DUPLICATES の結果は BATCH-DIMS と構造を共有しうるので、破壊的な SORT の前に
+COPY-LIST する（呼び出し側のリストを壊さない）。"
   (let* ((dims (remove nil batch-dims))
          (votes (lambda (d) (count d dims)))
          (most (reduce #'max (mapcar votes dims))))
-    (find most (sort (remove-duplicates dims) #'<) :key votes)))
+    (find most (sort (copy-list (remove-duplicates dims)) #'<) :key votes)))
 
 (defun %batch-elementwise (name args batch-dims params)
   "形の揃った要素演算 NAME（PARAMS はそのプリミティブのパラメータの plist）のバッチ化。

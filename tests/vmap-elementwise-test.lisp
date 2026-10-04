@@ -225,3 +225,20 @@ eqn の名前のリスト（引数を揃えるために足された eqn）。"
            :regression-id vmap/elementwise-transposes-only-the-minority-operands
            :regression-file (regression-path "vmap-elementwise"))
           "~S" name))))
+
+(test vmap/elementwise-common-axis-tie-picks-the-smallest-axis
+  "最も多くの引数が共有する軸が同数で複数あるときは、引数の順序に依らず最も小さい軸を選ぶ。
+呼び出し側の BATCH-DIMS のリストは壊さない。"
+  (is (= 0 (nb::%elementwise-common-axis (list 2 0 nil))))
+  (is (= 0 (nb::%elementwise-common-axis (list 0 2))))
+  (is (= 1 (nb::%elementwise-common-axis (list 2 1 1 2))))
+  (is (= 1 (nb::%elementwise-common-axis (list nil 3 1))))
+  (let ((batch-dims (list 2 nil 1 0)))
+    (is (= 0 (nb::%elementwise-common-axis batch-dims)))
+    (is (equal '(2 nil 1 0) batch-dims))))
+
+(test vmap/elementwise-common-axis-majority-beats-the-first-argument
+  "先頭の引数の軸より、より多くの引数が共有する軸を選ぶ。"
+  (is (= 0 (nb::%elementwise-common-axis (list 2 0 0))))
+  (is (= 1 (nb::%elementwise-common-axis (list nil 0 1 1))))
+  (is (= 2 (nb::%elementwise-common-axis (list 0 2 2)))))
