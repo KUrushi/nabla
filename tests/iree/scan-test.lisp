@@ -206,12 +206,13 @@ ys のバッファは in-place に書き換えるので、0 の初期値が CSE 
       (release-device-array input)
       (nabla:backend-unload backend module))))
 
-(define-iree-test scan/iree-ys-write-cost-is-linear-in-length
+(define-iree-test/large scan/iree-ys-write-cost-is-linear-in-length
     "ys を積む scan の実行時間は、ys を積まない同じ scan と同程度（ys の書き込みが1行ぶんの
 コピーで済み、ys のバッファ全体を毎ステップコピーしない）。IREE 3.11 は while の carry を
 本体で使うたびに丸ごとコピーするので、何もしないと長さ 1000 × 幅 1024 で約 50 倍遅い
 （docs/stablehlo-ops.md、issue #159）。タイミングの揺れで落ちないよう、最短時間の比較に
-5 倍 + 100 ms の余裕を持たせる。"
+5 倍 + 100 ms の余裕を持たせる。実行時間はマシンの負荷で揺れるので large に置き、既定のスイートでは
+出力の形を検査する scan/emits-ys-buffers-through-barriers（tests/scan-test.lisp）で守る。"
   (skip-unless-iree :library :both)
   (let* ((backend (nabla:find-backend :iree))
          (without-ys (%scan-ys-cost-best-ms backend (%scan-ys-cost-graph 1000 1024 nil) 3))

@@ -170,7 +170,7 @@ IREE 3.11 のコンパイラバグの回避: cond を決める carry が `stable
 | 1000 | 20〜40 ms | 956 ms | 20 ms |
 | 4000 | 48〜116 ms | 16488 ms | 64〜256 ms |
 
-  守るテストは `tests/iree/scan-test.lisp` の `scan/iree-ys-write-cost-is-linear-in-length`（長さ 1000 で ys ありが ys なしの 5 倍 + 100 ms 以内。回避前は 748 ms 対 20 ms で落ちる）と `scan/iree-same-typed-ys-do-not-share-a-buffer`
+  守るテストは、出力の形を検査する small テスト `tests/scan-test.lisp` の `scan/emits-ys-buffers-through-barriers`（本体で ys ごとに barrier を通して dynamic_update_slice に渡すこと、初期値が ys ごとに別の broadcast_in_dim + barrier の組であること、長さ 1 ではどちらも無いこと）、実行時間を測る large テスト `tests/iree/scan-test.lisp` の `scan/iree-ys-write-cost-is-linear-in-length`（長さ 1000 で ys ありが ys なしの 5 倍 + 100 ms 以内。回避前は 748 ms 対 20 ms で落ちる。時間は負荷で揺れるので既定のスイートには入れない）と `scan/iree-same-typed-ys-do-not-share-a-buffer`
 
 長さ 0 の scan は、`dynamic_slice` の切り出し幅 1 が長さ 0 の軸を超えて不正になるので `while` を出さない。carry は入力と同じ型の `stablehlo.reshape` で素通しにし、ys は `stablehlo.constant dense<> : tensor<0x...>` にする（この形を IREE が受け付けることを確認済み）。
 
