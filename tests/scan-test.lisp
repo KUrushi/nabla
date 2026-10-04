@@ -98,7 +98,7 @@ ys の形・dtype が混ざる（[n]、[k]、i32 スカラー）。")
        :regression-file (regression-path "scan-matches-lisp-loop"))))
 
 (test scan/length-zero-returns-init-and-empty-ys
-  "長さ 0 の scan は init をそのまま返し、ys は先頭の軸が 0 の空の配列になる。"
+  "長さ 0 の scan は init と同じ値（新しい配列）を返し、ys は先頭の軸が 0 の空の配列になる。"
   (multiple-value-bind (init xs) (%scan-mixed-case 3 0 2 3 :f32)
     (multiple-value-bind (carry ys) (nb:scan *scan-mixed* init xs)
       (is (every #'equalp carry init))
@@ -205,6 +205,105 @@ reverse のときだけ添字を length-1 から引く。"
     (is (null (search "stablehlo.subtract" forward)))
     (is (search "stablehlo.subtract" backward))))
 
+(defun %scan-two-ys-graph (length)
+  "carry h:f32 [3] と、同じ形と dtype の ys を2つ (h, -h) 持つ長さ LENGTH の scan の graph。"
+  (nb::trace-to-graph
+   (nb:with-tracing (h xs)
+     (multiple-value-bind (carry ys)
+         (nb:scan (nb:with-tracing (carry x)
+                    (let ((h (+ (first carry) (first x))))
+                      (values (list h) (list h (- h)))))
+                  (list h) (list xs))
+       (values (first carry) (first ys) (second ys))))
+   (list (nb:make-aval '(3) :f32) (nb:make-aval (list length 3) :f32))))
+
+(defun %scan-text-lines (text)
+  (mapcar (lambda (line) (string-trim " " line)) (uiop:split-string text :separator '(#\Newline))))
+
+(defun %scan-line-defining (lines name)
+  "LINES のうち NAME を（多出力の左辺の1つとしても）定義する行。"
+  (find-if (lambda (line)
+             (let ((eq (search " = " line)))
+               (and eq (member name (uiop:split-string (subseq line 0 eq) :separator '(#\, #\Space))
+                               :test #'string=))))
+           lines))
+
+(test scan/emits-ys-buffers-through-barriers
+  "長さ 2 以上の scan は、本体で ys のバッファ（%<p>by<j>）をそれぞれ optimization_barrier に通し、
+その結果（%<p>bk<j>）を dynamic_update_slice に渡す。初期値は ys ごとに broadcast_in_dim と
+optimization_barrier の組を1つずつ持ち、同じ型の2つの ys も別々のバッファになる。長さ 1 の scan は
+どちらも持たない（issue #159。実行時間ではなく出力の形で、in-place の書き込みを守る）。"
+  (let* ((lines (%scan-text-lines (nb:emit-stablehlo (%scan-two-ys-graph 4))))
+         (bb0 (find-if (lambda (line) (and (search "^bb0(" line) (search "bi: " line))) lines))
+         (prefix (subseq bb0 (length "^bb0(") (search "bi: " bb0)))
+         (while-line (find-if (lambda (line) (search "\"stablehlo.while\"(" line)) lines))
+         (operands (uiop:split-string
+                    (subseq while-line (+ (search "(" while-line :start2 (search "while" while-line)) 1)
+                            (search ")" while-line))
+                    :separator '(#\, #\Space)))
+         (ys-init (last (remove "" operands :test #'string=) 2)))
+    (dotimes (j 2)
+      (let ((by (format nil "~Aby~D" prefix j))
+            (bk (format nil "~Abk~D" prefix j)))
+        (is (member (format nil "~A = stablehlo.optimization_barrier ~A : tensor<4x3xf32>" bk by) lines
+                    :test #'string=)
+            "~A が optimization_barrier に通されていない" by)
+        (is (find-if (lambda (line) (search (format nil "stablehlo.dynamic_update_slice ~A," bk) line)) lines)
+            "dynamic_update_slice が ~A を受け取っていない" bk)))
+    (is (= 2 (length (remove-duplicates ys-init :test #'string=)))
+        "同じ型の2つの ys の初期値が同じバッファ: ~S" ys-init)
+    (let ((broadcast-sources '()))
+      (dolist (name ys-init)
+        (let* ((def (%scan-line-defining lines name))
+               (source (and def (search "stablehlo.optimization_barrier " def)
+                            (string-right-trim
+                             " " (subseq def (+ (search "optimization_barrier " def) (length "optimization_barrier "))
+                                         (search " :" def)))))
+               (source-def (and source (%scan-line-defining lines source))))
+          (is (and source-def (search "stablehlo.broadcast_in_dim" source-def))
+              "ys の初期値 ~A が broadcast_in_dim → optimization_barrier の組で作られていない: ~S" name def)
+          (when source-def
+            (push (subseq source-def (+ (search "broadcast_in_dim " source-def) (length "broadcast_in_dim "))
+                          (search "," source-def))
+                  broadcast-sources))))
+      (is (= 2 (length (remove-duplicates broadcast-sources :test #'string=)))
+          "2つの ys の broadcast_in_dim が同じスカラーを広げている: ~S" broadcast-sources)))
+  (let ((text (nb:emit-stablehlo (%scan-two-ys-graph 1))))
+    (is (null (search "optimization_barrier" text)) "長さ 1 の scan に optimization_barrier がある")
+    (is (null (search "broadcast_in_dim" text)) "長さ 1 の scan の ys の初期値が broadcast_in_dim で作られている")
+    (is (null (search "bk0" text)) "長さ 1 の scan の本体に ys の barrier がある")))
+
+(test scan/emits-a-distinct-salt-for-each-scan-ys-init
+  "同じ入力の順方向と逆方向の scan を並べても、カウンタと ys の初期値のスカラーを通す
+optimization_barrier のオペランドは scan ごとに違う（モジュールの中で一意な整数の constant も通す）。
+同じなら barrier どうしが CSE でまとめられ、2つの scan が同じカウンタや ys のバッファを書き換える
+（先の scan が進めたカウンタから逆方向の scan が始まり、1回も回らない）。"
+  (let* ((text (nb:emit-stablehlo
+                (nb::trace-to-graph
+                 (nb:with-tracing (h xs)
+                   (multiple-value-bind (fwd-carry fwd-ys)
+                       (nb:scan (nb:with-tracing (carry x)
+                                  (let ((h (+ (first carry) (first x)))) (values (list h) (list h))))
+                                (list h) (list xs))
+                     (multiple-value-bind (rev-carry rev-ys)
+                         (nb:scan (nb:with-tracing (carry x)
+                                    (let ((h (+ (first carry) (first x)))) (values (list h) (list h))))
+                                  (list h) (list xs) :reverse t)
+                       (values (first fwd-carry) (first fwd-ys) (first rev-carry) (first rev-ys)))))
+                 (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 3) :f32)))))
+         (salts (loop for line in (uiop:split-string text :separator '(#\Newline))
+                      for pos = (search "_u_c = stablehlo.constant dense<" line)
+                      when pos
+                        collect (let ((start (+ (position #\< line :start pos) 1)))
+                                  (subseq line start (position #\> line :start start))))))
+    (is (= 2 (length salts)) "ys の初期値の一意な整数が scan ごとに1つずつ無い: ~S" salts)
+    (is (= 2 (length (remove-duplicates salts :test #'string=))) "2つの scan の一意な整数が同じ: ~S" salts)
+    (let ((counter-lines (remove-if-not (lambda (line) (and (search "_i0, " line) (search "optimization_barrier" line)))
+                                        (uiop:split-string text :separator '(#\Newline)))))
+      (is (= 2 (length counter-lines)) "カウンタが scan ごとに1つの多出力の barrier から出ていない")
+      (is (every (lambda (line) (search "_u_c :" line)) counter-lines)
+          "カウンタの barrier に一意な整数が通っていない: ~S" counter-lines))))
+
 ;;; ---- コンディション ----
 
 (defun %scan-one (shape &optional (dtype :f32))
@@ -282,6 +381,62 @@ carry を壊さない（ys は1ステップ前の x、最終の carry は最後�
     (multiple-value-bind (carry ys) (nb:scan f init xs)
       (is (equalp #(5.0 6.0) (first carry)))
       (is (equalp #2A((0.0 0.0) (1.0 2.0) (3.0 4.0)) (first ys))))))
+
+;;; ---- eager の結果は入力と領域を共有しない（issue #166 (c)） ----
+
+(defparameter *scan-host-constant*
+  (make-array 2 :element-type 'single-float :initial-contents '(7.0 8.0))
+  "*SCAN-ALIAS-BODIES* の本体が閉包で捕まえるホストの配列（本体のサブグラフの定数になる）。")
+
+(defparameter *scan-alias-bodies*
+  (list
+   ;; carry をそのまま返す（長さ 0 でも 1 以上でも、結果の carry は init と同じ値）
+   (nb:with-tracing (carry x) x (values carry (list (first carry))))
+   ;; 捕まえたホストの配列を carry にする
+   (nb:with-tracing (carry x) carry (values (list *scan-host-constant*) x))
+   ;; x_t をそのまま carry にする
+   (nb:with-tracing (carry x) (values (list (first x)) (list (first carry)))))
+  "本体が入力（init・捕捉した配列・x_t）をそのまま出力に回す scan の本体。
+どれも carry = ([2] の f32)、x = ([2] の f32)。")
+
+(defun %scan-snapshot (arrays)
+  "ARRAYS の各配列の中身を写した新しい配列のリスト。"
+  (mapcar (lambda (a)
+            (let ((copy (make-array (array-dimensions a) :element-type (array-element-type a))))
+              (dotimes (j (array-total-size a) copy)
+                (setf (row-major-aref copy j) (row-major-aref a j)))))
+          arrays))
+
+(test scan/eager-results-never-share-storage-with-inputs
+  "eager の scan が返す carry と ys は、init・xs・本体が捕まえたホストの配列のどれとも
+EQ にならず、結果を書き換えても入力は変わらない（長さ 0 を含む）。"
+  (is (check-it
+       (generator (tuple (integer 0 100000) (integer 0 3) (integer 0 2)))
+       (lambda (case)
+         (destructuring-bind (seed length body-index) case
+           (let* ((init (list (make-random-array (make-array-spec '(2) :f32) :seed seed)))
+                  (xs (list (make-random-array (make-array-spec (list length 2) :f32) :seed (1+ seed))))
+                  (inputs (append init xs (list *scan-host-constant*)))
+                  (before (%scan-snapshot inputs)))
+             (multiple-value-bind (carry ys) (nb:scan (nth body-index *scan-alias-bodies*) init xs)
+               (let ((outputs (append carry ys)))
+                 (dolist (out outputs)
+                   (fill (make-array (array-total-size out) :element-type (array-element-type out)
+                                                           :displaced-to out)
+                         -1.0))
+                 (and (notany (lambda (out) (member out inputs :test #'eq)) outputs)
+                      (every #'equalp before inputs)))))))
+       :regression-id scan/eager-results-never-share-storage-with-inputs
+       :regression-file (regression-path "scan-eager-results-fresh"))))
+
+(test scan/rejects-raw-16-bit-arrays
+  "dtype が一意に決まらない生の (unsigned-byte 16) の配列（bf16 / f16）を init や xs に
+渡すと SCAN-ERROR（トレーサで渡す）。"
+  (let ((body (nb:with-tracing (c x) x (values c '())))
+        (raw-carry (make-array 2 :element-type '(unsigned-byte 16) :initial-element 0))
+        (raw-xs (make-array '(3 2) :element-type '(unsigned-byte 16) :initial-element 0)))
+    (signals nb:scan-error (nb:scan body (list raw-carry) '() :length 1))
+    (signals nb:scan-error (nb:scan body (list (%scan-one '(2))) (list raw-xs)))))
 
 ;;; ---- 実数リテラル、ys の形、eqn の整合性検査（primitive-error） ----
 

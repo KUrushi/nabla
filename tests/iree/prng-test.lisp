@@ -88,6 +88,17 @@
     (%prng-iree-jit-matches-eager "normal f64" (nb:with-tracing (k) (nb:normal k '(33) :dtype :f64))
                                   (list key) :rtol 1d-9 :atol 1d-9)))
 
+(define-iree-test iree/prng/f64-erf-inv-tails-match-eager
+  "normal の :f64 が使う erf の逆関数（倍精度用の3区間の近似）を、全区間（w < 6.25、< 16、
+それ以上）にまたがる x で jit したものが eager と一致する。裾は乱数では引けないので内部関数を直接呼ぶ。"
+  (skip-unless-iree :library :both)
+  (let ((x (make-array 8 :element-type 'double-float
+                         :initial-contents (list 0d0 0.5d0 -0.9d0 0.998d0 (- 1 1d-5) (- (- 1 1d-7))
+                                                 (- 1 1d-12) (- 1 (scale-float 1d0 -53))))))
+    (%prng-iree-jit-matches-eager "erf-inv f64"
+                                  (nb:with-tracing (v) (nb::%prng-dispatch (list v) #'nb::%prng-erf-inv))
+                                  (list x) :rtol 1d-12 :atol 1d-12)))
+
 (define-iree-test iree/prng/jit-is-deterministic-across-calls
   "同じキーでの jit 呼び出しは何度でも同じ値、別のキーなら別の値になる。"
   (skip-unless-iree :library :both)

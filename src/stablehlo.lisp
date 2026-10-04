@@ -205,7 +205,16 @@ INDEX が NIL なら loc を付けない（リージョンの中の eqn。外側
 (defvar *stablehlo-region-counter* nil
   "EMIT-STABLEHLO が 0 に束縛する整数。%STABLEHLO-REGION-LINES がリージョンを
 出すたびに 1 ずつ増やし、その値 k からリージョンの SSA 名の接頭辞 \"%s<k>_\" を作る
-（入れ子のリージョンや、同じ graph から出す複数のリージョンの名前が衝突しない）。")
+（入れ子のリージョンや、同じ graph から出す複数のリージョンの名前が衝突しない）。
+%STABLEHLO-UNIQUE-ID も同じカウンタから番号を取る。")
+
+(defun %stablehlo-unique-id ()
+  "いま出しているモジュールの中で一意な整数（*STABLEHLO-REGION-COUNTER* を1つ進めた値）。
+EMIT-STABLEHLO の外では 0。同じ graph からは常に同じ番号の列になる（出力のテキストが
+決定的なので、コンパイルのキャッシュが効く）。"
+  (if *stablehlo-region-counter*
+      (incf *stablehlo-region-counter*)
+      0))
 
 (defun %stablehlo-region-return-line (numbers outvars)
   "リージョンの終わりの stablehlo.return。OUTVARS が無ければ裸の \"stablehlo.return\"。"

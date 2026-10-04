@@ -510,4 +510,6 @@
                (:file "tests/pjrt/bench-test")
                (:file "tests/pjrt/integer-test")
                (:file "tests/pjrt/rng-test")
-               (:file "tests/pjrt/prng-test")))
+               (:file "tests/pjrt/prng-test")
+               ;; :i1（PRED）の往復と jit の入出力（issue #166）
+               (:file "tests/pjrt/i1-test")))
