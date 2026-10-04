@@ -390,6 +390,35 @@ slice も concatenate も出さない。"
       (is (zerop (count-of "stablehlo.slice" single)))
       (is (zerop (count-of "stablehlo.concatenate" single))))))
 
+(test prng/rng-batched-emit-defines-each-ssa-name-once
+  "バッチ次元つきの rng-bit-generator を12回つないだ graph の StableHLO でも、各 SSA 名は
+ちょうど1回だけ定義される（出力の名前が %1 と %11 と %21 のように数字の一部だけ違う eqn が
+並ぶので、補助の名前を出力の名前の一部だけから作ると衝突する。issue #70 の mutation testing
+で生き残った変異体）。"
+  (flet ((chain (state)
+           ;; with-tracing の中では setq できないので、トレース対象の外の関数で12回つなぐ
+           (dotimes (i 12 state)
+             (setf state (nb::rng-bit-generator state :shape '(2) :dtype :u32)))))
+    (let* ((text (nb:emit-stablehlo
+                  (nb:trace-to-graph
+                   (nb:with-tracing (s) (chain s))
+                   (list (nb:make-aval '(2 2) :u64)))))
+           (defined (with-input-from-string (in text)
+                      (loop for line = (read-line in nil nil)
+                            while line
+                            for trimmed = (string-left-trim " " line)
+                            for eq = (search " = " trimmed)
+                            when (and eq (char= #\% (char trimmed 0)))
+                              append (mapcar (lambda (name) (string-trim " " name))
+                                             (uiop:split-string (subseq trimmed 0 eq) :separator ","))))))
+      (is (= 24 (loop with start = 0 for pos = (search "stablehlo.rng_bit_generator" text :start2 start)
+                      while pos count t do (setf start (1+ pos))))
+          "rng_bit_generator を行数（2）× 12 回出していない")
+      (is (= (length defined) (length (remove-duplicates defined :test #'string=)))
+          "同じ SSA 名が2回以上定義された: ~S"
+          (remove-duplicates (remove-if (lambda (n) (= 1 (count n defined :test #'string=))) defined)
+                             :test #'string=)))))
+
 (defun %prng-states (rows seed)
   (let ((rs (sb-ext:seed-random-state seed))
         (states (make-array (list rows 2) :element-type '(unsigned-byte 64))))

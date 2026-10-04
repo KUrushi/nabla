@@ -335,10 +335,15 @@ B の縮約を dim0（k）、A の縮約を dim1（k）にした dot(b, a) は (
                          :lhs-batch '(0) :rhs-batch '()))))
 
 (test dot-general/out-of-range-index-signals-primitive-error
-  "index = rank（境界外）は PRIMITIVE-ERROR になる。"
+  "index = rank と index = -1（どちらも境界外）は PRIMITIVE-ERROR になる
+（-1 は、範囲の下限を (integer -1 ...) に緩める変異体が issue #70 の
+mutation testing で生き残っていたため足した）。"
   (let ((lhs (nb:make-aval '(2 3) :f32)) (rhs (nb:make-aval '(3 2) :f32)))
     (signals nb:primitive-error
       (%abstract-eval-of :dot-general (list lhs rhs) :lhs-contracting '(2) :rhs-contracting '(0)
+                         :lhs-batch '() :rhs-batch '()))
+    (signals nb:primitive-error
+      (%abstract-eval-of :dot-general (list lhs rhs) :lhs-contracting '(-1) :rhs-contracting '(0)
                          :lhs-batch '() :rhs-batch '()))
     (signals nb:primitive-error
       (%abstract-eval-of :dot-general (list lhs rhs) :lhs-contracting '(1) :rhs-contracting '(2)
