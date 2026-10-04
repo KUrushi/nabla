@@ -1,7 +1,7 @@
 ;;;; PRNG の公開 API と、バッチ次元つき rng-bit-generator の IREE（local）での実行
 ;;;; （issue #136、medium）。
 ;;;;
-;;;; - バッチ次元つきの状態（行ごとに slice → rng_bit_generator → concatenate に展開した
+;;;; - バッチ次元つきの状態（stablehlo.while で行ごとに rng_bit_generator を回す
 ;;;;   StableHLO）の出力が、eager とビット単位で一致する。
 ;;;; - jit した uniform / normal / split / fold-in が eager と一致する（整数の split / fold-in は
 ;;;;   ビット単位、浮動小数点は許容誤差つき。f32 は exp / log の実装の差と乗加算の融合があり得るので

@@ -368,27 +368,45 @@ n = 200000。"
       (nb:trace-to-graph (nb:with-tracing (s) (call s)) (list (nb:make-aval '(4 2) :u64))))
     (is (equal '(0 0) axes))))
 
+(defun %prng-emit-rng (state-shape shape dtype)
+  (nb:emit-stablehlo
+   (nb:trace-to-graph (nb:with-tracing (s) (nb::rng-bit-generator s :shape shape :dtype dtype))
+                      (list (nb:make-aval state-shape :u64)))))
+
+(defun %prng-count-of (needle text)
+  (loop with start = 0 for pos = (search needle text :start2 start)
+        while pos count t do (setf start (1+ pos))))
+
 (test prng/rng-batched-emit-structure
-  "バッチ次元つきの状態の StableHLO は、行数ぶんの slice と rng_bit_generator、2 回の concatenate、
-行ごと 3 回 + 前後 3 回の reshape を持ち、SSA 名が不正（%%）にならない。バッチ次元の無い状態は
-slice も concatenate も出さない。"
-  (flet ((count-of (needle text)
-           (loop with start = 0 for pos = (search needle text :start2 start)
-                 while pos count t do (setf start (1+ pos))))
-         (emit (state-shape)
-           (nb:emit-stablehlo
-            (nb:trace-to-graph (nb:with-tracing (s) (nb::rng-bit-generator s :shape '(4) :dtype :u32))
-                               (list (nb:make-aval state-shape :u64))))))
-    (let ((batched (emit '(3 2)))
-          (single (emit '(2))))
-      (is (= 3 (count-of "stablehlo.rng_bit_generator" batched)))
-      (is (= 3 (count-of "stablehlo.slice" batched)))
-      (is (= 2 (count-of "stablehlo.concatenate" batched)))
-      (is (= 12 (count-of "stablehlo.reshape" batched)))
-      (is (zerop (count-of "%%" batched)))
-      (is (= 1 (count-of "stablehlo.rng_bit_generator" single)))
-      (is (zerop (count-of "stablehlo.slice" single)))
-      (is (zerop (count-of "stablehlo.concatenate" single))))))
+  "バッチ次元つきの状態（2行以上）の StableHLO は、1つの while の中で rng_bit_generator を1回だけ
+呼び、slice / concatenate による行ごとの展開をしない。SSA 名は不正（%%）にならない。1行の
+状態と、バッチ次元の無い状態は while を出さない。"
+  (let ((batched (%prng-emit-rng '(3 2) '(4) :u32))
+        (one-row (%prng-emit-rng '(1 2) '(4) :u32))
+        (single (%prng-emit-rng '(2) '(4) :u32)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" batched)))
+    (is (= 1 (%prng-count-of "stablehlo.while" batched)))
+    (is (zerop (%prng-count-of "stablehlo.slice " batched)))
+    (is (zerop (%prng-count-of "stablehlo.concatenate" batched)))
+    (is (zerop (%prng-count-of "%%" batched)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" one-row)))
+    (is (zerop (%prng-count-of "stablehlo.while" one-row)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" single)))
+    (is (zerop (%prng-count-of "stablehlo.while" single)))))
+
+(def-prng-property prng/rng-batched-emit-size-is-independent-of-rows
+  "バッチ次元つきの状態の StableHLO の行数は、行数（2行以上。バッチ次元が1段でも2段でも）に
+依らない（issue #164: 行ごとに展開するとコンパイル時間が行数とともに伸びる）。"
+  (rows dtype-index rank d0 d1) (generator (tuple (uniform-integer :lo 3 :hi 300)
+                                                  (uniform-integer :lo 0 :hi 1)
+                                                  (uniform-integer :lo 0 :hi 2)
+                                                  (uniform-integer :lo 1 :hi 6)
+                                                  (uniform-integer :lo 1 :hi 6)))
+  (let ((shape (subseq (list d0 d1) 0 rank))
+        (dtype (nth dtype-index '(:u32 :u64))))
+    (flet ((lines (state-shape)
+             (%prng-count-of (string #\Newline) (%prng-emit-rng state-shape shape dtype))))
+      (= (lines '(2 2)) (lines (list rows 2)) (lines (list 2 rows 2))))))
 
 (defun %prng-states (rows seed)
   (let ((rs (sb-ext:seed-random-state seed))

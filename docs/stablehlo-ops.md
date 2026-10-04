@@ -123,7 +123,7 @@ mlir::iree_compiler::DFX::Solver::updateElement(...)
 | --- | --- |
 | `stablehlo.bitcast_convert` | 同じ幅（`ui32` ⇄ `f32` / `i32`、`ui64` ⇄ `f64`）に加え、幅が違う `tensor<2xui32>` → `tensor<ui64>`（末尾の次元が消える）と、その逆（`tensor<…xui64>` → `tensor<…x2xui32>`）もコンパイル・実行できる。並びはリトルエンディアン（先頭の要素が下位32ビット）。eager 実装（`bitcast-convert`）と一致 |
 | `stablehlo.shift_right_logical` / `stablehlo.or`（`ui32` / `ui64`） | 使える。量がビット幅以上のとき 0（eager も同じ） |
-| `stablehlo.slice` / `stablehlo.concatenate`（バッチ次元つきの `rng_bit_generator` の展開に使う） | `stablehlo.slice %x [0:1, 0:2] : (tensor<Nx2xui64>) -> tensor<1x2xui64>` と `stablehlo.concatenate %a, %b, dim = 0` の pretty form がそのまま通る 。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度。vmap の入れ子では行数が段ごとの積になる。将来は scan 化で解消する |
+| バッチ次元つきの `rng_bit_generator`（`stablehlo.while` の本体で `dynamic_slice` → `rng_bit_generator` → `dynamic_update_slice`。issue #164） | `ui64[2]` の状態を while の中で1行ずつ取り出して呼ぶ形が、IREE・PJRT とも eager とビット単位で一致する。カウンタとビットのバッファの 0 初期値は `optimization_barrier` を通す（制御構造の節の while のバグの回避策。1行のときは while を出さない）。**コンパイルコスト**（IREE local、eqn 1つ）: 32 行 0.79 秒、64 行 0.80 秒、256 行 0.85 秒（MLIR 約 2.6 KB で行数に依らない）。以前の行ごとの展開（`slice` / `concatenate`）は 4.0 秒 / 6.9 秒 / 42.8 秒（MLIR 179 KB）だった。**実行時間**は IREE で増える（256 キー × 1024 要素で 57 ms、展開では 3 ms。ループ1回ごとの起動と、`dynamic_update_slice` がバッファ全体をコピーするため。#159）。PJRT（XLA CPU）は 4 ms で変わらない |
 
 ## その他の確認事項
 
