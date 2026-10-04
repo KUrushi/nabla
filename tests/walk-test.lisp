@@ -340,3 +340,36 @@ path は THE 自体を基準に位置2。"
   (%signals-unsupported-form (form path) '(nb:with-tracing (x) (the single-float (setq x 1.0)))
     (is (equal '(setq x 1.0) form))
     (is (equal '(1 2) path))))
+
+;;; --- 先頭の DECLARE（本体の先頭の宣言は LAMBDA の宣言になる） ---
+
+(test walk/leading-declare-compiles-without-warnings
+  "本体の先頭の (DECLARE ...) は、LAMBDA-LIST の仮引数への宣言として受け付ける。
+PROGN の中に置くと「DECLARE が置けない場所」の警告とコンパイルエラーになる。
+COMPILE が警告も失敗も報告せず、宣言した仮引数を使わない関数として呼べる
+ことを確かめる。"
+  (multiple-value-bind (maker warnings-p failure-p)
+      (compile nil '(lambda () (nb:with-tracing (x y) (declare (ignore y)) (+ x 1.0))))
+    (is (null warnings-p))
+    (is (null failure-p))
+    (is (= 3.0 (funcall (funcall maker) 2.0 :unused)))))
+
+(test walk/several-leading-declares-and-tracing
+  "先頭の DECLARE が複数あっても受け付け、トレースした graph も宣言なしと
+同じ値を計算する。"
+  (let* ((f (eval '(nb:with-tracing (x y)
+                     (declare (ignorable y))
+                     (declare (optimize (speed 1)))
+                     (* x 2.0))))
+         (graph (nb:trace-to-graph f (list (nb:make-aval '() :f32) (nb:make-aval '() :f32)))))
+    (is (= 6.0 (funcall f 3.0 0.0)))
+    (is (= 6.0 (aref (nb:eval-graph graph
+                                     (make-array '() :element-type 'single-float :initial-element 3.0)
+                                     (make-array '() :element-type 'single-float :initial-element 0.0)))))))
+
+(test walk/leading-declare-is-not-counted-in-path
+  "UNSUPPORTED-FORM の PATH は、先頭の DECLARE を除いた本体のフォームを
+位置1から数える（宣言は (PROGN ...) の外、LAMBDA に置かれるため）。"
+  (%signals-unsupported-form (form path) '(nb:with-tracing (x) (declare (ignorable x)) (setq x 1))
+    (is (equal '(setq x 1) form))
+    (is (equal '(1) path))))

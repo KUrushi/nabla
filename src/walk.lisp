@@ -338,8 +338,18 @@ CL の + - * / max min exp log tanh 1+ 1-
 < <= > >= = /= は、この時点でトレース対象の内部ジェネリック（%T-ADD 等）
 への呼び出しに書き換わる。それ以外のシンボルを演算子に持つ呼び出しは
 そのまま残す（ふつうの Lisp として実行される。トレーサを渡すと、その
-関数の実装が対応していない限り失敗する）。"
+関数の実装が対応していない限り失敗する）。
+
+BODY の先頭の (DECLARE ...) は、LAMBDA-LIST の仮引数への宣言として
+LAMBDA の先頭にそのまま置き、歩かない（(IGNORE Y) など）。UNSUPPORTED-FORM
+の PATH は、宣言を除いた本体のフォームを位置1から数える。トレース中の
+仮引数はトレーサなので、配列の型の宣言（(TYPE ARRAY X) など）はトレース時に
+型エラーになる。"
   (%check-tracing-lambda-list lambda-list)
-  (let* ((expanded (sb-cltl2:macroexpand-all `(progn ,@(%expand-do-loops-list body)) env))
+  (let* ((declarations (loop for form in body
+                             while (%declare-form-p form)
+                             collect form))
+         (forms (nthcdr (length declarations) body))
+         (expanded (sb-cltl2:macroexpand-all `(progn ,@(%expand-do-loops-list forms)) env))
          (walked (%walk expanded '())))
-    `(%make-traceable-function ',lambda-list (lambda ,lambda-list ,walked))))
+    `(%make-traceable-function ',lambda-list (lambda ,lambda-list ,@declarations ,walked))))
