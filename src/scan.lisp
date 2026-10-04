@@ -190,32 +190,40 @@ LENGTH が無い、xs の要素が rank 0、xs の先頭の軸の長さが揃わ
                    for aval in (nthcdr num-carry out-avals)
                    collect (%scan-zero-constant-line out aval))))))
 
-(defun %scan-ys-init-lines (names avals)
-  "長さ 2 以上の scan の ys バッファの初期値 NAMES（形は AVALS）を作る行。
-本体は ys のバッファを optimization_barrier に通して in-place に書き換えるので
-（%scan-emit）、次の2つを守る（どちらも破ると、特定の版のバックエンドのコンパイラで
-結果が壊れる。記録は docs/stablehlo-ops.md、issue #159）。
-- ys ごとに別のバッファにする。同じ型の 0 の constant は CSE で1つにまとめられ、
-  2つの ys が同じバッファに書き込んでしまう。そこでスカラーの 0 をまとめて1つの
-  多出力の optimization_barrier に通し（結果はそれぞれ別の値になる）、それぞれを
-  broadcast_in_dim で広げる
+(defun %scan-ys-init-lines (counter names avals)
+  "長さ 2 以上の scan（と、同じ形の while を出すバッチされた rng）の、ループのカウンタ COUNTER
+（:i32 の 0）と ys バッファ NAMES（形は AVALS。無くてもよい）の初期値を作る行。
+本体は ys のバッファを optimization_barrier に通して in-place に書き換え、カウンタも carry として
+in-place に進められうるので、次を守る（破ると、特定の版のバックエンドのコンパイラで結果が壊れる。
+記録は docs/stablehlo-ops.md、issue #159）。
+- ループごと・ys ごとに別のバッファにする。同じ型の 0 の constant は CSE で1つにまとめられ、
+  オペランドが同じ optimization_barrier どうしもまとめられる。2つの ys や、同じモジュールの
+  2つのループ（同じ入力の順方向と逆方向の scan など）のカウンタが同じバッファになると、
+  先のループが書き換えた値から次のループが始まる（逆方向の scan が1回も回らない）。そこで
+  カウンタとスカラーの 0 を、モジュールの中で一意な整数（%STABLEHLO-UNIQUE-ID）の constant と
+  一緒に1つの多出力の optimization_barrier に通し（結果はそれぞれ別の値になる）、ys の 0 を
+  それぞれ broadcast_in_dim で広げる
 - 広げたバッファをそれぞれ optimization_barrier に通してから while に渡す。通さないと
   初期値のバッファが1つの確保にまとめられ、ループの中で使っているのに while の前で
   解放される
 while のオペランドが constant にならないので、定数で初期化された carry の回避も兼ねる。"
-  (when names
-    (let ((scalars (mapcar (lambda (aval) (make-aval '() (aval-dtype aval))) avals))
-          (consts (mapcar (lambda (name) (format nil "~A_c" name)) names))
-          (kept (mapcar (lambda (name) (format nil "~A_s" name)) names)))
-      (append
-       (mapcar #'%scan-zero-constant-line consts scalars)
-       (list (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
-                     kept consts (mapcar #'tensor-type-string scalars)))
-       (loop for name in names for scalar in kept for scalar-aval in scalars for aval in avals
-             append (list (format nil "~A_b = stablehlo.broadcast_in_dim ~A, dims = [] : (~A) -> ~A"
-                                  name scalar (tensor-type-string scalar-aval) (tensor-type-string aval))
-                          (format nil "~A = stablehlo.optimization_barrier ~A_b : ~A"
-                                  name name (tensor-type-string aval))))))))
+  (let ((scalars (mapcar (lambda (aval) (make-aval '() (aval-dtype aval))) avals))
+        (consts (mapcar (lambda (name) (format nil "~A_c" name)) names))
+        (kept (mapcar (lambda (name) (format nil "~A_s" name)) names))
+        (salt (format nil "~A_u" counter)))
+    (append
+     (list (format nil "~A_c = stablehlo.constant dense<0> : tensor<i32>" counter))
+     (mapcar #'%scan-zero-constant-line consts scalars)
+     (list (format nil "~A_c = stablehlo.constant dense<~D> : tensor<i32>" salt (%stablehlo-unique-id))
+           (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
+                   (append (list counter) kept (list salt))
+                   (append (list (format nil "~A_c" counter)) consts (list (format nil "~A_c" salt)))
+                   (append (list "tensor<i32>") (mapcar #'tensor-type-string scalars) (list "tensor<i32>"))))
+     (loop for name in names for scalar in kept for scalar-aval in scalars for aval in avals
+           append (list (format nil "~A_b = stablehlo.broadcast_in_dim ~A, dims = [] : (~A) -> ~A"
+                                name scalar (tensor-type-string scalar-aval) (tensor-type-string aval))
+                        (format nil "~A = stablehlo.optimization_barrier ~A_b : ~A"
+                                name name (tensor-type-string aval)))))))
 
 (defun %scan-emit (in-names in-avals out-names out-avals &key num-consts num-carry length reverse body)
   (when (zerop length)
@@ -259,13 +267,10 @@ while のオペランドが constant にならないので、定数で初期化�
                    ;; 失敗するので、barrier を付けない（constant のまま。この長さでは
                    ;; クラッシュしない）。
                    (if (= length 1)
-                       (list (format nil "~A = stablehlo.constant dense<0> : ~A" counter i32))
-                       (list (format nil "~A_c = stablehlo.constant dense<0> : ~A" counter i32)
-                             (format nil "~A = stablehlo.optimization_barrier ~A_c : ~A" counter counter i32)))
-                   (if (= length 1)
-                       (loop for name in ys-init for aval in ys-avals
-                             collect (%scan-zero-constant-line name aval))
-                       (%scan-ys-init-lines ys-init ys-avals))
+                       (cons (format nil "~A = stablehlo.constant dense<0> : ~A" counter i32)
+                             (loop for name in ys-init for aval in ys-avals
+                                   collect (%scan-zero-constant-line name aval)))
+                       (%scan-ys-init-lines counter ys-init ys-avals))
                    (list
                     (format nil "~{~A~^, ~} = \"stablehlo.while\"(~{~A~^, ~}) ({"
                             (cons (format nil "~A_n" p) out-names)

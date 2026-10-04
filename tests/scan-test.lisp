@@ -273,6 +273,37 @@ optimization_barrier の組を1つずつ持ち、同じ型の2つの ys も別�
     (is (null (search "broadcast_in_dim" text)) "長さ 1 の scan の ys の初期値が broadcast_in_dim で作られている")
     (is (null (search "bk0" text)) "長さ 1 の scan の本体に ys の barrier がある")))
 
+(test scan/emits-a-distinct-salt-for-each-scan-ys-init
+  "同じ入力の順方向と逆方向の scan を並べても、カウンタと ys の初期値のスカラーを通す
+optimization_barrier のオペランドは scan ごとに違う（モジュールの中で一意な整数の constant も通す）。
+同じなら barrier どうしが CSE でまとめられ、2つの scan が同じカウンタや ys のバッファを書き換える
+（先の scan が進めたカウンタから逆方向の scan が始まり、1回も回らない）。"
+  (let* ((text (nb:emit-stablehlo
+                (nb::trace-to-graph
+                 (nb:with-tracing (h xs)
+                   (multiple-value-bind (fwd-carry fwd-ys)
+                       (nb:scan (nb:with-tracing (carry x)
+                                  (let ((h (+ (first carry) (first x)))) (values (list h) (list h))))
+                                (list h) (list xs))
+                     (multiple-value-bind (rev-carry rev-ys)
+                         (nb:scan (nb:with-tracing (carry x)
+                                    (let ((h (+ (first carry) (first x)))) (values (list h) (list h))))
+                                  (list h) (list xs) :reverse t)
+                       (values (first fwd-carry) (first fwd-ys) (first rev-carry) (first rev-ys)))))
+                 (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 3) :f32)))))
+         (salts (loop for line in (uiop:split-string text :separator '(#\Newline))
+                      for pos = (search "_u_c = stablehlo.constant dense<" line)
+                      when pos
+                        collect (let ((start (+ (position #\< line :start pos) 1)))
+                                  (subseq line start (position #\> line :start start))))))
+    (is (= 2 (length salts)) "ys の初期値の一意な整数が scan ごとに1つずつ無い: ~S" salts)
+    (is (= 2 (length (remove-duplicates salts :test #'string=))) "2つの scan の一意な整数が同じ: ~S" salts)
+    (let ((counter-lines (remove-if-not (lambda (line) (and (search "_i0, " line) (search "optimization_barrier" line)))
+                                        (uiop:split-string text :separator '(#\Newline)))))
+      (is (= 2 (length counter-lines)) "カウンタが scan ごとに1つの多出力の barrier から出ていない")
+      (is (every (lambda (line) (search "_u_c :" line)) counter-lines)
+          "カウンタの barrier に一意な整数が通っていない: ~S" counter-lines))))
+
 ;;; ---- コンディション ----
 
 (defun %scan-one (shape &optional (dtype :f32))

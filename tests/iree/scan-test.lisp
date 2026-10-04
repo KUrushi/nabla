@@ -175,6 +175,26 @@ ys のバッファは in-place に書き換えるので、0 の初期値が CSE 
     (%with-scan-iree-check (graph "same-typed-ys") "IREE の同じ型の ys が2つある scan の結果が eager と一致しなかった")))
 
 
+(define-iree-test scan/iree-sibling-scans-do-not-share-a-counter
+    "同じ入力で、ys の無い順方向と逆方向の scan と、ys のある scan を1つのモジュールに並べても、
+どれも IREE と eager で一致する。ループのカウンタの初期値が CSE で1つのバッファにまとめられると、
+先の while が進めたカウンタから次の while が始まり、1回も回らない（%scan-ys-init-lines）。"
+  (skip-unless-iree :library :both)
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (h xs)
+                  (flet ((step-fn () (nb:with-tracing (carry x)
+                                       (values (list (+ (* (first carry) 0.5) (first x))) '()))))
+                    (let ((fwd (first (nb:scan (step-fn) (list h) (list xs))))
+                          (rev (first (nb:scan (step-fn) (list h) (list xs) :reverse t))))
+                      (multiple-value-bind (carry ys)
+                          (nb:scan (nb:with-tracing (carry x)
+                                     (let ((g (+ (* (first carry) 0.5) (first x))))
+                                       (values (list g) (list g))))
+                                   (list h) (list xs))
+                        (values fwd rev (first carry) (first ys))))))
+                (list (nb:make-aval '(3) :f32) (nb:make-aval '(6 3) :f32)))))
+    (%with-scan-iree-check (graph "sibling-scans") "IREE の並んだ scan の結果が eager と一致しなかった")))
+
 (defun %scan-ys-cost-graph (length width with-ys)
   "carry h:f32 [WIDTH] を LENGTH 回 tanh(h)+h で更新する scan の graph。WITH-YS なら各 h を ys に積んで返す。"
   (nb::trace-to-graph
