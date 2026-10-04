@@ -151,10 +151,26 @@ mlir::iree_compiler::DFX::Solver::updateElement(...)
 | reshape | `%x = stablehlo.reshape %s : (tensor<1x3xf32>) -> tensor<3xf32>` | 先頭の軸 1 を落とす / y_t に足す |
 | dynamic_update_slice | `%w = stablehlo.dynamic_update_slice %ybuf, %y1, %idx, %z : (tensor<4x3xf32>, tensor<1x3xf32>, tensor<i32>, tensor<i32>) -> tensor<4x3xf32>` | y_t を ys のバッファに書く |
 | subtract / add | `%idx = stablehlo.subtract %last, %i : tensor<i32>` | reverse の添字 `length-1-i` / カウンタの増分 |
+| optimization_barrier | `%k = stablehlo.optimization_barrier %ybuf : tensor<4x3xf32>` | while の定数オペランドを通す（下の IREE のバグの回避）/ 本体で ys のバッファを通す（下の性能の節） |
 
 IREE 3.11 のコンパイラバグの回避: cond を決める carry が `stablehlo.constant` で初期化された `stablehlo.while`（他に carry が2つ以上、うち1つは rank 1 以上）は、Stream の AffinityAnalysis（ScheduleAllocationPass）が非決定的に segfault する。scan の while はこの形なので、カウンタと ys の0初期値は `stablehlo.optimization_barrier` を通してから while に渡す。ただし長さ 1 の scan は IREE が while を `scf.for` に変換し、barrier があると `stream.resource` の型の不一致でコンパイルに失敗するので、barrier を付けない（長さ 1 ではクラッシュしない）。バグの詳細は制御構造の節（PR #157）を参照。
 
-性能の注意（issue #159）: IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピーするので、ys を持つ scan は長さに対して2乗で遅くなる。実測（IREE local、f32）は n=1000, w=1024 で ys ありが 1638 ms、ys なしが 31 ms、n=4000, w=1024 で約 39.7 s。長い系列の ys は、必要でなければ出さない。改善は #159 で扱う。
+性能（issue #159）: ys のバッファは、本体の先頭で `stablehlo.optimization_barrier` に通してから `dynamic_update_slice` に渡す（`%p_bk<j> = stablehlo.optimization_barrier %p_by<j>`）。
+
+- 原因: IREE 3.11 の `iree-stream-conversion`（ConvertToStreamPass）は、ループ（`scf.for` / `scf.while`）の carry であるブロック引数の配置先（affinity）を AffinityAnalysis から引けない。そのため本体の中で carry を使うたびに、転送元が不明の `stream.async.transfer ... -> to(@__device_0)` を挟み、この転送は同じデバイスへのものでも消されず（`ElideAsyncCopiesPass` が消すのは `clone` だけ）、毎ステップ carry 全体のコピー（`stream.cmd.copy`）と新しいバッファの確保になる。ys のバッファ（`length × |y_t|`）も carry なので、ys を持つ scan は長さに対して2乗の時間がかかっていた。`--compile-to=stream` の出力で、本体に ys 全体の `stream.cmd.copy` があることで確かめられる。`--iree-stream-affinity-solver-max-iterations` を増やしても変わらない
+- 回避: `util.optimization_barrier`（`stablehlo.optimization_barrier` から変換される）の結果は配置先が引けるので、転送が挟まらず、`dynamic_update_slice` が ys のバッファを in-place に書く（本体のコピーは y_t の1行ぶんだけになる）。carry 自体（`|carry|` ぶんのコピー）は本体の計算と同じ程度なので、そのままにしている。結果の値は変わらない
+- in-place にすると、それまで毎ステップのコピーで隠れていた IREE 3.11 の別の問題が出るので、ys の初期値は次の形にする（`%scan-ys-init-lines`）:
+  - **ys ごとに別のバッファにする**。同じ型の 0 の `stablehlo.constant` は CSE で1つになり、別々の `optimization_barrier` も1つの値に通るので、2つの ys が同じバッファに書き込んで同じ値になる（jvp / vjp の scan で再現）。スカラーの 0 をまとめて1つの多出力の `optimization_barrier` に通し（結果はそれぞれ別の値）、それぞれを `broadcast_in_dim` で広げる。同じモジュールに同じ入力の scan が2つ（順方向と逆方向など）あると、barrier のオペランドが同じになって CSE で1つにまとめられ、2つの scan が同じ ys のバッファやカウンタを書き換える（#167 の rank 0 / rank 2 のテストと重ねて見つかった。カウンタを共有すると、先の while が進めた値から次の while が始まり、逆方向の scan が1回も回らない。どの組み合わせで壊れるかは定数の値などで変わり、予測できない）。そこでカウンタの 0・ys のスカラーの 0・モジュールの中で一意な整数の `stablehlo.constant`（`%stablehlo-unique-id`）を1つの多出力の barrier に通し、ループごとに別の値にする
+  - **広げたバッファをそれぞれ `optimization_barrier` に通してから while に渡す**。通さないと初期値が1つの確保（subview の詰め合わせ）にまとめられ、ループの中で使っているのに while の前で `stream.resource.dealloca` される（ys が3つ以上だと実行時に `ref is null; while invoking native function hal.buffer.subspan` で落ち、2つでは偶然動く use-after-free）
+  - 長さ 1 の scan は1回しか書かないので、従来どおり初期値は constant のまま、本体の barrier も付けない
+- 実測（IREE local、f32、幅 1024、carry は `tanh(h)+h`、jit の呼び出し3回の最短。ホストへの転送を含む。値は実行ごとに揺れる）:
+
+| 長さ | ys なし | ys あり（回避前） | ys あり（回避後） |
+| --- | --- | --- | --- |
+| 1000 | 20〜40 ms | 956 ms | 20 ms |
+| 4000 | 48〜116 ms | 16488 ms | 64〜256 ms |
+
+  守るテストは、出力の形を検査する small テスト `tests/scan-test.lisp` の `scan/emits-ys-buffers-through-barriers`（本体で ys ごとに barrier を通して dynamic_update_slice に渡すこと、初期値が ys ごとに別の broadcast_in_dim + barrier の組であること、長さ 1 ではどちらも無いこと）、実行時間を測る large テスト `tests/iree/scan-test.lisp` の `scan/iree-ys-write-cost-is-linear-in-length`（長さ 1000 で ys ありが ys なしの 5 倍 + 100 ms 以内。回避前は 748 ms 対 20 ms で落ちる。時間は負荷で揺れるので既定のスイートには入れない）と `scan/iree-same-typed-ys-do-not-share-a-buffer`
 
 長さ 0 の scan は、`dynamic_slice` の切り出し幅 1 が長さ 0 の軸を超えて不正になるので `while` を出さない。carry は入力と同じ型の `stablehlo.reshape` で素通しにし、ys は `stablehlo.constant dense<> : tensor<0x...>` にする（この形を IREE が受け付けることを確認済み）。
 

@@ -128,7 +128,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 
 #### 4.1 `scan` の `ys`（#159、IREE local、f32）
 
-IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピーするので、ys を持つ scan は長さに対して2乗で遅くなる。実測（`docs/stablehlo-ops.md`）: n=1000, w=1024 で ys あり 1638 ms、ys なし 31 ms。n=4000, w=1024 で約 39.7 秒。長い系列の ys は、必要でなければ出さない。PJRT（XLA CPU）では未測定。
+（#159 で解決）IREE 3.11 はループの carry を本体で使うたびに丸ごとコピーしていたため、ys を持つ scan は長さに対して2乗で遅かった（n=1000, w=1024 で ys あり 1638 ms、ys なし 31 ms。n=4000 で約 39.7 秒）。ys のバッファを本体の先頭で `optimization_barrier` に通す回避で、n=4000 でも ys なしと同じ桁になった。原因と実測は `docs/stablehlo-ops.md` の scan の節。PJRT（XLA CPU）では未測定。
 
 #### 4.2 バッチされた rng のコンパイル時間（#136）
 
@@ -146,7 +146,7 @@ IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピ�
 ## 5. 既知の制限と積み残し
 
 - 以下のうち、#164 / #165 / #166 は #142 の時点で起こしたフォローアップの issue。
-- **#159: `scan` の `ys` が IREE で O(length × |ys|)**（§4.1）。`dynamic_update_slice` が in-place にならない。
+- **#159: `scan` の `ys` が IREE で O(length × |ys|)**（§4.1）。解決済み（ys のバッファを `optimization_barrier` に通す）。
 - **バッチされた rng の emit が行ごとの展開**（§3.8。#164 で `scan` 化を扱う）。行数が数百になるとコンパイルが数十秒。`scan` 化が将来策。
 - **`while-loop` の逆モード（`grad`）は対応しない**（§3.5）。`scan` で書く。
 - **IREE 3.11 の `:i1` carry のバグは回避策が無い**（§3.12 の 2。比較由来の `:i1` の carry を持つ while の結果を jit の戻り値にしない）。
