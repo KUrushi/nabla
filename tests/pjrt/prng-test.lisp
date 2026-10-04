@@ -1,6 +1,6 @@
 ;;;; PRNG の公開 API と、バッチ次元つき rng-bit-generator の PJRT（XLA CPU プラグイン）での実行
 ;;;; （issue #136、medium）。tests/iree/prng-test.lisp と同じ内容を PJRT で確かめる:
-;;;; バッチ次元つきの状態（slice → rng_bit_generator → concatenate に展開した StableHLO）が
+;;;; バッチ次元つきの状態（stablehlo.while で行ごとに rng_bit_generator を回す StableHLO）が
 ;;;; eager とビット単位で一致し、jit した uniform / normal / split / fold-in が eager と一致する。
 
 (in-package #:nabla.pjrt.tests)
