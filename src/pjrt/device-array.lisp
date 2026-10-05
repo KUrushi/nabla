@@ -68,18 +68,39 @@ finalizer は整数アドレスと CLIENT-STATE だけを捕まえる。"
   (or (cdr (assoc dtype *buffer-types*))
       (error 'nabla:unsupported-dtype :dtype dtype)))
 
+;; :i1 のホスト表現（BIT 配列。SBCL は実体をビット詰めで持つ）と PJRT の
+;; PRED（XLA の PRED は1要素1バイト）が違うので、:i1 だけは
+;; sb-ext:array-storage-vector を直接渡せず、行優先の順に1要素1バイトへ
+;; 展開・圧縮する（nabla.iree の device-array.lisp と同じ。issue #166）。
+
+(defun %i1-octets (array)
+  "BIT の配列 ARRAY の要素を行優先の順に並べた (unsigned-byte 8) のベクタ
+（1要素1バイト、値は 0 か 1）を新しく作って返す。"
+  (let ((octets (make-array (array-total-size array) :element-type '(unsigned-byte 8))))
+    (dotimes (i (length octets) octets)
+      (setf (aref octets i) (row-major-aref array i)))))
+
+(defun %unpack-i1-octets (octets array)
+  "OCTETS（PJRT から読み出した1要素1バイトの PRED）の各バイトの最下位ビットを、
+BIT の配列 ARRAY に行優先の順で書き込む。"
+  (dotimes (i (length octets) array)
+    (setf (row-major-aref array i) (logand (aref octets i) 1))))
+
 (defun %client-to-device (client device array dtype)
   "ARRAY（simple-array）を CLIENT の DEVICE（PJRT_Device*）へコピーした
 DEVICE-ARRAY を返す。ホストの実体を pin したまま、転送の完了
 （done_with_host_buffer の PJRT_Event）を待ってから返すので、返った時点で
-ARRAY は自由に書き換えてよい。"
+ARRAY は自由に書き換えてよい。:i1 は %I1-OCTETS で1要素1バイトに展開した
+コピーを送る。"
   (check-type array simple-array)
   (let* ((aval (nabla:array-aval array dtype))
          (element-dtype (nabla:aval-dtype aval))
          (type (%buffer-type element-dtype))
          (shape (nabla:aval-shape aval))
          (rank (length shape))
-         (storage (sb-ext:array-storage-vector array))
+         (storage (if (eq element-dtype :i1)
+                      (%i1-octets array)
+                      (sb-ext:array-storage-vector array)))
          (api (%pjrt-client-api client)))
     (cffi:with-foreign-object (dims :int64 (max rank 1))
       (loop for dim in shape for i from 0 do (setf (cffi:mem-aref dims :int64 i) dim))
@@ -113,14 +134,18 @@ ARRAY は自由に書き換えてよい。"
   "DEVICE-ARRAY の内容を、その aval と同じ shape・要素型を持つ新しい多次元
 simple-array にコピーして返す。PJRT_Buffer_ToHostBuffer で結果配列の実体
 （array-storage-vector）へ直接書かせ、PJRT_Event の完了を待つ。release-device-array
-済みなら PJRT-OBJECT-RELEASED。"
+済みなら PJRT-OBJECT-RELEASED。:i1 は PRED が1要素1バイトなので、いったん
+(unsigned-byte 8) のベクタに読み出してから、各バイトの最下位ビットを BIT 配列に
+詰める。"
   (let* ((buffer (%live-device-array-pointer device-array))
          (client (device-array-client device-array))
          (api (%pjrt-client-api client))
          (aval (device-array-aval device-array))
          (array (make-array (nabla:aval-shape aval)
                             :element-type (nabla:dtype-element-type (nabla:aval-dtype aval))))
-         (storage (sb-ext:array-storage-vector array)))
+         (storage (if (eq (nabla:aval-dtype aval) :i1)
+                      (make-array (array-total-size array) :element-type '(unsigned-byte 8))
+                      (sb-ext:array-storage-vector array))))
     (sb-sys:with-pinned-objects (storage)
       (let ((event (%pjrt-call (api "PJRT_Buffer_ToHostBuffer" args
                                     (:struct %buffer-to-host-buffer-args)
@@ -130,6 +155,8 @@ simple-array にコピーして返す。PJRT_Buffer_ToHostBuffer で結果配列
                      (cffi:foreign-slot-value args '(:struct %buffer-to-host-buffer-args)
                                               'event))))
         (%await-and-destroy-event api event)))
+    (when (eq (nabla:aval-dtype aval) :i1)
+      (%unpack-i1-octets storage array))
     array))
 
 (defmethod print-object ((device-array device-array) stream)

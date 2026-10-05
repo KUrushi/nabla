@@ -243,7 +243,12 @@ PRIMITIVE-ERROR になる（契約 §0）。"
     (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(3 3)))
     (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape 6))
     (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(2 -3)))
-    (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(2 3.0)))))
+    (signals nb:primitive-error (%abstract-eval-of :reshape (list in-aval) :shape '(2 3.0))))
+  ;; 要素数 0 の入力なら、負の次元を含む shape でも要素数の検査は通ってしまう。
+  ;; 負の次元を弾くのは shape の検査だけ（issue #70 の mutation testing で、
+  ;; その下限を -1 に緩める変異体が生き残っていた）。
+  (signals nb:primitive-error
+    (%abstract-eval-of :reshape (list (nb:make-aval '(0) :f32)) :shape '(0 -1))))
 
 (test shape/reshape/wrong-arity-signals-primitive-error
   "入力が0個・2個の reshape は PRIMITIVE-ERROR になる。"
@@ -341,7 +346,24 @@ PRIMITIVE-ERROR になる（非リスト・非整数の場合は契約 §0: SORT
     (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(0 0)))
     (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list (nb:make-aval '(4) :f32)) :shape '(3) :dims '(0)))
     (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims 5))
-    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(a b)))))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(a b))))
+  ;; 上の境界外・重複の例は、operand の次元の検査でも弾かれてしまう（in-aval の
+  ;; 次元 3 は出力の次元 2 と合わない）。次元が合う入力でも、範囲の検査と重複の
+  ;; 検査だけで弾かれることを確かめる（issue #70 の mutation testing で、
+  ;; この2つの検査を消す変異体が生き残っていた）。
+  (let ((in-aval (nb:make-aval '(2 3) :f32)))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(0 2)))
+    (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim (list in-aval) :shape '(2 3) :dims '(0 -1))))
+  (signals nb:primitive-error
+    (%abstract-eval-of :broadcast-in-dim (list (nb:make-aval '(2 2) :f32)) :shape '(2 3) :dims '(0 0))))
+
+(test shape/broadcast-in-dim/wrong-arity-signals-primitive-error
+  "入力が0個・2個の broadcast-in-dim は PRIMITIVE-ERROR になる（2個目を黙って
+無視しない）。"
+  (signals nb:primitive-error (%abstract-eval-of :broadcast-in-dim '() :shape '(2) :dims '()))
+  (signals nb:primitive-error
+    (%abstract-eval-of :broadcast-in-dim (list (nb:make-aval '(2) :f32) (nb:make-aval '(2) :f32))
+                       :shape '(2) :dims '(0))))
 
 (test shape/broadcast-in-dim/invalid-shape-signals-primitive-error
   "非リストの shape、非整数を含む shape、負の次元を含む shape は
@@ -453,6 +475,12 @@ reference-transpose の期待値と dtype ごとの許容誤差で一致する�
     (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm '(0)))
     (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm 3))
     (signals nb:primitive-error (%abstract-eval-of :transpose (list in-aval) :perm '(a b)))))
+
+(test shape/transpose/wrong-arity-signals-primitive-error
+  "入力が0個・2個の transpose は PRIMITIVE-ERROR になる（2個目を黙って無視しない）。"
+  (signals nb:primitive-error (%abstract-eval-of :transpose '() :perm '()))
+  (signals nb:primitive-error
+    (%abstract-eval-of :transpose (list (nb:make-aval '(2) :f32) (nb:make-aval '(2) :f32)) :perm '(0))))
 
 (test shape/transpose/emit-matches-fixture
   "transpose の :emit（f32・bf16）は、SSA 名を正規化した後 transpose.mlir /

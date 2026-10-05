@@ -434,6 +434,30 @@ MAX/MIN が引数の順序で挙動を変える問題を再発させないため
            (result (funcall (nb::primitive-eager (nb::find-primitive :log)) (list negative) (list aval))))
       (is (sb-ext:float-nan-p (%decode-unary-scalar dtype (row-major-aref result 0))) "~A: log(-1)" dtype))))
 
+(test primitives/log/negative-is-canonical-quiet-nan
+  "f32 / f64 の log(負の値) は、どの負の値でも canonical quiet NaN
+（符号ビット 0・quiet ビット 1・残りのペイロード 0。f32 は #x7FC00000、
+f64 は #x7FF8000000000000）のビット列になる。NaN であることだけを見る
+性質では、ペイロードの違う NaN や signaling NaN（#x7FF7FFFF...）を返す
+変異体が生き残っていた（issue #70）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 0 :hi 1)
+                                  (uniform-real :lo -1d6 :hi -1d-6)))
+                (lambda (args)
+                  (destructuring-bind (dtype-index x) args
+                    (let* ((dtype (nth dtype-index '(:f32 :f64)))
+                           (aval (nb:make-aval '() dtype))
+                           (negative (%unary-scalar-array dtype x))
+                           (result (funcall (nb::primitive-eager (nb::find-primitive :log))
+                                            (list negative) (list aval)))
+                           (value (row-major-aref result 0)))
+                      (ecase dtype
+                        (:f32 (= #x7FC00000 (ldb (byte 32 0) (sb-kernel:single-float-bits value))))
+                        (:f64 (and (= #x7FF80000 (ldb (byte 32 0) (sb-kernel:double-float-high-bits value)))
+                                   (= 0 (sb-kernel:double-float-low-bits value))))))))
+                :regression-id primitives/log/negative-is-canonical-quiet-nan
+                :regression-file (regression-path "primitives-log-negative-is-canonical-quiet-nan"))
+      "log(負の値) のビット列が canonical quiet NaN と一致しなかった"))
+
 (test primitives/exp/overflow-is-positive-infinity
   "exp(大きい正の値) は正の無限大になる（オーバーフロー、全 dtype）。"
   (dolist (dtype *dtypes*)
