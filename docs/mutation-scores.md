@@ -84,6 +84,21 @@ mutation score は `(殺した数 + タイムアウト数) / (全数 - 除外数
 両段を合わせると生き残る変異体は無い。第1段の `rng.lisp` で生き残る `%rng-emit-batched` の
 変異体（StableHLO の型の綴り）は、逆にすべて第2段が殺す。
 
+**注意（#172 の後）**: この節の `rng.lisp` の数字（第1段・第2段とも）は、バッチされた rng を
+行ごとに展開していた #172 より前の `%rng-emit-batched` で測ったもの。#172 で
+`%rng-emit-batched` は1つの `stablehlo.while` を出す形に書き直され、さらにビットのバッファを
+in-place に書く形に変わった（#172 のレビュー）ので、行ごとの補助の名前についての除外6件は
+`tools/mutate/exclusions.lisp` から消した（除外は `defun` の全文を埋め込むので、書き直した
+定義には当たらない）。書き直した `%rng-emit-batched`（`src/primitives/rng.lisp:181-252`）だけは
+第2段と同じやり方で測り直した: `--test-system nabla/iree/tests` で、small の emit のテスト3つ
+（`prng/rng-batched-emit-passes-bits-through-barriers`・`prng/rng-batched-emit-structure`・
+`prng/rng-batched-emit-size-is-independent-of-rows`）と IREE のテスト3つ
+（`iree/prng/batched-rng-bit-generator-matches-eager`・
+`iree/prng/batched-rng-same-device-input-twice-gives-identical-bits`・
+`iree/prng/two-batched-rngs-on-the-same-state-do-not-share-a-buffer`）を走らせ、
+14体中 殺した 14（score 1.0。`--trials 5 --timeout 300`、間引かない）。`rng.lisp` の第1段
+（`nabla/tests` 全体での 127 体）は測り直していない。
+
 タイムアウトは、変異で `select` や比較の向きが変わり、`while-loop` を使うテストが止まらなく
 なったものが多い（タイムアウトは殺したとみなす）。マシンの負荷によって、同じ変異体が
 「殺した」と「タイムアウト」の間を行き来する。
@@ -120,8 +135,9 @@ mutation score は `(殺した数 + タイムアウト数) / (全数 - 除外数
 理由は `tools/mutate/exclusions.lisp` の各エントリの `:reason` にある（このファイルでは要約だけ）。
 
 - 補助の SSA 名のタグを `""` にする（`compare.lisp` の `%convert-aux-name` 13体、
-  `reduce.lisp` の `%reduce-aux-name` 3体、`rng.lisp` の `%rng-emit-batched` の行ごとの名前 6体）:
-  名前が一意のまま綴りが変わるだけ
+  `reduce.lisp` の `%reduce-aux-name` 3体）: 名前が一意のまま綴りが変わるだけ。
+  `rng.lisp` の `%rng-emit-batched` の行ごとの名前 6体も同じ理由で除外していたが、#172 で
+  定義を書き直したので除外リストから消した（§3 の注意）
 - `bits.lisp` の7体: シフト量 = ビット幅の境界（どちらでも 0）、直前の cond の節が捕まえる
   `=` の場合の `>` / `>=`、後で必ず切り捨てられる上位ビット、すべて上書きされる初期値
 - `compare.lisp` の select の shape の検査の削除2体: 3つの検査のうち1つは残り2つから従う
@@ -136,6 +152,7 @@ mutation score は `(殺した数 + タイムアウト数) / (全数 - 除外数
 この測定の範囲では、両段を合わせて生き残った変異体は無い。ただし次は測っていない。
 
 - `--max-per-def 25` で間引いた `dot.lisp` の17体と `rng.lisp` の130体
+- `rng.lisp` の第1段は #172 より前のコードで測ったまま（§3 の注意）
 - `nabla/iree/tests` による第2段は `%rng-emit-batched` だけ。ほかの emit の変異は
   `nabla/tests` の StableHLO のフィクスチャとの比較だけで殺している（今回はそれで足りた）
 - 第2段で IREE の全 medium テストを変異体ごとに走らせると1体あたり数分かかるので、
