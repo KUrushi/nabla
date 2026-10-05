@@ -51,7 +51,7 @@ scripts/verify-iree.sh
 
 - `NABLA_IREE_HOME`: IREE のインストール先。既定 `~/.local/share/nabla/iree-3.11.0`
 - `NABLA_LISP_DEPS`: apt に無い Lisp 依存（check-it / optima）の置き場。既定 `~/.local/share/nabla/lisp-deps`
-- `NABLA_CACHE_DIR`: vmfb ディスクキャッシュの場所。既定 `${XDG_CACHE_HOME:-~/.cache}/nabla/`
+- `NABLA_CACHE_DIR`: vmfb ディスクキャッシュの場所（キャッシュはその下の `vmfb/` に置く）。既定 `${XDG_CACHE_HOME:-~/.cache}/nabla/`。相対パスはプロセスの作業ディレクトリを基準に絶対パスへ解決する（`*compile-cache-directory*` に束縛した相対パスも同じ）
 
 ## テスト
 
