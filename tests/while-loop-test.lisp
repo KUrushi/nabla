@@ -440,7 +440,10 @@ stablehlo.optimization_barrier を通る（引数の x と limit は通らない
   "%stablehlo-unique-id は EMIT-STABLEHLO の外（カウンタが束縛されていない）では一意性を保証できないのでエラー。
 黙って 0 を返すと、2つのループが黙って同じバッファを共有しうる（issue #179）。"
   (let ((nb::*stablehlo-region-counter* nil))
-    (signals error (nb::%stablehlo-unique-id)))
+    ;; 説明のあるエラー（INCF が NIL に出す TYPE-ERROR ではない）
+    (handler-case (progn (nb::%stablehlo-unique-id) (fail "エラーにならなかった"))
+      (type-error (e) (fail "説明の無い TYPE-ERROR になった: ~A" e))
+      (error (e) (is (search "EMIT-STABLEHLO" (princ-to-string e))))))
   (let ((nb::*stablehlo-region-counter* 4))
     (is (= 5 (nb::%stablehlo-unique-id)))
     (is (= 6 (nb::%stablehlo-unique-id)))))
