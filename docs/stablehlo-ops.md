@@ -102,7 +102,7 @@ mlir::iree_compiler::IREE::Stream::ValueConsumerAffinityPVS::updateValue(mlir::V
 mlir::iree_compiler::DFX::Solver::updateElement(...)
 ```
 
-回避策（nabla 側で入れてある）: while のオペランドのうち graph の定数（`stablehlo.constant` で出す値）のものを、while の前の `stablehlo.optimization_barrier` に通す（`src/while-loop.lisp` の `%while-barrier-lines`。値は変わらない）。実際の jvp の graph と最小の形で 10 回中 0 回に減ることを確かめた（引数のオペランドは通さない）。`tests/iree/while-loop-test.lisp`（medium）の、定数の carry を持つ生の StableHLO が今も落ちることを子プロセスで確かめるテストが、このバグが IREE に残っていることを守り（直れば失敗するので、回避策・このテスト・この注意書きを消す）、barrier 付きの StableHLO が 10 回続けてコンパイルできることを別のテストが確かめる。
+回避策（nabla 側で入れてある）: while のオペランドのうち graph の定数（`stablehlo.constant` で出す値）のものを、while の前の `stablehlo.optimization_barrier` に通す（`src/while-loop.lisp` の `%while-barrier-lines`。値は変わらない）。実際の jvp の graph と最小の形で 10 回中 0 回に減ることを確かめた（引数のオペランドは通さない）。同じ値の定数は CSE で1つになるので、同じ定数で初期化した while が2つあると barrier どうしもまったく同じ形になってまとめられ、2つのループが同じ SSA 値から始まりうる。そこで barrier には、モジュールの中で一意な整数の `stablehlo.constant`（`%stablehlo-unique-id`。`%wbar_<out>_u_c`）も一緒に通す（結果は使わない。scan の `%scan-ys-init-lines` と同じやり方。issue #179。`tests/while-loop-test.lisp` の `while-loop/emits-a-distinct-salt-for-each-constant-barrier` が守る）。`tests/iree/while-loop-test.lisp`（medium）の、定数の carry を持つ生の StableHLO が今も落ちることを子プロセスで確かめるテストが、このバグが IREE に残っていることを守り（直れば失敗するので、回避策・このテスト・この注意書きを消す）、barrier 付きの StableHLO が 10 回続けてコンパイルできることを別のテストが確かめる。
 
 ### 制御構造（issue #130）
 

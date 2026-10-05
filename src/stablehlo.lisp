@@ -210,11 +210,12 @@ INDEX が NIL なら loc を付けない（リージョンの中の eqn。外側
 
 (defun %stablehlo-unique-id ()
   "いま出しているモジュールの中で一意な整数（*STABLEHLO-REGION-COUNTER* を1つ進めた値）。
-EMIT-STABLEHLO の外では 0。同じ graph からは常に同じ番号の列になる（出力のテキストが
-決定的なので、コンパイルのキャッシュが効く）。"
-  (if *stablehlo-region-counter*
-      (incf *stablehlo-region-counter*)
-      0))
+同じ graph からは常に同じ番号の列になる（出力のテキストが決定的なので、コンパイルのキャッシュが効く）。
+EMIT-STABLEHLO の外（カウンタが束縛されていない）ではエラー（一意性を保証できず、
+同じ番号の barrier が CSE でまとめられて2つのループがバッファを共有しうるため。issue #179）。"
+  (unless *stablehlo-region-counter*
+    (error "%stablehlo-unique-id は EMIT-STABLEHLO の中（*STABLEHLO-REGION-COUNTER* が束縛されている間）でしか呼べない"))
+  (incf *stablehlo-region-counter*))
 
 (defun %stablehlo-region-return-line (numbers outvars)
   "リージョンの終わりの stablehlo.return。OUTVARS が無ければ裸の \"stablehlo.return\"。"
