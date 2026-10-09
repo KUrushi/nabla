@@ -68,7 +68,9 @@ step() {
   echo
 } >> "${SUMMARY}"
 
-step apt bash -c 'apt-get update && apt-get install -y sbcl clang lld cmake ninja-build python3-pip git'
+# Colab には pip と git が最初から入っている。apt の python3-pip で Colab の
+# Python 環境（カーネルが動いている）を書き換えないよう、入れない。
+step apt bash -c 'apt-get update && apt-get install -y sbcl clang lld cmake ninja-build'
 step lisp-deps scripts/setup-lisp-deps.sh
 if step build-iree scripts/build-iree.sh --cuda; then
   step verify-iree scripts/verify-iree.sh --cuda

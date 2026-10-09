@@ -87,19 +87,41 @@ print('started')
 "
 
 log "終わるまで待つ（${POLL_SECONDS} 秒おき、最大 $((MAX_WAIT_SECONDS / 60)) 分）"
+# 問い合わせの出力（colab の "[colab] ..." のメッセージは標準出力に出る）は
+# すべて poll.log に残す。Colab 側で VM が消える
+# （"Session not found"）と以後の問い合わせはすべて失敗するので、
+# MAX_POLL_FAILURES 回続けて失敗したらセッションの有無を確かめ、消えて
+# いれば待つのをやめる。
+POLL_LOG="${OUT_DIR}/poll.log"
+MAX_POLL_FAILURES=3
+failures=0
 waited=0
 while :; do
-  status="$(remote_py 60 "
+  if status="$(remote_py 60 "
 import os
 print('DONE' if os.path.exists('/content/nabla-out/DONE') else 'RUNNING')
 try:
     print(open('/content/nabla-out/progress.log').read().strip().splitlines()[-1])
 except Exception:
     pass
-" 2>/dev/null || echo "POLL-FAILED")"
-  log "$(echo "${status}" | tail -n 1)"
-  if echo "${status}" | grep -q '^DONE'; then
-    break
+" 2>&1)"; then
+    failures=0
+    { date -u +%FT%TZ; echo "${status}"; } >> "${POLL_LOG}"
+    log "$(echo "${status}" | tail -n 1)"
+    if echo "${status}" | grep -q '^DONE'; then
+      break
+    fi
+  else
+    failures=$((failures + 1))
+    { date -u +%FT%TZ; echo "POLL-FAILED"; echo "${status:-}"; } >> "${POLL_LOG}"
+    log "問い合わせに失敗した（${failures} 回連続）: $(echo "${status:-}" | tail -n 1)"
+    if (( failures >= MAX_POLL_FAILURES )); then
+      if ! colab sessions 2>/dev/null | grep -q "${SESSION}"; then
+        log "セッション ${SESSION} が Colab 側で消えている（VM が回収された）。"
+        log "問い合わせの記録: ${POLL_LOG}。VM 側の記録: colab log -s ${SESSION} -n 50"
+        exit 1
+      fi
+    fi
   fi
   if (( waited >= MAX_WAIT_SECONDS )); then
     log "時間切れ。途中までのログを持ち帰る"
