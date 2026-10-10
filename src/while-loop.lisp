@@ -123,7 +123,12 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
   "while のオペランド名 IN-NAMES（型は IN-AVALS）のうち、いま出している graph の定数（*STABLEHLO-CONSTANT-NAMES*）
 の名前のものを、まとめて1つの stablehlo.optimization_barrier に通す。
 (VALUES barrier の行のリスト（無ければ NIL） 置き換えたオペランド名のリスト) を返す。
-同じ定数が複数のオペランドに現れてもよい（それぞれ別の barrier の結果になる）。"
+同じ定数が複数のオペランドに現れてもよい（それぞれ別の barrier の結果になる）。
+定数のオペランドがあるときは、モジュールの中で一意な整数（%STABLEHLO-UNIQUE-ID）の constant
+\"%wbar_<out>_u_c\" も同じ barrier に通す（結果は使わない。MLIR の SSA 名は数字で始まると
+数字だけでなければならないので、接頭辞を付ける）。同じ値の定数は CSE で1つになるので、
+通さないと同じ定数で初期化した2つの while の barrier がまったく同じ形になって CSE で
+まとめられ、2つのループが同じ SSA 値から始まる（issue #179。%SCAN-YS-INIT-LINES と同じやり方）。"
   (let ((positions (loop for name in in-names for i from 0
                          when (member name *stablehlo-constant-names* :test #'string=)
                            collect i)))
@@ -131,12 +136,16 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
         (values '() in-names)
         (let* ((results (loop for i in positions
                               collect (format nil "%wbar~D_~A" i (subseq out-name 1))))
+               (salt (format nil "%wbar_~A_u" (subseq out-name 1)))
                (names (copy-list in-names)))
           (loop for i in positions for r in results do (setf (nth i names) r))
-          (values (list (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
-                                results
-                                (mapcar (lambda (i) (nth i in-names)) positions)
-                                (mapcar (lambda (i) (tensor-type-string (nth i in-avals))) positions)))
+          (values (list (format nil "~A_c = stablehlo.constant dense<~D> : tensor<i32>" salt (%stablehlo-unique-id))
+                        (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
+                                (append results (list salt))
+                                (append (mapcar (lambda (i) (nth i in-names)) positions)
+                                        (list (format nil "~A_c" salt)))
+                                (append (mapcar (lambda (i) (tensor-type-string (nth i in-avals))) positions)
+                                        (list "tensor<i32>"))))
                   names)))))
 
 (defprimitive while-loop (:cond :body :n-carries)

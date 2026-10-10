@@ -245,3 +245,37 @@ docs/stablehlo-ops.md の注意書きとこのテストを消す。"
     (multiple-value-bind (code output) (%wl-iree-compile-in-child text :times 10)
       (is (and (eql code 0) (search "COMPILED" output))
           "barrier 付きの while が IREE でクラッシュした: ~A" output))))
+
+(define-iree-test while-loop/iree-sibling-loops-with-constant-inits-match-eager
+    "cond と body が同じで、init が同じ閉包の定数（カウンタ 0 と rank 1 の定数）の while-loop を
+1つのモジュールに2つ並べても、IREE と eager で一致する。定数を通す barrier が CSE で1つに
+まとめられると、2つのループが同じ SSA 値から始まる（issue #179。直す前でも再現しないかもしれない。
+本当の守りは small の while-loop/emits-a-distinct-salt-for-each-constant-barrier）。"
+  (skip-unless-iree :library :both)
+  (let* ((counter (nb::%scalar-array 0.0 :f32))
+         (vec (make-random-array (make-array-spec '(3) :f32) :seed 5))
+         (cond-fn (nb:with-tracing (c) (< (first c) 3.0)))
+         (body-fn (nb:with-tracing (c)
+                    (list (+ (first c) 1.0) (+ (* (second c) 0.5) (third c)) (third c))))
+         (graph (nb::trace-to-graph
+                 (nb:with-tracing (x)
+                   (let ((a (nb:while-loop cond-fn body-fn (list counter vec x)))
+                         (b (nb:while-loop cond-fn body-fn (list counter vec (* x 2.0)))))
+                     (values (first a) (second a) (first b) (second b))))
+                 (list (nb:make-aval '(3) :f32))))
+         (backend (nabla:find-backend :iree))
+         (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph))))
+         (x (make-random-array (make-array-spec '(3) :f32) :seed 6))
+         (input nil)
+         (results nil))
+    (unwind-protect
+         (progn
+           (setf input (to-device x backend :dtype :f32))
+           (setf results (multiple-value-list (nabla:backend-invoke backend module "main" input)))
+           (let ((expected (multiple-value-list (nb:eval-graph graph x))))
+             (is (= (length expected) (length results)))
+             (is (every (lambda (r e) (allclose (to-host r) e :dtype :f32)) results expected)
+                 "IREE の並んだ while-loop の結果が eager と一致しなかった")))
+      (dolist (r results) (release-device-array r))
+      (when input (release-device-array input))
+      (nabla:backend-unload backend module))))
