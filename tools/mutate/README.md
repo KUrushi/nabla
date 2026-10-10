@@ -39,6 +39,12 @@ tools/mutate/run.sh --system nabla --base main --trials 20 --timeout 300
   ロードされている必要がある。`nabla` 以外のシステムを対象にするときは、
   `--test-system` と `--test-form` を明示的に渡すこと）
 
+## nabla 本体での実測
+
+`src/eval.lisp`・`src/primitives/*.lisp`・`src/jit.lisp`・`src/stablehlo.lisp` に
+この runner をかけた結果（変異体の数、mutation score、生き残った変異体への対処）は
+[`docs/mutation-scores.md`](../../docs/mutation-scores.md) にある（issue #70）。
+
 ## 終了コード
 
 `tools/mutate/run.sh` の終了コード:
@@ -236,6 +242,11 @@ CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-de
   `%jit-call` が暴走再帰してこれが起きた（テストを1回だけ invoke する
   ように直した）。テストのハンドラがリスタートを invoke するときは、
   回数に上限を付けること
+- 同じチェックアウトで runner を2つ並行に走らせない。regression 状態の
+  隔離（上の「変異体どうしの隔離」）はプロセスごとのスナップショットなので、
+  別の runner の変異体が書いた regression-case を取り込んで書き戻してしまい、
+  `tests/regressions/` に変異体由来のケースが残る。並行に測るときは別の
+  ワークツリーを使う
 - `format` は arid node なので、`format` で StableHLO のテキストを書き出す
   箇所（`src/stablehlo.lisp` など）の中には変異がかからない。StableHLO
   出力の検査を強めたいときは、この制限に注意すること

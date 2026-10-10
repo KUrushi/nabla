@@ -5,9 +5,9 @@
 ;;;; 出力は最初の入力の AVAL、という共通の形（%BINARY-FLOAT-ABSTRACT-EVAL、
 ;;;; src/primitives/common.lisp）を持つ。DEFPRIMITIVE 本体は薄いラムダに
 ;;;; とどめ、実際の計算は演算ごとの小さな named defun に分ける
-;;;; （mutation testing の runner はトップレベル定義1つにつき1変異体しか
-;;;; 作らないため、大きな defprimitive フォーム1つにまとめると変異体の
-;;;; 数が減り、生き残りやすくなる）。
+;;;; （当初の mutation testing の runner が定義1つにつき1変異体しか作らな
+;;;; かったための分け方。issue #70 以降は箇所ごとに変異体を作るので、
+;;;; 分け方は変異体の数に影響しない。docs/mutation-scores.md を見よ）。
 
 (in-package #:nabla)
 

@@ -413,6 +413,68 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
   あるマシンが必要 |
 | `scripts/verify-iree.sh --cuda` | 未実施（環境に GPU/CUDA なし） | - | 同上 |
 
+## IREE を上げたときに回避策を外せるか確かめる手順
+
+IREE 3.11.0 のコンパイラのバグ3件（issue #73、#165。詳細・最小の再現・上流への報告の下書きは [`docs/iree-upstream-bugs.md`](iree-upstream-bugs.md)）に対して、nabla は回避策を入れている。`third_party/iree.lock` を上げる PR では、次の手順で各バグが直ったかを確かめ、直ったものだけ回避策を外す（外すのは別の PR に分けてよい）。
+
+### 1. 単体の iree-compile で最小の再現を流す
+
+```sh
+NABLA_IREE_HOME=<新しい版のインストール先> scripts/check-iree-repros.sh --runs 20
+```
+
+`docs/iree-repros/` の各ファイルを `--runs` 回コンパイルし、1行ずつ判定を出す。終了コードは、記録どおり（バグは全部再現し、回避策の形は全部通る）なら 0、どれか違えば 1。IREE 3.11.0 での出力:
+
+```
+bug      dot-general-k0.mlir                      REPRODUCED      crashes=20/20 exit-codes=136
+bug      while-constant-carry.mlir                REPRODUCED      crashes=19/20 exit-codes=139 0
+control  while-constant-carry-barrier.mlir        OK              crashes=0/20 exit-codes=0
+bug      while-i1-carry-returned.mlir             REPRODUCED      crashes=20/20 exit-codes=134 139
+control  while-i1-carry-not-returned.mlir         OK              crashes=0/20 exit-codes=0
+```
+
+`while-constant-carry.mlir` は非決定的に落ちる（3.11.0 では 50 回中 49 回）ので、`NOT-REPRODUCED` を「直った」と判断するのは `--runs 50` 以上で 1 回も落ちなかったときにする。`bug` の行が `NOT-REPRODUCED` になったら、上流の issue（`docs/iree-upstream-bugs.md` の各節）が閉じているかも確かめる。
+
+### 2. ガードテストを流す
+
+```sh
+NABLA_IREE_HOME=<新しい版> NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
+```
+
+次のテスト（`nabla/iree/tests` の medium）は、**バグが IREE に残っていることを確かめる**ので、バグが直ると失敗する。失敗したら、それが「直った」という合図で、下の撤去条件に従って回避策とテストを一緒に消す。
+
+| バグ | ガードテスト（`tests/iree/`） | 直ったときの結果 |
+| --- | --- | --- |
+| 1. K=0 の dot_general | ガードテストは無い。`float-traps-test.lisp` の `float-traps/zero-size-dot-general-poisons-compiler-then-fails-clearly` は、K=0 がコンパイルできた場合（`K0-RESULT=COMPILED-OK`）も通るように書いてある | 失敗しない。手順 1 の `dot-general-k0.mlir` で判断する |
+| 2. 定数の carry の while | `while-loop-test.lisp` の `while-loop/iree-known-bug-constant-carry-crashes-the-compiler`（子プロセスで 10 回コンパイルし、1 回でも落ちることを確かめる） | 失敗する |
+| 3. `i1` の carry を返す while | `while-loop-test.lisp` の `while-loop/iree-known-limitation-i1-carry-returned-crashes-the-compiler` | 失敗する |
+
+回避策が新しい版でも効いていることは、`while-loop/iree-constant-carry-with-barrier-compiles-repeatedly`・`tests/iree/scan-test.lisp`・`tests/iree/dot-test.lisp` の `dot-general/zero-contracting-compiles-and-matches-eager` が引き続き確かめる（こちらは失敗してはいけない）。
+
+### 3. 回避策を撤去する条件と、消すもの
+
+**バグ 1（K=0 の dot_general、#62 / #73）**: 条件は `dot-general-k0.mlir` が `NOT-REPRODUCED`（決定的に落ちていたので `--runs 20` で十分）で、かつ K=0 の dot_general を IREE で実行した結果が全 0 になること。消すもの:
+
+- `src/primitives/dot.lisp` の `%dot-zero-contracting-p` と `%dot-zero-constant-line`、`%dot-emit-lines` の K=0 の分岐（と docstring の issue #62 の記述）
+- `tests/primitives/dot-test.lisp` の「K=0（issue #62）: ゼロ定数 :emit」の節のテスト（emit がゼロ定数になることを確かめているので、dot_general を出すことを確かめる形に書き換える）。`tests/iree/dot-test.lisp` の `dot-general/zero-contracting-compiles-and-matches-eager` は残す（回避策を消した後も、K=0 が IREE で正しく動くことを守る）
+- `docs/stablehlo-ops.md` の dot_general の行の K=0 の記述
+- #69 のコンパイラの poison（`src/iree/compiler.lisp` の `*compiler-poison-reason*` まわり）は、K=0 に限らず「Pipeline の途中で ARITHMETIC-ERROR が起きたら以後そのプロセスでコンパイラを使わない」一般の安全策なので**残す**。ただし、その経路を踏ませるテスト（`tests/iree/float-traps-test.lisp` の性質2）は K=0 では #DE が起きなくなり、`COMPILED-OK` の側しか通らなくなる。別の #DE の起こし方が無ければ、その旨をテストのコメントに書く
+
+**バグ 2（定数の carry の while、#165）**: 条件は `while-constant-carry.mlir` が `--runs 50` で 0 回、かつガードテスト `while-loop/iree-known-bug-constant-carry-crashes-the-compiler` が失敗すること。消すもの:
+
+- `src/while-loop.lisp` の `%while-barrier-lines` と、`while-loop` の `:emit` からの呼び出し・冒頭のコメントのこのバグの記述
+- `src/scan.lisp` の `:emit` で、カウンタと ys の0初期値を `stablehlo.optimization_barrier` に通している部分（長さ 1 で barrier を付けない分岐も一緒に）
+- `tests/iree/while-loop-test.lisp` の `*wl-iree-const-carry-crash-text*` とガードテスト。`while-loop/iree-constant-carry-with-barrier-compiles-repeatedly` は、`optimization_barrier` を含むことの検査を外して「定数の carry の while が 10 回続けてコンパイルできる」テストとして残す
+- `docs/stablehlo-ops.md` の制御構造の節と scan の節のこのバグの記述、`CLAUDE.md` の「設計上の約束」の IREE 3.11 の `stablehlo.while` の項目（barrier の部分）、`docs/phase3-report.md` §3.12 の 1 に「何版で直った」を追記
+
+**バグ 3（`i1` の carry を返す while、#131 / #165）**: 条件は `while-i1-carry-returned.mlir` が `NOT-REPRODUCED`、かつガードテスト `while-loop/iree-known-limitation-i1-carry-returned-crashes-the-compiler` が失敗すること。回避策のコードは無いので、消すのは制限の記述とガードテスト:
+
+- `src/while-loop.lisp` の冒頭の「既知の制限」と `while-loop` の docstring の制限の記述
+- `tests/iree/while-loop-test.lisp` の `*wl-iree-known-crash-text*` とガードテスト。代わりに `%with-wl-iree-i1-check` で `i1` の carry を返す形（`return-flag` が真）の、eager との一致のテストを足す
+- `docs/stablehlo-ops.md` の制御構造の節の「既知の制限」、`CLAUDE.md` の同じ項目の後半（「比較由来の `:i1` の carry を持つ while の結果を jit の戻り値にすると……」）、`docs/phase3-report.md` §5 の該当行
+
+どのバグでも、撤去したら `docs/iree-upstream-bugs.md` の表と節に「何版で直ったか」を書き、`docs/iree-repros/` の該当ファイルと `scripts/check-iree-repros.sh` の `CASES` の行を消す。
+
 ## GPU で確かめる手順（issue #12）
 
 同じ StableHLO から作った vmfb を `local`（CPU）と `cuda`（NVIDIA GPU）の

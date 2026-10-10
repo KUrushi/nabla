@@ -49,7 +49,7 @@
 | broadcast_in_dim | `%0 = stablehlo.broadcast_in_dim %a, dims = [1] : (tensor<3xf32>) -> tensor<2x3xf32>`（pretty。rank 0 元は `dims = []`） | `broadcast-in-dim` | ○ | ○ | |
 | reshape | `%0 = stablehlo.reshape %a : (tensor<2x3xf32>) -> tensor<3x2xf32>`（pretty。`-> tensor<f32>` も可） | `reshape` | ○ | ○ | |
 | transpose | `%0 = stablehlo.transpose %a, dims = [2, 0, 1] : (tensor<2x3x4xf32>) -> tensor<4x2x3xf32>`（pretty） | `transpose` | ○ | ○ | |
-| dot_general | f32/f64: `%0 = stablehlo.dot_general %a, %b, contracting_dims = [1] x [0] : (tensor<2x3xf32>, tensor<3x2xf32>) -> tensor<2x2xf32>`（pretty。バッチ付きは `batching_dims = [0] x [0], contracting_dims = [2] x [1]`、`precision = [DEFAULT, DEFAULT]` 付きも可）。既存 `tests/fixtures/stablehlo/matmul.mlir` の generic form も通る。bf16/f16: IREE（llvm-cpu）は縮約を入力の dtype のまま累積し、K が大きいと eager（single-float 累積）と許容誤差を超えてずれる（issue #54）ので、f32 の結果型を持つ `stablehlo.dot_general` を出してから `stablehlo.convert` で戻す2行にする: `%acc_0 = stablehlo.dot_general %a, %b, contracting_dims = [1] x [0] : (tensor<2x3xbf16>, tensor<3x2xbf16>) -> tensor<2x2xf32>` に続けて `%0 = stablehlo.convert %acc_0 : (tensor<2x2xf32>) -> tensor<2x2xbf16>`（JAX の `preferred_element_type=f32` と同じ考え方）。K=0（contracting 次元のサイズが 0）では IREE 3.11.0 のコンパイラが AnnotateDispatches の整数 0 除算で落ちる（issue #62）ので、dot_general を出さず `%0 = stablehlo.constant dense<0.0> : <出力型>` を1行出す（全 float dtype。bf16/f16 の f32 累積も経由しない。数学的にも空和 = 0 で正しい） | `dot-general` | ○ | ○ | |
+| dot_general | f32/f64: `%0 = stablehlo.dot_general %a, %b, contracting_dims = [1] x [0] : (tensor<2x3xf32>, tensor<3x2xf32>) -> tensor<2x2xf32>`（pretty。バッチ付きは `batching_dims = [0] x [0], contracting_dims = [2] x [1]`、`precision = [DEFAULT, DEFAULT]` 付きも可）。既存 `tests/fixtures/stablehlo/matmul.mlir` の generic form も通る。bf16/f16: IREE（llvm-cpu）は縮約を入力の dtype のまま累積し、K が大きいと eager（single-float 累積）と許容誤差を超えてずれる（issue #54）ので、f32 の結果型を持つ `stablehlo.dot_general` を出してから `stablehlo.convert` で戻す2行にする: `%acc_0 = stablehlo.dot_general %a, %b, contracting_dims = [1] x [0] : (tensor<2x3xbf16>, tensor<3x2xbf16>) -> tensor<2x2xf32>` に続けて `%0 = stablehlo.convert %acc_0 : (tensor<2x2xf32>) -> tensor<2x2xbf16>`（JAX の `preferred_element_type=f32` と同じ考え方）。K=0（contracting 次元のサイズが 0）では IREE 3.11.0 のコンパイラが AnnotateDispatches の整数 0 除算で落ちる（issue #62。最小の再現は `docs/iree-repros/dot-general-k0.mlir`、上流への報告は #73 と `docs/iree-upstream-bugs.md`）ので、dot_general を出さず `%0 = stablehlo.constant dense<0.0> : <出力型>` を1行出す（全 float dtype。bf16/f16 の f32 累積も経由しない。数学的にも空和 = 0 で正しい） | `dot-general` | ○ | ○ | |
 | reduce（add） | f32/f64: `%0 = stablehlo.reduce(%a init: %init) applies stablehlo.add across dimensions = [1] : (tensor<4x8xf32>, tensor<f32>) -> tensor<4xf32>`（pretty。全軸 `dimensions = [0, 1]` → `tensor<f32>` も可）。既存 `tests/fixtures/stablehlo/reduce_sum.mlir` の generic form も通る。bf16/f16: IREE（llvm-cpu）は reduce（add）を入力の dtype のまま累積し、軸長が大きいと eager（single-float 累積）と許容誤差を超えてずれる（issue #63、dot_general の issue #54 と同じ原因）ので、入力を f32 に `stablehlo.convert` → f32 の init で reduce → 結果を元の dtype に `stablehlo.convert` して戻す4行にする: `%in32 = stablehlo.convert %a : (tensor<4x8xbf16>) -> tensor<4x8xf32>` → `%init = stablehlo.constant dense<0.0> : tensor<f32>` → `%acc = stablehlo.reduce(%in32 init: %init) applies stablehlo.add across dimensions = [1] : (tensor<4x8xf32>, tensor<f32>) -> tensor<4xf32>` → `%0 = stablehlo.convert %acc : (tensor<4xf32>) -> tensor<4xbf16>`（dot_general の `preferred_element_type=f32` と同じ考え方） | `reduce-sum` | ○ | ○ | init は `stablehlo.constant dense<0.0>`。bf16/f16 も f32 累積の init として同じ `tensor<f32>` の `0.0` を使う（`dense<0x0000>` は使わなくなった） |
 | reduce（max） | reduce（add）と同じ pretty form で `applies stablehlo.maximum`。init は `-inf` を16進で: f32 `0xFF800000`、bf16 `0xFF80`、f16 `0xFC00`、f64 `0xFFF0000000000000`（`dense<-inf>` は書かない） | `reduce-max` | ○ | ○ | |
 | optimization_barrier | `%0 = stablehlo.optimization_barrier %a : tensor<4xf32>`（pretty、1オペランド） | `stop-gradient` | ○ | ○ | StableHLO には恒等の op が無い（`stablehlo.convert` を同じ dtype でかけると定数畳み込みで消えうる）ので、値を変えず最適化の境界になる optimization_barrier を使う。IREE 3.11.0 がコンパイル・実行できることを確認済み。任意の dtype（`:i1` も）を通す。issue #80 |
@@ -91,7 +91,7 @@ PATH 上の `ld.lld` が使われ、`IREE_LLVM_SYSTEM_LINKER_PATH` で変えら�
 
 オペランドは carry と、cond / body が閉包で捕まえた値（body は素通しで返す）の全部。IREE でコンパイル・実行できることは `tests/iree/while-loop-test.lisp`（medium）で確かめる。
 
-既知の制限（IREE 3.11 のコンパイラのバグ。issue #131 のレビューで確認）: 本体の中で比較から作った値（`:i1` のフラグ、またはそれを `i32` に変換・`select` した値）を carry にした while の結果が関数の戻り値になると、コンパイラが LLVM の `out of memory` / メモリフォルトでプロセスごと落ちる（`:i1` を `i32` として通す・`optimization_barrier` を挟む、のどれでも直らない）。戻り値にしない場合（フラグはループの継続判定にだけ使う）は動く。eager と PJRT は影響を受けない。nabla 側では防げないので、このような while の結果は jit の戻り値にしない。`tests/iree/while-loop-test.lisp` の子プロセスのテストが、このバグが IREE に残っていることを守る（直れば失敗するので、この注意書きごと消す）。
+既知の制限（IREE 3.11 のコンパイラのバグ。issue #131 のレビューで確認）: 本体の中で比較から作った値（`:i1` のフラグ、またはそれを `i32` に変換・`select` した値）を carry にした while の結果が関数の戻り値になると、コンパイラが LLVM の `out of memory` / メモリフォルトでプロセスごと落ちる（`:i1` を `i32` として通す・`optimization_barrier` を挟む、のどれでも直らない）。戻り値にしない場合（フラグはループの継続判定にだけ使う）は動く。eager と PJRT は影響を受けない。nabla 側では防げないので、このような while の結果は jit の戻り値にしない（最小の再現は `docs/iree-repros/while-i1-carry-returned.mlir`、上流への報告の下書きは `docs/iree-upstream-bugs.md`）。`tests/iree/while-loop-test.lisp` の子プロセスのテストが、このバグが IREE に残っていることを守る（直れば失敗するので、この注意書きごと消す）。
 
 もう1つの既知のバグ（IREE 3.11 のコンパイラ。issue #134 の jvp の CI で見つかった。上の `:i1` の carry のバグとは別）: `stablehlo.while` で、cond を駆動する carry（カウンタ）の初期値が `stablehlo.constant` で、ほかに carry が 2 つ以上あり、そのうち少なくとも 1 つが rank 1 以上のとき、コンパイラが非決定的に SIGSEGV / SIGBUS で落ちる（単体の `iree-compile` で 10 回中 6 回、定数の carry を 2 つにした最小の形では 10 回中 10 回）。単純な while の jvp（接線の carry が増える）がこの形になる。バックトレース（`ScheduleAllocationPass` の AffinityAnalysis）:
 
@@ -102,7 +102,9 @@ mlir::iree_compiler::IREE::Stream::ValueConsumerAffinityPVS::updateValue(mlir::V
 mlir::iree_compiler::DFX::Solver::updateElement(...)
 ```
 
-回避策（nabla 側で入れてある）: while のオペランドのうち graph の定数（`stablehlo.constant` で出す値）のものを、while の前の `stablehlo.optimization_barrier` に通す（`src/while-loop.lisp` の `%while-barrier-lines`。値は変わらない）。実際の jvp の graph と最小の形で 10 回中 0 回に減ることを確かめた（引数のオペランドは通さない）。`tests/iree/while-loop-test.lisp`（medium）の、定数の carry を持つ生の StableHLO が今も落ちることを子プロセスで確かめるテストが、このバグが IREE に残っていることを守り（直れば失敗するので、回避策・このテスト・この注意書きを消す）、barrier 付きの StableHLO が 10 回続けてコンパイルできることを別のテストが確かめる。
+nabla を使わない最小の再現（`docs/iree-repros/while-constant-carry.mlir`。carry 3 つで 50 回中 49 回落ちる）と上流への報告の下書きは `docs/iree-upstream-bugs.md`、回避策を外す条件は `docs/iree-build.md` の「IREE を上げたときに回避策を外せるか確かめる手順」にある。
+
+回避策（nabla 側で入れてある）: while のオペランドのうち graph の定数（`stablehlo.constant` で出す値）のものを、while の前の `stablehlo.optimization_barrier` に通す（`src/while-loop.lisp` の `%while-barrier-lines`。値は変わらない）。実際の jvp の graph と最小の形で 10 回中 0 回に減ることを確かめた（引数のオペランドは通さない）。同じ値の定数は CSE で1つになるので、同じ定数で初期化した while が2つあると barrier どうしもまったく同じ形になってまとめられ、2つのループが同じ SSA 値から始まりうる。そこで barrier には、モジュールの中で一意な整数の `stablehlo.constant`（`%stablehlo-unique-id`。`%wbar_<out>_u_c`）も一緒に通す（結果は使わない。scan の `%scan-ys-init-lines` と同じやり方。issue #179。`tests/while-loop-test.lisp` の `while-loop/emits-a-distinct-salt-for-each-constant-barrier` が守る）。`tests/iree/while-loop-test.lisp`（medium）の、定数の carry を持つ生の StableHLO が今も落ちることを子プロセスで確かめるテストが、このバグが IREE に残っていることを守り（直れば失敗するので、回避策・このテスト・この注意書きを消す）、barrier 付きの StableHLO が 10 回続けてコンパイルできることを別のテストが確かめる。
 
 ### 制御構造（issue #130）
 
@@ -123,7 +125,7 @@ mlir::iree_compiler::DFX::Solver::updateElement(...)
 | --- | --- |
 | `stablehlo.bitcast_convert` | 同じ幅（`ui32` ⇄ `f32` / `i32`、`ui64` ⇄ `f64`）に加え、幅が違う `tensor<2xui32>` → `tensor<ui64>`（末尾の次元が消える）と、その逆（`tensor<…xui64>` → `tensor<…x2xui32>`）もコンパイル・実行できる。並びはリトルエンディアン（先頭の要素が下位32ビット）。eager 実装（`bitcast-convert`）と一致 |
 | `stablehlo.shift_right_logical` / `stablehlo.or`（`ui32` / `ui64`） | 使える。量がビット幅以上のとき 0（eager も同じ） |
-| `stablehlo.slice` / `stablehlo.concatenate`（バッチ次元つきの `rng_bit_generator` の展開に使う） | `stablehlo.slice %x [0:1, 0:2] : (tensor<Nx2xui64>) -> tensor<1x2xui64>` と `stablehlo.concatenate %a, %b, dim = 0` の pretty form がそのまま通る 。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度。vmap の入れ子では行数が段ごとの積になる。将来は scan 化で解消する |
+| バッチ次元つきの `rng_bit_generator`（`stablehlo.while` の本体で `dynamic_slice` → `rng_bit_generator` → `dynamic_update_slice`。issue #164） | `ui64[2]` の状態を while の中で1行ずつ取り出して呼ぶ形が、IREE・PJRT とも eager とビット単位で一致する。カウンタとビットのバッファの 0 初期値は、scan の ys と同じく `%scan-ys-init-lines` で作る（制御構造の節の while のバグの回避策と、ループごとに別のバッファにするための一意な整数。1行のときは while を出さない）。本体ではビットのバッファを `optimization_barrier` に通してから `dynamic_update_slice` に渡し、in-place に書く（#159 と同じ回避。状態の carry は小さいので通さない）。**コンパイルコスト**（IREE local、eqn 1つ）: 32 行 0.79 秒、64 行 0.80 秒、256 行 0.85 秒（MLIR 約 2.6 KB で行数に依らない）。以前の行ごとの展開（`slice` / `concatenate`）は 4.0 秒 / 6.9 秒 / 42.8 秒（MLIR 179 KB）だった。**実行時間**は IREE ではループ1回ごとの起動のぶん増える（`vmap` した `uniform` の jit、4コアの機械で 256 キー × 4 / 1024 要素が 40 / 46 ms、64 キー × 16384 要素が 20 ms。展開では 0.8 / 2.8 / 8.0 ms。バッファを in-place に書く前は 1024 要素で 99 ms、16384 要素で 72 ms だった）。PJRT（XLA CPU）は 4 ms で変わらない |
 
 ## その他の確認事項
 
@@ -151,10 +153,26 @@ mlir::iree_compiler::DFX::Solver::updateElement(...)
 | reshape | `%x = stablehlo.reshape %s : (tensor<1x3xf32>) -> tensor<3xf32>` | 先頭の軸 1 を落とす / y_t に足す |
 | dynamic_update_slice | `%w = stablehlo.dynamic_update_slice %ybuf, %y1, %idx, %z : (tensor<4x3xf32>, tensor<1x3xf32>, tensor<i32>, tensor<i32>) -> tensor<4x3xf32>` | y_t を ys のバッファに書く |
 | subtract / add | `%idx = stablehlo.subtract %last, %i : tensor<i32>` | reverse の添字 `length-1-i` / カウンタの増分 |
+| optimization_barrier | `%k = stablehlo.optimization_barrier %ybuf : tensor<4x3xf32>` | while の定数オペランドを通す（下の IREE のバグの回避）/ 本体で ys のバッファを通す（下の性能の節） |
 
 IREE 3.11 のコンパイラバグの回避: cond を決める carry が `stablehlo.constant` で初期化された `stablehlo.while`（他に carry が2つ以上、うち1つは rank 1 以上）は、Stream の AffinityAnalysis（ScheduleAllocationPass）が非決定的に segfault する。scan の while はこの形なので、カウンタと ys の0初期値は `stablehlo.optimization_barrier` を通してから while に渡す。ただし長さ 1 の scan は IREE が while を `scf.for` に変換し、barrier があると `stream.resource` の型の不一致でコンパイルに失敗するので、barrier を付けない（長さ 1 ではクラッシュしない）。バグの詳細は制御構造の節（PR #157）を参照。
 
-性能の注意（issue #159）: IREE は `dynamic_update_slice` のたびに ys のバッファ全体をコピーするので、ys を持つ scan は長さに対して2乗で遅くなる。実測（IREE local、f32）は n=1000, w=1024 で ys ありが 1638 ms、ys なしが 31 ms、n=4000, w=1024 で約 39.7 s。長い系列の ys は、必要でなければ出さない。改善は #159 で扱う。
+性能（issue #159）: ys のバッファは、本体の先頭で `stablehlo.optimization_barrier` に通してから `dynamic_update_slice` に渡す（`%p_bk<j> = stablehlo.optimization_barrier %p_by<j>`）。
+
+- 原因: IREE 3.11 の `iree-stream-conversion`（ConvertToStreamPass）は、ループ（`scf.for` / `scf.while`）の carry であるブロック引数の配置先（affinity）を AffinityAnalysis から引けない。そのため本体の中で carry を使うたびに、転送元が不明の `stream.async.transfer ... -> to(@__device_0)` を挟み、この転送は同じデバイスへのものでも消されず（`ElideAsyncCopiesPass` が消すのは `clone` だけ）、毎ステップ carry 全体のコピー（`stream.cmd.copy`）と新しいバッファの確保になる。ys のバッファ（`length × |y_t|`）も carry なので、ys を持つ scan は長さに対して2乗の時間がかかっていた。`--compile-to=stream` の出力で、本体に ys 全体の `stream.cmd.copy` があることで確かめられる。`--iree-stream-affinity-solver-max-iterations` を増やしても変わらない
+- 回避: `util.optimization_barrier`（`stablehlo.optimization_barrier` から変換される）の結果は配置先が引けるので、転送が挟まらず、`dynamic_update_slice` が ys のバッファを in-place に書く（本体のコピーは y_t の1行ぶんだけになる）。carry 自体（`|carry|` ぶんのコピー）は本体の計算と同じ程度なので、そのままにしている。結果の値は変わらない
+- in-place にすると、それまで毎ステップのコピーで隠れていた IREE 3.11 の別の問題が出るので、ys の初期値は次の形にする（`%scan-ys-init-lines`）:
+  - **ys ごとに別のバッファにする**。同じ型の 0 の `stablehlo.constant` は CSE で1つになり、別々の `optimization_barrier` も1つの値に通るので、2つの ys が同じバッファに書き込んで同じ値になる（jvp / vjp の scan で再現）。スカラーの 0 をまとめて1つの多出力の `optimization_barrier` に通し（結果はそれぞれ別の値）、それぞれを `broadcast_in_dim` で広げる。同じモジュールに同じ入力の scan が2つ（順方向と逆方向など）あると、barrier のオペランドが同じになって CSE で1つにまとめられ、2つの scan が同じ ys のバッファやカウンタを書き換える（#167 の rank 0 / rank 2 のテストと重ねて見つかった。カウンタを共有すると、先の while が進めた値から次の while が始まり、逆方向の scan が1回も回らない。どの組み合わせで壊れるかは定数の値などで変わり、予測できない）。そこでカウンタの 0・ys のスカラーの 0・モジュールの中で一意な整数の `stablehlo.constant`（`%stablehlo-unique-id`）を1つの多出力の barrier に通し、ループごとに別の値にする
+  - **広げたバッファをそれぞれ `optimization_barrier` に通してから while に渡す**。通さないと初期値が1つの確保（subview の詰め合わせ）にまとめられ、ループの中で使っているのに while の前で `stream.resource.dealloca` される（ys が3つ以上だと実行時に `ref is null; while invoking native function hal.buffer.subspan` で落ち、2つでは偶然動く use-after-free）
+  - 長さ 1 の scan は1回しか書かないので、従来どおり初期値は constant のまま、本体の barrier も付けない
+- 実測（IREE local、f32、幅 1024、carry は `tanh(h)+h`、jit の呼び出し3回の最短。ホストへの転送を含む。値は実行ごとに揺れる）:
+
+| 長さ | ys なし | ys あり（回避前） | ys あり（回避後） |
+| --- | --- | --- | --- |
+| 1000 | 20〜40 ms | 956 ms | 20 ms |
+| 4000 | 48〜116 ms | 16488 ms | 64〜256 ms |
+
+  守るテストは、出力の形を検査する small テスト `tests/scan-test.lisp` の `scan/emits-ys-buffers-through-barriers`（本体で ys ごとに barrier を通して dynamic_update_slice に渡すこと、初期値が ys ごとに別の broadcast_in_dim + barrier の組であること、長さ 1 ではどちらも無いこと）、実行時間を測る large テスト `tests/iree/scan-test.lisp` の `scan/iree-ys-write-cost-is-linear-in-length`（長さ 1000 で ys ありが ys なしの 5 倍 + 100 ms 以内。回避前は 748 ms 対 20 ms で落ちる。時間は負荷で揺れるので既定のスイートには入れない）と `scan/iree-same-typed-ys-do-not-share-a-buffer`
 
 長さ 0 の scan は、`dynamic_slice` の切り出し幅 1 が長さ 0 の軸を超えて不正になるので `while` を出さない。carry は入力と同じ型の `stablehlo.reshape` で素通しにし、ys は `stablehlo.constant dense<> : tensor<0x...>` にする（この形を IREE が受け付けることを確認済み）。
 

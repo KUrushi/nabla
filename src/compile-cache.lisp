@@ -18,8 +18,12 @@
 - :DEFAULT（既定）: 環境変数 NABLA_CACHE_DIR があれば <それ>/vmfb/、
   無ければ (uiop:xdg-cache-home \"nabla/vmfb/\")
   （= ${XDG_CACHE_HOME:-~/.cache}/nabla/vmfb/）
-- pathname または文字列: そのディレクトリをそのまま使う
-- NIL: キャッシュを無効にする（毎回 BACKEND-COMPILE を呼び、何も書かない）")
+- pathname または文字列: そのディレクトリを使う
+- NIL: キャッシュを無効にする（毎回 BACKEND-COMPILE を呼び、何も書かない）
+
+NABLA_CACHE_DIR や pathname・文字列が相対パスなら、呼び出した時点の
+プロセスの作業ディレクトリ（UIOP:GETCWD）を基準に絶対パスへ解決する
+（*DEFAULT-PATHNAME-DEFAULTS* ではない）。")
 
 (defparameter +compile-cache-magic+ "NBLMOD01"
   "キャッシュファイルの先頭8バイト（ASCII）。フォーマットの版を兼ねる。
@@ -35,6 +39,17 @@ fasl を作り直す）すると SBCL が
 生の vmfb（payload）はヘッダーの直後、41バイト目から始まる。
 `tail -c +41 <hex>.module > out.vmfb` で取り出せる。")
 
+(defun %absolute-directory (directory)
+  "DIRECTORY（pathname または文字列）をディレクトリの pathname にし、相対
+パスならその時点のプロセスの作業ディレクトリ（UIOP:GETCWD）を基準に絶対
+パスにする（issue #180）。
+
+%COMPILE-CACHE-WRITE が使う UIOP:RENAME-FILE-OVERWRITING-TARGET → SBCL の
+RENAME-FILE は、相対パスの移動先を（相対パスの）移動元を基準に解決し直す
+ため、相対パスのままだと存在しないパスへの rename になって失敗する。"
+  (uiop:ensure-absolute-pathname (uiop:ensure-directory-pathname directory)
+                                 #'uiop:getcwd))
+
 (defun %compile-cache-root ()
   "*COMPILE-CACHE-DIRECTORY* を実際のキャッシュディレクトリの pathname に
 解決する。NIL ならキャッシュ無効を表す NIL をそのまま返す。"
@@ -44,10 +59,10 @@ fasl を作り直す）すると SBCL が
       ((eq value :default)
        (let ((env (uiop:getenv "NABLA_CACHE_DIR")))
          (if (and env (plusp (length env)))
-             (uiop:ensure-directory-pathname
+             (%absolute-directory
               (merge-pathnames "vmfb/" (uiop:ensure-directory-pathname env)))
              (uiop:xdg-cache-home "nabla/vmfb/"))))
-      (t (uiop:ensure-directory-pathname value)))))
+      (t (%absolute-directory value)))))
 
 (defun %compile-cache-key (backend text)
   "BACKEND-FINGERPRINT の各文字列 + TEXT を、それぞれ「UTF-8 バイト長:」の

@@ -137,6 +137,18 @@
     (let ((array (first arrays)))
       (make-array (array-dimensions array) :element-type '(unsigned-byte 16) :initial-element 0))))
 
+;; 出力1つの複数出力プリミティブ（契約 C1）だが、:EAGER が COUNT 個の配列の
+;; リストを返す（COUNT が 1 以外なら壊れている）。EVAL-GRAPH が複数出力の
+;; :EAGER の返す個数を outvars と照合することのテスト用（issue #70 の
+;; mutation testing で、この照合を消す変異体が生き残っていた）。
+(nb:defprimitive %test-multiple-eager-count (:count)
+  :multiple-outputs t
+  :abstract-eval (lambda (in-avals &key count) (declare (ignore count)) (list (first in-avals)))
+  :eager
+  (lambda (arrays in-avals &key count)
+    (declare (ignore in-avals))
+    (make-list count :initial-element (first arrays))))
+
 (nb:defprimitive %test-two-params (:a :b)
   :abstract-eval (lambda (in-avals &key a b) (declare (ignore a b)) (first in-avals)))
 

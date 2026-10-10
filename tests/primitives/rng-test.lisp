@@ -232,3 +232,67 @@ shape (3 3 3) の :u32 は新しい状態 [0 18]（カウンタが 18 進む）�
       (is (equalp #(0 18) state))
       (is (equal '(3 3 3) (array-dimensions bits)))
       (is (equal *rng-jax-zero-state-u32-3-3-3* (%rng-flat bits))))))
+
+;;; --- issue #70 の mutation testing で生き残った変異体を殺す性質 ---
+
+(defparameter *threefry-2x32-known-answers*
+  ;; ((鍵0 鍵1) (カウンタの下位32 上位32) (出力 x0 x1))。Random123 の
+  ;; kat_vectors（threefry2x32_20）にある値で、JAX の random_test の
+  ;; testThreefry2x32 も同じ3組を使っている。状態 [0 0] だけの既知の答え
+  ;; （上の matches-jax-known-answers）では鍵が 0 なので、鍵とカウンタを
+  ;; 足す所を引き算に変えても、鍵の上位ビットを落としても区別できなかった。
+  '(((#x00000000 #x00000000) (#x00000000 #x00000000) (#x6b200159 #x99ba4efe))
+    ((#xffffffff #xffffffff) (#xffffffff #xffffffff) (#x1cb996fc #xbb002be7))
+    ((#x13198a2e #x03707344) (#x243f6a88 #x85a308d3) (#xc4923a9c #x483df7a0))))
+
+(test primitives/rng/matches-threefry-2x32-known-answers
+  "状態 [鍵0 | 鍵1<<32, カウンタ] から shape (1) の :u64 を1つ作ると、その値は
+Threefry-2x32（20ラウンド）の既知の答え (x0 | x1<<32) と一致する（鍵が 0 でない
+組と、すべてのビットが立った組を含む）。"
+  (loop for ((key0 key1) (lo hi) (x0 x1)) in *threefry-2x32-known-answers*
+        do (let ((state (make-array 2 :element-type '(unsigned-byte 64)
+                                      :initial-contents (list (logior key0 (ash key1 32))
+                                                              (logior lo (ash hi 32))))))
+             (is (equal (list (logior x0 (ash x1 32)))
+                        (%rng-flat (second (%rng-run state '(1) :u64))))
+                 "鍵 (~X ~X)・カウンタ (~X ~X)" key0 key1 lo hi))))
+
+(def-rng-property primitives/rng/counter-wraps-around-2-to-the-64
+  "カウンタが 2^64 を越えるときも、:u64 の n 個の出力は、カウンタを 2^64 で折り返した
+状態から1個ずつ作った値と一致し、新しい状態のカウンタも折り返す（カウンタは
+2^64 - k、k = 1..4 から始め、n = 1..8 個作る）。:u32 の 2n 個の出力でも、カウンタは
+状態 0 から作ったときと同じだけ進んで 2^64 で折り返す。"
+  (seed k n) (generator (tuple (uniform-integer :lo 0 :hi (1- (expt 2 31)))
+                               (uniform-integer :lo 1 :hi 4)
+                               (uniform-integer :lo 1 :hi 8)))
+  (let ((state (%rng-state seed))
+        (zero-counter (%rng-state seed)))
+    (setf (aref state 1) (- (expt 2 64) k)
+          (aref zero-counter 1) 0)
+    (destructuring-bind (new-state bits) (%rng-run state (list n) :u64)
+      (and (= (aref new-state 1) (mod (+ (aref state 1) n) (expt 2 64)))
+           (equal (%rng-flat bits)
+                  (loop for i below n
+                        collect (let ((one (copy-seq state)))
+                                  (setf (aref one 1) (mod (+ (aref state 1) i) (expt 2 64)))
+                                  (first (%rng-flat (second (%rng-run one '(1) :u64)))))))
+           (let ((advance (aref (first (%rng-run zero-counter (list (* 2 n)) :u32)) 1)))
+             (= (aref (first (%rng-run state (list (* 2 n)) :u32)) 1)
+                (mod (+ (aref state 1) advance) (expt 2 64))))))))
+
+(def-rng-property primitives/rng/batched-state-shape-and-dtype-match-abstract-eval
+  "バッチ次元つきの状態（ui64[rows, 2]）を eager に渡したときも、出力の aval（要素型を含む）は
+abstract-eval の aval と一致する。"
+  (spec rows seed) (generator (tuple (array-spec :dtypes '(:f32) :max-rank 2)
+                                     (uniform-integer :lo 1 :hi 4)
+                                     (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+  (let ((shape (array-spec-shape spec))
+        (states (make-array (list rows 2) :element-type '(unsigned-byte 64))))
+    (dotimes (i (* rows 2))
+      (setf (row-major-aref states i) (aref (%rng-state (+ seed i)) 0)))
+    (dolist (dtype '(:u32 :u64) t)
+      (destructuring-bind (new-state bits) (%rng-run states shape dtype)
+        (unless (equalp (list (nb:array-aval new-state :u64) (nb:array-aval bits dtype))
+                        (funcall (nb::primitive-abstract-eval (nb::find-primitive :rng-bit-generator))
+                                 (list (nb:make-aval (list rows 2) :u64)) :shape shape :dtype dtype))
+          (return nil))))))
