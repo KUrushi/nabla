@@ -52,7 +52,37 @@ log() { echo "[colab-gpu-check] $*"; }
 # VM の上で Python を実行し、その標準出力を返す（colab exec は Python を実行する）
 remote_py() {
   local timeout="$1"; shift
-  printf '%s\n' "$*" | colab exec -s "${SESSION}" --timeout "${timeout}"
+  printf '%s\n' "$*" > "${WORK}/remote.py"
+  # colab exec の --timeout は VM 側の実行時間だけを区切る。CLI と VM の接続が
+  # 詰まると手元で返ってこないことがあるので、手元でも時間を区切る。
+  # 出力はいったんファイルに受ける。打ち切った colab の子プロセスが標準出力の
+  # パイプを持ったまま残ると、呼び出し側の $(...) がいつまでも終わらないため。
+  local status=0
+  with_timeout $((timeout + 60)) colab exec -s "${SESSION}" --timeout "${timeout}" \
+    < "${WORK}/remote.py" > "${WORK}/remote.out" 2>&1 || status=$?
+  cat "${WORK}/remote.out"
+  return "${status}"
+}
+
+# with_timeout <秒> <コマンド...>: 時間内に終わらなければ止めて 124 を返す。
+# macOS には timeout(1) が無いので bash だけで書く。見張りのサブシェルの
+# 出力は捨てる（$(...) で包まれたときに、見張りがパイプを開いたままにしないため）。
+with_timeout() {
+  local secs="$1"; shift
+  "$@" &
+  local pid=$!
+  ( sleep "${secs}"; pkill -TERM -P "${pid}" 2>/dev/null; kill -TERM "${pid}" 2>/dev/null ) \
+    > /dev/null 2>&1 &
+  local watcher=$!
+  local status=0
+  wait "${pid}" || status=$?
+  kill "${watcher}" 2>/dev/null || true
+  wait "${watcher}" 2>/dev/null || true
+  if (( status == 143 )); then
+    echo "[colab-gpu-check] ${secs} 秒で応答が無かったので打ち切った: $1 $2" >&2
+    return 124
+  fi
+  return "${status}"
 }
 
 cleanup() {
@@ -154,7 +184,7 @@ print(last_line('/content/nabla-out/progress.log') or '(まだ最初の手順に
     { date -u +%FT%TZ; echo "POLL-FAILED"; echo "${status:-}"; } >> "${POLL_LOG}"
     log "問い合わせに失敗した（${failures} 回連続）: $(echo "${status:-}" | tail -n 1)"
     if (( failures >= MAX_POLL_FAILURES )); then
-      if ! colab sessions 2>/dev/null | grep -q "${SESSION}"; then
+      if ! with_timeout 60 colab sessions 2>/dev/null | grep -q "${SESSION}"; then
         log "セッション ${SESSION} が Colab 側で消えている（VM が回収された）。"
         log "問い合わせの記録: ${POLL_LOG}。VM 側の記録: colab log -s ${SESSION} -n 50"
         exit 1
@@ -175,7 +205,7 @@ import subprocess
 subprocess.run(['bash', '-c', 'cp /content/nabla-run.log /content/nabla-out/ 2>/dev/null; tar -C /content -czf /content/nabla-out.tar.gz nabla-out'], check=True)
 print('packed')
 "
-colab download -s "${SESSION}" /content/nabla-out.tar.gz "${OUT_DIR}/nabla-out.tar.gz"
+with_timeout 900 colab download -s "${SESSION}" /content/nabla-out.tar.gz "${OUT_DIR}/nabla-out.tar.gz"
 tar -C "${OUT_DIR}" -xzf "${OUT_DIR}/nabla-out.tar.gz"
 
 log "結果: ${OUT_DIR}/nabla-out/summary.md"
