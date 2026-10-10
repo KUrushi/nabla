@@ -377,34 +377,60 @@ n = 200000。"
   (loop with start = 0 for pos = (search needle text :start2 start)
         while pos count t do (setf start (1+ pos))))
 
+(defun %prng-k ()
+  "バッチされた rng の emit が while の1回で処理する行数 K（issue #178）。"
+  nb::*rng-rows-per-iteration*)
+
 (test prng/rng-batched-emit-structure
-  "バッチ次元つきの状態（2行以上）の StableHLO は、1つの while の中で rng_bit_generator を1回だけ
-呼び、slice / concatenate による行ごとの展開をしない。SSA 名は不正（%%）にならない。1行の
-状態と、バッチ次元の無い状態は while を出さない。"
-  (let ((batched (%prng-emit-rng '(3 2) '(4) :u32))
-        (one-row (%prng-emit-rng '(1 2) '(4) :u32))
-        (single (%prng-emit-rng '(2) '(4) :u32)))
-    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" batched)))
+  "行数が K を超える状態の StableHLO は、1つの while の中で (K 2) の状態を dynamic_slice で取り、
+rng_bit_generator を K 回呼ぶ（issue #178）。行数が K 以下（1行を含む）なら while を出さず、
+行ごとに rng_bit_generator を1回ずつ展開する（1行なら slice も concatenate も出さない）。SSA 名は不正（%%）にならない。バッチ次元の無い
+状態は while を出さない。"
+  (let* ((k (%prng-k))
+         (batched (%prng-emit-rng (list (+ k 1) 2) '(4) :u32))
+         (at-k (%prng-emit-rng (list k 2) '(4) :u32))
+         (one-row (%prng-emit-rng '(1 2) '(4) :u32))
+         (single (%prng-emit-rng '(2) '(4) :u32)))
+    (is (= k (%prng-count-of "stablehlo.rng_bit_generator" batched)))
     (is (= 1 (%prng-count-of "stablehlo.while" batched)))
-    (is (zerop (%prng-count-of "stablehlo.slice " batched)))
-    (is (zerop (%prng-count-of "stablehlo.concatenate" batched)))
+    (is (= 1 (%prng-count-of (format nil "sizes = [~D, 2]" k) batched)))
     (is (zerop (%prng-count-of "%%" batched)))
+    (is (= k (%prng-count-of "stablehlo.rng_bit_generator" at-k)))
+    (is (zerop (%prng-count-of "stablehlo.while" at-k)))
     (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" one-row)))
     (is (zerop (%prng-count-of "stablehlo.while" one-row)))
+    ;; 1行は reshape だけで済ませ、1行の slice と1要素の concatenate を出さない
+    (is (zerop (%prng-count-of "stablehlo.slice " one-row)))
+    (is (zerop (%prng-count-of "stablehlo.concatenate" one-row)))
     (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" single)))
     (is (zerop (%prng-count-of "stablehlo.while" single)))))
 
+(test prng/rng-batched-emit-reads-original-states-in-every-iteration
+  "while の本体は、ループで書き換えない元の状態の carry（<p>_src。while に同じ値を2回渡す）から
+K 行を読み、新しい状態は別の carry（<p>_s）に書く。行数が K の倍数でないと最後の1回が前の回と
+重なる（添字のクランプ）ので、書き換えた状態を読むと重なった行のビットが変わる（issue #178）。"
+  (let* ((text (%prng-emit-rng (list (+ (%prng-k) 3) 2) '(4) :u32))
+         (lines (mapcar (lambda (line) (string-trim " " line))
+                        (uiop:split-string text :separator '(#\Newline))))
+         (while-line (find-if (lambda (line) (search "\"stablehlo.while\"(" line)) lines))
+         (p (subseq while-line 0 (search "n, " while-line))))
+    (is (search (format nil "(~Ai0, ~Aflat, ~Aflat, ~Ab0)" p p p p) while-line))
+    (is (find-if (lambda (line) (eql 0 (search (format nil "~Ablock = stablehlo.dynamic_slice ~Asrc, " p p) line)))
+                 lines))
+    (is (find-if (lambda (line) (eql 0 (search (format nil "stablehlo.return ~Anext, ~Asrc, " p p) line)))
+                 lines))))
+
 (test prng/rng-batched-emit-passes-bits-through-barriers
-  "2行以上の状態の StableHLO は、ビットのバッファを scan の ys と同じく扱う（issue #159）。本体の先頭で
+  "K 行を超える状態の StableHLO は、ビットのバッファを scan の ys と同じく扱う（issue #159）。本体の先頭で
 carry のバッファ（<p>_b）を optimization_barrier に通し、その結果（<p>_bk）を dynamic_update_slice に
 渡す。初期値は、カウンタの 0 とスカラーの 0 を一意な整数と一緒に1つの barrier に通し、スカラーを
 broadcast_in_dim で広げてもう一度 barrier に通す。状態の carry（<p>_s）は barrier に通さない。
-1行の状態には barrier が無い。"
-  (let* ((text (%prng-emit-rng '(3 2) '(4) :u32))
+K 行以下の状態には barrier が無い。"
+  (let* ((text (%prng-emit-rng (list (1+ (%prng-k)) 2) '(4) :u32))
          (lines (mapcar (lambda (line) (string-trim " " line))
                         (uiop:split-string text :separator '(#\Newline))))
          (rng-line (find-if (lambda (line) (search "stablehlo.rng_bit_generator" line)) lines))
-         (p (subseq rng-line 0 (search "new," rng-line))))
+         (p (subseq rng-line 0 (search "new0," rng-line))))
     (flet ((has-prefix (prefix)
              (find-if (lambda (line) (eql 0 (search prefix line))) lines)))
       (is (has-prefix (format nil "~Abk = stablehlo.optimization_barrier ~Ab :" p p))
@@ -422,12 +448,13 @@ broadcast_in_dim で広げてもう一度 barrier に通す。状態の carry（
           "状態の dynamic_update_slice が carry をそのまま受け取っていない")
       (is (= 3 (%prng-count-of "stablehlo.optimization_barrier" text))
           "barrier は初期値の2つと本体の1つだけ（状態の carry には付けない）")))
-  (is (zerop (%prng-count-of "stablehlo.optimization_barrier" (%prng-emit-rng '(1 2) '(4) :u32)))))
+  (is (zerop (%prng-count-of "stablehlo.optimization_barrier" (%prng-emit-rng '(1 2) '(4) :u32))))
+  (is (zerop (%prng-count-of "stablehlo.optimization_barrier" (%prng-emit-rng (list (%prng-k) 2) '(4) :u32)))))
 
 (def-prng-property prng/rng-batched-emit-size-is-independent-of-rows
-  "バッチ次元つきの状態の StableHLO の行数は、行数（2行以上。バッチ次元が1段でも2段でも）に
-依らない（issue #164: 行ごとに展開するとコンパイル時間が行数とともに伸びる）。"
-  (rows dtype-index rank d0 d1) (generator (tuple (uniform-integer :lo 3 :hi 300)
+  "バッチ次元つきの状態の StableHLO の行数は、行数が K を超えれば（バッチ次元が1段でも2段でも）
+行数に依らない（issue #164 / #178: 行ごとに展開するとコンパイル時間が行数とともに伸びる）。"
+  (rows dtype-index rank d0 d1) (generator (tuple (uniform-integer :lo 2 :hi 300)
                                                   (uniform-integer :lo 0 :hi 1)
                                                   (uniform-integer :lo 0 :hi 2)
                                                   (uniform-integer :lo 1 :hi 6)
@@ -436,36 +463,38 @@ broadcast_in_dim で広げてもう一度 barrier に通す。状態の carry（
         (dtype (nth dtype-index '(:u32 :u64))))
     (flet ((lines (state-shape)
              (%prng-count-of (string #\Newline) (%prng-emit-rng state-shape shape dtype))))
-      (= (lines '(2 2)) (lines (list rows 2)) (lines (list 2 rows 2))))))
+      (let ((k (%prng-k)))
+        (= (lines (list (+ k 1) 2)) (lines (list (+ k rows) 2)) (lines (list 2 (+ k rows) 2)))))))
 
 (test prng/rng-batched-emit-defines-each-ssa-name-once
   "バッチ次元つきの rng-bit-generator を12回つないだ graph の StableHLO でも、各 SSA 名は
 ちょうど1回だけ定義される（出力の名前が %1 と %11 と %21 のように数字の一部だけ違う eqn が
 並ぶので、補助の名前を出力の名前の一部だけから作ると衝突する。issue #70 の mutation testing
-で生き残った変異体。emit が while になった後も（#164）、ループの補助の名前で同じことが起こる）。"
+で生き残った変異体。emit が while になった後も（#164）、ループの補助の名前で同じことが起こる）。
+行数が K 以下（展開）と K を超える（while）の両方で確かめる。"
   (flet ((chain (state)
            ;; with-tracing の中では setq できないので、トレース対象の外の関数で12回つなぐ
            (dotimes (i 12 state)
              (setf state (nb::rng-bit-generator state :shape '(2) :dtype :u32)))))
-    (let* ((text (nb:emit-stablehlo
-                  (nb:trace-to-graph
-                   (nb:with-tracing (s) (chain s))
-                   (list (nb:make-aval '(2 2) :u64)))))
-           (defined (with-input-from-string (in text)
-                      (loop for line = (read-line in nil nil)
-                            while line
-                            for trimmed = (string-left-trim " " line)
-                            for eq = (search " = " trimmed)
-                            when (and eq (char= #\% (char trimmed 0)))
-                              append (mapcar (lambda (name) (string-trim " " name))
-                                             (uiop:split-string (subseq trimmed 0 eq) :separator ","))))))
-      (is (= 12 (loop with start = 0 for pos = (search "stablehlo.rng_bit_generator" text :start2 start)
-                      while pos count t do (setf start (1+ pos))))
-          "rng_bit_generator を eqn ごとに1回（while の本体に）出していない")
-      (is (= (length defined) (length (remove-duplicates defined :test #'string=)))
-          "同じ SSA 名が2回以上定義された: ~S"
-          (remove-duplicates (remove-if (lambda (n) (= 1 (count n defined :test #'string=))) defined)
-                             :test #'string=)))))
+    (dolist (rows (list 2 (1+ (%prng-k))))
+      (let* ((text (nb:emit-stablehlo
+                    (nb:trace-to-graph
+                     (nb:with-tracing (s) (chain s))
+                     (list (nb:make-aval (list rows 2) :u64)))))
+             (defined (with-input-from-string (in text)
+                        (loop for line = (read-line in nil nil)
+                              while line
+                              for trimmed = (string-left-trim " " line)
+                              for eq = (search " = " trimmed)
+                              when (and eq (char= #\% (char trimmed 0)))
+                                append (mapcar (lambda (name) (string-trim " " name))
+                                               (uiop:split-string (subseq trimmed 0 eq) :separator ","))))))
+        (is (= (* 12 (min rows (%prng-k))) (%prng-count-of "stablehlo.rng_bit_generator" text))
+            "rng_bit_generator を eqn ごとに min(行数, K) 回出していない")
+        (is (= (length defined) (length (remove-duplicates defined :test #'string=)))
+            "同じ SSA 名が2回以上定義された: ~S"
+            (remove-duplicates (remove-if (lambda (n) (= 1 (count n defined :test #'string=))) defined)
+                               :test #'string=))))))
 
 (defun %prng-states (rows seed)
   (let ((rs (sb-ext:seed-random-state seed))

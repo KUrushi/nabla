@@ -51,6 +51,22 @@
                 "状態の shape ~S・bits の shape ~S・dtype ~S: IREE が eager と一致しなかった"
                 state-shape shape dtype)))))))
 
+(define-iree-test iree/prng/batched-rng-around-k-rows-matches-eager
+  "行数が 0・1・K-1・K+1・2K+3（K は while の1回で処理する行数。K の倍数でない行数では最後の1回が
+前の回と重なる）× 形 × :u32 / :u64 で、IREE の出力が eager とビット単位で一致する（issue #178）。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (k nb::*rng-rows-per-iteration*))
+    (dolist (rows (remove-duplicates (list 0 1 (max 1 (1- k)) (1+ k) (+ (* 2 k) 3))))
+      (dolist (shape '(() (3) (2 3)))
+        (dolist (dtype '(:u32 :u64))
+          (let* ((graph (%prng-iree-batched-graph (list rows 2) shape dtype))
+                 (states (%prng-iree-states (list rows 2) rows))
+                 (iree (%prng-iree-run backend graph states))
+                 (eager (multiple-value-list (nb:eval-graph graph states))))
+            (is (equalp iree eager)
+                "行数 ~D・bits の shape ~S・dtype ~S: IREE が eager と一致しなかった" rows shape dtype)))))))
+
 ;; ビットのバッファは本体で optimization_barrier を通して in-place に書き換える（issue #159 と同じ
 ;; 回避）。入力のデバイス配列や前の呼び出しの出力と記憶を共有してしまうと、2回目の呼び出しで
 ;; 結果が変わる。それを同じデバイス配列で2回呼んで確かめる。
@@ -60,8 +76,9 @@
   (skip-unless-iree :library :both)
   (let* ((backend (nabla:find-backend :iree))
          (nb:*compile-cache-directory* nil)
-         (states (%prng-iree-states '(5 2) 11))
-         (graph (%prng-iree-batched-graph '(5 2) '(3 4) :u32))
+         (rows (+ nb::*rng-rows-per-iteration* 3)) ; while を出す行数
+         (states (%prng-iree-states (list rows 2) 11))
+         (graph (%prng-iree-batched-graph (list rows 2) '(3 4) :u32))
          (eager (multiple-value-list (nb:eval-graph graph states)))
          (module (nabla:backend-load
                   backend (nabla:backend-compile backend (nb:emit-stablehlo graph)))))
@@ -88,14 +105,15 @@
   (skip-unless-iree :library :both)
   (let* ((backend (nabla:find-backend :iree))
          (nb:*compile-cache-directory* nil)
-         (states (%prng-iree-states '(4 2) 12))
+         (rows (+ nb::*rng-rows-per-iteration* 3)) ; while を出す行数
+         (states (%prng-iree-states (list rows 2) 12))
          (graph (nb:trace-to-graph
                  (nb:with-tracing (s)
                    (multiple-value-bind (s1 b1) (nb::rng-bit-generator s :shape '(5) :dtype :u32)
                      (multiple-value-bind (s2 b2) (nb::rng-bit-generator s1 :shape '(5) :dtype :u32)
                        (multiple-value-bind (s3 b3) (nb::rng-bit-generator s :shape '(5) :dtype :u32)
                          (values s2 b1 b2 s3 b3)))))
-                 (list (nb:make-aval '(4 2) :u64))))
+                 (list (nb:make-aval (list rows 2) :u64))))
          (iree (%prng-iree-run backend graph states))
          (eager (multiple-value-list (nb:eval-graph graph states))))
     (is (equalp iree eager) "同じ状態から2回・続けて1回呼んだバッチされた rng が eager と一致しなかった")))
@@ -177,3 +195,24 @@
          (is (allclose batched expected :dtype :f32))
       (nb::%jit-cache-forget (nb::%jitted-function-fn jitted)))
     (gc-and-run-finalizers)))
+
+(define-iree-test/large iree/prng/vmap-uniform-256-keys-runs-within-15-ms
+  "jit した vmap(uniform) の 256 キー × 1024 要素の1回の実行が 15 ms 以下（issue #178。while の1回で
+K 行を処理するので、ループ1回ごとの起動の費用が 256 / K 回で済む。1行ずつ回すと約 52 ms、K = 16 で約 7 ms）。
+10回の平均の3回のうちの最短で判定する。実行時間はマシンの負荷で揺れるので large に置き、既定の
+スイートでは出力の形を検査する prng/rng-batched-emit-structure（tests/prng-test.lisp）で守る。"
+  (skip-unless-iree :library :both)
+  (let* ((nb:*compile-cache-directory* nil)
+         (fn (nb:vmap (nb:with-tracing (k) (nb:uniform k '(1024)))))
+         (jitted (nb:jit fn :backend (nabla:find-backend :iree)))
+         (keys (nb:split (nb:prng-key 7) 256)))
+    (unwind-protect
+         (progn
+           (funcall jitted keys)          ; コンパイルと初回
+           (let ((best (loop repeat 3
+                             minimize (let ((start (get-internal-real-time)))
+                                        (dotimes (i 10) (funcall jitted keys))
+                                        (/ (* 1000.0 (- (get-internal-real-time) start))
+                                           internal-time-units-per-second 10)))))
+             (is (<= best 15) "256 キー × 1024 要素の vmap(uniform) が ~,1F ms（許容は 15 ms）" best)))
+      (nb::%jit-cache-forget (nb::%jitted-function-fn jitted)))))

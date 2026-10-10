@@ -1,6 +1,6 @@
 ;;;; PRNG の公開 API と、バッチ次元つき rng-bit-generator の PJRT（XLA CPU プラグイン）での実行
 ;;;; （issue #136、medium）。tests/iree/prng-test.lisp と同じ内容を PJRT で確かめる:
-;;;; バッチ次元つきの状態（stablehlo.while で行ごとに rng_bit_generator を回す StableHLO）が
+;;;; バッチ次元つきの状態（stablehlo.while で K 行ずつ rng_bit_generator を回す StableHLO）が
 ;;;; eager とビット単位で一致し、jit した uniform / normal / split / fold-in が eager と一致する。
 
 (in-package #:nabla.pjrt.tests)
@@ -12,11 +12,14 @@
       (setf (row-major-aref states i) (random (expt 2 64) rs)))))
 
 (define-pjrt-test backend/prng/batched-rng-bit-generator-matches-eager
-  "バッチ次元つきの状態（行数 1・3 と2段の (2 3)）× 形 × :u32 / :u64 で、PJRT の出力が eager と
-ビット単位で一致する。"
+  "バッチ次元つきの状態（行数 1・3・K-1・K+1・2K+3 と2段の (2 3)。K は while の1回で処理する行数）
+× 形 × :u32 / :u64 で、PJRT の出力が eager とビット単位で一致する。"
   (skip-unless-pjrt :kind :cpu)
   (let ((backend (%pjrt-backend)))
-    (dolist (state-shape '((1 2) (3 2) (2 3 2)))
+    (dolist (state-shape (let ((k nb::*rng-rows-per-iteration*))
+                           ;; K の倍数でない行数（while の最後の1回が重なる。issue #178）も含める
+                           (list '(1 2) '(3 2) '(2 3 2) (list (max 1 (1- k)) 2) (list (1+ k) 2)
+                                 (list (+ (* 2 k) 3) 2))))
       (dolist (shape '(() (3) (2 3)))
         (dolist (dtype '(:u32 :u64))
           (let* ((graph (nb:trace-to-graph
