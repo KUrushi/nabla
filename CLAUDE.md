@@ -61,6 +61,11 @@ scripts/build-iree.sh --configure-only    # cmake configure までで止める
 NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 scripts/verify-iree.sh
 scripts/verify-iree.sh --cuda             # llvm-cpu に加えて CUDA でも確かめる
 
+# IREE のコンパイラのバグ（#73 / #165）の最小再現（docs/iree-repros/）が今も
+# 再現するかを単体の iree-compile で確かめる。IREE を上げたときに回避策を外せるかの
+# 確認に使う（手順は docs/iree-build.md、上流への報告の下書きは docs/iree-upstream-bugs.md）
+NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 scripts/check-iree-repros.sh --runs 20
+
 # mutation testing（既定は main から HEAD までの git diff で変わった行が対象）
 tools/mutate/run.sh
 tools/mutate/run.sh src/core/foo.lisp:10-40           # ファイル・行範囲を指定する
