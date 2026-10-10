@@ -368,27 +368,75 @@ n = 200000。"
       (nb:trace-to-graph (nb:with-tracing (s) (call s)) (list (nb:make-aval '(4 2) :u64))))
     (is (equal '(0 0) axes))))
 
+(defun %prng-emit-rng (state-shape shape dtype)
+  (nb:emit-stablehlo
+   (nb:trace-to-graph (nb:with-tracing (s) (nb::rng-bit-generator s :shape shape :dtype dtype))
+                      (list (nb:make-aval state-shape :u64)))))
+
+(defun %prng-count-of (needle text)
+  (loop with start = 0 for pos = (search needle text :start2 start)
+        while pos count t do (setf start (1+ pos))))
+
 (test prng/rng-batched-emit-structure
-  "バッチ次元つきの状態の StableHLO は、行数ぶんの slice と rng_bit_generator、2 回の concatenate、
-行ごと 3 回 + 前後 3 回の reshape を持ち、SSA 名が不正（%%）にならない。バッチ次元の無い状態は
-slice も concatenate も出さない。"
-  (flet ((count-of (needle text)
-           (loop with start = 0 for pos = (search needle text :start2 start)
-                 while pos count t do (setf start (1+ pos))))
-         (emit (state-shape)
-           (nb:emit-stablehlo
-            (nb:trace-to-graph (nb:with-tracing (s) (nb::rng-bit-generator s :shape '(4) :dtype :u32))
-                               (list (nb:make-aval state-shape :u64))))))
-    (let ((batched (emit '(3 2)))
-          (single (emit '(2))))
-      (is (= 3 (count-of "stablehlo.rng_bit_generator" batched)))
-      (is (= 3 (count-of "stablehlo.slice" batched)))
-      (is (= 2 (count-of "stablehlo.concatenate" batched)))
-      (is (= 12 (count-of "stablehlo.reshape" batched)))
-      (is (zerop (count-of "%%" batched)))
-      (is (= 1 (count-of "stablehlo.rng_bit_generator" single)))
-      (is (zerop (count-of "stablehlo.slice" single)))
-      (is (zerop (count-of "stablehlo.concatenate" single))))))
+  "バッチ次元つきの状態（2行以上）の StableHLO は、1つの while の中で rng_bit_generator を1回だけ
+呼び、slice / concatenate による行ごとの展開をしない。SSA 名は不正（%%）にならない。1行の
+状態と、バッチ次元の無い状態は while を出さない。"
+  (let ((batched (%prng-emit-rng '(3 2) '(4) :u32))
+        (one-row (%prng-emit-rng '(1 2) '(4) :u32))
+        (single (%prng-emit-rng '(2) '(4) :u32)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" batched)))
+    (is (= 1 (%prng-count-of "stablehlo.while" batched)))
+    (is (zerop (%prng-count-of "stablehlo.slice " batched)))
+    (is (zerop (%prng-count-of "stablehlo.concatenate" batched)))
+    (is (zerop (%prng-count-of "%%" batched)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" one-row)))
+    (is (zerop (%prng-count-of "stablehlo.while" one-row)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" single)))
+    (is (zerop (%prng-count-of "stablehlo.while" single)))))
+
+(test prng/rng-batched-emit-passes-bits-through-barriers
+  "2行以上の状態の StableHLO は、ビットのバッファを scan の ys と同じく扱う（issue #159）。本体の先頭で
+carry のバッファ（<p>_b）を optimization_barrier に通し、その結果（<p>_bk）を dynamic_update_slice に
+渡す。初期値は、カウンタの 0 とスカラーの 0 を一意な整数と一緒に1つの barrier に通し、スカラーを
+broadcast_in_dim で広げてもう一度 barrier に通す。状態の carry（<p>_s）は barrier に通さない。
+1行の状態には barrier が無い。"
+  (let* ((text (%prng-emit-rng '(3 2) '(4) :u32))
+         (lines (mapcar (lambda (line) (string-trim " " line))
+                        (uiop:split-string text :separator '(#\Newline))))
+         (rng-line (find-if (lambda (line) (search "stablehlo.rng_bit_generator" line)) lines))
+         (p (subseq rng-line 0 (search "new," rng-line))))
+    (flet ((has-prefix (prefix)
+             (find-if (lambda (line) (eql 0 (search prefix line))) lines)))
+      (is (has-prefix (format nil "~Abk = stablehlo.optimization_barrier ~Ab :" p p))
+          "本体でビットのバッファが barrier を通っていない")
+      (is (has-prefix (format nil "~Ab2 = stablehlo.dynamic_update_slice ~Abk," p p))
+          "ビットの dynamic_update_slice が barrier の結果を受け取っていない")
+      (is-true (let ((line (has-prefix (format nil "~Ai0, ~Ab0_s, ~Ai0_u = stablehlo.optimization_barrier " p p p))))
+                 (and line (search (format nil "~Ai0_c, ~Ab0_c, ~Ai0_u_c :" p p p) line)))
+               "カウンタとビットの初期値のスカラーが一意な整数と一緒に1つの barrier を通っていない")
+      (is (has-prefix (format nil "~Ab0_b = stablehlo.broadcast_in_dim ~Ab0_s," p p))
+          "ビットの初期値が barrier を通したスカラーの broadcast_in_dim で作られていない")
+      (is (has-prefix (format nil "~Ab0 = stablehlo.optimization_barrier ~Ab0_b :" p p))
+          "広げたビットの初期値が barrier を通っていない")
+      (is (has-prefix (format nil "~As2 = stablehlo.dynamic_update_slice ~As," p p))
+          "状態の dynamic_update_slice が carry をそのまま受け取っていない")
+      (is (= 3 (%prng-count-of "stablehlo.optimization_barrier" text))
+          "barrier は初期値の2つと本体の1つだけ（状態の carry には付けない）")))
+  (is (zerop (%prng-count-of "stablehlo.optimization_barrier" (%prng-emit-rng '(1 2) '(4) :u32)))))
+
+(def-prng-property prng/rng-batched-emit-size-is-independent-of-rows
+  "バッチ次元つきの状態の StableHLO の行数は、行数（2行以上。バッチ次元が1段でも2段でも）に
+依らない（issue #164: 行ごとに展開するとコンパイル時間が行数とともに伸びる）。"
+  (rows dtype-index rank d0 d1) (generator (tuple (uniform-integer :lo 3 :hi 300)
+                                                  (uniform-integer :lo 0 :hi 1)
+                                                  (uniform-integer :lo 0 :hi 2)
+                                                  (uniform-integer :lo 1 :hi 6)
+                                                  (uniform-integer :lo 1 :hi 6)))
+  (let ((shape (subseq (list d0 d1) 0 rank))
+        (dtype (nth dtype-index '(:u32 :u64))))
+    (flet ((lines (state-shape)
+             (%prng-count-of (string #\Newline) (%prng-emit-rng state-shape shape dtype))))
+      (= (lines '(2 2)) (lines (list rows 2)) (lines (list 2 rows 2))))))
 
 (defun %prng-states (rows seed)
   (let ((rs (sb-ext:seed-random-state seed))
