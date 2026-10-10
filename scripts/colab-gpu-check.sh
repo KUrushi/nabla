@@ -80,9 +80,11 @@ if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=no)" ]]; 
 fi
 
 log "リポジトリを固める（HEAD = $(git -C "${REPO_ROOT}" rev-parse --short HEAD)）"
-git -C "${REPO_ROOT}" archive --format=tar --prefix=nabla/ HEAD | tar -C "${WORK}" -xf -
-git -C "${REPO_ROOT}" rev-parse HEAD > "${WORK}/nabla/.nabla-commit"
-tar -C "${WORK}" -czf "${WORK}/nabla.tar.gz" nabla
+# git archive の出力をそのまま送る。手元で展開して tar し直すと、macOS の
+# tar が拡張属性を AppleDouble（._foo.lisp）として入れ、VM 上で
+# tests/regressions/*.lisp のグロブに引っかかって load が落ちる。
+COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+git -C "${REPO_ROOT}" archive --format=tar.gz --prefix=nabla/ -o "${WORK}/nabla.tar.gz" HEAD
 
 log "Colab セッション ${SESSION} を作る（GPU: ${GPU}）"
 colab new -s "${SESSION}" --gpu "${GPU}"
@@ -94,7 +96,9 @@ colab upload -s "${SESSION}" "${WORK}/nabla.tar.gz" /content/nabla.tar.gz
 log "VM 上で remote-gpu-check.sh を起動する"
 remote_py 120 "
 import subprocess
-subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'], check=True)
+subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'
+                ' && find /content/nabla -name \"._*\" -delete'], check=True)
+open('/content/nabla/.nabla-commit', 'w').write('${COMMIT}\\n')
 p = subprocess.Popen(['bash', '-c', 'bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
                      start_new_session=True)
 open('/content/nabla-run.pid', 'w').write(str(p.pid))
