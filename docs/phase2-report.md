@@ -150,7 +150,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 - **argnums がリストの勾配は jit の出力にできない**: 勾配のリストは jit の出力（フラットな多値）にならないので、`examples/mlp.lisp` のように多値に直す。
 - **`grad` は jitted-function の `:backend` を無視する**: `grad` が jit した関数をトレース中に呼ぶと、その関数は展開されるだけで `:backend` は見られない（外側の `jit` の backend が使われる）。
 - ~~**PJRT で `:i1` は未対応**（`unsupported-dtype`）~~ → #166 (b) で対応した。複数デバイス・replica、CUDA プラグインでの動作は未検証。
-- **GPU が無く未測定**: #12（local/cuda の数値一致）と、§4 の CUDA の計測。GPU のある環境で `scripts/bench-backends.sh --cuda` と `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh` を実行する。
+- **GPU が無く未測定**: #12（local/cuda の数値一致）と、§4 の CUDA の計測。GPU のある環境で `scripts/bench-backends.sh --cuda` と `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh` を実行する。（追記 2026-10-10: #12 の local/cuda の数値一致は Colab の Tesla T4 で確かめた。large スイートが `NABLA_REQUIRE_CUDA=1` で通った。結果は `docs/iree-build.md` の「実測（Colab Tesla T4）」）
 - **計測のノイズ**: §4.1 のとおり共有マシンでの1回の測定。フラグ・スレッド数を揃えた比較や、定期的な計測は積み残し。
 - **SBCL の GC ロック餓死**: 別スレッドが sleep 無しの tight loop で `(gc :full t)` を回すと main スレッドが進まない（§3.2）。対策は子プロセステストの GC 間の sleep だけで、`src/ffi-support/signals.lisp` のリスク3は残っている。
 - **#68 / #73**: フェーズ1から引き続き（in-process コンパイラのメモリ破壊の根本原因、IREE 上流への報告）。

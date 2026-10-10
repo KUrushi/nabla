@@ -14,7 +14,7 @@ issue #2 の完了条件（5項目）に対する達成状況:
 | デバイスバッファがループ実行でリークしない | 達成 | issue #11。finalizer + `run-pending-finalizers` で確認（`tests/iree/finalizer-test.lisp`） |
 | 既定のテストスイート（small + medium）が CI で通る | 達成 | `.github/workflows/ci.yml`（issue #13）。ローカルでも `scripts/run-tests.sh` で確認済み（本報告書 §3(b)） |
 
-結論: **GPU での数値一致（#12）だけが環境の制約で未測定**で、それ以外の完了条件はすべて達成している。#12 は open のまま残す。フェーズ1（#35）はこの上に着手してよい。
+結論: **GPU での数値一致（#12）だけが環境の制約で未測定**で、それ以外の完了条件はすべて達成している。#12 は open のまま残す。フェーズ1（#35）はこの上に着手してよい。（追記 2026-10-10: #12 の local/cuda の数値一致は Colab の Tesla T4 で確かめた。large スイートが `NABLA_REQUIRE_CUDA=1` で通った。結果は `docs/iree-build.md` の「実測（Colab Tesla T4）」）
 
 ## 2. 環境と IREE
 

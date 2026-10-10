@@ -6,7 +6,7 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 
 ## 現状
 
-フェーズ0（IREE 疎通）は完了した。ただし GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は GPU の無い環境のため未測定で、issue は open のままにしてある。詳しい知見は [docs/phase0-report.md](docs/phase0-report.md) にまとめてある。
+フェーズ0（IREE 疎通）は完了した。GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は、2026-10-10 に Colab の Tesla T4 で確かめた（`scripts/colab-gpu-check.sh`、結果は [docs/iree-build.md](docs/iree-build.md)）。詳しい知見は [docs/phase0-report.md](docs/phase0-report.md) にまとめてある。
 
 フェーズ1（トレースと jit。親 issue #35）も完了した。得た知見は [docs/phase1-report.md](docs/phase1-report.md) にまとめてある。
 

@@ -59,7 +59,7 @@
          (local (nabla:find-backend :iree))
          (cuda (nabla:make-backend :iree :target target))
          (nabla:*compile-cache-directory* nil))
-    (format t "~&| fixture | dtype | seeds | 最大絶対誤差 | 最大相対誤差 | 許容誤差外 |~%")
+    (format t "~&| fixture | dtype | seeds | 最大絶対誤差 | 最大相対誤差 | 旧既定の許容誤差外 |~%")
     (format t "| --- | --- | --- | --- | --- | --- |~%")
     (dolist (case *measure-cases*)
       (destructuring-bind (fixture dtype shapes) case

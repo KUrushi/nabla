@@ -535,7 +535,7 @@ nvcc 13.0.88）で測った。IREE は `third_party/iree.lock` の commit
 もの。cuda-arch は IREE の既定に任せた。入力はテストと同じ生成器
 （`make-random-array`、seed 0..99 の 100 通り、値はおよそ [-1, 1)）で、
 表は `scripts/colab/measure-cross-device.lisp` で作った（このスクリプトは
-別の PR #177 にあり、main にはまだ無い）。
+`scripts/colab-gpu-check.sh` が VM 上で実行する）。
 
 | fixture | dtype | 最大絶対誤差 | 最大相対誤差 | 旧既定の許容誤差を超えた seed |
 | --- | --- | --- | --- | --- |
@@ -562,9 +562,17 @@ bf16 の差はバグではなく、期待どおりの数値誤差である。`lo
 約 1/9（matmul_bf16）。
 
 これは1種類の GPU とドライバでの測定で、他の GPU・ドライバ・IREE の版で
-同じ結果になることは保証しない。新しい許容誤差で large スイートが GPU 上で
-通ることはまだ確かめていない。issue #12 は、それを確かめるまで open の
-ままにする。
+同じ結果になることは保証しない。
+
+新しい許容誤差での large スイートは、同じ環境（2026-10-10、commit
+`c94426d`、`scripts/colab-gpu-check.sh --gpu T4`）で
+`NABLA_TEST_SIZES=large NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_CUDA=1
+scripts/run-tests.sh` が通った（NABLA.LARGE: 17 checks、Pass 17・Skip 0・
+Fail 0。cross-device の6テスト、`runtime/make-device/cuda-creates-and-releases`、
+`scan/iree-ys-write-cost-is-linear-in-length` を含む）。`NABLA_REQUIRE_CUDA`
+を立てているので、cuda が使えなければスキップではなく失敗になる。
+`verify-iree.sh --cuda`（`iree-run-module` で matmul を cuda で実行）も通った。
+CUDA でのベンチ（`scripts/bench-backends.sh --cuda`）はまだ測っていない。
 
 ## Lisp からの呼び出し（issue #6）
 
