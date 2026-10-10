@@ -4,7 +4,12 @@
 ;;;; このマシンには GPU が無いので、SKIP-UNLESS-CUDA が常にこのテストを
 ;;;; スキップする（NABLA_REQUIRE_CUDA を立てれば失敗にできる。CI では
 ;;;; 立てない）。実際の GPU での実行結果は docs/iree-build.md の
-;;;; 「GPU で確かめる手順」節に記録する（この PR の時点ではすべて未測定）。
+;;;; 「GPU で確かめる手順」節に記録する（Colab Tesla T4 での実測あり）。
+;;;;
+;;;; add は要素ごとの1回の丸めなので dtype の既定の許容誤差で比べる。
+;;;; matmul / reduce_sum は総和の丸め方が実装ごとに違うので、rtol 0・
+;;;; atol = ACCUMULATION-ATOL（総和の誤差の上界 2·n·u·Σ|項|。入力は
+;;;; MAKE-RANDOM-ARRAY の [-1, 1) なので Σ|項| ≦ n）で比べる。
 ;;;;
 ;;;; local backend は find-backend（プロセス寿命の共有インスタンス）、
 ;;;; cuda backend は各テストの中で make-backend :iree :target :cuda を
@@ -87,18 +92,18 @@ atol 1e-3）で一致する。"
 
 (define-iree-test/large cross-device/matmul/f32-local-matches-cuda
     "matmul.mlir（2x3 · 3x2）を local と cuda で、同じ seed から作った同じ
-入力に対して実行した結果は、f32 の既定の許容誤差で一致する。
+入力に対して実行した結果は、内積（K = 3）の総和の誤差の上界
+（ACCUMULATION-ATOL :F32 3 3、rtol 0）の範囲で一致する。
 
-CPU と GPU では総和（dot_general の内積）の順序が違いうるので、既定の
-許容誤差で不安定に失敗するようなら、その理由をここに書いてから緩める
-（issue の補足を参照。現時点では GPU が無く未検証なので、まずは既定値
-から始める）。"
+CPU と GPU では総和（dot_general の内積）の順序が違いうるので、出力では
+なく部分和の大きさで決まる上界で比べる（Colab T4 の実測の最大誤差は
+1.2e-7 で、既定の許容誤差にも収まっていた。docs/iree-build.md）。"
   (skip-unless-iree :library :both)
   (skip-unless-cuda)
   (let ((local (nabla:find-backend :iree))
         (cuda (nabla:make-backend :iree :target :cuda))
         (text (stablehlo-fixture "matmul")))
-    (multiple-value-bind (rtol atol) (dtype-tolerance :f32)
+    (let ((rtol 0d0) (atol (accumulation-atol :f32 3 3)))
       (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                     (lambda (seed)
                       (let* ((a (make-random-array (make-array-spec '(2 3) :f32) :seed seed))
@@ -111,13 +116,24 @@ CPU と GPU では総和（dot_general の内積）の順序が違いうるの�
 
 (define-iree-test/large cross-device/matmul/bf16-local-matches-cuda
     "matmul_bf16.mlir（2x3 · 3x2）を local と cuda で、同じ seed から作った
-同じ入力に対して実行した結果は、bf16 の既定の許容誤差で一致する。"
+同じ入力に対して実行した結果は、内積（K = 3）の総和の誤差の上界
+（ACCUMULATION-ATOL :BF16 3 3 ≒ 0.07、rtol 0）の範囲で一致する。
+
+緩める理由（issue #12 の「緩める場合は理由をテストに書く」）: local
+（llvm-cpu）は bf16 の総和・内積を f32 で累積して最後に1回だけ丸めるが、
+bf16 の演算器を持たない sm_75 の cuda は bf16 の加算ごとに丸める。差は
+出力ではなく最大の部分和の約1 ULP で、和が打ち消し合うところでは
+相対誤差が 0.4 を超える（Colab T4 の実測、docs/iree-build.md）。そこで
+atol を総和の誤差の上界 2·n·u·Σ|x|（Higham §4.2、ACCUMULATION-ATOL）に
+し、rtol は 0 にする。実測の最大誤差 2^-7 は上界 0.07 の約 1/9。粗い誤りを
+見つける力は弱くなるが、各プリミティブが reference-* と一致することは
+local の medium テストが確かめている。"
   (skip-unless-iree :library :both)
   (skip-unless-cuda)
   (let ((local (nabla:find-backend :iree))
         (cuda (nabla:make-backend :iree :target :cuda))
         (text (stablehlo-fixture "matmul_bf16")))
-    (multiple-value-bind (rtol atol) (dtype-tolerance :bf16)
+    (let ((rtol 0d0) (atol (accumulation-atol :bf16 3 3)))
       (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                     (lambda (seed)
                       (let* ((a (make-random-array (make-array-spec '(2 3) :bf16) :seed seed))
@@ -130,14 +146,16 @@ CPU と GPU では総和（dot_general の内積）の順序が違いうるの�
 
 (define-iree-test/large cross-device/reduce-sum/f32-local-matches-cuda
     "reduce_sum.mlir（shape 4x8 を dimension 1 で総和）を local と cuda で、
-同じ seed から作った同じ入力に対して実行した結果は、f32 の既定の許容誤差で
-一致する。CPU と GPU で総和の順序が違いうる点は matmul と同じ注意が要る。"
+同じ seed から作った同じ入力に対して実行した結果は、8項の総和の誤差の
+上界（ACCUMULATION-ATOL :F32 8 8 ≒ 7.6e-6、rtol 0）の範囲で一致する。
+CPU と GPU で総和の順序が違いうるので、matmul と同じく部分和の大きさで
+決まる上界で比べる（Colab T4 の実測ではビット単位で一致した）。"
   (skip-unless-iree :library :both)
   (skip-unless-cuda)
   (let ((local (nabla:find-backend :iree))
         (cuda (nabla:make-backend :iree :target :cuda))
         (text (stablehlo-fixture "reduce_sum")))
-    (multiple-value-bind (rtol atol) (dtype-tolerance :f32)
+    (let ((rtol 0d0) (atol (accumulation-atol :f32 8 8)))
       (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                     (lambda (seed)
                       (let* ((a (make-random-array (make-array-spec '(4 8) :f32) :seed seed))
@@ -149,14 +167,24 @@ CPU と GPU では総和（dot_general の内積）の順序が違いうるの�
 
 (define-iree-test/large cross-device/reduce-sum/bf16-local-matches-cuda
     "reduce_sum_bf16.mlir（shape 4x8 を dimension 1 で総和）を local と
-cuda で、同じ seed から作った同じ入力に対して実行した結果は、bf16 の
-既定の許容誤差で一致する。"
+cuda で、同じ seed から作った同じ入力に対して実行した結果は、8項の総和の
+誤差の上界（ACCUMULATION-ATOL :BF16 8 8 = 0.5、rtol 0）の範囲で一致する。
+
+緩める理由（issue #12 の「緩める場合は理由をテストに書く」）: local
+（llvm-cpu）は bf16 の総和・内積を f32 で累積して最後に1回だけ丸めるが、
+bf16 の演算器を持たない sm_75 の cuda は bf16 の加算ごとに丸める。差は
+出力ではなく最大の部分和の約1 ULP で、和が打ち消し合うところでは
+相対誤差が 0.4 を超える（Colab T4 の実測、docs/iree-build.md）。そこで
+atol を総和の誤差の上界 2·n·u·Σ|x|（Higham §4.2、ACCUMULATION-ATOL）に
+し、rtol は 0 にする。実測の最大誤差 2^-6 は上界 0.5 の約 1/32。粗い誤りを
+見つける力は弱くなるが、各プリミティブが reference-* と一致することは
+local の medium テストが確かめている。"
   (skip-unless-iree :library :both)
   (skip-unless-cuda)
   (let ((local (nabla:find-backend :iree))
         (cuda (nabla:make-backend :iree :target :cuda))
         (text (stablehlo-fixture "reduce_sum_bf16")))
-    (multiple-value-bind (rtol atol) (dtype-tolerance :bf16)
+    (let ((rtol 0d0) (atol (accumulation-atol :bf16 8 8)))
       (is (check-it (generator (uniform-integer :lo 0 :hi (1- (expt 2 31))))
                     (lambda (seed)
                       (let* ((a (make-random-array (make-array-spec '(4 8) :bf16) :seed seed))

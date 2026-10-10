@@ -24,6 +24,8 @@
    #:make-random-integer-array
    #:integer-edge-values
    #:dtype-tolerance
+   #:dtype-unit-roundoff
+   #:accumulation-atol
    #:graph-worst-float-dtype
    ;; check-it::*size* にクランプされない一様な整数・実数の生成器
    ;; （.claude/skills/nabla-testing/references/properties.md の

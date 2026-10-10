@@ -64,6 +64,7 @@ Google の *Software Engineering at Google* のテストの章の考え方にな
 | f64 | `1e-12` | `1e-12` |
 | f32 | `1e-5` | `1e-6` |
 | bf16 / f16 | `1e-2` | `1e-3` |
+| 総和・内積をバックエンド間で比べる | `0` | `accumulation-atol`（2·n·u·Σ\|項\|。`tests/support/dtypes.lisp`、issue #12） |
 
 許容誤差を緩めるときは、理由をテストのコメントに書く。理由の例: 総和の順序が違うため（JAX と比べるとき、CNN では 1e-5〜1e-4 の差が出ることが分かっている）。
 
