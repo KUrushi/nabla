@@ -65,6 +65,20 @@ cleanup() {
   fi
 }
 
+# VM に送るのはコミット済みの HEAD だけ。HEAD に必要なファイルが無いと、
+# VM 側の処理が起動直後に失敗する（未コミットのファイルは送られない）。
+for f in scripts/colab/remote-gpu-check.sh scripts/colab/measure-cross-device.lisp \
+         tests/iree/cross-device-test.lisp; do
+  if ! git -C "${REPO_ROOT}" cat-file -e "HEAD:${f}" 2>/dev/null; then
+    echo "HEAD（$(git -C "${REPO_ROOT}" rev-parse --short HEAD)）に ${f} が無い。" >&2
+    echo "このスクリプトを含むブランチ（claude/hopeful-fermi-11e9mw）をチェックアウトしてから実行する" >&2
+    exit 2
+  fi
+done
+if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=no)" ]]; then
+  log "注意: 未コミットの変更がある。VM には HEAD の内容だけを送る"
+fi
+
 log "リポジトリを固める（HEAD = $(git -C "${REPO_ROOT}" rev-parse --short HEAD)）"
 git -C "${REPO_ROOT}" archive --format=tar --prefix=nabla/ HEAD | tar -C "${WORK}" -xf -
 git -C "${REPO_ROOT}" rev-parse HEAD > "${WORK}/nabla/.nabla-commit"
@@ -81,9 +95,10 @@ log "VM 上で remote-gpu-check.sh を起動する"
 remote_py 120 "
 import subprocess
 subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'], check=True)
-subprocess.Popen(['bash', '-c', 'bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
-                 start_new_session=True)
-print('started')
+p = subprocess.Popen(['bash', '-c', 'bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
+                     start_new_session=True)
+open('/content/nabla-run.pid', 'w').write(str(p.pid))
+print('started', p.pid)
 "
 
 log "終わるまで待つ（${POLL_SECONDS} 秒おき、最大 $((MAX_WAIT_SECONDS / 60)) 分）"
@@ -99,16 +114,35 @@ waited=0
 while :; do
   if status="$(remote_py 60 "
 import os
-print('DONE' if os.path.exists('/content/nabla-out/DONE') else 'RUNNING')
-try:
-    print(open('/content/nabla-out/progress.log').read().strip().splitlines()[-1])
-except Exception:
-    pass
+def alive():
+    try:
+        os.kill(int(open('/content/nabla-run.pid').read()), 0)
+        return True
+    except Exception:
+        return False
+def last_line(path):
+    try:
+        return open(path, errors='replace').read().strip().splitlines()[-1]
+    except Exception:
+        return ''
+if os.path.exists('/content/nabla-out/DONE'):
+    print('DONE')
+elif alive():
+    print('RUNNING')
+else:
+    print('DIED')
+    print('nabla-run.log: ' + last_line('/content/nabla-run.log'))
+print(last_line('/content/nabla-out/progress.log') or '(まだ最初の手順に入っていない)')
 " 2>&1)"; then
     failures=0
     { date -u +%FT%TZ; echo "${status}"; } >> "${POLL_LOG}"
     log "$(echo "${status}" | tail -n 1)"
     if echo "${status}" | grep -q '^DONE'; then
+      break
+    fi
+    if echo "${status}" | grep -q '^DIED'; then
+      log "VM 上の処理が DONE を書かずに終わった。ログを持ち帰る"
+      echo "${status}" | grep '^nabla-run.log:' >&2 || true
       break
     fi
   else
