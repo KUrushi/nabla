@@ -119,6 +119,55 @@ Lisp のループの結果と一致する（limit が 0 の場合を含む）。
                   :regression-id while-loop/traced-closure
                   :regression-file (regression-path "while-loop-traced-closure")))))
 
+;;; ---- cond と body が同じ外側の値を捕まえる（issue #166 の d）。捕捉値は重複なく
+;;; 1回だけオペランドになる ----
+
+(defun %wl-shared-capture-graph ()
+  "limit を cond と body の両方が、step を body だけが閉包で捕まえる while-loop の graph。
+body は limit を2回使う。"
+  (nb::trace-to-graph
+   (nb:with-tracing (limit step x)
+     (let ((result (nb:while-loop
+                    (nb:with-tracing (c) (< (first c) limit))
+                    (nb:with-tracing (c)
+                      (list (+ (first c) 1.0) (+ (second c) (* step limit) limit)))
+                    (list (%wl-scalar 0.0) x))))
+       (values (first result) (second result))))
+   (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32) (nb:make-aval '(3) :f32))))
+
+(test while-loop/shared-capture-is-one-operand
+  "cond と body が同じ外側のトレーサを捕まえても、eqn のオペランド（と StableHLO の
+while の carry）にはその値が1回だけ現れる: carry 2 + 捕捉値 2（limit と step）。"
+  (let* ((graph (%wl-shared-capture-graph))
+         (eqn (first (%wl-while-eqns graph)))
+         (operands (nb:eqn-invars eqn)))
+    (is (= 4 (length operands)))
+    (is (= 4 (length (remove-duplicates operands :test #'eq))))
+    (is (= 4 (length (nb:eqn-outvars eqn))))
+    (is (= 4 (length (nb:graph-invars (getf (nb:eqn-params eqn) :cond)))))
+    (is (= 4 (length (nb:graph-invars (getf (nb:eqn-params eqn) :body)))))
+    (is (search "-> (tensor<f32>, tensor<3xf32>, tensor<f32>, tensor<3xf32>)"
+                (nb:emit-stablehlo graph)))))
+
+(test while-loop/shared-capture-equals-lisp-loop
+  "cond と body が同じ外側の値を捕まえる while-loop をトレースして eval-graph した
+結果は、Lisp のループの結果（x に step*limit + limit を limit 回足す）と一致する。"
+  (let ((graph (%wl-shared-capture-graph)))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let* ((n (mod seed 7))
+                           (limit (%wl-scalar (float n 1.0)))
+                           (step (%wl-seed-array seed '(3) :f32))
+                           (x (%wl-seed-array (1+ seed) '(3) :f32))
+                           (actual (multiple-value-list (nb:eval-graph graph limit step x)))
+                           (delta (funcall (nb:with-tracing (s l) (+ (* s l) l)) step limit))
+                           (expected-x (let ((v x))
+                                         (dotimes (_ n v) (setf v (nb::%t-add v delta))))))
+                      (and (allclose (first actual) limit :dtype :f32)
+                           (allclose (second actual) expected-x :dtype :f32))))
+                  :regression-id while-loop/shared-capture
+                  :regression-file (regression-path "while-loop-shared-capture")))))
+
 (test while-loop/array-init-inside-a-trace
   "外側のトレースの中で、init が配列（定数）のときも while-loop をトレースできる。"
   (let ((graph (nb::trace-to-graph
@@ -361,8 +410,9 @@ stablehlo.optimization_barrier を通る（引数の x と limit は通らない
          (lines (%sg-lines text))
          (barrier (find-if (lambda (l) (search "stablehlo.optimization_barrier" l)) lines)))
     (is (not (null barrier)))
-    ;; 定数 2 つ（カウンタと y）の分だけ、barrier は 2 つのオペランドと 2 つの結果を持つ
-    (is (= 2 (count #\% (subseq barrier (1+ (position #\= barrier)) (position #\: barrier)))))
+    ;; 定数 2 つ（カウンタと y）と一意な整数（_u_c）の分だけ、barrier は 3 つのオペランドを持つ
+    (is (= 3 (count #\% (subseq barrier (1+ (position #\= barrier)) (position #\: barrier)))))
+    (is (search "_u_c :" barrier))
     (is (= 1 (count-if (lambda (l) (search "stablehlo.optimization_barrier" l)) lines)))
     (let ((while-line (find-if (lambda (l) (search "\"stablehlo.while\"(" l)) lines)))
       ;; while のオペランドは、barrier の結果（%wbar...）と引数（%0 = limit、%1 = x）
@@ -383,3 +433,66 @@ stablehlo.optimization_barrier を通る（引数の x と limit は通らない
                                         (list i x))))
                 (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32))))))
     (is (null (search "optimization_barrier" text)))))
+
+(defun %wl-salts (text)
+  "TEXT の while の barrier に通す一意な整数（\"<名前>_u_c = stablehlo.constant dense<N>\"）の N のリスト。"
+  (loop for line in (%sg-lines text)
+        for pos = (search "_u_c = stablehlo.constant dense<" line)
+        when pos
+          collect (let ((start (+ (position #\< line :start pos) 1)))
+                    (subseq line start (position #\> line :start start)))))
+
+(defun %wl-sibling-graph ()
+  "cond と body が同じ関数で、init が同じ閉包の定数（カウンタ 0 と rank 1 の定数）の while-loop を2つ並べた graph。"
+  (let ((counter (%wl-scalar 0.0))
+        (vec (%wl-seed-array 5 '(3) :f32))
+        (cond-fn (nb:with-tracing (c) (< (first c) 3.0)))
+        (body-fn (nb:with-tracing (c) (list (+ (first c) 1.0) (+ (* (second c) 0.5) (third c)) (third c)))))
+    (nb::trace-to-graph
+     (nb:with-tracing (x)
+       (let ((a (nb:while-loop cond-fn body-fn (list counter vec x)))
+             (b (nb:while-loop cond-fn body-fn (list counter vec x))))
+         (values (first a) (second a) (first b) (second b))))
+     (list (nb:make-aval '(3) :f32)))))
+
+(test while-loop/emits-a-distinct-salt-for-each-constant-barrier
+  "同じ定数で初期化した while-loop を2つ並べても、定数を通す optimization_barrier のオペランドは
+ループごとに違う（モジュールの中で一意な整数の constant も通す）。同じなら barrier どうしが CSE で
+まとめられ、2つのループが同じ SSA 値から始まる（issue #179）。"
+  (let* ((text (nb:emit-stablehlo (%wl-sibling-graph)))
+         (salts (%wl-salts text))
+         (barriers (remove-if-not (lambda (l) (search "stablehlo.optimization_barrier" l)) (%sg-lines text))))
+    (is (= 2 (length salts)) "while ごとの一意な整数が1つずつ無い: ~S" salts)
+    (is (= 2 (length (remove-duplicates salts :test #'string=))) "2つの while の一意な整数が同じ: ~S" salts)
+    (is (= 2 (length barriers)) "barrier が while ごとに1つずつ無い: ~S" barriers)
+    (is (every (lambda (l) (search "_u_c :" l)) barriers) "barrier に一意な整数が通っていない: ~S" barriers)
+    ;; MLIR の SSA 名は、数字で始まるなら数字だけでなければならない（\"%4_u_c\" はパースエラー）
+    (is (every (lambda (l)
+                 (let ((name (string-trim " " (subseq l 0 (search " = stablehlo.constant" l)))))
+                   (and (char= #\% (char name 0)) (alpha-char-p (char name 1)))))
+               (remove-if-not (lambda (l) (search "_u_c = stablehlo.constant" l)) (%sg-lines text)))
+        "一意な整数の constant の SSA 名が英字で始まらない")))
+
+(test while-loop/no-salt-without-constant-operands
+  "定数のオペランドが無い while-loop には、barrier も一意な整数の constant も出ない。"
+  (let ((text (nb:emit-stablehlo
+               (nb::trace-to-graph
+                (nb:with-tracing (i x)
+                  (first (nb:while-loop (nb:with-tracing (c) (< (first c) 3.0))
+                                        (nb:with-tracing (c) (list (+ (first c) 1.0) (second c)))
+                                        (list i x))))
+                (list (nb:make-aval '() :f32) (nb:make-aval '(3) :f32))))))
+    (is (null (%wl-salts text)))
+    (is (null (search "_u_c" text)))))
+
+(test while-loop/unique-id-outside-emit-stablehlo-is-an-error
+  "%stablehlo-unique-id は EMIT-STABLEHLO の外（カウンタが束縛されていない）では一意性を保証できないのでエラー。
+黙って 0 を返すと、2つのループが黙って同じバッファを共有しうる（issue #179）。"
+  (let ((nb::*stablehlo-region-counter* nil))
+    ;; 説明のあるエラー（INCF が NIL に出す TYPE-ERROR ではない）
+    (handler-case (progn (nb::%stablehlo-unique-id) (fail "エラーにならなかった"))
+      (type-error (e) (fail "説明の無い TYPE-ERROR になった: ~A" e))
+      (error (e) (is (search "EMIT-STABLEHLO" (princ-to-string e))))))
+  (let ((nb::*stablehlo-region-counter* 4))
+    (is (= 5 (nb::%stablehlo-unique-id)))
+    (is (= 6 (nb::%stablehlo-unique-id)))))

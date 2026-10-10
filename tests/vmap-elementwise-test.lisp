@@ -4,7 +4,8 @@
 ;;;; eager で適用して積み直したもの」（期待値は tests/support/vmap.lisp の REFERENCE-VMAP）。
 ;;;; バッチ軸の位置・どの引数がバッチされるか・out-axes をランダムにする。もう1つの
 ;;;; 性質は、バッチされた引数が全部同じ軸で、バッチされていない引数も無いときは、
-;;;; 余分な transpose / broadcast-in-dim の eqn が1つも生成されないこと。
+;;;; 余分な transpose / broadcast-in-dim の eqn が1つも生成されないこと。軸が食い違うときは
+;;;; 多数決の軸へ揃え、少数派の引数だけを transpose すること（issue #166）。
 
 (in-package #:nabla.tests)
 
@@ -180,3 +181,64 @@
      (lambda (x y)
        (signals nb:vmap-error (funcall rule (list x y) (list nil nil)))
        (nb::%trace-eqn :add (list x y))))))
+
+;;; --- バッチ軸は多数決で揃える（issue #166 (e)） ---
+
+(defun %ew-eqns-before-primitive (f in-axes avals name)
+  "F を IN-AXES で vmap した graph のうち、元のプリミティブ NAME の eqn より前にある
+eqn の名前のリスト（引数を揃えるために足された eqn）。"
+  (let ((names (%ew-eqn-names f in-axes 0 avals)))
+    (subseq names 0 (position name names))))
+
+(test vmap/elementwise-aligns-to-the-majority-axis
+  "3引数のうち2つが軸 1 でバッチされているとき、残りの1つだけを transpose する。"
+  (let ((f (nb:with-tracing (p x y) (nb:where p x y))))
+    (is (equal '(:transpose)
+               (%ew-eqns-before-primitive
+                f '(1 1 0) (list (nb:make-aval '(2 5 3) :i1) (nb:make-aval '(2 5 3) :f64)
+                                 (nb:make-aval '(5 2 3) :f64))
+                :select)))))
+
+(test vmap/elementwise-transposes-only-the-minority-operands
+  "どの引数がどの軸でバッチされても、引数を揃える transpose の数は「バッチされた引数の数 -
+最も多くの引数が共有する軸の引数の数」で、broadcast-in-dim の数はバッチされていない引数の数。"
+  (dolist (case *vmap-elementwise-cases*)
+    (destructuring-bind (name f kinds out-dtype) case
+      (declare (ignore out-dtype))
+      (is (check-it
+           (%ew-generator)
+           (lambda (c)
+             (destructuring-bind (rank size seed c1 c2 c3 code-out) c
+               (declare (ignore code-out))
+               (let* ((inner (%ew-inner-shape rank seed))
+                      (axes (%ew-axes (list c1 c2 c3) kinds rank))
+                      (avals (loop for kind in kinds for axis in axes
+                                   collect (%ew-aval kind (if axis
+                                                              (append (subseq inner 0 axis) (list size) (nthcdr axis inner))
+                                                              inner))))
+                      (batched (remove nil axes))
+                      (majority (reduce #'max (mapcar (lambda (a) (count a batched)) batched)))
+                      (added (%ew-eqns-before-primitive f axes avals name)))
+                 (and (= (count :transpose added) (- (length batched) majority))
+                      (= (count :broadcast-in-dim added) (count nil axes))
+                      (= (length added) (+ (- (length batched) majority) (count nil axes)))))))
+           :regression-id vmap/elementwise-transposes-only-the-minority-operands
+           :regression-file (regression-path "vmap-elementwise"))
+          "~S" name))))
+
+(test vmap/elementwise-common-axis-tie-picks-the-smallest-axis
+  "最も多くの引数が共有する軸が同数で複数あるときは、引数の順序に依らず最も小さい軸を選ぶ。
+呼び出し側の BATCH-DIMS のリストは壊さない。"
+  (is (= 0 (nb::%elementwise-common-axis (list 2 0 nil))))
+  (is (= 0 (nb::%elementwise-common-axis (list 0 2))))
+  (is (= 1 (nb::%elementwise-common-axis (list 2 1 1 2))))
+  (is (= 1 (nb::%elementwise-common-axis (list nil 3 1))))
+  (let ((batch-dims (list 2 nil 1 0)))
+    (is (= 0 (nb::%elementwise-common-axis batch-dims)))
+    (is (equal '(2 nil 1 0) batch-dims))))
+
+(test vmap/elementwise-common-axis-majority-beats-the-first-argument
+  "先頭の引数の軸より、より多くの引数が共有する軸を選ぶ。"
+  (is (= 0 (nb::%elementwise-common-axis (list 2 0 0))))
+  (is (= 1 (nb::%elementwise-common-axis (list nil 0 1 1))))
+  (is (= 2 (nb::%elementwise-common-axis (list 0 2 2)))))

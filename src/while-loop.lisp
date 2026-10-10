@@ -11,7 +11,8 @@
 ;;;; 末尾に足される。StableHLO の while は、オペランド全部を carry として持つ
 ;;;; （リージョンのブロック引数も戻り値も全部）ので、eqn のオペランドと出力は次の形に
 ;;;; 揃える:
-;;;;   オペランド = carry（N 個）+ cond が捕まえた値 + body が捕まえた値
+;;;;   オペランド = carry（N 個）+ cond と body が捕まえた値の和集合（EQ で重複なし。
+;;;;                cond が捕まえた順、続いて body だけが捕まえた順。issue #166）
 ;;;;   COND graph = 全オペランドを受け、rank 0 の :i1 を返す（cond が捕まえない値は未使用）
 ;;;;   BODY graph = 全オペランドを受け、新しい carry（N 個）+ 捕まえた値の素通しを返す
 ;;;;   出力      = 全オペランドと同じ aval（捕まえた値の分は呼び出し側が捨てる）
@@ -122,7 +123,12 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
   "while のオペランド名 IN-NAMES（型は IN-AVALS）のうち、いま出している graph の定数（*STABLEHLO-CONSTANT-NAMES*）
 の名前のものを、まとめて1つの stablehlo.optimization_barrier に通す。
 (VALUES barrier の行のリスト（無ければ NIL） 置き換えたオペランド名のリスト) を返す。
-同じ定数が複数のオペランドに現れてもよい（それぞれ別の barrier の結果になる）。"
+同じ定数が複数のオペランドに現れてもよい（それぞれ別の barrier の結果になる）。
+定数のオペランドがあるときは、モジュールの中で一意な整数（%STABLEHLO-UNIQUE-ID）の constant
+\"%wbar_<out>_u_c\" も同じ barrier に通す（結果は使わない。MLIR の SSA 名は数字で始まると
+数字だけでなければならないので、接頭辞を付ける）。同じ値の定数は CSE で1つになるので、
+通さないと同じ定数で初期化した2つの while の barrier がまったく同じ形になって CSE で
+まとめられ、2つのループが同じ SSA 値から始まる（issue #179。%SCAN-YS-INIT-LINES と同じやり方）。"
   (let ((positions (loop for name in in-names for i from 0
                          when (member name *stablehlo-constant-names* :test #'string=)
                            collect i)))
@@ -130,12 +136,16 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
         (values '() in-names)
         (let* ((results (loop for i in positions
                               collect (format nil "%wbar~D_~A" i (subseq out-name 1))))
+               (salt (format nil "%wbar_~A_u" (subseq out-name 1)))
                (names (copy-list in-names)))
           (loop for i in positions for r in results do (setf (nth i names) r))
-          (values (list (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
-                                results
-                                (mapcar (lambda (i) (nth i in-names)) positions)
-                                (mapcar (lambda (i) (tensor-type-string (nth i in-avals))) positions)))
+          (values (list (format nil "~A_c = stablehlo.constant dense<~D> : tensor<i32>" salt (%stablehlo-unique-id))
+                        (format nil "~{~A~^, ~} = stablehlo.optimization_barrier ~{~A~^, ~} : ~{~A~^, ~}"
+                                (append results (list salt))
+                                (append (mapcar (lambda (i) (nth i in-names)) positions)
+                                        (list (format nil "~A_c" salt)))
+                                (append (mapcar (lambda (i) (tensor-type-string (nth i in-avals))) positions)
+                                        (list "tensor<i32>"))))
                   names)))))
 
 (defprimitive while-loop (:cond :body :n-carries)
@@ -192,7 +202,8 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
 (defun %while-loop-trace-regions (cond-fn body-fn avals)
   "COND-FN / BODY-FN を AVALS（carry の aval）でサブグラフにトレースして、検査したうえで、
 全オペランド形式（ファイル冒頭）に揃えた (VALUES COND-GRAPH BODY-GRAPH CAPTURED) を返す。
-CAPTURED は cond が捕まえた外側のトレーサ、body が捕まえたものの順に並ぶ。"
+CAPTURED は cond と body が捕まえた外側のトレーサの和集合（EQ で重複なし）で、cond が
+捕まえた順、続いて body だけが捕まえた順に並ぶ。"
   (let ((n (length avals)))
     (multiple-value-bind (cond-graph cond-captured)
         (%call-with-trace avals
@@ -217,23 +228,20 @@ CAPTURED は cond が捕まえた外側のトレーサ、body が捕まえたも
                    :expected avals :actual actual
                    :format-control "BODY-FN の出力の aval が INIT と一致しない: 期待 ~S / 実際 ~S"
                    :format-arguments (list avals actual))))
-        (let* ((cond-const-avals (mapcar #'tracer-aval cond-captured))
-               (body-const-avals (mapcar #'tracer-aval body-captured))
-               ;; cond: [carry.. cond-consts..] + 未使用の body-consts
-               (cond-unused (mapcar #'make-var body-const-avals))
-               (cond-full (make-graph (append (graph-invars cond-graph) cond-unused)
-                                      (graph-eqns cond-graph)
-                                      (graph-outvars cond-graph)
-                                      (graph-constants cond-graph)))
-               ;; body: [carry.. 未使用の cond-consts.. body-consts..]。consts は素通し
-               (body-unused (mapcar #'make-var cond-const-avals))
-               (body-invars (graph-invars body-graph))
-               (body-consts (nthcdr n body-invars))
-               (body-full (make-graph (append (subseq body-invars 0 n) body-unused body-consts)
-                                      (graph-eqns body-graph)
-                                      (append (graph-outvars body-graph) body-unused body-consts)
-                                      (graph-constants body-graph))))
-          (values cond-full body-full (append cond-captured body-captured)))))))
+        ;; 両方が捕まえた値は1回だけ（cond が先に捕まえた順、続いて body だけが捕まえた順）
+        ;; オペランドにする。cond / body の invars はどちらも「carry、CAPTURED」に揃え、
+        ;; 自分が使わない捕捉値の位置には使われない invar を置く（%COND-UNIFY-BRANCHES）。
+        (let* ((captured (remove-duplicates (append cond-captured body-captured)
+                                            :test #'eq :from-end t))
+               (cond-full (%cond-unify-branches cond-graph cond-captured captured n))
+               (body-unified (%cond-unify-branches body-graph body-captured captured n))
+               (body-consts (nthcdr n (graph-invars body-unified)))
+               ;; body は捕捉値を同じ invar のまま素通しで返す。
+               (body-full (make-graph (graph-invars body-unified)
+                                      (graph-eqns body-unified)
+                                      (append (graph-outvars body-unified) body-consts)
+                                      (graph-constants body-unified))))
+          (values cond-full body-full captured))))))
 
 (defun while-loop (cond-fn body-fn init)
   "COND-FN が真の間 BODY-FN を繰り返し、最後の carry のリストを返す（JAX の

@@ -439,6 +439,16 @@ loc はリージョンの外の行（補助の定数行と演算を閉じる最�
     (is (search "stablehlo.add %7, %3" (format nil "~{~A~^~%~}" all-strings)))
     (is (string= "^bb0(%s1_0: tensor<2x3xf32>, %s1_1: tensor<2x3xf32>):" (first all-nil)))))
 
+(test subgraph/region-lines-rejects-arg-names-of-the-wrong-length
+  "arg-names の個数がサブグラフの入力の個数と違えば（多くても少なくても）エラーにする。
+多すぎる名前を黙って捨てない（issue #70 の mutation testing で、この検査を消す変異体が
+生き残っていた）。"
+  (let ((graph (%sg-body-graph)))
+    (signals error (let ((nb::*stablehlo-region-counter* 0))
+                     (nb::%stablehlo-region-lines graph :arg-names (list "%7" "%3" "%5"))))
+    (signals error (let ((nb::*stablehlo-region-counter* 0))
+                     (nb::%stablehlo-region-lines graph :arg-names (list "%7"))))))
+
 (test subgraph/region-lines-empty-arg-names-means-no-block-args
   "invars が無いサブグラフに空の arg-names を渡すと ^bb0 の行は出ない。"
   (let* ((graph (nb::make-graph '() '() '()))

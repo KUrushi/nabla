@@ -101,9 +101,11 @@ IREE はコンパイル時に複数の演算を融合できるため、eager 実
 
 つまり「mutation score 80%以上」は、対象がごく少数の変異体しかない場合の「たまたま全部殺せた」という弱い保証にしかなっていない。mutation runner 自体の演算子と粒度を増やす作業を issue #70 に切り出してある。フェーズ2で jvp / transpose ルールのような分岐が増える変換を書くときは、この issue が直るまで mutation score だけに頼らず、レビューと PBT の性質の充実度で品質を担保する必要がある。
 
+（追記: issue #70 で対応済み。runner は変異をかけられるすべての箇所に1つずつ変異体を作り、演算子も条件の反転・式の削除・等価述語の入れ替え・`member` の要素の削除・文字列の置き換えを足して9種類になった。`src/eval.lisp`・`src/primitives/*.lisp`・`src/jit.lisp`・`src/stablehlo.lisp` での変異体の数と mutation score の実測は [docs/mutation-scores.md](mutation-scores.md) にある。）
+
 ## 6. 既知の制限と積み残し
 
-- **#70**: mutation runner の演算子と粒度を増やし、「mutation score 80%」を意味のある基準にする（§5 参照）
+- **#70**: mutation runner の演算子と粒度を増やし、「mutation score 80%」を意味のある基準にする（対応済み。§5 の追記と docs/mutation-scores.md 参照）
 - **#71**: jit キャッシュの後始末と並行性を直す（`backend-unload` が GC 時に呼ばれない・ロックの粒度・`recompile` リスタートの再帰に上限が無い・`defjit` が `:static-args` 未対応、`src/jit.lisp` のコメント参照）
 - **#72**: `f64` と `:i1` を `to-device` で扱えるようにし、op 対応表の全 dtype を `jit` で実行できるようにする（対応済み。f64 の exp / log / tanh は、それを含むモジュールだけ embedded ELF ではなく system library としてリンクすることで `jit` できるようにした（`ld.lld` が要る）。docs/stablehlo-ops.md 参照）
 - **#73**: IREE 3.11.0 の `AnnotateDispatches` のゼロ除算（§4.4）を最小の再現にまとめ、上流に報告する
