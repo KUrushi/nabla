@@ -155,3 +155,77 @@ AffinityAnalysis が非決定的に落ちる（docs/stablehlo-ops.md）。carry 
              (actual (multiple-value-list (funcall jitted h s xs)))
              (expected (multiple-value-list (funcall f h s xs))))
         (is (every (lambda (a e) (allclose a e :dtype :f32)) actual expected))))))
+
+;;; ---- issue #166 (f): rank 0 の x_t、rank 2 の y_t、入れ子の scan ----
+
+(define-iree-test scan/iree-rank0-xs-matches-eager
+    "xs の形が (L) で x_t が rank 0 になる scan（carry と y_t も rank 0）が、順方向・逆方向とも
+IREE と eager で一致する（dynamic_slice の結果を rank 0 に reshape する経路）。"
+  (skip-unless-iree :library :both)
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (h xs)
+                  (multiple-value-bind (fwd-carry fwd-ys)
+                      (nb:scan (nb:with-tracing (carry x)
+                                 (let ((h (+ (* (first carry) 0.5) (first x))))
+                                   (values (list h) (list (* h (first x))))))
+                               (list h) (list xs))
+                    (multiple-value-bind (rev-carry rev-ys)
+                        (nb:scan (nb:with-tracing (carry x)
+                                   (let ((h (+ (* (first carry) 0.5) (first x))))
+                                     (values (list h) (list (* h (first x))))))
+                                 (list h) (list xs) :reverse t)
+                      (values (first fwd-carry) (first fwd-ys) (first rev-carry) (first rev-ys)))))
+                (list (nb:make-aval '() :f32) (nb:make-aval '(5) :f32)))))
+    (%with-scan-iree-check (graph "rank0-xs") "IREE の rank 0 の x_t の scan の結果が eager と一致しなかった")))
+
+(define-iree-test scan/iree-rank2-ys-matches-eager
+    "y_t が rank 2（ys が rank 3）になる scan が、順方向・逆方向とも IREE と eager で一致する
+（dynamic_update_slice の添字が rank 2 の y_t の分だけ 0 で埋まる経路）。"
+  (skip-unless-iree :library :both)
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (h xs)
+                  (multiple-value-bind (fwd-carry fwd-ys)
+                      (nb:scan (nb:with-tracing (carry x)
+                                 (let ((h (tanh (+ (first carry) (first x)))))
+                                   (values (list h) (list h (* (first carry) (first x))))))
+                               (list h) (list xs))
+                    (multiple-value-bind (rev-carry rev-ys)
+                        (nb:scan (nb:with-tracing (carry x)
+                                   (let ((h (tanh (+ (first carry) (first x)))))
+                                     (values (list h) (list h (* (first carry) (first x))))))
+                                 (list h) (list xs) :reverse t)
+                      (values (first fwd-carry) (first fwd-ys) (second fwd-ys)
+                              (first rev-carry) (first rev-ys) (second rev-ys)))))
+                (list (nb:make-aval '(2 3) :f32) (nb:make-aval '(4 2 3) :f32)))))
+    (%with-scan-iree-check (graph "rank2-ys") "IREE の rank 2 の y_t の scan の結果が eager と一致しなかった")))
+
+(defun %scan-iree-nested-graph (outer-reverse inner-reverse)
+  "外側の scan の本体の中で内側の scan を回す graph。内側の本体は外側の carry h と、
+graph の引数 w を閉包で捕まえる。"
+  (nb::trace-to-graph
+   (nb:with-tracing (h0 xss w)
+     (multiple-value-bind (carry ys)
+         (nb:scan (nb:with-tracing (outer-carry xs)
+                    (let ((h (first outer-carry)))
+                      (multiple-value-bind (inner-carry inner-ys)
+                          (nb:scan (nb:with-tracing (carry x)
+                                     (let ((g (tanh (+ (* (first carry) w) (first x) h))))
+                                       (values (list g) (list (* g w)))))
+                                   (list h) (list (first xs)) :reverse inner-reverse)
+                        (values (list (first inner-carry)) (list (first inner-ys))))))
+                  (list h0) (list xss) :reverse outer-reverse)
+       (values (first carry) (first ys))))
+   (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 2 3) :f32) (nb:make-aval '(3) :f32))))
+
+(define-iree-test scan/iree-nested-forward-reverse-matches-eager
+    "順方向の外側の scan の中で逆方向の内側の scan を回す入れ子の scan（内側は外側の carry と
+外側の引数を閉包で捕まえる）が、IREE と eager で一致する。"
+  (skip-unless-iree :library :both)
+  (let ((graph (%scan-iree-nested-graph nil t)))
+    (%with-scan-iree-check (graph "nested") "IREE の入れ子の scan（外側 順・内側 逆）の結果が eager と一致しなかった")))
+
+(define-iree-test scan/iree-nested-reverse-forward-matches-eager
+    "逆方向の外側の scan の中で順方向の内側の scan を回す入れ子の scan も、IREE と eager で一致する。"
+  (skip-unless-iree :library :both)
+  (let ((graph (%scan-iree-nested-graph t nil)))
+    (%with-scan-iree-check (graph "nested") "IREE の入れ子の scan（外側 逆・内側 順）の結果が eager と一致しなかった")))
