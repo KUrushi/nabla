@@ -105,8 +105,15 @@ SINGLE-FLOAT 配列にコピーして返す（フェイクは f32 だけサポ�
 (defmethod nabla:backend-invoke ((backend fake-backend) module function-name &rest arrays)
   "MODULE の KIND に応じて reference-add / reference-matmul /
 reference-reduce-sum を ARRAYS（FAKE-ARRAY のリスト）の中身に適用し、
-SINGLE-FLOAT にキャストした結果を1つの FAKE-ARRAY にして多値で返す。"
-  (declare (ignore backend function-name))
+SINGLE-FLOAT にキャストした結果を1つの FAKE-ARRAY にして多値で返す。
+
+FUNCTION-NAME は EMIT-STABLEHLO が出す関数名 \"main\" でなければならない
+（本物の実行系はモジュールの中の関数を名前で探し、無ければエラーにする。
+フェイクも同じにしないと、jit が別の名前で呼んでも気づけない。issue #70 の
+mutation testing で生き残った変異体）。"
+  (declare (ignore backend))
+  (unless (equal function-name "main")
+    (error "fake-backend: モジュールに関数 ~S は無い（あるのは \"main\" だけ）" function-name))
   (let ((inputs (mapcar #'%fake-array-data arrays)))
     (let ((result
             (ecase (fake-module-kind module)

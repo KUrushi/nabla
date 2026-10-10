@@ -149,6 +149,31 @@ string= で一致する。"
                              (sb-kernel:make-double-float #x7FF80000 0) :f64)
                             2)))))
 
+(test stablehlo/non-finite-literal-is-the-exact-bit-pattern
+  "符号・ペイロードの任意の NaN と ±inf の :f32 / :f64 のリテラルは、その値のビット列を
+そのまま（f32 は8桁、f64 は16桁の）16進にしたものになる。ペイロードの下位ビットまで
+落とさない（上の例は下位ビットがすべて 0 の値だけなので、ビット列の下位を落とす
+変異体が issue #70 の mutation testing で生き残っていた）。"
+  (is (check-it (generator (tuple (uniform-integer :lo 0 :hi 1)
+                                  (uniform-integer :lo 0 :hi (1- (expt 2 23)))
+                                  (uniform-integer :lo 0 :hi (1- (expt 2 52)))))
+                (lambda (args)
+                  (destructuring-bind (sign payload32 payload64) args
+                    (let ((bits32 (logior (ash sign 31) #x7F800000 payload32))
+                          (bits64 (logior (ash sign 63) (ash #x7FF 52) payload64)))
+                      (and (string= (format nil "0x~8,'0X" bits32)
+                                    (nb::%stablehlo-float-literal
+                                     (sb-kernel:make-single-float (if (logbitp 31 bits32) (- bits32 (expt 2 32)) bits32))
+                                     :f32))
+                           (string= (format nil "0x~16,'0X" bits64)
+                                    (nb::%stablehlo-float-literal
+                                     (sb-kernel:make-double-float
+                                      (let ((hi (ash bits64 -32))) (if (logbitp 31 hi) (- hi (expt 2 32)) hi))
+                                      (ldb (byte 32 0) bits64))
+                                     :f64))))))
+                :regression-id stablehlo/non-finite-literal-is-the-exact-bit-pattern
+                :regression-file (regression-path "stablehlo-non-finite-literal-is-the-exact-bit-pattern"))))
+
 (test stablehlo/rank-0-constant-has-no-brackets
   (let ((array (make-array '() :element-type 'single-float :initial-element 1.5f0)))
     (is (string= "dense<1.5>" (nb::%constant-literal array :f32)))))
@@ -209,6 +234,11 @@ string= で一致する。"
     (multiple-value-bind (eqn n) (nb::graph-eqn-for-diagnostic graph "no loc here at all")
       (is (null eqn))
       (is (null n)))
+    ;; 先頭の eqn（N = 0）も見つける（0 を範囲外と取り違える変異体が issue #70 の
+    ;; mutation testing で生き残っていた）
+    (multiple-value-bind (eqn n) (nb::graph-eqn-for-diagnostic graph "error: loc(\"eqn-0\"): x")
+      (is (eq (first eqns) eqn))
+      (is (eql 0 n)))
     (multiple-value-bind (eqn n) (nb::graph-eqn-for-diagnostic graph "loc(\"eqn-99\")")
       (is (null eqn))
       (is (null n)))))
