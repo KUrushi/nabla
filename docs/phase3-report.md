@@ -160,7 +160,7 @@ IREE local、バッチされた rng の eqn 1つ（bits は `(4)` の `:u32`）�
 - **`(vmap f)` / `(grad f)` は呼ぶたびに新しい関数オブジェクト**を作り、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため）。
 - **`while-loop` の捕捉値の重複は取り除いた**（#166 の d。2026-10-04）。cond と body が同じトレーサを捕まえても、オペランド（StableHLO の while の carry）には1回だけ現れる（`cond*` と同じく、両方のサブグラフの invars を「carry、捕捉値の和集合」に揃える）。
 - **#166 にまとめた小さな積み残し**: f64 `normal` の裾（解消済み）、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe（解消済み）は上の項目のとおり。
-- **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。
+- **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。（追記 2026-10-10: #12 の local/cuda の数値一致は Colab の Tesla T4 で確かめた。large スイートが `NABLA_REQUIRE_CUDA=1` で通った。結果は `docs/iree-build.md` の「実測（Colab Tesla T4）」）
 - **#73**: フェーズ1から引き続き（IREE 上流への報告。#68 の in-process コンパイラのメモリ破壊は閉じている）。最小の再現と報告の下書きは `docs/iree-upstream-bugs.md`。
 - **#165**: 上の IREE 3.11 の while のバグ2つ（§3.12 の 1 と 2）を上流へ報告し、回避策を消す時期を決める。最小の再現と報告の下書きは `docs/iree-upstream-bugs.md`、回避策を外す条件と確かめる手順は `docs/iree-build.md` の「IREE を上げたときに回避策を外せるか確かめる手順」。
 

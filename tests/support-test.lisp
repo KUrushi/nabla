@@ -637,3 +637,74 @@ fiveam:run で当該テストだけを名指しで呼ぶ。"
   (is (eq *large-selection-guard-ran-p* t)))
 
 (in-suite :nabla.small)
+
+;;; --- accumulation-atol（issue #12）: 総和・内積をバックエンド間で比べる atol ---
+
+(defun %round-to-dtype (x dtype)
+  "有理数 X（f32 / f64 では [1, 2) の値）を DTYPE の浮動小数点数に RNE で
+丸めた値を、有理数で返す。SBCL の有理数 → float の COERCE は正しく丸めない
+（double-float 経由の2回丸めなど）ので、f64 は [1, 2) の刻み 2^-52 で
+CL:ROUND（偶数丸め）し、f32 には double-float で正確に表せる X だけを渡す。"
+  (ecase dtype
+    (:f64 (* (round x (expt 2 -52)) (expt 2 -52)))
+    (:f32 (rational (coerce (coerce x 'double-float) 'single-float)))
+    ((:bf16 :f16) (rational (nb::decode-float16
+                             (nb::encode-float16 (coerce x 'single-float) dtype) dtype)))))
+
+(test support/dtype-unit-roundoff/bounds-relative-rounding-error
+  "[1, 2) の X を DTYPE に丸めた相対誤差は DTYPE-UNIT-ROUNDOFF 以下で、
+しかも 1 + u は DTYPE で表せない（u が大きすぎない）。X の刻みは、1回の
+丸めで済むよう bf16 / f16 では 2^-20、f32 では 2^-50、f64 では 2^-80。"
+  (is (check-it (generator (tuple (uniform-integer :lo 0 :hi (1- (expt 2 20)))
+                                  (uniform-integer :lo 0 :hi (1- (expt 2 60)))
+                                  (map (lambda (i) (nth i '(:f64 :f32 :bf16 :f16))) (uniform-integer :lo 0 :hi 3))))
+                (lambda (args)
+                  (destructuring-bind (k20 k60 dtype) args
+                    (let ((x (ecase dtype
+                               ((:bf16 :f16) (+ 1 (/ k20 (expt 2 20))))
+                               (:f32 (+ 1 (/ (+ (* k20 (expt 2 30)) (ldb (byte 30 0) k60)) (expt 2 50))))
+                               (:f64 (+ 1 (/ (+ (* k20 (expt 2 60)) k60) (expt 2 80))))))
+                          (u (rational (dtype-unit-roundoff dtype))))
+                      (and (<= (abs (- (%round-to-dtype x dtype) x)) (* u x))
+                           (/= (%round-to-dtype (+ 1 u) dtype) (+ 1 u))))))
+                :regression-id support/dtype-unit-roundoff/bounds-relative-rounding-error
+                :regression-file (regression-path "dtype-unit-roundoff-bounds-relative-rounding-error"))))
+
+(test support/accumulation-atol/linear-in-n-and-sum
+  "ACCUMULATION-ATOL は項数 N と Σ|項| のそれぞれについて線形
+（K 倍すると K 倍になる）で、N = 1・Σ = 1 のとき 2u。"
+  (is (check-it (generator (tuple (map (lambda (i) (nth i '(:f64 :f32 :bf16 :f16))) (uniform-integer :lo 0 :hi 3))
+                                  (uniform-integer :lo 1 :hi 64)
+                                  (uniform-integer :lo 1 :hi 64)
+                                  (uniform-integer :lo 1 :hi 8)))
+                (lambda (args)
+                  (destructuring-bind (dtype n s k) args
+                    (and (= (accumulation-atol dtype (* k n) s) (* k (accumulation-atol dtype n s)))
+                         (= (accumulation-atol dtype n (* k s)) (* k (accumulation-atol dtype n s)))
+                         (= (accumulation-atol dtype 1 1) (* 2 (dtype-unit-roundoff dtype))))))
+                :regression-id support/accumulation-atol/linear-in-n-and-sum
+                :regression-file (regression-path "accumulation-atol-linear-in-n-and-sum"))))
+
+(defun %bf16 (x)
+  "X を bf16 に丸めた値を single-float で返す。"
+  (coerce (%round-to-dtype (rational x) :bf16) 'single-float))
+
+(test support/accumulation-atol/bounds-bf16-per-step-vs-f32-accumulation
+  "bf16 の N 項の総和（DOT が真なら、別の N 個との内積）を、加算ごとに
+bf16 へ丸める実装（sm_75 の cuda）と、f32 で累積して最後に1回だけ丸める
+実装（llvm-cpu）で計算した差は、ACCUMULATION-ATOL :BF16 N Σ|項| 以下。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 16)
+                                  (uniform-integer :lo 0 :hi (1- (expt 2 31)))
+                                  (map #'oddp (uniform-integer :lo 0 :hi 1))))
+                (lambda (args)
+                  (destructuring-bind (n seed dot) args
+                    (let* ((state (sb-ext:seed-random-state seed))
+                           (xs (loop repeat n collect (%bf16 (- (random 2.0f0 state) 1.0f0))))
+                           (ys (loop repeat n collect (if dot (%bf16 (- (random 2.0f0 state) 1.0f0)) 1.0f0)))
+                           (terms (mapcar #'* xs ys))
+                           (per-step (reduce (lambda (s p) (%bf16 (+ s (%bf16 p)))) terms :initial-value 0.0f0))
+                           (once (%bf16 (reduce #'+ terms :initial-value 0.0f0))))
+                      (<= (abs (- (rational per-step) (rational once)))
+                          (rational (accumulation-atol :bf16 n (reduce #'+ terms :key #'abs)))))))
+                :regression-id support/accumulation-atol/bounds-bf16-per-step-vs-f32-accumulation
+                :regression-file (regression-path "accumulation-atol-bounds-bf16-per-step-vs-f32-accumulation"))))
