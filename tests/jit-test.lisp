@@ -172,10 +172,11 @@ allclose で比べる）。1回目の呼び出しで *jit-miss-count* が1増え
   (signals nb:jit-error (nb:jit (lambda (x) x))))
 
 (test jit/errors-on-static-arg-out-of-range
-  "arity 2 の関数に :STATIC-ARGS '(2) は範囲外で JIT-ERROR。境界の '(0) と
+  "arity 2 の関数に :STATIC-ARGS '(2) と '(-1) は範囲外で JIT-ERROR。境界の '(0) と
 '(1) はどちらも受け付ける（下限0・上限 arity-1 の両端）。"
   (let ((f (nb:with-tracing (a b) (+ a b))))
     (signals nb:jit-error (nb:jit f :static-args '(2)))
+    (signals nb:jit-error (nb:jit f :static-args '(-1)))
     (is (nb:jit f :static-args '(0)))
     (is (nb:jit f :static-args '(1)))))
 

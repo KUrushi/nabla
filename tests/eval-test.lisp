@@ -130,6 +130,20 @@ DTYPE-MISMATCH を PRIMITIVE-ERROR にまとめて）PRIMITIVE-ERROR を signal
          (graph (nb::make-graph (list a) (list eqn) (nb:eqn-outvars eqn))))
     (signals nb:primitive-error (nb:eval-graph graph (make-random-array (make-array-spec '(2) :f32))))))
 
+(test eval/multiple-output-eager-with-wrong-count-signals-primitive-error
+  "複数出力のプリミティブの EAGER が outvars と違う個数の配列を返したら、
+余分を黙って捨てたり（多すぎる場合）未束縛の outvar を残したり（少なすぎる
+場合）せず、PRIMITIVE-ERROR を signal する。個数が合っていれば評価できる
+（issue #70 の mutation testing で生き残った、個数の照合を消す変異体を殺す）。"
+  (flet ((graph-with-count (count)
+           (let* ((a (nb::make-var (nb:make-aval '(2) :f32)))
+                  (eqn (nb::make-eqn :%test-multiple-eager-count (list a) :count count)))
+             (nb::make-graph (list a) (list eqn) (nb:eqn-outvars eqn)))))
+    (let ((array (make-random-array (make-array-spec '(2) :f32))))
+      (is (eq array (nb:eval-graph (graph-with-count 1) array)))
+      (signals nb:primitive-error (nb:eval-graph (graph-with-count 0) array))
+      (signals nb:primitive-error (nb:eval-graph (graph-with-count 2) array)))))
+
 (test eval/undefined-var-signals-malformed-graph
   "CHECK-GRAPH を経由しない、invars にも constants にも無い var を参照する
 eqn を持つ graph を評価すると MALFORMED-GRAPH。"

@@ -51,6 +51,31 @@
              "IREE の実行結果が eager の while-loop と一致しなかった")
       (nabla:backend-unload backend module))))
 
+(defun %wl-iree-shared-capture-graph ()
+  "limit を cond と body の両方が捕まえる while-loop（捕捉値は1つのオペランドになる。issue #166）。"
+  (nb::trace-to-graph
+   (nb:with-tracing (limit step x)
+     (let ((result (nb:while-loop
+                    (nb:with-tracing (c) (< (first c) limit))
+                    (nb:with-tracing (c)
+                      (list (+ (first c) 1.0) (+ (* (second c) 0.5) (* step limit))))
+                    (list (nb::%scalar-array 0.0 :f32) x))))
+       (values (first result) (second result))))
+   (list (nb:make-aval '() :f32) (nb:make-aval '(3 5) :f32) (nb:make-aval '(3 5) :f32))))
+
+(define-iree-test while-loop/iree-shared-capture-matches-eager
+    "cond と body が同じ外側の値を捕まえる while-loop を IREE でコンパイル・実行した結果は、
+eager と一致する。"
+  (skip-unless-iree :library :both)
+  (let* ((backend (nabla:find-backend :iree))
+         (graph (%wl-iree-shared-capture-graph))
+         (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo graph)))))
+    (unwind-protect
+         (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                       (lambda (seed) (%wl-iree-matches-eager-p backend module graph seed)))
+             "IREE の実行結果が eager の while-loop と一致しなかった")
+      (nabla:backend-unload backend module))))
+
 ;;; ---- :i1 の carry。IREE 3.11 のコンパイラは、比較から作ったフラグを carry にした
 ;;; while の結果が関数の戻り値になるとプロセスごと落ちる（src/while-loop.lisp 冒頭の注）。
 ;;; 戻り値にしない :i1 の carry は動くので、それを確かめる。落ちる形は子プロセスで守る。

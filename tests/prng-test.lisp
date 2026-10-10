@@ -368,27 +368,104 @@ n = 200000。"
       (nb:trace-to-graph (nb:with-tracing (s) (call s)) (list (nb:make-aval '(4 2) :u64))))
     (is (equal '(0 0) axes))))
 
+(defun %prng-emit-rng (state-shape shape dtype)
+  (nb:emit-stablehlo
+   (nb:trace-to-graph (nb:with-tracing (s) (nb::rng-bit-generator s :shape shape :dtype dtype))
+                      (list (nb:make-aval state-shape :u64)))))
+
+(defun %prng-count-of (needle text)
+  (loop with start = 0 for pos = (search needle text :start2 start)
+        while pos count t do (setf start (1+ pos))))
+
 (test prng/rng-batched-emit-structure
-  "バッチ次元つきの状態の StableHLO は、行数ぶんの slice と rng_bit_generator、2 回の concatenate、
-行ごと 3 回 + 前後 3 回の reshape を持ち、SSA 名が不正（%%）にならない。バッチ次元の無い状態は
-slice も concatenate も出さない。"
-  (flet ((count-of (needle text)
-           (loop with start = 0 for pos = (search needle text :start2 start)
-                 while pos count t do (setf start (1+ pos))))
-         (emit (state-shape)
-           (nb:emit-stablehlo
-            (nb:trace-to-graph (nb:with-tracing (s) (nb::rng-bit-generator s :shape '(4) :dtype :u32))
-                               (list (nb:make-aval state-shape :u64))))))
-    (let ((batched (emit '(3 2)))
-          (single (emit '(2))))
-      (is (= 3 (count-of "stablehlo.rng_bit_generator" batched)))
-      (is (= 3 (count-of "stablehlo.slice" batched)))
-      (is (= 2 (count-of "stablehlo.concatenate" batched)))
-      (is (= 12 (count-of "stablehlo.reshape" batched)))
-      (is (zerop (count-of "%%" batched)))
-      (is (= 1 (count-of "stablehlo.rng_bit_generator" single)))
-      (is (zerop (count-of "stablehlo.slice" single)))
-      (is (zerop (count-of "stablehlo.concatenate" single))))))
+  "バッチ次元つきの状態（2行以上）の StableHLO は、1つの while の中で rng_bit_generator を1回だけ
+呼び、slice / concatenate による行ごとの展開をしない。SSA 名は不正（%%）にならない。1行の
+状態と、バッチ次元の無い状態は while を出さない。"
+  (let ((batched (%prng-emit-rng '(3 2) '(4) :u32))
+        (one-row (%prng-emit-rng '(1 2) '(4) :u32))
+        (single (%prng-emit-rng '(2) '(4) :u32)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" batched)))
+    (is (= 1 (%prng-count-of "stablehlo.while" batched)))
+    (is (zerop (%prng-count-of "stablehlo.slice " batched)))
+    (is (zerop (%prng-count-of "stablehlo.concatenate" batched)))
+    (is (zerop (%prng-count-of "%%" batched)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" one-row)))
+    (is (zerop (%prng-count-of "stablehlo.while" one-row)))
+    (is (= 1 (%prng-count-of "stablehlo.rng_bit_generator" single)))
+    (is (zerop (%prng-count-of "stablehlo.while" single)))))
+
+(test prng/rng-batched-emit-passes-bits-through-barriers
+  "2行以上の状態の StableHLO は、ビットのバッファを scan の ys と同じく扱う（issue #159）。本体の先頭で
+carry のバッファ（<p>_b）を optimization_barrier に通し、その結果（<p>_bk）を dynamic_update_slice に
+渡す。初期値は、カウンタの 0 とスカラーの 0 を一意な整数と一緒に1つの barrier に通し、スカラーを
+broadcast_in_dim で広げてもう一度 barrier に通す。状態の carry（<p>_s）は barrier に通さない。
+1行の状態には barrier が無い。"
+  (let* ((text (%prng-emit-rng '(3 2) '(4) :u32))
+         (lines (mapcar (lambda (line) (string-trim " " line))
+                        (uiop:split-string text :separator '(#\Newline))))
+         (rng-line (find-if (lambda (line) (search "stablehlo.rng_bit_generator" line)) lines))
+         (p (subseq rng-line 0 (search "new," rng-line))))
+    (flet ((has-prefix (prefix)
+             (find-if (lambda (line) (eql 0 (search prefix line))) lines)))
+      (is (has-prefix (format nil "~Abk = stablehlo.optimization_barrier ~Ab :" p p))
+          "本体でビットのバッファが barrier を通っていない")
+      (is (has-prefix (format nil "~Ab2 = stablehlo.dynamic_update_slice ~Abk," p p))
+          "ビットの dynamic_update_slice が barrier の結果を受け取っていない")
+      (is-true (let ((line (has-prefix (format nil "~Ai0, ~Ab0_s, ~Ai0_u = stablehlo.optimization_barrier " p p p))))
+                 (and line (search (format nil "~Ai0_c, ~Ab0_c, ~Ai0_u_c :" p p p) line)))
+               "カウンタとビットの初期値のスカラーが一意な整数と一緒に1つの barrier を通っていない")
+      (is (has-prefix (format nil "~Ab0_b = stablehlo.broadcast_in_dim ~Ab0_s," p p))
+          "ビットの初期値が barrier を通したスカラーの broadcast_in_dim で作られていない")
+      (is (has-prefix (format nil "~Ab0 = stablehlo.optimization_barrier ~Ab0_b :" p p))
+          "広げたビットの初期値が barrier を通っていない")
+      (is (has-prefix (format nil "~As2 = stablehlo.dynamic_update_slice ~As," p p))
+          "状態の dynamic_update_slice が carry をそのまま受け取っていない")
+      (is (= 3 (%prng-count-of "stablehlo.optimization_barrier" text))
+          "barrier は初期値の2つと本体の1つだけ（状態の carry には付けない）")))
+  (is (zerop (%prng-count-of "stablehlo.optimization_barrier" (%prng-emit-rng '(1 2) '(4) :u32)))))
+
+(def-prng-property prng/rng-batched-emit-size-is-independent-of-rows
+  "バッチ次元つきの状態の StableHLO の行数は、行数（2行以上。バッチ次元が1段でも2段でも）に
+依らない（issue #164: 行ごとに展開するとコンパイル時間が行数とともに伸びる）。"
+  (rows dtype-index rank d0 d1) (generator (tuple (uniform-integer :lo 3 :hi 300)
+                                                  (uniform-integer :lo 0 :hi 1)
+                                                  (uniform-integer :lo 0 :hi 2)
+                                                  (uniform-integer :lo 1 :hi 6)
+                                                  (uniform-integer :lo 1 :hi 6)))
+  (let ((shape (subseq (list d0 d1) 0 rank))
+        (dtype (nth dtype-index '(:u32 :u64))))
+    (flet ((lines (state-shape)
+             (%prng-count-of (string #\Newline) (%prng-emit-rng state-shape shape dtype))))
+      (= (lines '(2 2)) (lines (list rows 2)) (lines (list 2 rows 2))))))
+
+(test prng/rng-batched-emit-defines-each-ssa-name-once
+  "バッチ次元つきの rng-bit-generator を12回つないだ graph の StableHLO でも、各 SSA 名は
+ちょうど1回だけ定義される（出力の名前が %1 と %11 と %21 のように数字の一部だけ違う eqn が
+並ぶので、補助の名前を出力の名前の一部だけから作ると衝突する。issue #70 の mutation testing
+で生き残った変異体。emit が while になった後も（#164）、ループの補助の名前で同じことが起こる）。"
+  (flet ((chain (state)
+           ;; with-tracing の中では setq できないので、トレース対象の外の関数で12回つなぐ
+           (dotimes (i 12 state)
+             (setf state (nb::rng-bit-generator state :shape '(2) :dtype :u32)))))
+    (let* ((text (nb:emit-stablehlo
+                  (nb:trace-to-graph
+                   (nb:with-tracing (s) (chain s))
+                   (list (nb:make-aval '(2 2) :u64)))))
+           (defined (with-input-from-string (in text)
+                      (loop for line = (read-line in nil nil)
+                            while line
+                            for trimmed = (string-left-trim " " line)
+                            for eq = (search " = " trimmed)
+                            when (and eq (char= #\% (char trimmed 0)))
+                              append (mapcar (lambda (name) (string-trim " " name))
+                                             (uiop:split-string (subseq trimmed 0 eq) :separator ","))))))
+      (is (= 12 (loop with start = 0 for pos = (search "stablehlo.rng_bit_generator" text :start2 start)
+                      while pos count t do (setf start (1+ pos))))
+          "rng_bit_generator を eqn ごとに1回（while の本体に）出していない")
+      (is (= (length defined) (length (remove-duplicates defined :test #'string=)))
+          "同じ SSA 名が2回以上定義された: ~S"
+          (remove-duplicates (remove-if (lambda (n) (= 1 (count n defined :test #'string=))) defined)
+                             :test #'string=)))))
 
 (defun %prng-states (rows seed)
   (let ((rs (sb-ext:seed-random-state seed))
@@ -488,3 +565,81 @@ slice も concatenate も出さない。"
           (is (allclose batched
                         (first (reference-vmap f (list keys x)))
                         :dtype :f32)))))
+
+;;; --- erf の逆関数の精度（issue #166 (a)） ---
+;;;
+;;; normal の裾（u が ±1 に近い所）は乱数では事実上引けないので、normal が使う erf の逆関数
+;;; （内部関数）を、Lisp の多倍長固定小数点で求めた参照値と直接比べる。
+
+(defconstant +erf-ref-bits+ 256
+  "参照値の固定小数点の小数部のビット数（erf の級数の打ち消し e^(y^2) ≈ 2^52 を吸収して余る）。")
+
+(defun %erf-ref-fixed (r)
+  (round (* r (expt 2 +erf-ref-bits+))))
+
+(defun %erf-ref-sqrt-pi ()
+  "√π の固定小数点（π は Machin の公式 16 atan(1/5) - 4 atan(1/239)）。"
+  (flet ((atan-inv (n)
+           (loop with term = (%erf-ref-fixed (/ 1 n))
+                 for k from 0
+                 until (zerop term)
+                 sum (* (if (evenp k) 1 -1) (round term (1+ (* 2 k))))
+                 do (setf term (round term (* n n))))))
+    (isqrt (* (- (* 16 (atan-inv 5)) (* 4 (atan-inv 239))) (expt 2 +erf-ref-bits+)))))
+
+(defparameter *erf-ref-sqrt-pi* (%erf-ref-sqrt-pi))
+
+(defun %erf-ref (y)
+  "erf(Y)（Y は 0 以上の有理数）の固定小数点。erf(y) = 2/√π Σ (-1)^n y^(2n+1) / (n! (2n+1))。"
+  (loop with term = (%erf-ref-fixed y)
+        for n from 0
+        until (and (> n 2) (zerop term))
+        sum (* (if (evenp n) 1 -1) (round term (1+ (* 2 n)))) into sum
+        do (setf term (round (* term y y) (1+ n)))
+        finally (return (round (* 2 sum (expt 2 +erf-ref-bits+)) *erf-ref-sqrt-pi*))))
+
+(defun %erf-inv-ref (x)
+  "erf の逆関数の参照値（X は (-1, 1) の有理数、結果は有理数）。二分法で近づけてから
+Newton 法 y ← y - (erf(y) - x) √π/2 e^(y^2) で更新が 2^-150 を下回るまで詰める（裾では固定小数点の
+丸めが e^(y^2) ≈ 2^52 倍に増幅されるので、更新は 2^-200 程度より小さくならない）。"
+  (cond ((minusp x) (- (%erf-inv-ref (- x))))
+        ((zerop x) 0)
+        (t (let ((target (%erf-ref-fixed x)) (lo 0) (hi 7))
+             (dotimes (i 40)
+               (let ((mid (/ (+ lo hi) 2)))
+                 (if (< (%erf-ref mid) target) (setf lo mid) (setf hi mid))))
+             (loop with y = lo
+                   for exp-y2 = (loop with term = (%erf-ref-fixed 1)
+                                      for n from 1 until (zerop term)
+                                      sum term
+                                      do (setf term (round (* term y y) n)))
+                   for step = (/ (* (- (%erf-ref y) target) *erf-ref-sqrt-pi* exp-y2)
+                                 (* 2 (expt 2 (* 3 +erf-ref-bits+))))
+                   do (setf y (/ (%erf-ref-fixed (- y step)) (expt 2 +erf-ref-bits+)))
+                   until (< (abs step) (expt 2 -150))
+                   finally (return y))))))
+
+(defparameter *erf-inv-rtol* '((:f32 1d-6) (:f64 2d-15))
+  "erf の逆関数の相対誤差の上限。実測（650 点）の最大は f32 で 2.0e-7、f64 で 4.9e-16
+（src/prng.lisp の冒頭）。f64 の上限は f32 用の近似（u = 1 - 2^-53 で 12% ずれる）を確実に落とす。")
+
+(def-prng-property prng/erf-inv-matches-high-precision-reference
+  "normal が使う erf の逆関数（:f32 / :f64）の相対誤差が *ERF-INV-RTOL* 以内。x = ±(1 - m 2^-k)
+（k は 0 から dtype の仮数部のビット数まで。f64 は u = 1 - 2^-53、√2 倍で約 8.29 の裾まで）。"
+  (f64 sign k m)
+  (generator (tuple (uniform-integer :lo 0 :hi 1) (uniform-integer :lo 0 :hi 1)
+                    (uniform-integer :lo 0 :hi 52) (uniform-real :lo 0.5d0 :hi 1d0)))
+  (let* ((dtype (if (= f64 1) :f64 :f32))
+         (type (if (eq dtype :f64) 'double-float 'single-float))
+         (one (coerce 1 type))
+         (magnitude (- one (coerce (scale-float m (- (min k (if (eq dtype :f64) 52 23)))) type)))
+         (x (if (= sign 1) (- magnitude) magnitude))
+         (y (aref (nb::%prng-dispatch (list (make-array 1 :element-type type :initial-element x))
+                                      #'nb::%prng-erf-inv)
+                  0))
+         (reference (%erf-inv-ref (rational x))))
+    (or (<= (abs (- (rational y) reference))
+            (* (second (assoc dtype *erf-inv-rtol*)) (abs reference)))
+        (progn (format t "~&erf-inv ~S x = ~S: ~S, 参照値 ~S~%" dtype x y
+                       (coerce reference 'double-float))
+               nil))))

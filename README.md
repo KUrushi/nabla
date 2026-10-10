@@ -288,8 +288,8 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 - **キー → 状態**: キー `[k0 k1]` を `rng-bit-generator` の状態 `ui64[2] = [k0 | k1 << 32, カウンタ]` にする（`bitcast-convert` で2語を1語にまとめる）。`uniform` / `normal` / `split` はカウンタ 0 から引き、`fold-in` はカウンタ `2^32 + data` の2語を新しいキーにする（引く量が 2^32 要素未満なら、`fold-in` の出力が `uniform` / `split` の列と重なることはない）。
 - **JAX とビット単位では一致しない**: JAX の既定は `threefry_2x32` を直接呼ぶ実装で `rng_bit_generator` を使わないため、同じシードでも値が違う。nabla は `stablehlo.rng_bit_generator`（THREE_FRY）を使い、IREE・PJRT・eager が互いにビット単位で一致する（`docs/stablehlo-ops.md`）。分布としては同じ（統計検定で確かめている）。
 - **uniform**: 乱数ビットの仮数部だけを取り出して `[1, 2)` の浮動小数点数にし、1 を引いて範囲に伸ばす（JAX と同じ。`:f32` は 23 ビット、`:f64` は 52 ビットの粒度）。丸めのため `maxval` にちょうど等しい値が出うる。
-- **normal**: JAX と同じく、`(-1, 1)` の一様乱数に erf の逆関数をかけて √2 倍する。Box–Muller は `sin` / `cos` のプリミティブが無いため採らなかった。erf の逆関数は Giles の単精度多項式近似（JAX の f32 と同じ係数。相対誤差 約 1e-7）で、`:f64` でも同じ近似を使うので精度は f32 並みで、極端な裾は過小評価される（`u = ±(1 - 2^-53)` で約 ±7.32、真の分位点は約 8.2）。
-- **バッチ化**: バッチ次元を持つ状態 `ui64[..., 2]` を `rng-bit-generator` が受け付け、各行は単独に呼んだ結果とビット単位で一致する。StableHLO の `rng_bit_generator` は `ui64[2]` しか受けないので、行ごとに slice → `rng_bit_generator` → concatenate に展開して出力する（行数だけ演算が増える。静的形状のため）。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 4.0 秒、64 行 6.9 秒、256 行 42.8 秒（MLIR 179 KB）。実用上の上限は 64 行程度で、`vmap` を入れ子にすると行数は段ごとの積になる。将来は scan（while）で1行ぶんの本体を回す形にして解消する。
+- **normal**: JAX と同じく、`(-1, 1)` の一様乱数に erf の逆関数をかけて √2 倍する。Box–Muller は `sin` / `cos` のプリミティブが無いため採らなかった。erf の逆関数は Giles の多項式近似で、`:f32` は単精度用（JAX の f32 と同じ係数）、`:f64` は倍精度用（XLA の f64 と同じ係数）。相対誤差の実測は f32 で最大 2.0e-7、f64 で最大 4.9e-16（多倍長の参照値と比較）。値の絶対値の上限は f32 で約 5.42、f64 で約 8.29。
+- **バッチ化**: バッチ次元を持つ状態 `ui64[..., 2]` を `rng-bit-generator` が受け付け、各行は単独に呼んだ結果とビット単位で一致する。StableHLO の `rng_bit_generator` は `ui64[2]` しか受けないので、`stablehlo.while` で1行ずつ `dynamic_slice` → `rng_bit_generator` → `dynamic_update_slice` を回して出力する（issue #164。出力する StableHLO の大きさは行数に依らない）。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行 0.79 秒、64 行 0.80 秒、256 行 0.85 秒（行ごとに展開していた以前は 4.0 秒 / 6.9 秒 / 42.8 秒）。**実行時間**: ビットのバッファは `scan` の ys と同じく `optimization_barrier` を通して in-place に書く（#159）ので、バッファ全体のコピーは無い。残る費用はループ1回（1行）ごとの起動で、IREE では行数に比例する（4コアの機械で 256 キー × `uniform` 4 要素が 1回 約 40 ms、1024 要素で約 46 ms、64 キー × 16384 要素で約 20 ms。行ごとに展開していたときはそれぞれ約 1 / 3 / 8 ms）。PJRT（XLA CPU）では遅くならない。
 - 新しいビット演算プリミティブ（内部）: `:shift-right-logical`、`:bitwise-or`（整数専用の2入力の要素演算）と、ビット列を再解釈する `:bitcast-convert`（`:f32 :f64 :i32 :u32 :u64`。幅が違うときは StableHLO と同じく末尾の次元が増減し、並びはリトルエンディアン）。どれも整数・ビット列の演算なので微分しない。
 
 
@@ -369,7 +369,7 @@ third_party/         iree.lock（固定した IREE のコミットとホイー�
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
 
-ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。docs/pjrt-setup.md）の9つに加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
+ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）の9つに加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
 
 ## 開発の進め方
 
