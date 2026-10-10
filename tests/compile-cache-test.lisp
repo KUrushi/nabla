@@ -231,3 +231,51 @@ UNWIND-PROTECT で退避・復元する。"
       (nb:backend-compile backend +add-text+)
       (is (= 2 (fake-backend-compile-count backend)))
       (is (= 0 (%module-file-count dir))))))
+
+(test compile-cache/backend-compile/relative-directory-resolves-against-cwd
+  "NB:*COMPILE-CACHE-DIRECTORY* に `..` を含む相対パスの文字列を束縛しても、
+書き込み（一時ファイル + rename）が成功し、2回目の呼び出しはキャッシュに
+当たる。ファイルは現在の作業ディレクトリを基準に解決した絶対パスの下に
+できる（issue #180。SBCL の RENAME-FILE は相対パスの移動先を移動元を基準に
+解決するため、相対パスのまま渡すと存在しないパスへの rename で失敗していた）。
+
+UIOP:WITH-CURRENT-DIRECTORY はプロセス大域の作業ディレクトリを変えるので、
+NABLA_CACHE_DIR を書き換えるテストと同じく、逐次実行のスイートでだけ安全。"
+  (with-temporary-directory (dir)
+    (let ((wd (merge-pathnames "wd/" dir)))
+      (ensure-directories-exist wd)
+      (uiop:with-current-directory (wd)
+        (let ((nb:*compile-cache-directory* "../relcache/vmfb/")
+              (backend (nb:make-backend :fake)))
+          (nb:backend-compile backend +add-text+)
+          (nb:backend-compile backend +add-text+)
+          (is (= 1 (fake-backend-compile-count backend))
+              "2回目は相対パスから解決したキャッシュに当たるはず")))
+      (is (= 1 (%module-file-count (merge-pathnames "relcache/vmfb/" dir)))
+          "<作業ディレクトリ>/../relcache/vmfb/ に .module ファイルが1つできるはず"))))
+
+(test compile-cache/backend-compile/relative-nabla-cache-dir-resolves-against-cwd
+  "環境変数 NABLA_CACHE_DIR が `..` を含む相対パスでも、:DEFAULT の解決は
+現在の作業ディレクトリを基準にした絶対パスになり、<それ>/vmfb/ の下に
+キャッシュファイルができて2回目はヒットする（issue #180 の環境変数の枝）。
+環境変数と作業ディレクトリはどちらもプロセス大域なので、UNWIND-PROTECT /
+UIOP:WITH-CURRENT-DIRECTORY で元に戻す。"
+  (with-temporary-directory (dir)
+    (let ((wd (merge-pathnames "wd/" dir))
+          (original (sb-ext:posix-getenv "NABLA_CACHE_DIR")))
+      (ensure-directories-exist wd)
+      (unwind-protect
+           (progn
+             (sb-posix:setenv "NABLA_CACHE_DIR" "../relcache" 1)
+             (uiop:with-current-directory (wd)
+               (let ((nb:*compile-cache-directory* :default)
+                     (backend (nb:make-backend :fake)))
+                 (nb:backend-compile backend +add-text+)
+                 (nb:backend-compile backend +add-text+)
+                 (is (= 1 (fake-backend-compile-count backend))
+                     "2回目は相対パスの NABLA_CACHE_DIR から解決したキャッシュに当たるはず"))))
+        (if original
+            (sb-posix:setenv "NABLA_CACHE_DIR" original 1)
+            (sb-posix:unsetenv "NABLA_CACHE_DIR")))
+      (is (= 1 (%module-file-count (merge-pathnames "relcache/vmfb/" dir)))
+          "<作業ディレクトリ>/../relcache/vmfb/ に .module ファイルが1つできるはず"))))
