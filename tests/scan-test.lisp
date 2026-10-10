@@ -382,7 +382,7 @@ carry を壊さない（ys は1ステップ前の x、最終の carry は最後�
       (is (equalp #(5.0 6.0) (first carry)))
       (is (equalp #2A((0.0 0.0) (1.0 2.0) (3.0 4.0)) (first ys))))))
 
-;;; ---- eager の結果は入力と領域を共有しない（issue #166 (c)） ----
+;;; ---- eager の scan は入力を書き換えない（issue #166） ----
 
 (defparameter *scan-host-constant*
   (make-array 2 :element-type 'single-float :initial-contents '(7.0 8.0))
@@ -407,27 +407,28 @@ carry を壊さない（ys は1ステップ前の x、最終の carry は最後�
                 (setf (row-major-aref copy j) (row-major-aref a j)))))
           arrays))
 
-(test scan/eager-results-never-share-storage-with-inputs
-  "eager の scan が返す carry と ys は、init・xs・本体が捕まえたホストの配列のどれとも
-EQ にならず、結果を書き換えても入力は変わらない（長さ 0 を含む）。"
+(test scan/eager-does-not-modify-inputs
+  "eager の scan は init・xs・本体が捕まえたホストの配列を書き換えず、結果は参照実装
+%SCAN-REF と一致する（長さ 0 を含む）。結果が入力と EQ かどうかは問わない
+（README「配列の不変性」）。"
   (is (check-it
        (generator (tuple (integer 0 100000) (integer 0 3) (integer 0 2)))
        (lambda (case)
          (destructuring-bind (seed length body-index) case
-           (let* ((init (list (make-random-array (make-array-spec '(2) :f32) :seed seed)))
+           (let* ((f (nth body-index *scan-alias-bodies*))
+                  (init (list (make-random-array (make-array-spec '(2) :f32) :seed seed)))
                   (xs (list (make-random-array (make-array-spec (list length 2) :f32) :seed (1+ seed))))
                   (inputs (append init xs (list *scan-host-constant*)))
                   (before (%scan-snapshot inputs)))
-             (multiple-value-bind (carry ys) (nb:scan (nth body-index *scan-alias-bodies*) init xs)
-               (let ((outputs (append carry ys)))
-                 (dolist (out outputs)
-                   (fill (make-array (array-total-size out) :element-type (array-element-type out)
-                                                           :displaced-to out)
-                         -1.0))
-                 (and (notany (lambda (out) (member out inputs :test #'eq)) outputs)
-                      (every #'equalp before inputs)))))))
-       :regression-id scan/eager-results-never-share-storage-with-inputs
-       :regression-file (regression-path "scan-eager-results-fresh"))))
+             (multiple-value-bind (carry ys) (nb:scan f init xs)
+               (multiple-value-bind (ref-carry ref-ys)
+                   (%scan-ref f (%scan-snapshot init) (%scan-snapshot xs) length nil
+                              (list (cons '(2) 'single-float)))
+                 (and (every #'equalp before inputs)
+                      (equalp ref-carry carry)
+                      (equalp ref-ys ys)))))))
+       :regression-id scan/eager-does-not-modify-inputs
+       :regression-file (regression-path "scan-eager-does-not-modify-inputs"))))
 
 (test scan/rejects-raw-16-bit-arrays
   "dtype が一意に決まらない生の (unsigned-byte 16) の配列（bf16 / f16）を init や xs に

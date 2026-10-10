@@ -249,7 +249,7 @@ lax.while_loop）。INIT は配列（トレース中はトレーサでもよい�
 COND-FN / BODY-FN は carry のリストを1つ受け取る関数（WITH-TRACING で作る）:
 COND-FN は rank 0 の :i1（比較の結果など）を返し、BODY-FN は INIT と同じ AVAL
 （個数・shape・dtype）の carry のリストを返す。carry は INIT の個数と順序のまま
-返る。
+返る。eager の結果は INIT・閉包で捕まえた配列と EQ でありうる（README「配列の不変性」）。
 
 配列だけを渡して WITH-TRACING の外から呼べば eager に、WITH-TRACING / JIT の中では
 :WHILE-LOOP の eqn（StableHLO では stablehlo.while）としてトレースされる。COND-FN /

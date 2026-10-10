@@ -57,6 +57,48 @@ limit は 0〜6（0回で終わる場合を含む）。"
     (is (= 3 (length result)))
     (is (equalp x (third result)))))
 
+;;; ---- eager の while-loop は入力を書き換えない（issue #166） ----
+
+(defparameter *wl-host-constant*
+  (make-array 3 :element-type 'single-float :initial-contents '(7.0 8.0 9.0))
+  "*WL-ALIAS-BODIES* の本体が閉包で捕まえるホストの配列。")
+
+(defparameter *wl-alias-bodies*
+  (list
+   ;; x をそのまま回す
+   (nb:with-tracing (c) (list (+ (first c) 1.0) (second c) (third c)))
+   ;; 捕まえたホストの配列を carry にする
+   (nb:with-tracing (c) (list (+ (first c) 1.0) (second c) *wl-host-constant*))
+   ;; カウンタを進めて x を足し込む
+   (nb:with-tracing (c) (list (+ (first c) 1.0) (second c) (+ (third c) (third c)))))
+  "carry = (カウンタ, 上限, [3] の f32)。入力をそのまま出力に回す本体を含む。")
+
+(defun %wl-snapshot (arrays)
+  "ARRAYS の各配列の中身を写した新しい配列のリスト。"
+  (mapcar (lambda (a)
+            (let ((copy (make-array (array-dimensions a) :element-type (array-element-type a))))
+              (dotimes (j (array-total-size a) copy)
+                (setf (row-major-aref copy j) (row-major-aref a j)))))
+          arrays))
+
+(test while-loop/eager-does-not-modify-inputs
+  "eager の while-loop は init・本体が捕まえたホストの配列を書き換えず、結果は Lisp の
+ループと一致する（反復 0〜3 回）。結果が入力と EQ かどうかは問わない（README「配列の不変性」）。"
+  (is (check-it
+       (generator (tuple (integer 0 100000) (integer 0 3) (integer 0 2)))
+       (lambda (case)
+         (destructuring-bind (seed n body-index) case
+           (let* ((body (nth body-index *wl-alias-bodies*))
+                  (init (list (%wl-scalar 0.0) (%wl-scalar (float n 1.0))
+                              (%wl-seed-array seed '(3) :f32)))
+                  (inputs (append init (list *wl-host-constant*)))
+                  (before (%wl-snapshot inputs))
+                  (actual (nb:while-loop *wl-cond* body init)))
+             (and (every #'equalp before inputs)
+                  (%wl-all-close actual (%wl-lisp-loop *wl-cond* body (%wl-snapshot init)))))))
+       :regression-id while-loop/eager-does-not-modify-inputs
+       :regression-file (regression-path "while-loop-eager-does-not-modify-inputs"))))
+
 (test while-loop/carries-of-different-shapes-and-dtypes
   "形も dtype も違う carry（f32 の配列と f64 の配列）を同時に持てる。"
   (let ((cond-fn (nb:with-tracing (c) (< (first c) 4.0)))
