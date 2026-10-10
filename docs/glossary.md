@@ -180,6 +180,9 @@ pretty form を出力する。
 **rtol / atol（相対誤差と絶対誤差の許容値）**
 : 浮動小数点数の比較で使う。`|actual - expected| <= atol + rtol * |expected|` なら一致とみなす。値が大きいときは rtol が、0 に近いときは atol が効く。
 
+**unit roundoff（u）/ ULP（unit in the last place）**
+: ULP は、ある値の付近で隣り合う2つの浮動小数点数の間隔。unit roundoff u は、最も近い値に丸めたときの相対誤差の上限で、仮数部が p ビットなら 2^-p（bf16 は 2^-8、f32 は 2^-24）。総和の丸め誤差は出力ではなく途中の部分和の大きさで決まるので、バックエンド間で総和や内積を比べるときは `accumulation-atol`（2·n·u·Σ|項|）を atol に使う（issue #12）。
+
 **mutation testing（変異テスト）**
 : テストの品質を測るテスト。プログラムにわざと小さなバグを入れ、テストがそれを見つけられるか（落ちるか）を確かめる。
 

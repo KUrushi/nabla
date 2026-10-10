@@ -438,37 +438,54 @@ NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh
 
 `tests/iree/cross-device-test.lisp` は add / matmul / reduce_sum のそれぞれ
 f32 版・bf16 版（計6テスト）で、`local` と `cuda`（cuda-arch は指定せず
-IREE の既定に任せる）に同じ乱数入力を渡し、結果を dtype ごとの既定の許容
-誤差（f32: rtol 1e-5 / atol 1e-6、bf16: rtol 1e-2 / atol 1e-3）で比較する
-（`allclose` が不一致のとき最大誤差を表示する）。あわせて、同じテキストに
-対する vmfb ディスクキャッシュ（issue #10）のファイルが `local` と `cuda`
-で別々にできていること（キャッシュのキーにターゲットが入っていること）も
-確かめる。
+IREE の既定に任せる）に同じ乱数入力を渡し、結果を比較する
+（`allclose` が不一致のとき最大誤差を表示する）。add は dtype ごとの既定の
+許容誤差（f32: rtol 1e-5 / atol 1e-6、bf16: rtol 1e-2 / atol 1e-3）で、
+matmul と reduce_sum は rtol 0・atol = `accumulation-atol`（総和の誤差の
+上界 2·n·u·Σ|項|、`tests/support/dtypes.lisp`）で比べる。あわせて、同じ
+テキストに対する vmfb ディスクキャッシュ（issue #10）のファイルが `local`
+と `cuda` で別々にできていること（キャッシュのキーにターゲットが入って
+いること）も確かめる。
 
-CPU と GPU では `matmul`（`dot_general` の内積）や `reduce_sum` の総和の
-順序が異なりうる。既定の許容誤差で不安定に失敗するようなら、
-`tests/iree/cross-device-test.lisp` のコメントに理由（総和順序の違い）を
-書いた上で緩める。
+### 実測（Colab Tesla T4）
 
-### 結果（この環境: GPU なしのため未測定）
+2026-10-10 に Colab の Tesla T4（sm_75、ドライバ 580.82.07、CUDA 13.0、
+nvcc 13.0.88）で測った。IREE は `third_party/iree.lock` の commit
+（`e4a3b0405d7d23554da26403658d0e8c3c5ecf25`）で、コンパイラは PyPI
+ホイール、ランタイムは `scripts/build-iree.sh --cuda` でソースビルドした
+もの。cuda-arch は IREE の既定に任せた。入力はテストと同じ生成器
+（`make-random-array`、seed 0..99 の 100 通り、値はおよそ [-1, 1)）で、
+表は `scripts/colab/measure-cross-device.lisp` で作った（このスクリプトは
+別の PR #177 にあり、main にはまだ無い）。
 
-この環境には NVIDIA GPU が無いため、上の手順は実行できていない
-（`skip-unless-cuda` が毎回スキップする）。GPU のあるマシンで実行したら、
-下の表を実測値で埋める。
+| fixture | dtype | 最大絶対誤差 | 最大相対誤差 | 旧既定の許容誤差を超えた seed |
+| --- | --- | --- | --- | --- |
+| add | f32 | 0 | 0 | 0 |
+| add_bf16 | bf16 | 0 | 0 | 0 |
+| matmul | f32 | 1.192e-7 | 2.177e-5 | 0 |
+| matmul_bf16 | bf16 | 7.813e-3 | 3.765e-1 | 1 |
+| reduce_sum | f32 | 0 | 0 | 0 |
+| reduce_sum_bf16 | bf16 | 1.563e-2 | 4.286e-1 | 29 |
 
-| fixture | dtype | 最大誤差 | GPU | sm_XX | CUDA 版 | IREE commit |
-| --- | --- | --- | --- | --- | --- | --- |
-| add | f32 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
-| add | bf16 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
-| matmul | f32 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
-| matmul | bf16 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
-| reduce_sum | f32 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
-| reduce_sum | bf16 | 未測定 | 未測定 | 未測定 | 未測定 | `e4a3b0405d7d23554da26403658d0e8c3c5ecf25` |
+（最後の列は、各 dtype の旧既定の許容誤差（rtol / atol）で比べたときに
+不一致になった seed の数）
 
-（「最大誤差」は `allclose` が不一致のときに表示する値。一致した場合は
-許容誤差の範囲内だったことと、実測した最大誤差をここに書く。「GPU」は
-`nvidia-smi -L` などで分かる GPU の製品名。issue #12 は、この表が実測値で
-埋まるまで open のままにする）
+bf16 の差はバグではなく、期待どおりの数値誤差である。`local`（llvm-cpu）
+は bf16 の reduce や dot を f32 で累積して最後に1回だけ丸める（同じ入力で
+`local` を実行した 400 行すべてがこのモデルと一致した）。一方、bf16 の
+演算器を持たない sm_75 の `cuda` は bf16 の加算ごとに丸める。このため差は
+出力の 1 ULP ではなく、途中で最大になった部分和の約 1 ULP になり、和が
+打ち消し合うところでは出力の 192 ULP にも達する（相対誤差は 0.4 を
+超える）。この2つの丸め方を真似たシミュレーションは表の値を桁まで
+再現する。rtol はここでは意味を持たないので、テストは rtol 0・atol =
+2·n·u·Σ|x|（Higham, *Accuracy and Stability of Numerical Algorithms*
+§4.2）で比べる。実測の最大誤差はこの上界の約 1/32（reduce_sum_bf16）と
+約 1/9（matmul_bf16）。
+
+これは1種類の GPU とドライバでの測定で、他の GPU・ドライバ・IREE の版で
+同じ結果になることは保証しない。新しい許容誤差で large スイートが GPU 上で
+通ることはまだ確かめていない。issue #12 は、それを確かめるまで open の
+ままにする。
 
 ## Lisp からの呼び出し（issue #6）
 
