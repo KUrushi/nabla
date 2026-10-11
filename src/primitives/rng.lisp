@@ -35,9 +35,10 @@
 ;;;; ビットは (lead... shape...)。各行は、その行だけを ui64[2] として単独に呼んだ結果と
 ;;;; ビット単位で一致する（vmap のバッチ化ルールがこれに頼る。vmap の結果は「各要素を
 ;;;; 単独に呼んだ結果」と一致しなければならない）。StableHLO の rng_bit_generator は
-;;;; ui64[2] しか受けないので、emit は stablehlo.while で行ごとに dynamic_slice して
-;;;; rng_bit_generator を呼び、dynamic_update_slice で積み直す（issue #164。以前は行ごとに
-;;;; 展開しており、コンパイル時間が行数とともに伸びた。実測は docs/phase3-report.md §5）。
+;;;; ui64[2] しか受けないので、emit は stablehlo.while の1回で K 行（*RNG-ROWS-PER-ITERATION*）を
+;;;; dynamic_slice して K 回 rng_bit_generator を呼び、dynamic_update_slice で積み直す（issue #164 /
+;;;; #178。全行を展開するとコンパイル時間が行数とともに伸び、1行ずつ回すとバックエンドでループ1回ごとの
+;;;; 起動の費用が行数に比例する。実測は docs/phase3-report.md §4.2）。
 ;;;;
 ;;;; 状態・ビットは整数なので微分しない（jvp ルールは要らない。全入力の接線が
 ;;;; ゼロのとき jvp-graph はルールを呼ばず主値を再発行する）。
@@ -178,11 +179,67 @@
           (tensor-type-string (first out-avals))
           (tensor-type-string (second out-avals))))
 
+(defparameter *rng-rows-per-iteration* 16
+  "バッチされた rng-bit-generator の emit（%RNG-EMIT-BATCHED）が while の1回で処理する行数 K（内部。
+export しない。issue #178）。行数が K 以下なら while を出さずに行ごとに展開し、K を超えると
+while の1回で K 行ぶんの rng_bit_generator を展開して回す。CPU の実行系の実行時間にはループ1回ごとの
+起動の費用（4コアの機械で約 0.16 ms）× ceil(行数 / K) が残り、コンパイル時間は K とともに伸びる。
+測定（docs/phase3-report.md §4.2）では eqn 1つのコンパイルが K = 16 で約 1 秒、K = 32 で
+2〜3 秒だったので、約 2 秒に収まる 16 にした。emit のときに読むので、jit のキャッシュのキーには
+入らない（コンパイル済みの関数には効かない）。")
+
+(defun %rng-emit-block (n block k shape dtype)
+  "(K 2) の状態 BLOCK の各行に rng_bit_generator を呼ぶ行（展開）。N は補助の名前を作る関数。
+(VALUES 行のリスト 新しい状態 (K 2) の名前 ビット (K . SHAPE) の名前) を返す。
+K = 1 なら slice と concatenate を出さない。"
+  (let* ((block-aval (make-aval (list k 2) :u64))
+         (row-aval (make-aval '(2) :u64))
+         (one-aval (make-aval '(1 2) :u64))
+         (bits-aval (make-aval shape dtype))
+         (one-bits-aval (make-aval (cons 1 shape) dtype))
+         (lines '()) (states '()) (bits '()))
+    (flet ((reshape (out in from to)
+             (push (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
+                           out in (tensor-type-string from) (tensor-type-string to))
+                   lines))
+           (concat (out ins one all)
+             (push (format nil "~A = stablehlo.concatenate ~{~A~^, ~}, dim = 0 : (~{~A~^, ~}) -> ~A"
+                           out ins (make-list k :initial-element (tensor-type-string one))
+                           (tensor-type-string all))
+                   lines)))
+      (dotimes (j k)
+        (let ((slice (funcall n (format nil "slice~D" j))) (row (funcall n (format nil "row~D" j)))
+              (new (funcall n (format nil "new~D" j))) (row-bits (funcall n (format nil "bits~D" j)))
+              (one (funcall n (format nil "onestate~D" j))) (one-bits (funcall n (format nil "onebits~D" j))))
+          (if (= k 1)
+              (setf slice block)
+              (push (format nil "~A = stablehlo.slice ~A [~D:~D, 0:2] : (~A) -> ~A"
+                            slice block j (1+ j) (tensor-type-string block-aval) (tensor-type-string one-aval))
+                    lines))
+          (reshape row slice one-aval row-aval)
+          (push (%rng-emit-single row row-aval (list new row-bits) (list row-aval bits-aval)) lines)
+          (reshape one new row-aval one-aval)
+          (reshape one-bits row-bits bits-aval one-bits-aval)
+          (push one states)
+          (push one-bits bits)))
+      (if (= k 1)
+          (values (reverse lines) (first states) (first bits))
+          (progn
+            (concat (funcall n "news") (reverse states) one-aval block-aval)
+            (concat (funcall n "blockbits") (reverse bits) one-bits-aval (make-aval (cons k shape) dtype))
+            (values (reverse lines) (funcall n "news") (funcall n "blockbits")))))))
+
 (defun %rng-emit-batched (in-name state-aval out-names out-avals shape dtype)
-  "バッチ次元のある状態の StableHLO。状態を (行数 2) にならし、stablehlo.while で行ごとに
-dynamic_slice → rng_bit_generator → dynamic_update_slice を回して、最後に元の shape に戻す
-（issue #164。行数によらず同じ行数の StableHLO になる）。1行だけなら while を使わず、
-reshape して rng_bit_generator を1回呼ぶ。
+  "バッチ次元のある状態の StableHLO。状態を (行数 2) にならし、行ごとに rng_bit_generator を
+呼んで積み、最後に元の shape に戻す。行数が K（*RNG-ROWS-PER-ITERATION*）以下なら
+行ごとに展開する（slice → rng_bit_generator → concatenate。%RNG-EMIT-BLOCK）。K を超えると
+stablehlo.while の1回で K 行ずつ処理する（issue #164 / #178。StableHLO の大きさは行数に依らない）:
+dynamic_slice で (K 2) の状態を取り、K 行を展開して、dynamic_update_slice で K 行を1回で書く。
+
+行数が K の倍数でないときは、最後の1回の開始位置を dynamic_slice / dynamic_update_slice の
+添字のクランプ（行数 - K に丸められる）に任せ、前の回と重なる行を計算し直す。各行は元の状態
+（ループで書き換えない carry <p>_src）から計算するので、重なった行は同じ値で上書きされるだけ。
+詰め物をして切り出すより、余分な配列も2つ目のループも要らず短い。
 
 while の定数オペランド（カウンタとビットのバッファの 0 初期値）は optimization_barrier を
 通す（特定の版のバックエンドのコンパイラが落ちる回避策。docs/stablehlo-ops.md の制御構造の節）。
@@ -192,68 +249,78 @@ while の定数オペランド（カウンタとビットのバッファの 0 �
 （カウンタの 0・スカラーの 0・モジュールの中で一意な整数を1つの barrier に通し、スカラーを
 broadcast_in_dim で広げてもう一度 barrier）で作る。状態の carry は小さいので barrier に通さない。"
   (let* ((rows (reduce #'* (%rng-lead-shape state-aval)))
+         (k (min rows *rng-rows-per-iteration*))
          (p (format nil "%rng_~A" (subseq (first out-names) 1)))
          (flat-state-aval (make-aval (list rows 2) :u64))
-         (row-state-aval (make-aval '(2) :u64))
-         (one-state-aval (make-aval '(1 2) :u64))
-         (row-bits-aval (make-aval shape dtype))
-         (one-bits-aval (make-aval (cons 1 shape) dtype))
          (all-bits-aval (make-aval (cons rows shape) dtype))
+         (block-aval (make-aval (list k 2) :u64))
+         (block-bits-aval (make-aval (cons k shape) dtype))
          (i32 "tensor<i32>")
-         (types (list i32 (tensor-type-string flat-state-aval) (tensor-type-string all-bits-aval))))
+         (types (list i32 (tensor-type-string flat-state-aval) (tensor-type-string flat-state-aval)
+                      (tensor-type-string all-bits-aval))))
     (flet ((n (suffix) (format nil "~A_~A" p suffix))
            (reshape (out in from to)
              (format nil "~A = stablehlo.reshape ~A : (~A) -> ~A"
                      out in (tensor-type-string from) (tensor-type-string to))))
       (format nil "~{~A~^~%~}"
-              (if (= rows 1)
-                  (list (reshape (n "row") in-name state-aval row-state-aval)
-                        (%rng-emit-single (n "row") row-state-aval (list (n "new") (n "bits"))
-                                          (list row-state-aval row-bits-aval))
-                        (reshape (first out-names) (n "new") row-state-aval (first out-avals))
-                        (reshape (second out-names) (n "bits") row-bits-aval (second out-avals)))
+              (cond
+                ((zerop rows)
+                 ;; 0 行: 状態はそのまま、ビットは空
+                 (list (reshape (first out-names) in-name state-aval (first out-avals))
+                       (%scan-zero-constant-line (second out-names) (second out-avals))))
+                ((= k rows)
+                  (multiple-value-bind (lines news bits) (%rng-emit-block #'n (n "flat") k shape dtype)
+                    (append (list (reshape (n "flat") in-name state-aval flat-state-aval))
+                            lines
+                            (list (reshape (first out-names) news flat-state-aval (first out-avals))
+                                  (reshape (second out-names) bits all-bits-aval (second out-avals))))))
+                (t
                   (append
                    (list
                     (reshape (n "flat") in-name state-aval flat-state-aval))
                   (%scan-ys-init-lines (n "i0") (list (n "b0")) (list all-bits-aval))
                   (list
-                   (format nil "~A, ~A, ~A = \"stablehlo.while\"(~A, ~A, ~A) ({"
-                           (n "n") (n "states") (n "allbits") (n "i0") (n "flat") (n "b0"))
-                   ;; cond: カウンタ < 行数
-                   (format nil "^bb0(~A: ~A, ~A: ~A, ~A: ~A):"
-                           (n "ci") (first types) (n "cs") (second types) (n "cb") (third types))
+                   (format nil "~A, ~A, ~A, ~A = \"stablehlo.while\"(~A, ~A, ~A, ~A) ({"
+                           (n "n") (n "src_n") (n "states") (n "allbits")
+                           (n "i0") (n "flat") (n "flat") (n "b0"))
+                   ;; cond: 開始位置 < 行数
+                   (format nil "^bb0(~A: ~A, ~A: ~A, ~A: ~A, ~A: ~A):"
+                           (n "ci") (first types) (n "csrc") (second types) (n "cs") (third types)
+                           (n "cb") (fourth types))
                    (format nil "~A = stablehlo.constant dense<~D> : ~A" (n "len") rows i32)
                    (format nil "~A = stablehlo.compare LT, ~A, ~A : (~A, ~A) -> tensor<i1>"
                            (n "lt") (n "ci") (n "len") i32 i32)
                    (format nil "stablehlo.return ~A : tensor<i1>" (n "lt"))
                    "}, {"
-                   ;; body: i 行目の状態を読み、rng_bit_generator の結果を i 行目に書く
-                   (format nil "^bb0(~A: ~A, ~A: ~A, ~A: ~A):"
-                           (n "i") (first types) (n "s") (second types) (n "b") (third types))
-                   (format nil "~A = stablehlo.optimization_barrier ~A : ~A" (n "bk") (n "b") (third types))
+                   ;; body: i 行目からの K 行の元の状態を読み、K 行ぶんの結果を i 行目から書く
+                   (format nil "^bb0(~A: ~A, ~A: ~A, ~A: ~A, ~A: ~A):"
+                           (n "i") (first types) (n "src") (second types) (n "s") (third types)
+                           (n "b") (fourth types))
+                   (format nil "~A = stablehlo.optimization_barrier ~A : ~A" (n "bk") (n "b") (fourth types))
                    (format nil "~A = stablehlo.constant dense<0> : ~A" (n "z") i32)
-                   (format nil "~A = stablehlo.dynamic_slice ~A, ~A, ~A, sizes = [1, 2] : (~A, ~A, ~A) -> ~A"
-                           (n "slice") (n "s") (n "i") (n "z") (second types) i32 i32
-                           (tensor-type-string one-state-aval))
-                   (reshape (n "row") (n "slice") one-state-aval row-state-aval)
-                   (%rng-emit-single (n "row") row-state-aval (list (n "new") (n "bits"))
-                                     (list row-state-aval row-bits-aval))
-                   (reshape (n "onestate") (n "new") row-state-aval one-state-aval)
-                   (reshape (n "onebits") (n "bits") row-bits-aval one-bits-aval)
-                   (format nil "~A = stablehlo.dynamic_update_slice ~A, ~A, ~A, ~A : (~A, ~A, ~A, ~A) -> ~A"
-                           (n "s2") (n "s") (n "onestate") (n "i") (n "z")
-                           (second types) (tensor-type-string one-state-aval) i32 i32 (second types))
-                   (format nil "~A = stablehlo.dynamic_update_slice ~A, ~A, ~A~{, ~A~} : (~A, ~A, ~A) -> ~A"
-                           (n "b2") (n "bk") (n "onebits") (n "i")
-                           (make-list (length shape) :initial-element (n "z"))
-                           (third types) (tensor-type-string one-bits-aval)
-                           (%scan-index-types (1+ (length shape))) (third types))
-                   (format nil "~A = stablehlo.constant dense<1> : ~A" (n "one") i32)
-                   (format nil "~A = stablehlo.add ~A, ~A : ~A" (n "next") (n "i") (n "one") i32)
-                   (format nil "stablehlo.return ~A, ~A, ~A : ~{~A~^, ~}" (n "next") (n "s2") (n "b2") types)
+                   (format nil "~A = stablehlo.dynamic_slice ~A, ~A, ~A, sizes = [~D, 2] : (~A, ~A, ~A) -> ~A"
+                           (n "block") (n "src") (n "i") (n "z") k (second types) i32 i32
+                           (tensor-type-string block-aval)))
+                  (multiple-value-bind (lines news bits) (%rng-emit-block #'n (n "block") k shape dtype)
+                    (append
+                     lines
+                     (list
+                      (format nil "~A = stablehlo.dynamic_update_slice ~A, ~A, ~A, ~A : (~A, ~A, ~A, ~A) -> ~A"
+                              (n "s2") (n "s") news (n "i") (n "z")
+                              (third types) (tensor-type-string block-aval) i32 i32 (third types))
+                      (format nil "~A = stablehlo.dynamic_update_slice ~A, ~A, ~A~{, ~A~} : (~A, ~A, ~A) -> ~A"
+                              (n "b2") (n "bk") bits (n "i")
+                              (make-list (length shape) :initial-element (n "z"))
+                              (fourth types) (tensor-type-string block-bits-aval)
+                              (%scan-index-types (1+ (length shape))) (fourth types)))))
+                  (list
+                   (format nil "~A = stablehlo.constant dense<~D> : ~A" (n "step") k i32)
+                   (format nil "~A = stablehlo.add ~A, ~A : ~A" (n "next") (n "i") (n "step") i32)
+                   (format nil "stablehlo.return ~A, ~A, ~A, ~A : ~{~A~^, ~}"
+                           (n "next") (n "src") (n "s2") (n "b2") types)
                    (format nil "}) : (~{~A~^, ~}) -> (~{~A~^, ~})" types types)
                    (reshape (first out-names) (n "states") flat-state-aval (first out-avals))
-                   (reshape (second out-names) (n "allbits") all-bits-aval (second out-avals)))))))))
+                   (reshape (second out-names) (n "allbits") all-bits-aval (second out-avals))))))))))
 
 (defprimitive rng-bit-generator (:shape :dtype)
   :multiple-outputs t
