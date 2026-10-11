@@ -116,6 +116,61 @@
       (is (equal '(:add) (mapcar (lambda (e) (nb::primitive-name (nb:eqn-prim e)))
                                  (nb:graph-eqns graph)))))))
 
+;;; ---- eager の cond* は入力を書き換えない（issue #166） ----
+
+(defparameter *cond-host-constant*
+  (make-array 2 :element-type 'single-float :initial-contents '(7.0 8.0))
+  "*COND-ALIAS-BRANCHES* の枝が閉包で捕まえるホストの配列。")
+
+(defparameter *cond-alias-branches*
+  (list
+   (nb:with-tracing (u v) (values u v))                 ; operands をそのまま返す
+   (nb:with-tracing (u v) (values *cond-host-constant* v)) ; 捕まえたホストの配列を返す
+   (nb:with-tracing (u v) (values (+ u v) (* u v))))    ; 算術
+  "どれも [2] の f32 を2つ受け取り2つ返す枝。入力をそのまま出力に回すものを含む。")
+
+(defun %cond-snapshot (arrays)
+  "ARRAYS の各配列の中身を写した新しい配列のリスト。"
+  (mapcar (lambda (a)
+            (let ((copy (make-array (array-dimensions a) :element-type (array-element-type a))))
+              (dotimes (j (array-total-size a) copy)
+                (setf (row-major-aref copy j) (row-major-aref a j)))))
+          arrays))
+
+(test cond/eager-does-not-modify-inputs
+  "eager の cond* は operands・枝が捕まえたホストの配列を書き換えず、結果は選ばれた枝を
+直接呼んだ結果と一致する。pred が T / NIL / bit 配列の直接の経路と、トレースした :cond を
+eval-graph する経路の両方。結果が入力と EQ かどうかは問わない（README「配列の不変性」）。"
+  (is (check-it
+       (generator (tuple (integer 0 100000) (integer 0 2) (integer 0 2) (integer 0 2)))
+       (lambda (case)
+         (destructuring-bind (seed then-index else-index path) case
+           (let* ((then (nth then-index *cond-alias-branches*))
+                  (else (nth else-index *cond-alias-branches*))
+                  (bit (mod seed 2))
+                  (x (make-random-array (make-array-spec '(2) :f32) :seed seed))
+                  (y (make-random-array (make-array-spec '(2) :f32) :seed (1+ seed)))
+                  (inputs (list x y *cond-host-constant*))
+                  (before (%cond-snapshot inputs))
+                  (actual
+                    (multiple-value-list
+                     (ecase path
+                       (0 (nb:cond* (= bit 1) then else x y))
+                       (1 (nb:cond* (%cond-pred bit) then else x y))
+                       (2 (nb:eval-graph
+                               (nb::trace-to-graph
+                                (nb:with-tracing (p a b) (nb:cond* p then else a b))
+                                (list (nb:make-aval '() :i1) (nb:make-aval '(2) :f32)
+                                      (nb:make-aval '(2) :f32)))
+                               (%cond-pred bit) x y)))))
+                  (expected (multiple-value-list
+                             (apply (if (= bit 1) then else) (%cond-snapshot (list x y))))))
+             (and (every #'equalp before inputs)
+                  (= 2 (length actual))
+                  (every (lambda (a e) (allclose a e :dtype :f32)) actual expected)))))
+       :regression-id cond/eager-does-not-modify-inputs
+       :regression-file (regression-path "cond-eager-does-not-modify-inputs"))))
+
 (test cond/error-on-branch-aval-mismatch
   "両枝の出力の aval（個数・形状・dtype）が違えば、トレース時に cond-error。"
   (let ((avals (list (nb:make-aval '() :i1) (nb:make-aval '(2 3) :f32))))

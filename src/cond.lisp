@@ -56,7 +56,8 @@ CAPTURES（両枝の捕捉値の和集合）」の同じ並びの graph に直�
 
 THEN-FN / ELSE-FN は WITH-TRACING で作った TRACEABLE-FUNCTION で、OPERANDS を
 位置引数で受け取り、普通のトレース対象の関数と同じく1つの値または多値を返す。
-COND* も同じ個数の値（多値）を返す。枝の引数の個数が OPERANDS の個数と違えば COND-ERROR。
+COND* も同じ個数の値（多値）を返す。eager の結果は OPERANDS・閉包で捕まえた配列と
+EQ でありうる（README「配列の不変性」）。枝の引数の個数が OPERANDS の個数と違えば COND-ERROR。
 OPERANDS はトレーサ・実数・dtype を推論できる配列（:f32 / :f64 / :i1 / :i32 / :u32 / :u64。
 bf16 / f16 の生の配列は COND-ERROR なのでトレーサで渡す）。
 両枝は同一の入力シグネチャ（OPERANDS と、両枝の捕捉値の和集合）を持つ。両枝の出力の aval（個数・形状・dtype）は
