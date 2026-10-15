@@ -7,6 +7,9 @@
 #   scripts/colab-gpu-check.sh                 # T4 で実行
 #   scripts/colab-gpu-check.sh --gpu L4        # GPU を選ぶ（T4 / L4 / G4 / A100 / H100）
 #   scripts/colab-gpu-check.sh --keep          # 終わっても VM を止めない（調べもの用）
+#   scripts/colab-gpu-check.sh --bench         # テストの後に CUDA のベンチも測る
+#                                              # （scripts/bench-backends.sh --cuda。docs/phase2-report.md §4）
+#   scripts/colab-gpu-check.sh --bench-only    # テストと誤差の実測を飛ばし、ベンチだけ測る
 #
 # 流れ:
 #   1. git archive HEAD でこのチェックアウトを固めて、新しい Colab セッションに送る
@@ -25,6 +28,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GPU=T4
 KEEP=0
+BENCH=0
+BENCH_ONLY=0
 POLL_SECONDS=60
 MAX_WAIT_SECONDS=$((3 * 60 * 60))
 
@@ -32,7 +37,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --gpu) GPU="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --bench) BENCH=1; shift ;;
+    --bench-only) BENCH_ONLY=1; shift ;;
+    -h|--help) sed -n '2,/^set -euo/{/^set -euo/!p;}' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -129,7 +136,7 @@ import subprocess
 subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'
                 ' && find /content/nabla -name \"._*\" -delete'], check=True)
 open('/content/nabla/.nabla-commit', 'w').write('${COMMIT}\\n')
-p = subprocess.Popen(['bash', '-c', 'bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
+p = subprocess.Popen(['bash', '-c', 'NABLA_COLAB_BENCH=${BENCH} NABLA_COLAB_BENCH_ONLY=${BENCH_ONLY} bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
                      start_new_session=True)
 open('/content/nabla-run.pid', 'w').write(str(p.pid))
 print('started', p.pid)
