@@ -5,6 +5,7 @@
 #   scripts/bench-backends.sh --cuda                # iree-cuda と pjrt-cuda も（GPU が無ければ「未測定」）
 #   scripts/bench-backends.sh --configs small --steps 50 --reps 1
 #   scripts/bench-backends.sh --out bench.sexp      # 生のレコード（1行1つの S 式）の保存先
+#   scripts/bench-backends.sh --render-only --out bench.sexp  # 測らずに、保存済みのレコードから表だけ作る
 #
 # backend ごとに別の SBCL プロセスで測り（初回コストと LLVM のシグナル処理が互いに
 # 影響しないように）、レコードを --out（既定は標準エラーに出さず一時ファイル）に集めてから
@@ -18,6 +19,7 @@ export CL_SOURCE_REGISTRY="${REPO_ROOT}/:${DEPS_DIR}//:"
 
 backends="iree-local,pjrt-cpu"
 out=""
+render_only=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --cuda) backends="iree-local,pjrt-cpu,iree-cuda,pjrt-cuda" ;;
@@ -27,18 +29,24 @@ while [ $# -gt 0 ]; do
     --warmup) export NABLA_BENCH_WARMUP="$2"; shift ;;
     --reps) export NABLA_BENCH_REPS="$2"; shift ;;
     --out) out="$2"; shift ;;
+    --render-only) render_only=1 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
+if [ "$render_only" -eq 1 ] && [ -z "$out" ]; then
+  echo "--render-only には --out でレコードのファイルを渡す" >&2; exit 2
+fi
 if [ -z "$out" ]; then
   out="$(mktemp)"
   trap 'rm -f "$out"' EXIT
 fi
-: > "$out"
-
-IFS=',' read -ra list <<< "$backends"
+list=()
+if [ "$render_only" -eq 0 ]; then
+  : > "$out"
+  IFS=',' read -ra list <<< "$backends"
+fi
 for backend in "${list[@]}"; do
   echo "measuring $backend ..." >&2
   NABLA_BENCH_BACKEND="$backend" sbcl --noinform --non-interactive \

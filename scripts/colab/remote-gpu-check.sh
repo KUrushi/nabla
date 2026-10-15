@@ -11,8 +11,12 @@
 #      NABLA_REQUIRE_CUDA=1 で実行する
 #   5. local と cuda の最大誤差を実測する（measure-cross-device.lisp）
 #   6. NABLA_COLAB_BENCH=1 のとき、PJRT の CUDA プラグインを取得して
-#      scripts/bench-backends.sh --cuda（iree-local / pjrt-cpu / iree-cuda /
-#      pjrt-cuda）を測る。NABLA_COLAB_BENCH_ONLY=1 なら 3〜5 を飛ばす
+#      scripts/bench-backends.sh で GPU の backend（既定 iree-cuda と
+#      pjrt-cuda。NABLA_COLAB_BENCH_BACKENDS で変える）を1つずつ測る。
+#      NABLA_COLAB_BENCH_ONLY=1 なら 3〜5 を飛ばす。
+#      Colab では 10 分程度で終わるよう、ステップ数などを既定より減らし
+#      （NABLA_BENCH_STEPS=100 / WARMUP=10 / REPS=2）、backend ごとに
+#      NABLA_COLAB_BENCH_TIMEOUT 秒（既定 600）で打ち切る
 #
 # 結果は $NABLA_COLAB_OUT（既定 /content/nabla-out）に、手順ごとのログと
 # summary.md として残す。各手順の終了コードを summary.md に書き、
@@ -89,9 +93,24 @@ if step build-iree scripts/build-iree.sh --cuda; then
     # 探す。Colab の CUDA toolkit の場所を教える。
     export LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     step fetch-pjrt scripts/fetch-pjrt.sh --cuda
-    # 表は標準出力（bench.log）、生のレコードは bench.sexp。backend ごとの
-    # 失敗は bench-backends.sh が「未測定」（理由つき）として表に残す
-    step bench scripts/bench-backends.sh --cuda --out "${OUT}/bench.sexp"
+    export NABLA_BENCH_STEPS="${NABLA_BENCH_STEPS:-100}"
+    export NABLA_BENCH_WARMUP="${NABLA_BENCH_WARMUP:-10}"
+    export NABLA_BENCH_REPS="${NABLA_BENCH_REPS:-2}"
+    : > "${OUT}/bench.sexp"
+    IFS=',' read -ra bench_backends <<< "${NABLA_COLAB_BENCH_BACKENDS:-iree-cuda,pjrt-cuda}"
+    for b in "${bench_backends[@]}"; do
+      # backend ごとに別の手順にして、どこまで進んだかを progress.log に残す。
+      # timeout はプロセスグループごと止めるので、子の sbcl も残らない
+      step "bench-${b}" timeout --kill-after=30 "${NABLA_COLAB_BENCH_TIMEOUT:-600}" \
+        scripts/bench-backends.sh --backends "${b}" --out "${OUT}/bench-${b}.sexp"
+      if [[ ! -s "${OUT}/bench-${b}.sexp" ]] || ! grep -q ':kind :result' "${OUT}/bench-${b}.sexp"; then
+        echo "(:kind :result :backend \"${b}\" :config \"-\" :metric \"-\" :status :unmeasured :reason \"timed out or produced no records (see bench-${b}.log)\")" \
+          >> "${OUT}/bench-${b}.sexp"
+      fi
+      cat "${OUT}/bench-${b}.sexp" >> "${OUT}/bench.sexp"
+    done
+    # 表は bench.log（標準出力）。backend ごとの失敗は「未測定」（理由つき）で残る
+    step bench scripts/bench-backends.sh --render-only --out "${OUT}/bench.sexp"
   fi
 fi
 
@@ -108,7 +127,9 @@ fi
   echo '```'
   if [[ -f "${OUT}/bench.log" ]]; then
     echo
-    echo '## ベンチ（scripts/bench-backends.sh --cuda）'
+    echo '## ベンチ（scripts/bench-backends.sh）'
+    echo
+    echo "ステップ ${NABLA_BENCH_STEPS:-200}、ウォームアップ ${NABLA_BENCH_WARMUP:-20}、コンパイルの繰り返し ${NABLA_BENCH_REPS:-3}"
     echo
     # 「measuring ...」などの進み具合を除き、測定条件と表だけを残す
     sed -n '/^## 測定条件/,$p' "${OUT}/bench.log"
