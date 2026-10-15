@@ -372,7 +372,12 @@ NABLA_BENCH_WARMUP（既定 20）、NABLA_BENCH_REPS（コンパイル時間の�
               (emit-env name kind)
               (load-mlp-definitions)
               (dolist (config configs)
+                ;; 進み具合は標準エラーに出す（標準出力はレコードだけ）
+                (format *error-output* "~&[bench] ~A ~A: compile x~D~%" name config reps)
+                (finish-output *error-output*)
                 (measure-compile name config backend reps)
+                (format *error-output* "~&[bench] ~A ~A: steps ~D (+~D warmup)~%" name config steps warmup)
+                (finish-output *error-output*)
                 (measure-steps name config backend steps warmup))))
         (error (c)
           (emit (unmeasured-record name (one-line (format nil "error: ~A" c)))))))))

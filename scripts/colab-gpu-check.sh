@@ -7,8 +7,8 @@
 #   scripts/colab-gpu-check.sh                 # T4 で実行
 #   scripts/colab-gpu-check.sh --gpu L4        # GPU を選ぶ（T4 / L4 / G4 / A100 / H100）
 #   scripts/colab-gpu-check.sh --keep          # 終わっても VM を止めない（調べもの用）
-#   scripts/colab-gpu-check.sh --bench         # テストの後に CUDA のベンチも測る
-#                                              # （scripts/bench-backends.sh --cuda。docs/phase2-report.md §4）
+#   scripts/colab-gpu-check.sh --bench         # テストの後に CUDA のベンチも測る（iree-cuda / pjrt-cuda。
+#                                              # docs/phase2-report.md §4。ステップ数を減らして約10分）
 #   scripts/colab-gpu-check.sh --bench-only    # テストと誤差の実測を飛ばし、ベンチだけ測る
 #
 # 流れ:
@@ -173,11 +173,18 @@ elif alive():
 else:
     print('DIED')
     print('nabla-run.log: ' + last_line('/content/nabla-run.log'))
-print(last_line('/content/nabla-out/progress.log') or '(まだ最初の手順に入っていない)')
+progress = last_line('/content/nabla-out/progress.log')
+print(progress or '(まだ最初の手順に入っていない)')
+# 実行中の手順のログの最後の行も出す（「=== [時刻] 名前: コマンド」の名前から引く）
+if progress.startswith('=== [') and '] ' in progress:
+    name = progress.split('] ', 1)[1].split(':', 1)[0]
+    detail = last_line('/content/nabla-out/' + name + '.log')
+    if detail:
+        print('  ' + detail[:200])
 " 2>&1)"; then
     failures=0
     { date -u +%FT%TZ; echo "${status}"; } >> "${POLL_LOG}"
-    log "$(echo "${status}" | tail -n 1)"
+    log "$(echo "${status}" | sed -n '2,$p')"
     if echo "${status}" | grep -q '^DONE'; then
       break
     fi
