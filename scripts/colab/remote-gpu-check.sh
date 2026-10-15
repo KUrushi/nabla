@@ -10,6 +10,9 @@
 #   4. large テスト（tests/iree/cross-device-test.lisp ほか）を
 #      NABLA_REQUIRE_CUDA=1 で実行する
 #   5. local と cuda の最大誤差を実測する（measure-cross-device.lisp）
+#   6. NABLA_COLAB_BENCH=1 のとき、PJRT の CUDA プラグインを取得して
+#      scripts/bench-backends.sh --cuda（iree-local / pjrt-cpu / iree-cuda /
+#      pjrt-cuda）を測る。NABLA_COLAB_BENCH_ONLY=1 なら 3〜5 を飛ばす
 #
 # 結果は $NABLA_COLAB_OUT（既定 /content/nabla-out）に、手順ごとのログと
 # summary.md として残す。各手順の終了コードを summary.md に書き、
@@ -72,11 +75,24 @@ step() {
 # Python 環境（カーネルが動いている）を書き換えないよう、入れない。
 step apt bash -c 'apt-get update && apt-get install -y sbcl clang lld cmake ninja-build'
 step lisp-deps scripts/setup-lisp-deps.sh
+BENCH="${NABLA_COLAB_BENCH:-0}"
+BENCH_ONLY="${NABLA_COLAB_BENCH_ONLY:-0}"
 if step build-iree scripts/build-iree.sh --cuda; then
-  step verify-iree scripts/verify-iree.sh --cuda
-  step large-tests env NABLA_TEST_SIZES=large NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_CUDA=1 \
-    scripts/run-tests.sh
-  step measure sbcl --non-interactive --load scripts/colab/measure-cross-device.lisp
+  if [[ "${BENCH_ONLY}" != 1 ]]; then
+    step verify-iree scripts/verify-iree.sh --cuda
+    step large-tests env NABLA_TEST_SIZES=large NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_CUDA=1 \
+      scripts/run-tests.sh
+    step measure sbcl --non-interactive --load scripts/colab/measure-cross-device.lisp
+  fi
+  if [[ "${BENCH}" == 1 || "${BENCH_ONLY}" == 1 ]]; then
+    # PJRT の CUDA プラグインは CUDA のライブラリ（cuBLAS など）を実行時に
+    # 探す。Colab の CUDA toolkit の場所を教える。
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    step fetch-pjrt scripts/fetch-pjrt.sh --cuda
+    # 表は標準出力（bench.log）、生のレコードは bench.sexp。backend ごとの
+    # 失敗は bench-backends.sh が「未測定」（理由つき）として表に残す
+    step bench scripts/bench-backends.sh --cuda --out "${OUT}/bench.sexp"
+  fi
 fi
 
 {
@@ -90,6 +106,13 @@ fi
   echo '```'
   tail -n 40 "${OUT}/large-tests.log" 2>/dev/null || echo '(no log)'
   echo '```'
+  if [[ -f "${OUT}/bench.log" ]]; then
+    echo
+    echo '## ベンチ（scripts/bench-backends.sh --cuda）'
+    echo
+    # 「measuring ...」などの進み具合を除き、測定条件と表だけを残す
+    sed -n '/^## 測定条件/,$p' "${OUT}/bench.log"
+  fi
 } >> "${SUMMARY}"
 
 echo "done" > "${OUT}/DONE"
