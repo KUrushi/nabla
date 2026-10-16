@@ -76,7 +76,11 @@ remote_py() {
 # 出力は捨てる（$(...) で包まれたときに、見張りがパイプを開いたままにしないため）。
 with_timeout() {
   local secs="$1"; shift
-  "$@" &
+  # 非対話のシェルで & を付けると、標準入力の明示が無いコマンドには
+  # /dev/null がつながる。<&0 で呼び出し元の標準入力（remote_py が渡す
+  # コードのファイル）をそのまま渡す。これが無いと colab exec が空のコードを
+  # 実行し、VM 上の処理も起動しない
+  "$@" <&0 &
   local pid=$!
   ( sleep "${secs}"; pkill -TERM -P "${pid}" 2>/dev/null; kill -TERM "${pid}" 2>/dev/null ) \
     > /dev/null 2>&1 &
