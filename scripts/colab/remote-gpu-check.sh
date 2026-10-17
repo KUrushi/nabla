@@ -20,7 +20,8 @@
 #   7. NABLA_COLAB_PROFILE=1 のとき、jit した関数の呼び出し1回を段に分けて測る
 #      （issue #190、scripts/profile-call-overhead.lisp）。iree-local・iree-cuda
 #      （IREE のランタイムフラグ違いを含む）・pjrt-cuda を1つずつ別プロセスで測る。
-#      このときも 3〜5 を飛ばす
+#      このときも 3〜5 を飛ばす。NABLA_COLAB_WITH_TESTS=1 なら、ベンチや内訳を
+#      測るときも 3〜5 を飛ばさない
 #
 # 結果は $NABLA_COLAB_OUT（既定 /content/nabla-out）に、手順ごとのログと
 # summary.md として残す。各手順の終了コードを summary.md に書き、
@@ -86,8 +87,9 @@ step lisp-deps scripts/setup-lisp-deps.sh
 BENCH="${NABLA_COLAB_BENCH:-0}"
 BENCH_ONLY="${NABLA_COLAB_BENCH_ONLY:-0}"
 PROFILE="${NABLA_COLAB_PROFILE:-0}"
+WITH_TESTS="${NABLA_COLAB_WITH_TESTS:-0}"
 if step build-iree scripts/build-iree.sh --cuda; then
-  if [[ "${BENCH_ONLY}" != 1 && "${PROFILE}" != 1 ]]; then
+  if [[ "${WITH_TESTS}" == 1 || ( "${BENCH_ONLY}" != 1 && "${PROFILE}" != 1 ) ]]; then
     step verify-iree scripts/verify-iree.sh --cuda
     step large-tests env NABLA_TEST_SIZES=large NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_CUDA=1 \
       scripts/run-tests.sh

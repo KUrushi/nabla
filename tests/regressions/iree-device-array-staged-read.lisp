@@ -1,0 +1,5 @@
+(in-package #:nabla.iree.tests)
+(REGRESSION-CASE :NAME DEVICE-ARRAY/TO-HOST/STAGED-READ-MATCHES-DIRECT-READ
+                 :DATUM
+                 "((#S(NABLA.TESTS.SUPPORT::ARRAY-SPEC% :SHAPE NIL :DTYPE :F32)) 0)"
+                 :TIMESTAMP 4001204696)

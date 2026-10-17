@@ -12,6 +12,7 @@
 #   scripts/colab-gpu-check.sh --bench-only    # テストと誤差の実測を飛ばし、ベンチだけ測る
 #   scripts/colab-gpu-check.sh --profile       # テストを飛ばし、jit した関数の呼び出し1回の
 #                                              # 内訳を測る（issue #190。IREE のビルド込みで約15分）
+#   scripts/colab-gpu-check.sh --profile --with-tests  # --profile / --bench-only でもテストと誤差の実測を飛ばさない
 #
 # 流れ:
 #   1. git archive HEAD でこのチェックアウトを固めて、新しい Colab セッションに送る
@@ -33,6 +34,7 @@ KEEP=0
 BENCH=0
 BENCH_ONLY=0
 PROFILE=0
+WITH_TESTS=0
 POLL_SECONDS=60
 MAX_WAIT_SECONDS=$((3 * 60 * 60))
 
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --bench) BENCH=1; shift ;;
     --bench-only) BENCH_ONLY=1; shift ;;
     --profile) PROFILE=1; shift ;;
+    --with-tests) WITH_TESTS=1; shift ;;
     -h|--help) sed -n '2,/^set -euo/{/^set -euo/!p;}' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -144,7 +147,7 @@ import subprocess
 subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'
                 ' && find /content/nabla -name \"._*\" -delete'], check=True)
 open('/content/nabla/.nabla-commit', 'w').write('${COMMIT}\\n')
-p = subprocess.Popen(['bash', '-c', 'NABLA_COLAB_BENCH=${BENCH} NABLA_COLAB_BENCH_ONLY=${BENCH_ONLY} NABLA_COLAB_PROFILE=${PROFILE} bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
+p = subprocess.Popen(['bash', '-c', 'NABLA_COLAB_BENCH=${BENCH} NABLA_COLAB_BENCH_ONLY=${BENCH_ONLY} NABLA_COLAB_PROFILE=${PROFILE} NABLA_COLAB_WITH_TESTS=${WITH_TESTS} bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
                      start_new_session=True)
 open('/content/nabla-run.pid', 'w').write(str(p.pid))
 print('started', p.pid)
