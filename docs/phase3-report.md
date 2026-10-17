@@ -171,7 +171,7 @@ K = 8・32 の行は別の回の測定で、同じ K でも回によって 1〜2
 - **`(vmap f)` / `(grad f)` は呼ぶたびに新しい関数オブジェクト**を作り、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため）。
 - **`while-loop` の捕捉値の重複は取り除いた**（#166 の d。2026-10-04）。cond と body が同じトレーサを捕まえても、オペランド（StableHLO の while の carry）には1回だけ現れる（`cond*` と同じく、両方のサブグラフの invars を「carry、捕捉値の和集合」に揃える）。
 - **#166 にまとめた小さな積み残し**: f64 `normal` の裾（解消済み）、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe（解消済み）は上の項目のとおり。
-- **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。（追記 2026-10-10: #12 の local/cuda の数値一致は Colab の Tesla T4 で確かめた。large スイートが `NABLA_REQUIRE_CUDA=1` で通った。結果は `docs/iree-build.md` の「実測（Colab Tesla T4）」）
+- **GPU が無く未測定**: #12 と CUDA の計測（フェーズ2から引き続き）。（追記 2026-10-10: #12 の local/cuda の数値一致は Colab の Tesla T4 で確かめた。large スイートが `NABLA_REQUIRE_CUDA=1` で通った。結果は `docs/iree-build.md` の「実測（Colab Tesla T4）」）（追記 2026-10-16: CUDA のベンチも Colab の T4 で測った。docs/phase2-report.md §4.4）
 - **#73**: フェーズ1から引き続き（IREE 上流への報告。#68 の in-process コンパイラのメモリ破壊は閉じている）。最小の再現と報告の下書きは `docs/iree-upstream-bugs.md`。
 - **#165**: 上の IREE 3.11 の while のバグ2つ（§3.12 の 1 と 2）を上流へ報告し、回避策を消す時期を決める。最小の再現と報告の下書きは `docs/iree-upstream-bugs.md`、回避策を外す条件と確かめる手順は `docs/iree-build.md` の「IREE を上げたときに回避策を外せるか確かめる手順」。
 
@@ -192,4 +192,4 @@ K = 8・32 の行は別の回の測定で、同じ K でも回によって 1〜2
 - **バッチ化ルール・partial eval の拡張点**: 新しいプリミティブには `defprimitive` の `:batch` か `def-batch-rule` を書く（`src/ad/rules-batch-*.lisp`）。主値と接線を分ける特別な処理が要る高階プリミティブは `set-partial-eval-rule` を使う。
 - **`optimization_barrier` のルール**: 定数の carry を持ちうる `while` を emit するプリミティブを足すときは、定数オペランドを `%while-barrier-lines` に通す（§3.12）。
 - **per-example 勾配**（`vmap` の `in-axes` で、パラメータをバッチしない）は、PyTree のパラメータでは `in-axes` の指定が PyTree になる。
-- **CUDA の未測定**: GPU のある環境で `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh`（#12）と `scripts/bench-backends.sh --cuda` を実行する。
+- **CUDA の未測定**: GPU のある環境で `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh`（#12）と `scripts/bench-backends.sh --cuda` を実行する。（追記 2026-10-16: CUDA のベンチも Colab の T4 で測った。docs/phase2-report.md §4.4）
