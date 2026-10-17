@@ -218,12 +218,66 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 
 - **IREE の CUDA は、呼び出し1回ごとの固定費が大きい**:
   - small の `step/jitted-call` は iree-cuda が約 7.1 ms、pjrt-cuda が約 1.5 ms で、モデルの大きさにほとんど依らない（medium でも 8.4 ms と 1.6 ms）。
-  - `jitted-call` には to-device / to-host が入るので、ホストとデバイスの転送や同期、呼び出しの起動の費用と思われる。原因はまだ切り分けていない。
+  - 内訳は §4.5 で測った。ほとんどが出力の読み出し（to-host）の固定費で、1回あたり約 1.35 ms かかる。
   - large でも iree-cuda は 17.2 ms で、§4.2 の iree-local（別マシンの4コア CPU）の 21.9 ms とほとんど変わらない。
 - **XLA（PJRT）の CUDA は、large で CPU より速い**: large の `step/jitted-call` は pjrt-cuda が 2.7 ms で、§4.2 の pjrt-cpu の 5.4 ms の約半分、iree-cuda の約 1/6。
 - **large の 1 ステップは、ホスト側の SGD の更新が支配的になる**: pjrt-cuda の large では `step/full` が 7.4 ms で、そのうち jit した関数の呼び出しは 2.7 ms。残りの約 4.7 ms は、Lisp 側で行うパラメータの更新と転送。
 - **コンパイル**: iree-cuda は 1.1〜1.8 秒で、iree-local（§4.2 の 1.0〜1.6 秒）と同程度。pjrt-cuda は 0.3〜0.8 秒で、pjrt-cpu（0.14〜0.2 秒）より長い。pjrt-cuda の初期化では、プラグインの sha256 計算に 3.6 秒かかる（`.so` が約 410 MB と大きい。プロセスにつき1回だけ）。
-- 1種類の GPU、2コアのホスト、1つのモデル、既定の設定での測定。IREE の CUDA の固定費は、フラグ（非同期実行やコマンドバッファの再利用など）で変わる可能性があり、まだ調べていない。
+- 1種類の GPU、2コアのホスト、1つのモデル、既定の設定での測定。IREE のランタイムフラグを変えても固定費は変わらなかった（§4.5）。
+
+### 4.5 iree-cuda の呼び出し1回の内訳（issue #190、2026-10-17）
+
+§4.4 の固定費の内訳を、`scripts/colab-gpu-check.sh --profile`（`scripts/profile-call-overhead.lisp`）で測った。
+
+測定条件:
+
+- 同じ Colab の Tesla T4 で測った（commit `6927a9c`、2 コア、各項目 200 回）。
+- 測った段:
+  - `h2d/N`: to-device
+  - `d2h/N`: to-host
+  - `release/N`: 解放
+  - `mlp/*`: MLP の学習ステップを段に分けたもの。`invoke` は入力を送った後の呼び出しだけで、`d2h-outputs` は5つの出力（loss と勾配4つ）の読み出し
+- PJRT の execute は非同期で返りうるので、pjrt-cuda では計算を待つ時間が `d2h-outputs` に入る。
+
+中央値（ms）:
+
+| 項目 | iree-local | iree-cuda | pjrt-cuda |
+| --- | --- | --- | --- |
+| h2d/1（4 B） | 0.010 | 0.220 | 0.046 |
+| h2d/262144（1 MiB） | 0.126 | 1.722 | 0.206 |
+| d2h/1（4 B） | 0.004 | 1.343 | 0.161 |
+| d2h/4096（16 KiB） | 0.009 | 1.374 | 0.163 |
+| d2h/262144（1 MiB） | 0.245 | 1.605 | 0.655 |
+| release/1 | 0.000 | 0.087 | 0.004 |
+| small mlp/jitted-call | 0.471 | 7.747 | 1.619 |
+| small mlp/h2d-inputs | 0.069 | 0.605 | 0.300 |
+| small mlp/invoke | 0.196 | 0.280 | 0.200 |
+| small mlp/d2h-outputs | 0.054 | 6.850 | 0.824 |
+| large mlp/jitted-call | 18.665 | 18.374 | 2.641 |
+| large mlp/h2d-inputs | 0.272 | 3.910 | 0.609 |
+| large mlp/invoke | 16.795 | 3.176 | 0.521 |
+| large mlp/d2h-outputs | 0.223 | 6.905 | 1.088 |
+
+IREE のランタイムフラグを変えた3つの列（`--cuda_allow_inline_execution=true`、`--cuda_async_allocations=false`、`--cuda_use_streams=false`）は、どの項目も既定とほぼ同じだった。例外は何もしない関数の invoke で、`--cuda_async_allocations=false` だけが 1.23 ms から 0.12 ms に減った。ただし MLP の invoke は減らなかった（0.28 ms → 0.36 ms）。
+
+読み取れること:
+
+- **固定費の正体は to-host**:
+  - small の `jitted-call` 7.75 ms の内訳は、`d2h-outputs` 6.85 ms、`h2d-inputs` 0.61 ms、`invoke` 0.28 ms。to-host が約 9 割を占める。
+  - to-host は1回あたり約 1.35 ms で、4 B でも 16 KiB でも変わらない。5つの出力を1つずつ読むので、約 6.9 ms になる。
+- **原因は nabla の使い方にある**:
+  - nabla の to-host は `iree_hal_device_transfer_d2h` を出力ごとに1回呼ぶ（`src/iree/runtime.lisp` の `%buffer-view-read-into-sap`）。
+  - この関数は、デバイス上のバッファがホストから見えない（CUDA の device-local）と、次の手順を踏む（固定コミットの `runtime/src/iree/hal/buffer_transfer.c`、`iree_hal_device_submit_transfer_range_and_wait`）。
+    1. 毎回、ホスト側の作業用バッファを確保する（`HOST_LOCAL | DEVICE_VISIBLE`。CUDA ではページロックされたメモリ）
+    2. コピーのコマンドを1つ投入し、完了まで待つ
+    3. 作業用バッファを読み出してから解放する
+  - 64 KiB 以下の to-device は作業用バッファを使わない更新コマンドで済むので 0.22 ms。差の約 1.1 ms が、作業用バッファの確保・解放と待ちの分と考えられる。to-device でも 1 MiB は作業用バッファの経路に入り、1.7 ms かかる。
+  - 一方、invoke（GPU の計算の起動と完了）自体は small で 0.28 ms で、pjrt-cuda（0.20 ms）と大差ない。
+- **直し方（別の PR）**: 出力の読み出しをまとめる。
+  - デバイスごとに、ホストから見える作業用バッファを1つ確保して使い回す
+  - 全出力のコピーを1回の投入・1回の待ちで済ませる
+  - こうすれば、5回 × 1.35 ms が 1 回分程度になる見込み。to-device の 64 KiB を超える経路も同じ作業用バッファで済ませられる
+- **large の invoke は、GPU のカーネル自体が XLA より遅い**: 3.2 ms 対 0.5 ms で、固定費とは別の問題。IREE の CUDA のコード生成（cuda-arch を既定に任せている）を調べる余地がある。
 
 ## 5. 既知の制限と積み残し
 
