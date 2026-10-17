@@ -19,7 +19,8 @@
 #      NABLA_COLAB_BENCH_TIMEOUT 秒（既定 600）で打ち切る
 #   7. NABLA_COLAB_PROFILE=1 のとき、jit した関数の呼び出し1回を段に分けて測る
 #      （issue #190、scripts/profile-call-overhead.lisp）。iree-local・iree-cuda
-#      （IREE のランタイムフラグ違いを含む）・pjrt-cuda を1つずつ別プロセスで測る。
+#      （IREE の既定の sm_60 向けと、この GPU の世代向け。issue #193）・pjrt-cuda を
+#      1つずつ別プロセスで測る。
 #      このときも 3〜5 を飛ばす。NABLA_COLAB_WITH_TESTS=1 なら、ベンチや内訳を
 #      測るときも 3〜5 を飛ばさない
 #
@@ -123,21 +124,21 @@ if step build-iree scripts/build-iree.sh --cuda; then
     export LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     [[ -f "${OUT}/fetch-pjrt.log" ]] || step fetch-pjrt scripts/fetch-pjrt.sh --cuda
     : > "${OUT}/profile.sexp"
-    # 「列名|backend|IREE のランタイムフラグ」。フラグは IREE 3.11 の既定
-    # （cuda_use_streams=true、cuda_async_allocations=true、
-    # cuda_allow_inline_execution=false）から1つずつ変える
+    # 「列名|backend|IREE のランタイムフラグ|cuda-arch」。ランタイムフラグを変えても
+    # 速さは変わらなかった（docs/phase2-report.md §4.5）ので、既定のまま。
+    # cuda-arch は nvidia-smi の compute capability から作る（T4 なら sm_75。issue #193）。
+    # 空なら IREE の既定（sm_60）
+    cuda_arch="sm_$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n 1 | tr -d ' .')"
     profile_variants=(
-      "iree-local|iree-local|"
-      "iree-cuda|iree-cuda|"
-      "iree-cuda+inline|iree-cuda|--cuda_allow_inline_execution=true"
-      "iree-cuda+sync-alloc|iree-cuda|--cuda_async_allocations=false"
-      "iree-cuda+graphs|iree-cuda|--cuda_use_streams=false"
-      "pjrt-cuda|pjrt-cuda|"
+      "iree-local|iree-local||"
+      "iree-cuda|iree-cuda||"
+      "iree-cuda+${cuda_arch}|iree-cuda||${cuda_arch}"
+      "pjrt-cuda|pjrt-cuda||"
     )
     for v in "${profile_variants[@]}"; do
-      IFS='|' read -r label backend flags <<< "${v}"
+      IFS='|' read -r label backend flags arch <<< "${v}"
       step "profile-${label}" env NABLA_BENCH_BACKEND="${backend}" NABLA_PROFILE_LABEL="${label}" \
-        NABLA_PROFILE_IREE_FLAGS="${flags}" \
+        NABLA_PROFILE_IREE_FLAGS="${flags}" NABLA_PROFILE_CUDA_ARCH="${arch}" \
         timeout --kill-after=30 "${NABLA_COLAB_PROFILE_TIMEOUT:-300}" \
         sbcl --noinform --non-interactive --eval '(require :asdf)' \
         --load scripts/bench-backends.lisp --load scripts/profile-call-overhead.lisp \

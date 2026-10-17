@@ -16,6 +16,8 @@
 ;;;;   NABLA_PROFILE_IREE_FLAGS  IREE のランタイムフラグ（空白区切り。例
 ;;;;                         "--cuda_allow_inline_execution=true"）。デバイスを作る前に
 ;;;;                         iree_flags_parse に渡す
+;;;;   NABLA_PROFILE_CUDA_ARCH   iree-cuda のコンパイル先の GPU 世代（例 "sm_75"）。
+;;;;                         make-backend の :cuda-arch に渡す。空なら IREE の既定（sm_60）
 ;;;;   NABLA_PROFILE_ITERATIONS  各項目の繰り返し（既定 200）
 ;;;;   NABLA_BENCH_CONFIGS   MLP の設定（既定 small,large）
 
@@ -161,7 +163,10 @@ THUNK の値を CLEANUP に渡す（SETUP と CLEANUP は時間に入れない�
           (setf (symbol-value (find-symbol "*COMPILE-CACHE-DIRECTORY*" "NABLA")) nil)
           (when (and (eq kind :iree) (env-var "NABLA_PROFILE_IREE_FLAGS"))
             (parse-iree-flags (env-var "NABLA_PROFILE_IREE_FLAGS")))
-          (let ((backend (make-backend-for name)))
+          (let ((backend (if (and (equal name "iree-cuda") (env-var "NABLA_PROFILE_CUDA_ARCH"))
+                             (nabla-call "MAKE-BACKEND" :iree :target :cuda
+                                                        :cuda-arch (env-var "NABLA_PROFILE_CUDA_ARCH"))
+                             (make-backend-for name))))
             ;; IREE は最初の to-device でデバイスを作るので、測る前に済ませる
             (funcall (release-fn kind)
                      (nabla-call "TO-DEVICE" (make-array 1 :element-type 'single-float) backend))
