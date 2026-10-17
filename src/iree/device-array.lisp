@@ -146,6 +146,85 @@ ARRAY の要素型と DTYPE が矛盾すれば NABLA:DTYPE-MISMATCH（NABLA:ARRA
                                           (nabla:aval-byte-length aval))))
         (%wrap-buffer-view buffer-view device aval)))))
 
+(defun %ensure-staging (device byte-length)
+  "DEVICE の作業用バッファを BYTE-LENGTH バイト以上にして返す（STAGING-LOCK を
+持った状態で呼ぶ）。足りなければ、BYTE-LENGTH 以上の最小の2の冪（4 KiB 以上）で
+確保し直す。"
+  (when (< (%device-staging-size device) byte-length)
+    (let ((size (max 4096 (ash 1 (integer-length (1- byte-length))))))
+      (unless (cffi:null-pointer-p (%device-staging device))
+        (%hal-buffer-release (%device-staging device))
+        (setf (%device-staging device) (cffi:null-pointer)
+              (%device-staging-size device) 0))
+      (cffi:with-foreign-object (out-buffer :pointer)
+        (check-status
+         (%hal-allocator-allocate-buffer
+          (%hal-device-allocator (%device-pointer device))
+          (list 'usage +hal-buffer-usage-staging+
+                'access +hal-memory-access-all+
+                'type +hal-memory-type-staging+
+                'queue-affinity +hal-queue-affinity-any+
+                'min-alignment 0)
+          size out-buffer)
+         "to-host（作業用バッファの確保）")
+        (setf (%device-staging device) (cffi:mem-ref out-buffer :pointer)
+              (%device-staging-size device) size))))
+  (%device-staging device))
+
+(defun %staged-read-into-sap (device-array sap byte-length even-if-host-visible)
+  "DEVICE-ARRAY の先頭 BYTE-LENGTH バイトを、device の作業用バッファへのコピー1回と
+map_read で SAP に読む。読んだら T、この経路を使わないときは NIL を返す（device が
+release-device 済み、またはバッファがホストから見えて EVEN-IF-HOST-VISIBLE が偽）。
+
+iree_hal_device_transfer_d2h は、ホストから見えないバッファに対して呼ぶたびに
+ホスト側の作業用バッファを確保・解放する。CUDA ではこれが1回あたり約 1.35 ms の
+固定費になっていた（docs/phase2-report.md §4.5、issue #190）。作業用バッファを
+device ごとに1つ持って使い回し、その確保・解放を省く。"
+  (let ((device (device-array-device device-array))
+        (buffer (%hal-buffer-view-buffer (%device-array-pointer device-array))))
+    (sb-thread:with-mutex ((%device-staging-lock device))
+      (when (and (not (device-released-p device))
+                 (or even-if-host-visible
+                     (not (logtest +hal-memory-type-host-visible+ (%hal-buffer-memory-type buffer)))))
+        (when (plusp byte-length)
+          (let ((staging (%ensure-staging device byte-length)))
+            (check-status
+             (%hal-device-transfer-d2d
+              (%device-pointer device) buffer 0 staging 0 byte-length
+              +hal-transfer-buffer-flag-default+
+              (list 'type +timeout-absolute+ 'nanos +time-infinite-future+))
+             "to-host（作業用バッファへのコピー）")
+            (check-status (%hal-buffer-map-read staging 0 sap byte-length)
+                          "to-host（作業用バッファの読み出し）")))
+        t))))
+
+(defun %read-via-staging (device-array &key even-if-host-visible)
+  "TO-HOST と同じ配列を、作業用バッファの経路（%STAGED-READ-INTO-SAP）で読んで返す。
+local のバッファはホストから見えるので、テストは EVEN-IF-HOST-VISIBLE で
+この経路を通す。経路を使えなければ error。"
+  (%read-device-array device-array
+                      (lambda (sap byte-length)
+                        (unless (%staged-read-into-sap device-array sap byte-length
+                                                       even-if-host-visible)
+                          (error "%read-via-staging: 作業用バッファの経路を使えない: ~S"
+                                 device-array)))))
+
+(defun %read-device-array (device-array read)
+  "DEVICE-ARRAY と同じ shape・dtype の新しい配列を作り、その記憶域の SAP と
+バイト数を READ に渡して読ませてから返す（:i1 の詰め直しを含む）。"
+  (%live-device-array-pointer device-array "to-host")
+  (let* ((aval (device-array-aval device-array))
+         (array (make-array (nabla:aval-shape aval)
+                             :element-type (nabla:dtype-element-type (nabla:aval-dtype aval))))
+         (storage (if (eq (nabla:aval-dtype aval) :i1)
+                      (make-array (array-total-size array) :element-type '(unsigned-byte 8))
+                      (sb-ext:array-storage-vector array))))
+    (sb-sys:with-pinned-objects (storage)
+      (funcall read (sb-sys:vector-sap storage) (nabla:aval-byte-length aval)))
+    (when (eq (nabla:aval-dtype aval) :i1)
+      (%unpack-i1-octets storage array))
+    array))
+
 (defmethod to-host ((device-array device-array))
   "DEVICE-ARRAY の内容を、DEVICE-ARRAY の aval と同じ shape・dtype を持つ
 新しい多次元 simple-array にコピーして返す（コピーは1回。
@@ -161,22 +240,19 @@ DEVICE-ARRAY が release-device-array 済みなら IREE-OBJECT-RELEASED
 DEVICE-ARRAY 自身が生成時に retain したものなので、TO-DEVICE に渡した
 device オブジェクトを呼び出し側が release-device した後でも、この
 device-array がまだ生きている限り to-host は動き続ける（ファイル先頭の
-コメント参照）。"
-  (let* ((buffer-view (%live-device-array-pointer device-array "to-host"))
-         (aval (device-array-aval device-array))
-         (array (make-array (nabla:aval-shape aval)
-                             :element-type (nabla:dtype-element-type (nabla:aval-dtype aval))))
-         (storage (if (eq (nabla:aval-dtype aval) :i1)
-                      (make-array (array-total-size array) :element-type '(unsigned-byte 8))
-                      (sb-ext:array-storage-vector array))))
-    (sb-sys:with-pinned-objects (storage)
-      (%buffer-view-read-into-sap (%device-array-device-pointer device-array)
-                                   buffer-view
-                                   (sb-sys:vector-sap storage)
-                                   (nabla:aval-byte-length aval)))
-    (when (eq (nabla:aval-dtype aval) :i1)
-      (%unpack-i1-octets storage array))
-    array))
+コメント参照）。
+
+ホストから見えないバッファ（CUDA の device-local）は、device ごとに使い回す
+作業用バッファを経由して読む（%STAGED-READ-INTO-SAP、issue #190）。ホストから
+見えるバッファ（local）と、device が release-device 済みのときは
+iree_hal_device_transfer_d2h で直接読む。"
+  (%read-device-array
+   device-array
+   (lambda (sap byte-length)
+     (unless (%staged-read-into-sap device-array sap byte-length nil)
+       (%buffer-view-read-into-sap (%device-array-device-pointer device-array)
+                                    (%device-array-pointer device-array)
+                                    sap byte-length)))))
 
 (defun release-device-array (device-array)
   "DEVICE-ARRAY を解放する。まず tg:cancel-finalization で %wrap-buffer-view

@@ -317,6 +317,36 @@
   (flags :uint32)
   (timeout (:struct %timeout-t)))
 
+(cffi:defcfun ("iree_hal_device_transfer_d2d" %hal-device-transfer-d2d) :pointer
+  (device :pointer)
+  (source :pointer)
+  (source-offset :size)
+  (target :pointer)
+  (target-offset :size)
+  (data-length :size)
+  (flags :uint32)
+  (timeout (:struct %timeout-t)))
+
+;; 以下3つは to-host の作業用バッファ（issue #190、device-array.lisp の
+;; %READ-VIA-STAGING）に使う。allocator.h:421、buffer.h:775,898,949。
+(cffi:defcfun ("iree_hal_allocator_allocate_buffer" %hal-allocator-allocate-buffer) :pointer
+  (allocator :pointer)
+  (params (:struct %hal-buffer-params-t))
+  (allocation-size :size)
+  (out-buffer :pointer))
+
+(cffi:defcfun ("iree_hal_buffer_release" %hal-buffer-release) :void
+  (buffer :pointer))
+
+(cffi:defcfun ("iree_hal_buffer_memory_type" %hal-buffer-memory-type) :uint32
+  (buffer :pointer))
+
+(cffi:defcfun ("iree_hal_buffer_map_read" %hal-buffer-map-read) :pointer
+  (source-buffer :pointer)
+  (source-offset :size)
+  (target :pointer)
+  (data-length :size))
+
 ;; hal/buffer_view.h の enum（IREE_HAL_ENCODING_TYPE_DENSE_ROW_MAJOR = 1）。
 (defconstant +hal-encoding-type-dense-row-major+ 1)
 
@@ -341,6 +371,22 @@
 ;; IREE_HAL_MEMORY_TYPE_DEVICE_LOCAL（buffer.h:88,95）。
 (defconstant +hal-memory-type-device-local+
   (logior (ash 1 4) (ash 1 5)))
+
+;; IREE_HAL_MEMORY_TYPE_HOST_VISIBLE = 1u<<1（buffer.h:49）。
+(defconstant +hal-memory-type-host-visible+ (ash 1 1))
+
+;; IREE_HAL_MEMORY_TYPE_HOST_LOCAL = HOST_VISIBLE | HOST_COHERENT | 1u<<6
+;; （buffer.h:55,66）に DEVICE_VISIBLE（1u<<4）を足したもの。iree_hal_device_transfer_d2h
+;; が内部で毎回確保する作業用バッファと同じ型（buffer_transfer.c の
+;; iree_hal_device_submit_transfer_range_and_wait）。
+(defconstant +hal-memory-type-staging+
+  (logior (ash 1 1) (ash 1 2) (ash 1 6) (ash 1 4)))
+
+;; IREE_HAL_BUFFER_USAGE_TRANSFER（TRANSFER_SOURCE | TRANSFER_TARGET、buffer.h:219）と
+;; IREE_HAL_BUFFER_USAGE_MAPPING（MAPPING_SCOPED 1u<<24 | MAPPING_ACCESS_RANDOM 1u<<27、
+;; buffer.h:353,378,400）。
+(defconstant +hal-buffer-usage-staging+
+  (logior (ash 1 0) (ash 1 1) (ash 1 24) (ash 1 27)))
 
 ;; IREE_HAL_QUEUE_AFFINITY_ANY = (iree_hal_queue_affinity_t)(-1)、
 ;; iree_hal_queue_affinity_t は uint64_t（hal/queue.h:33,36）。

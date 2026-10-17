@@ -112,7 +112,15 @@ canonical name（\"local-task\" など）をリストで返す
    (driver :reader device-driver :initarg :driver
            :documentation ":local-task / :local-sync / :cuda のどれか（:local は make-device で :local-task に正規化される）。")
    (name :reader device-name :initarg :name
-         :documentation "device の作成に使ったドライバの canonical name（文字列）。"))
+         :documentation "device の作成に使ったドライバの canonical name（文字列）。")
+   (staging :accessor %device-staging :initform (cffi:null-pointer)
+            :documentation "to-host の作業用バッファ（iree_hal_buffer_t*、ホストから見える）。
+まだ確保していなければ null-pointer。device-array.lisp の %READ-VIA-STAGING が
+STAGING-LOCK の中で確保・使用し、release-device が device より先に解放する（issue #190）。")
+   (staging-size :accessor %device-staging-size :initform 0
+                 :documentation "STAGING のバイト数（確保していなければ 0）。")
+   (staging-lock :reader %device-staging-lock
+                 :initform (sb-thread:make-mutex :name "nabla-iree-device-staging")))
   (:documentation "iree_hal_device_t を包む。POINTER は release-device の後 null-pointer になる。"))
 
 (defun %canonical-driver (driver)
@@ -189,10 +197,17 @@ nabla.iree 側の関数名（文字列）。"
   (%device-pointer device))
 
 (defun release-device (device)
-  "DEVICE を解放する。二重解放しても何もしない（idempotent）。"
-  (unless (device-released-p device)
-    (%hal-device-release (%device-pointer device))
-    (setf (%device-pointer device) (cffi:null-pointer))))
+  "DEVICE を解放する。二重解放しても何もしない（idempotent）。to-host の作業用
+バッファがあれば先に解放する（バッファは確保元の allocator を device が所有して
+いるため。device-array と同じ理由）。"
+  (sb-thread:with-mutex ((%device-staging-lock device))
+    (unless (device-released-p device)
+      (unless (cffi:null-pointer-p (%device-staging device))
+        (%hal-buffer-release (%device-staging device))
+        (setf (%device-staging device) (cffi:null-pointer)
+              (%device-staging-size device) 0))
+      (%hal-device-release (%device-pointer device))
+      (setf (%device-pointer device) (cffi:null-pointer)))))
 
 (defstruct (allocator-statistics
             (:constructor %make-allocator-statistics

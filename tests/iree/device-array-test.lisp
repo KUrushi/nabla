@@ -127,3 +127,93 @@ to-host はまだ正しい値を返し、release-device-array もクラッシュ
       ;; このテストランの間ずっとリークする）。
       (release-device-array y))
     (is (device-array-released-p y))))
+
+(define-iree-test device-array/to-host/staged-read-matches-direct-read
+    "ホストから見えないバッファ（CUDA の device-local）の to-host は、デバイスごとに
+1つの作業用バッファを使い回して読む（issue #190）。local のバッファはホストから
+見えるのでこの経路を通らないため、内部の %READ-VIA-STAGING を
+:EVEN-IF-HOST-VISIBLE で直接呼んで確かめる（cuda での実際の経路は
+device-array/to-host/cuda-round-trips-through-staging）。同じ device で大きさの
+違う配列を続けて読み（作業用バッファが伸びる・使い回される両方を通す）、どれも
+to-host と同じ値（equalp）になる。"
+  (skip-unless-iree :library :runtime)
+  (with-device (device :local-task)
+    (is (check-it (generator (tuple (list (array-spec :dtypes '(:f32 :bf16 :f64 :i1 :i32)))
+                                     (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                  (lambda (specs-and-seed)
+                    (destructuring-bind (specs seed) specs-and-seed
+                      (every (lambda (spec)
+                               (let ((x (make-random-array spec :seed seed)))
+                                 (with-device-arrays ((y (to-device x device :dtype (array-spec-dtype spec))))
+                                   (equalp (nabla.iree::%read-via-staging y :even-if-host-visible t)
+                                           (to-host y)))))
+                             specs)))
+                  :regression-id device-array/to-host/staged-read-matches-direct-read
+                  :regression-file (regression-path "iree-device-array-staged-read" :package "NABLA.IREE.TESTS")))))
+
+(define-iree-test device-array/to-host/staged-read-survives-release-device
+    "作業用バッファで読んだ後に release-device しても、まだ生きている device-array は
+to-host で同じ値を返し、その後の release-device-array も落ちない（作業用バッファは
+release-device が device より先に解放する。issue #190）。"
+  (skip-unless-iree :library :runtime)
+  (let* ((device (make-device :local-task))
+         (x (make-random-array (make-array-spec '(3 5) :f32) :seed 7))
+         (y (to-device x device)))
+    (unwind-protect
+         (let ((staged (nabla.iree::%read-via-staging y :even-if-host-visible t)))
+           (release-device device)
+           (is (equalp staged x))
+           (is (equalp (to-host y) x)))
+      (release-device-array y)
+      (release-device device))))
+
+(define-iree-test/large device-array/to-host/cuda-round-trips-through-staging
+    "cuda では to-host が作業用バッファの経路を通り（issue #190）、大きさや dtype の
+違う配列を同じ device で続けて読んでも、to-device した値がそのまま戻る（equalp）。"
+  (skip-unless-iree :library :runtime)
+  (skip-unless-cuda)
+  (with-device (device :cuda)
+    (is (check-it (generator (tuple (list (array-spec :dtypes '(:f32 :bf16 :f64 :i1 :i32)))
+                                     (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                  (lambda (specs-and-seed)
+                    (destructuring-bind (specs seed) specs-and-seed
+                      (every (lambda (spec)
+                               (let ((x (make-random-array spec :seed seed)))
+                                 (with-device-arrays ((y (to-device x device :dtype (array-spec-dtype spec))))
+                                   (equalp (to-host y) x))))
+                             specs)))
+                  :regression-id device-array/to-host/cuda-round-trips-through-staging
+                  :regression-file (regression-path "iree-device-array-cuda-staged" :package "NABLA.IREE.TESTS")))
+    (is (plusp (nabla.iree::%device-staging-size device)))))
+
+(defun %live-allocator-bytes (device)
+  "DEVICE の allocator が確保して、まだ解放していないバイト数（host と device の合計）。"
+  (let ((s (device-allocator-statistics device)))
+    (+ (- (allocator-statistics-host-bytes-allocated s) (allocator-statistics-host-bytes-freed s))
+       (- (allocator-statistics-device-bytes-allocated s) (allocator-statistics-device-bytes-freed s)))))
+
+(define-iree-test device-array/to-host/staging-buffer-is-reused-not-leaked
+    "作業用バッファは device ごとに1つだけ持つ（issue #190）。大きさの違う配列を
+続けて作業用バッファの経路で読み、device-array をすべて解放した後に残る確保は
+作業用バッファ1つ分だけで、その大きさは読んだ最大のバイト数以上、その2倍未満
+（ただし 4 KiB 以上）に収まる（伸ばすたびに古いバッファを解放し、
+必要以上に大きく取らない）。"
+  (skip-unless-iree :library :runtime)
+  (is (check-it (generator (list (array-spec :dtypes '(:f32 :f64 :i32)) :min-length 1))
+                (lambda (specs)
+                  (with-device (device :local-sync)
+                    (let ((baseline (%live-allocator-bytes device)))
+                      (dolist (spec specs)
+                        (with-device-arrays ((y (to-device (make-random-array spec) device
+                                                           :dtype (array-spec-dtype spec))))
+                          (nabla.iree::%read-via-staging y :even-if-host-visible t)))
+                      (let ((live (- (%live-allocator-bytes device) baseline))
+                            (largest (reduce #'max specs
+                                             :key (lambda (spec)
+                                                    (nabla:aval-byte-length
+                                                     (nabla:make-aval (array-spec-shape spec)
+                                                                      (array-spec-dtype spec)))))))
+                        (and (<= largest live)
+                             (<= live (max 4096 (1- (* 2 largest)))))))))
+                :regression-id device-array/to-host/staging-buffer-is-reused-not-leaked
+                :regression-file (regression-path "iree-device-array-staging-reuse" :package "NABLA.IREE.TESTS"))))

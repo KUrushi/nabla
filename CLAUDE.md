@@ -39,7 +39,7 @@ NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/ru
 # （このクラウド環境からは Colab に接続できない）。詳細は docs/iree-build.md
 scripts/colab-gpu-check.sh --gpu T4
 scripts/colab-gpu-check.sh --bench-only   # CUDA のベンチ（bench-backends.sh --cuda）だけを Colab で測る。--bench でテストの後に測る
-scripts/colab-gpu-check.sh --profile      # jit した関数の呼び出し1回の内訳（to-device / invoke / to-host）を測る（issue #190、scripts/profile-call-overhead.lisp）
+scripts/colab-gpu-check.sh --profile      # jit した関数の呼び出し1回の内訳（to-device / invoke / to-host）を測る（issue #190、scripts/profile-call-overhead.lisp）。--with-tests でテストも
 
 # PJRT プラグイン（CPU。--cuda で CUDA も）を third_party/pjrt.lock の wheel から
 # 取得・sha256 検査・展開する。インストール先は NABLA_PJRT_HOME（既定
@@ -127,7 +127,7 @@ GPU を使う large テストは CI では動かさない。
 - PyTree† として既定で扱うのは、リスト・ベクタ・`defmodule` で定義した構造体だけ。plist / alist / ハッシュ表は明示的に登録する
 - bf16 / f16† は `(unsigned-byte 16)` の配列で持ち、`aval` の dtype タグで区別する
 - IREE の C API は版によって関数名が変わる。関数名は記憶や設計書から書かず、固定コミットのヘッダ（`iree/runtime/api.h`、`iree/compiler/embedding_api.h`）から写す
-- デバイス上のバッファは `device-array` で包む。`device-array` は生成時に自分のデバイス（`iree_hal_device_t`）を retain し、解放時に buffer view → device の順で release する（IREE の heap buffer が確保元 allocator の統計ブロックへの生ポインタを持ち、その allocator を device が所有しているため。device を先に解放すると use-after-free になる）。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）。この解放は `trivial-garbage:finalize` で自動化されており（`device-array` 生成時に登録）、明示的な `release-device-array` は `tg:cancel-finalization` で finalizer を先に取り消してから自分で解放するので、二重解放にはならない。SBCL は finalizer を別スレッド（finalizer thread）で非同期に実行するため、テストで確認するときは `gc-and-run-finalizers`（`tests/iree/support.lisp`）のように GC の後で明示的に保留中の finalizer を実行させる
+- デバイス上のバッファは `device-array` で包む。`device-array` は生成時に自分のデバイス（`iree_hal_device_t`）を retain し、解放時に buffer view → device の順で release する（IREE の heap buffer が確保元 allocator の統計ブロックへの生ポインタを持ち、その allocator を device が所有しているため。device を先に解放すると use-after-free になる）。finalizer† はポインタだけを捕まえる（オブジェクト本体を捕まえると、いつまでも GC に回収されない）。この解放は `trivial-garbage:finalize` で自動化されており（`device-array` 生成時に登録）、明示的な `release-device-array` は `tg:cancel-finalization` で finalizer を先に取り消してから自分で解放するので、二重解放にはならない。SBCL は finalizer を別スレッド（finalizer thread）で非同期に実行するため、テストで確認するときは `gc-and-run-finalizers`（`tests/iree/support.lisp`）のように GC の後で明示的に保留中の finalizer を実行させる。ホストから見えないバッファ（CUDA の device-local）の to-host は、device ごとに1つ持つ作業用バッファ（ホストから見える。`%read-via-staging`、`src/iree/device-array.lisp`）へのコピーと map_read で読む（`iree_hal_device_transfer_d2h` は呼ぶたびに作業用バッファを確保・解放し、T4 で1回約 1.35 ms かかっていた。issue #190）。作業用バッファは `release-device` が device より先に解放する
 - 自動微分のルールは `src/primitives/*` ではなく `src/ad/rules-*.lisp` に `def-jvp-rule` / `def-transpose-rule` で書く（プリミティブ定義との衝突を避ける。vmap のバッチ化ルールも同じ配置）。jvp ルールは接線を、その被演算子について線形なプリミティブにしか流さない（接線同士の積や、接線への exp / log などは禁止。transpose が各ルールの局所的な転置で済むため）
 - ゼロの接線・余接線は配列ではなく symbolic zero† で表す。`:i1` など非 float の接線は変換の中では常に symbolic zero で、出力では全 false の配列に実体化する（`jvp-graph` の既定は float の invar だけが非ゼロ。非 float に接線を渡すと `autodiff-error`）。`jvp-graph` の中では DCE（不要な eqn の削除）しない（主値と接線が混ざった出力の使い道が分からなくなるため）。DCE は `linearize` が接線部分にかける
 - `grad` は f を aval で新しいトレースにトレースし、`inline-graph` で外側へ展開する（`src/ad/grad.lisp`）。f が外側のトレーサを閉包で捕まえると `tracing-error` になる（既知の制限）
