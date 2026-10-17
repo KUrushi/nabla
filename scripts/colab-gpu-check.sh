@@ -10,6 +10,8 @@
 #   scripts/colab-gpu-check.sh --bench         # テストの後に CUDA のベンチも測る（iree-cuda / pjrt-cuda。
 #                                              # docs/phase2-report.md §4。ステップ数を減らして約10分）
 #   scripts/colab-gpu-check.sh --bench-only    # テストと誤差の実測を飛ばし、ベンチだけ測る
+#   scripts/colab-gpu-check.sh --profile       # テストを飛ばし、jit した関数の呼び出し1回の
+#                                              # 内訳を測る（issue #190。IREE のビルド込みで約15分）
 #
 # 流れ:
 #   1. git archive HEAD でこのチェックアウトを固めて、新しい Colab セッションに送る
@@ -30,6 +32,7 @@ GPU=T4
 KEEP=0
 BENCH=0
 BENCH_ONLY=0
+PROFILE=0
 POLL_SECONDS=60
 MAX_WAIT_SECONDS=$((3 * 60 * 60))
 
@@ -39,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --keep) KEEP=1; shift ;;
     --bench) BENCH=1; shift ;;
     --bench-only) BENCH_ONLY=1; shift ;;
+    --profile) PROFILE=1; shift ;;
     -h|--help) sed -n '2,/^set -euo/{/^set -euo/!p;}' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -109,7 +113,7 @@ cleanup() {
 # VM に送るのはコミット済みの HEAD だけ。HEAD に必要なファイルが無いと、
 # VM 側の処理が起動直後に失敗する（未コミットのファイルは送られない）。
 for f in scripts/colab/remote-gpu-check.sh scripts/colab/measure-cross-device.lisp \
-         tests/iree/cross-device-test.lisp; do
+         tests/iree/cross-device-test.lisp scripts/profile-call-overhead.lisp; do
   if ! git -C "${REPO_ROOT}" cat-file -e "HEAD:${f}" 2>/dev/null; then
     echo "HEAD（$(git -C "${REPO_ROOT}" rev-parse --short HEAD)）に ${f} が無い。" >&2
     echo "このスクリプトを含むブランチ（claude/hopeful-fermi-11e9mw）をチェックアウトしてから実行する" >&2
@@ -140,7 +144,7 @@ import subprocess
 subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'
                 ' && find /content/nabla -name \"._*\" -delete'], check=True)
 open('/content/nabla/.nabla-commit', 'w').write('${COMMIT}\\n')
-p = subprocess.Popen(['bash', '-c', 'NABLA_COLAB_BENCH=${BENCH} NABLA_COLAB_BENCH_ONLY=${BENCH_ONLY} bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
+p = subprocess.Popen(['bash', '-c', 'NABLA_COLAB_BENCH=${BENCH} NABLA_COLAB_BENCH_ONLY=${BENCH_ONLY} NABLA_COLAB_PROFILE=${PROFILE} bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
                      start_new_session=True)
 open('/content/nabla-run.pid', 'w').write(str(p.pid))
 print('started', p.pid)

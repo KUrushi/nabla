@@ -17,6 +17,10 @@
 #      Colab では 10 分程度で終わるよう、ステップ数などを既定より減らし
 #      （NABLA_BENCH_STEPS=100 / WARMUP=10 / REPS=2）、backend ごとに
 #      NABLA_COLAB_BENCH_TIMEOUT 秒（既定 600）で打ち切る
+#   7. NABLA_COLAB_PROFILE=1 のとき、jit した関数の呼び出し1回を段に分けて測る
+#      （issue #190、scripts/profile-call-overhead.lisp）。iree-local・iree-cuda
+#      （IREE のランタイムフラグ違いを含む）・pjrt-cuda を1つずつ別プロセスで測る。
+#      このときも 3〜5 を飛ばす
 #
 # 結果は $NABLA_COLAB_OUT（既定 /content/nabla-out）に、手順ごとのログと
 # summary.md として残す。各手順の終了コードを summary.md に書き、
@@ -81,8 +85,9 @@ step apt bash -c 'apt-get update && apt-get install -y sbcl clang lld cmake ninj
 step lisp-deps scripts/setup-lisp-deps.sh
 BENCH="${NABLA_COLAB_BENCH:-0}"
 BENCH_ONLY="${NABLA_COLAB_BENCH_ONLY:-0}"
+PROFILE="${NABLA_COLAB_PROFILE:-0}"
 if step build-iree scripts/build-iree.sh --cuda; then
-  if [[ "${BENCH_ONLY}" != 1 ]]; then
+  if [[ "${BENCH_ONLY}" != 1 && "${PROFILE}" != 1 ]]; then
     step verify-iree scripts/verify-iree.sh --cuda
     step large-tests env NABLA_TEST_SIZES=large NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_CUDA=1 \
       scripts/run-tests.sh
@@ -112,6 +117,39 @@ if step build-iree scripts/build-iree.sh --cuda; then
     # 表は bench.log（標準出力）。backend ごとの失敗は「未測定」（理由つき）で残る
     step bench scripts/bench-backends.sh --render-only --out "${OUT}/bench.sexp"
   fi
+  if [[ "${PROFILE}" == 1 ]]; then
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    [[ -f "${OUT}/fetch-pjrt.log" ]] || step fetch-pjrt scripts/fetch-pjrt.sh --cuda
+    : > "${OUT}/profile.sexp"
+    # 「列名|backend|IREE のランタイムフラグ」。フラグは IREE 3.11 の既定
+    # （cuda_use_streams=true、cuda_async_allocations=true、
+    # cuda_allow_inline_execution=false）から1つずつ変える
+    profile_variants=(
+      "iree-local|iree-local|"
+      "iree-cuda|iree-cuda|"
+      "iree-cuda+inline|iree-cuda|--cuda_allow_inline_execution=true"
+      "iree-cuda+sync-alloc|iree-cuda|--cuda_async_allocations=false"
+      "iree-cuda+graphs|iree-cuda|--cuda_use_streams=false"
+      "pjrt-cuda|pjrt-cuda|"
+    )
+    for v in "${profile_variants[@]}"; do
+      IFS='|' read -r label backend flags <<< "${v}"
+      step "profile-${label}" env NABLA_BENCH_BACKEND="${backend}" NABLA_PROFILE_LABEL="${label}" \
+        NABLA_PROFILE_IREE_FLAGS="${flags}" \
+        timeout --kill-after=30 "${NABLA_COLAB_PROFILE_TIMEOUT:-300}" \
+        sbcl --noinform --non-interactive --eval '(require :asdf)' \
+        --load scripts/bench-backends.lisp --load scripts/profile-call-overhead.lisp \
+        --eval '(nabla-bench::profile-main)'
+      # 標準出力（レコード）と標準エラー（進み具合）は同じログに混ざるので、レコードの行だけを拾う
+      if grep -q '^(:KIND :RESULT' "${OUT}/profile-${label}.log"; then
+        grep '^(:KIND' "${OUT}/profile-${label}.log" >> "${OUT}/profile.sexp"
+      else
+        echo "(:kind :result :backend \"${label}\" :config \"-\" :metric \"-\" :status :unmeasured :reason \"timed out or produced no records (see profile-${label}.log)\")" \
+          >> "${OUT}/profile.sexp"
+      fi
+    done
+    step profile scripts/bench-backends.sh --render-only --out "${OUT}/profile.sexp"
+  fi
 fi
 
 {
@@ -133,6 +171,16 @@ fi
     echo
     # 「measuring ...」などの進み具合を除き、測定条件と表だけを残す
     sed -n '/^## 測定条件/,$p' "${OUT}/bench.log"
+  fi
+  if [[ -f "${OUT}/profile.log" ]]; then
+    echo
+    echo '## 呼び出し1回の内訳（scripts/profile-call-overhead.lisp、issue #190）'
+    echo
+    echo "各項目 ${NABLA_PROFILE_ITERATIONS:-200} 回"
+    echo
+    sed -n '/^## 測定条件/,$p' "${OUT}/profile.log"
+    # 表では「未測定」としか出ないので、理由を残す
+    grep -i ':status :unmeasured' "${OUT}/profile.sexp" | sed 's/^/    /' || true
   fi
 } >> "${SUMMARY}"
 

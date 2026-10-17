@@ -39,6 +39,7 @@ NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/ru
 # （このクラウド環境からは Colab に接続できない）。詳細は docs/iree-build.md
 scripts/colab-gpu-check.sh --gpu T4
 scripts/colab-gpu-check.sh --bench-only   # CUDA のベンチ（bench-backends.sh --cuda）だけを Colab で測る。--bench でテストの後に測る
+scripts/colab-gpu-check.sh --profile      # jit した関数の呼び出し1回の内訳（to-device / invoke / to-host）を測る（issue #190、scripts/profile-call-overhead.lisp）
 
 # PJRT プラグイン（CPU。--cuda で CUDA も）を third_party/pjrt.lock の wheel から
 # 取得・sha256 検査・展開する。インストール先は NABLA_PJRT_HOME（既定
