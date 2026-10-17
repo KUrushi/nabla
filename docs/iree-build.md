@@ -572,7 +572,7 @@ Fail 0。cross-device の6テスト、`runtime/make-device/cuda-creates-and-rele
 `scan/iree-ys-write-cost-is-linear-in-length` を含む）。`NABLA_REQUIRE_CUDA`
 を立てているので、cuda が使えなければスキップではなく失敗になる。
 `verify-iree.sh --cuda`（`iree-run-module` で matmul を cuda で実行）も通った。
-CUDA でのベンチ（`scripts/bench-backends.sh --cuda`）はまだ測っていない。
+CUDA でのベンチは 2026-10-16 に同じ Colab の T4 で測った（`docs/phase2-report.md` §4.4）。
 
 ## Lisp からの呼び出し（issue #6）
 

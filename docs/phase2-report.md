@@ -144,13 +144,94 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 - **学習ステップは小さいモデルでは同程度、大きいと XLA が速い**: small / medium では `step/full` が IREE 0.5 / 1.8 ms、PJRT 0.26 / 1.7 ms でほぼ同じ（to-device / to-host と SGD の更新といったホスト側の仕事が効く）。large（N1024 H512）では IREE 約 27 ms、PJRT 約 11 ms と XLA が約 2.4 倍速い。IREE の `llvm-cpu` のスレッド・タイリングの設定は既定のまま（nabla は何も設定していない）なので、調整で縮まる可能性はあるが、今回は調べていない。
 - **「どちらが優れている」とは言えない**: 1台の共有マシン、1つのモデル、既定の設定での比較。結論を出すには、コンパイルフラグ（IREE の `--iree-opt-level` など）とスレッド設定を揃えた測り直しが要る。
 
+### 4.4 CUDA（Colab Tesla T4、2026-10-16 に追記）
+
+フェーズ2の時点では GPU が無く、CUDA は未測定だった。2026-10-16 に、Colab の Tesla T4 で `scripts/colab-gpu-check.sh --bench-only` を実行して測った。
+
+測定条件:
+
+- GPU は Tesla T4（sm_75、ドライバ 580.82.07、CUDA 13.0）。ホストは Intel Xeon @ 2.00GHz の 2 コア、SBCL 2.2.9。
+- iree-cuda: IREE は `third_party/iree.lock` の commit（`e4a3b04`）。コンパイラは PyPI ホイール、ランタイムは `scripts/build-iree.sh --cuda` で作った。cuda-arch は IREE の既定に任せた。
+- pjrt-cuda: プラグインは jax-cuda13-pjrt 0.11.2（PJRT API 0.115、`scripts/fetch-pjrt.sh --cuda`）。
+- **§4.1 と設定が違う**:
+  - Colab の VM の寿命に収めるため、ステップ 100 回・ウォームアップ 10 回・コンパイルの繰り返し 2 回（`scripts/colab/remote-gpu-check.sh` の既定）に減らした。
+  - コンパイルの各段は n = 2 なので、「[p10-p90]」は実質的に2回の最小と最大になる。
+  - ディスクキャッシュは無効。
+  - 同じ VM では CPU の backend を測っていない。§4.2 の CPU の数値は別のマシン（4 コア）のもので、単純には比べられない。
+
+#### 初期化（プロセスにつき1回。ms）
+
+| 項目 | iree-cuda | pjrt-cuda |
+| --- | --- | --- |
+| init/compiler-load | 19.874 | - |
+| init/device-create | 343.621 | - |
+| init/plugin-load | - | 30.369 |
+| init/client-create | - | 275.594 |
+| init/plugin-sha256 | - | 3580.189 |
+
+#### small（ms。n > 1 は 中央値 [p10-p90]）
+
+| 項目 | iree-cuda | pjrt-cuda |
+| --- | --- | --- |
+| size/stablehlo-text | 4901 chars | 4901 chars |
+| size/compiled | 45020 bytes | 16046 bytes |
+| stage/trace | 12.040 [2.754-21.327] | 4.605 [1.272-7.937] |
+| stage/emit-stablehlo | 0.370 [0.306-0.434] | 0.332 [0.292-0.373] |
+| stage/backend-compile | 1112.371 [1066.667-1158.075] | 843.927 [394.788-1293.066] |
+| stage/backend-load | 77.011 [16.036-137.985] | 7.659 [5.448-9.870] |
+| jit/first-call | 1059.008 [1051.426-1066.591] | 244.104 [240.410-247.798] |
+| jit/second-call | 7.243 [7.237-7.250] | 1.589 [1.504-1.674] |
+| step/full | 7.053 [6.960-7.484] | 1.476 [1.382-1.586] |
+| step/jitted-call | 7.059 [6.941-7.368] | 1.467 [1.387-1.579] |
+
+#### medium（ms。n > 1 は 中央値 [p10-p90]）
+
+| 項目 | iree-cuda | pjrt-cuda |
+| --- | --- | --- |
+| size/stablehlo-text | 5069 chars | 5069 chars |
+| size/compiled | 151520 bytes | 17458 bytes |
+| stage/trace | 0.479 [0.425-0.532] | 0.511 [0.435-0.587] |
+| stage/emit-stablehlo | 0.404 [0.395-0.412] | 0.405 [0.399-0.411] |
+| stage/backend-compile | 1558.050 [1531.179-1584.920] | 322.819 [228.757-416.880] |
+| stage/backend-load | 132.777 [27.421-238.133] | 4.848 [4.845-4.852] |
+| jit/first-call | 1617.400 [1543.029-1691.771] | 217.362 [216.494-218.230] |
+| jit/second-call | 8.305 [8.275-8.334] | 1.764 [1.738-1.791] |
+| step/full | 8.759 [8.536-9.152] | 2.037 [1.937-2.185] |
+| step/jitted-call | 8.356 [8.228-8.576] | 1.639 [1.561-1.768] |
+
+#### large（ms。n > 1 は 中央値 [p10-p90]）
+
+| 項目 | iree-cuda | pjrt-cuda |
+| --- | --- | --- |
+| size/stablehlo-text | 5129 chars | 5129 chars |
+| size/compiled | 168936 bytes | 18617 bytes |
+| stage/trace | 0.467 [0.451-0.483] | 0.412 [0.406-0.418] |
+| stage/emit-stablehlo | 0.347 [0.340-0.353] | 0.373 [0.358-0.388] |
+| stage/backend-compile | 1820.807 [1817.221-1824.394] | 368.264 [280.912-455.615] |
+| stage/backend-load | 131.499 [27.213-235.784] | 5.186 [5.023-5.348] |
+| jit/first-call | 1697.707 [1641.785-1753.629] | 268.154 [267.313-268.995] |
+| jit/second-call | 18.626 [18.386-18.866] | 2.887 [2.802-2.971] |
+| step/full | 22.747 [22.207-24.739] | 7.405 [7.016-8.239] |
+| step/jitted-call | 17.211 [16.524-18.591] | 2.691 [2.560-2.852] |
+
+読み取れること:
+
+- **IREE の CUDA は、呼び出し1回ごとの固定費が大きい**:
+  - small の `step/jitted-call` は iree-cuda が約 7.1 ms、pjrt-cuda が約 1.5 ms で、モデルの大きさにほとんど依らない（medium でも 8.4 ms と 1.6 ms）。
+  - `jitted-call` には to-device / to-host が入るので、ホストとデバイスの転送や同期、呼び出しの起動の費用と思われる。原因はまだ切り分けていない。
+  - large でも iree-cuda は 17.2 ms で、§4.2 の iree-local（別マシンの4コア CPU）の 21.9 ms とほとんど変わらない。
+- **XLA（PJRT）の CUDA は、large で CPU より速い**: large の `step/jitted-call` は pjrt-cuda が 2.7 ms で、§4.2 の pjrt-cpu の 5.4 ms の約半分、iree-cuda の約 1/6。
+- **large の 1 ステップは、ホスト側の SGD の更新が支配的になる**: pjrt-cuda の large では `step/full` が 7.4 ms で、そのうち jit した関数の呼び出しは 2.7 ms。残りの約 4.7 ms は、Lisp 側で行うパラメータの更新と転送。
+- **コンパイル**: iree-cuda は 1.1〜1.8 秒で、iree-local（§4.2 の 1.0〜1.6 秒）と同程度。pjrt-cuda は 0.3〜0.8 秒で、pjrt-cpu（0.14〜0.2 秒）より長い。pjrt-cuda の初期化では、プラグインの sha256 計算に 3.6 秒かかる（`.so` が約 410 MB と大きい。プロセスにつき1回だけ）。
+- 1種類の GPU、2コアのホスト、1つのモデル、既定の設定での測定。IREE の CUDA の固定費は、フラグ（非同期実行やコマンドバッファの再利用など）で変わる可能性があり、まだ調べていない。
+
 ## 5. 既知の制限と積み残し
 
 - **`pjrt-module` の finalizer はフェーズ2の後に追加した**（#120）: 報告書の計測時点では `backend-unload` を呼ばないと PJRT の実行体が解放されなかった。現在は GC でも解放される（明示的な `backend-unload` との二重解放は起きない）。
 - **argnums がリストの勾配は jit の出力にできない**: 勾配のリストは jit の出力（フラットな多値）にならないので、`examples/mlp.lisp` のように多値に直す。
 - **`grad` は jitted-function の `:backend` を無視する**: `grad` が jit した関数をトレース中に呼ぶと、その関数は展開されるだけで `:backend` は見られない（外側の `jit` の backend が使われる）。
 - ~~**PJRT で `:i1` は未対応**（`unsupported-dtype`）~~ → #166 (b) で対応した。複数デバイス・replica、CUDA プラグインでの動作は未検証。
-- **GPU が無く未測定**: #12（local/cuda の数値一致）と、§4 の CUDA の計測。GPU のある環境で `scripts/bench-backends.sh --cuda` と `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh` を実行する。（追記 2026-10-10: #12 の local/cuda の数値一致は Colab の Tesla T4 で確かめた。large スイートが `NABLA_REQUIRE_CUDA=1` で通った。結果は `docs/iree-build.md` の「実測（Colab Tesla T4）」）
+- **GPU が無く未測定**: #12（local/cuda の数値一致）と、§4 の CUDA の計測。（追記 2026-10-16: どちらも Colab の Tesla T4 で測った。#12 は `docs/iree-build.md`、CUDA のベンチは §4.4）GPU のある環境で `scripts/bench-backends.sh --cuda` と `NABLA_TEST_SIZES=large NABLA_REQUIRE_CUDA=1 scripts/run-tests.sh` を実行する。（追記 2026-10-10: #12 の local/cuda の数値一致は Colab の Tesla T4 で確かめた。large スイートが `NABLA_REQUIRE_CUDA=1` で通った。結果は `docs/iree-build.md` の「実測（Colab Tesla T4）」）
 - **計測のノイズ**: §4.1 のとおり共有マシンでの1回の測定。フラグ・スレッド数を揃えた比較や、定期的な計測は積み残し。
 - **SBCL の GC ロック餓死**: 別スレッドが sleep 無しの tight loop で `(gc :full t)` を回すと main スレッドが進まない（§3.2）。対策は子プロセステストの GC 間の sleep だけで、`src/ffi-support/signals.lisp` のリスク3は残っている。
 - **#68 / #73**: フェーズ1から引き続き（in-process コンパイラのメモリ破壊の根本原因、IREE 上流への報告）。
