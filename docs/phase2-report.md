@@ -218,7 +218,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積んであ�
 
 - **IREE の CUDA は、呼び出し1回ごとの固定費が大きい**:
   - small の `step/jitted-call` は iree-cuda が約 7.1 ms、pjrt-cuda が約 1.5 ms で、モデルの大きさにほとんど依らない（medium でも 8.4 ms と 1.6 ms）。
-  - 内訳は §4.5 で測った。ほとんどが出力の読み出し（to-host）の固定費で、1回あたり約 1.35 ms かかる。
+  - 内訳は §4.5 で測った。ほとんどが出力の読み出し（to-host）の固定費で、1回あたり約 1.35 ms かかっていた。作業用バッファを使い回すように直し、small の呼び出しは約 1.15 ms になった（§4.5）。
   - large でも iree-cuda は 17.2 ms で、§4.2 の iree-local（別マシンの4コア CPU）の 21.9 ms とほとんど変わらない。
 - **XLA（PJRT）の CUDA は、large で CPU より速い**: large の `step/jitted-call` は pjrt-cuda が 2.7 ms で、§4.2 の pjrt-cpu の 5.4 ms の約半分、iree-cuda の約 1/6。
 - **large の 1 ステップは、ホスト側の SGD の更新が支配的になる**: pjrt-cuda の large では `step/full` が 7.4 ms で、そのうち jit した関数の呼び出しは 2.7 ms。残りの約 4.7 ms は、Lisp 側で行うパラメータの更新と転送。
@@ -273,11 +273,28 @@ IREE のランタイムフラグを変えた3つの列（`--cuda_allow_inline_ex
     3. 作業用バッファを読み出してから解放する
   - 64 KiB 以下の to-device は作業用バッファを使わない更新コマンドで済むので 0.22 ms。差の約 1.1 ms が、作業用バッファの確保・解放と待ちの分と考えられる。to-device でも 1 MiB は作業用バッファの経路に入り、1.7 ms かかる。
   - 一方、invoke（GPU の計算の起動と完了）自体は small で 0.28 ms で、pjrt-cuda（0.20 ms）と大差ない。
-- **直し方（別の PR）**: 出力の読み出しをまとめる。
-  - デバイスごとに、ホストから見える作業用バッファを1つ確保して使い回す
-  - 全出力のコピーを1回の投入・1回の待ちで済ませる
-  - こうすれば、5回 × 1.35 ms が 1 回分程度になる見込み。to-device の 64 KiB を超える経路も同じ作業用バッファで済ませられる
 - **large の invoke は、GPU のカーネル自体が XLA より遅い**: 3.2 ms 対 0.5 ms で、固定費とは別の問題。IREE の CUDA のコード生成（cuda-arch を既定に任せている）を調べる余地がある。
+
+#### 作業用バッファを使い回した後（2026-10-17）
+
+to-host を直した。device ごとにホストから見える作業用バッファを1つ持ち、`iree_hal_device_transfer_d2d` でそこへコピーしてから `iree_hal_buffer_map_read` で読む（`%read-via-staging`、`src/iree/device-array.lisp`）。直した後の commit `517d61c` を、同じ T4 で `scripts/colab-gpu-check.sh --profile --with-tests` で測った。large テストは 20/20 通った（cuda で作業用バッファの経路を通るテストを含む）。
+
+中央値（ms）:
+
+| 項目 | iree-cuda 前 | iree-cuda 後 | pjrt-cuda |
+| --- | --- | --- | --- |
+| d2h/1（4 B） | 1.343 | 0.058 | 0.137 |
+| d2h/262144（1 MiB） | 1.605 | 0.475 | 0.675 |
+| small mlp/d2h-outputs | 6.850 | 0.345 | 0.726 |
+| small mlp/jitted-call | 7.747 | 1.146 | 1.452 |
+| large mlp/d2h-outputs | 6.905 | 0.626 | 1.047 |
+| large mlp/jitted-call | 18.374 | 5.008 | 2.577 |
+
+- 出力1つの読み出しは 1.35 ms から 0.06 ms になった。small の呼び出し1回は 7.7 ms から 1.15 ms に縮み、pjrt-cuda（1.45 ms）より速くなった。
+- 1つずつ読んでも十分に速くなったので、全出力を1回の投入・1回の待ちで読むようにする変更（当初の案）は見送った。
+- 直していない to-device も、この回は速く出た。1 MiB で 1.72 ms から 0.39 ms、large の入力の送信で 3.9 ms から 0.95 ms。原因は確かめていない。
+- large で pjrt-cuda との差として残っているのは、主に invoke（3.1 ms 対 0.6 ms）。これは GPU のカーネル自体の速さの差。
+- 何もしない関数の invoke（約 1.2 ms）は、`--cuda_async_allocations=false` のときだけ 0.08 ms になる。MLP の invoke では差が出ないので、追っていない。
 
 ## 5. 既知の制限と積み残し
 
