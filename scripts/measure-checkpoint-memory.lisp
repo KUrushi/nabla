@@ -20,7 +20,8 @@
 ;;;;                  実際より小さく出る。読めるのは 256 MiB 以上のケース
 ;;;;   :heap-peak-mb  操作中の GC のたびに記録した dynamic-usage の最大（GC の間の山は拾えない）
 ;;;;   :status        :ok / :heap-exhausted（dynamic-space-size を超えた）
-;;;; ;;;; save の木は初期化せずに作る（ゼロ埋めの確保だけ）ので、生成による余計な山は小さい。
+;;;; save の木は初期化せずに作る（値は 0）。遅延ゼロページなので木のページは作った時点では RSS に載らず、
+;;;; 保存中にタッチされて載る。だから save の :rss-base-mb は小さく出る（倍率はピーク RSS で見る）。
 
 (require :sb-posix)
 (asdf:load-system "nabla/nn")

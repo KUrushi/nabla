@@ -183,7 +183,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。
 - **#242: jit の入力が 161 個を超えるモデルは local-task で学習できない**（葉が約 50 個を超える Adam の学習ステップ）。dtype ごとに葉を連結する案。
 - **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
-- **#244: チェックポイントは全体をメモリに読む**。測定と判断は [checkpoint-memory.md](checkpoint-memory.md)（load は約 2 倍、save は約 3 倍。フェーズ5には遅延読み込みも世代管理も要らない。データパイプラインの状態は配列だけの `defmodule` で往復する）。
+- **#244: チェックポイントは全体をメモリに読む**。測定と判断は [checkpoint-memory.md](checkpoint-memory.md)（load は約 2 倍、save は約 3 倍。フェーズ5には遅延読み込みも世代管理も要らない（測定・判断済み。遅延読み込みは 25M パラメータ超のモデルを扱う段階で別 Issue）。データパイプラインの状態は配列だけの `defmodule` で往復する）。
 - **#245: check-it の回帰 datum の文字列のバグ**。#236 が `check-it::datum` に足した防御のメソッドの扱い。
 - **`while-loop` の逆モード（`grad`）は引き続き対応しない**（フェーズ3から）。`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」も変わらない。
 - **nn の API は `defmodule` の `:call` が必須引数のみ**。可変個の引数や省略可能な引数（Flax の `mask=None`）は、位置引数に `nil` を渡して表す。

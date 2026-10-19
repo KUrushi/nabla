@@ -612,7 +612,7 @@ sbcl --non-interactive --load examples/transformer.lisp   # 100 ステップ。�
 
 | 関数 | 役割 |
 | --- | --- |
-| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、失敗しても既存のファイルは壊れない |
+| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、プロセスの失敗に対しては既存のファイルが壊れない。`fsync` はしない（OS クラッシュ・電源断は対象外） |
 | `(read-safetensors path)` | `(values entries metadata)` |
 | `(encode-safetensors entries &key metadata)` / `(decode-safetensors octets &key path)` | ファイルを介さないバイト列版 |
 | `safetensors-error` / `-path` / `-reason` / `-detail` | 壊れた入力・不正な引数のコンディション。`reason` は `:truncated` `:header-length` `:invalid-header` `:unknown-dtype` `:size-mismatch` `:bad-offsets` `:invalid-bool` `:invalid-entries`（意味は docstring） |
@@ -638,7 +638,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元でも、ひな形の葉が `(unsigned-byte 16)` の配列なら `:dtypes` で言う必要がある（言わなければ `:dtype-mismatch`。bf16 のモデルを f16 のファイルから生のビットで復元する事故を防ぐ。`device-array` と `aval` のひな形は自分の dtype を持つ）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
 - 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
 - データローダの再開状態（エポック数・バッチ内の位置・シャッフルの PRNG キー・小さな配列）は、**配列だけの `defmodule` にして**モデルとオプティマイザ状態と同じ木に入れる。整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
-- メモリ: `load-checkpoint` はファイルの約 2 倍、`save-checkpoint` は約 3 倍（木の分を含む）のピークになり、SBCL の既定の `dynamic-space-size`（1 GiB）ではsave は約 290 MiB・load は約 450 MiB を超えるチェックポイントを扱えない。大きなモデルでは起動時に `--dynamic-space-size` を上げる。測定は [docs/checkpoint-memory.md](docs/checkpoint-memory.md)。世代管理（最新 n 個を残す）は持たないので、必要なら保存先の名前にステップ数を含めて呼び出し側で古いものを消す
+- メモリ: `load-checkpoint` はファイルの約 2 倍、`save-checkpoint` は約 3 倍（木の分を含む）のピークになり、ヒープが 1 GiB のとき（測定環境の SBCL 2.6.7 / macOS arm64 の既定。`(sb-ext:dynamic-space-size)` で確かめる）、save は 256 MiB が通り 320 MiB で枯渇し、load は 448 MiB が通り 512 MiB で枯渇した。大きなモデルでは起動時に `--dynamic-space-size` を上げる。測定は [docs/checkpoint-memory.md](docs/checkpoint-memory.md)。世代管理（最新 n 個を残す）は持たないので、必要なら保存先の名前にステップ数を含めて呼び出し側で古いものを消す
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
 
