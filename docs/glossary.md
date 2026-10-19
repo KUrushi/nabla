@@ -154,6 +154,15 @@ pretty form を出力する。
 **モジュール（module）**
 : nabla では、パラメータを持つ構造体（`defmodule` で定義）。パラメータ・サブモジュール（`:param`）、学習しない状態（`:state`、BatchNorm の統計など）、ハイパーパラメータ（`:static`、treedef の補助データ）を別のスロットに持ち、PyTree に自動登録される。Linen / Equinox と同じく「パラメータの PyTree ＋ 純粋関数」で、`(call module x)` で適用し、`init-<name>` が PRNG キーからパラメータを作る。
 
+**lecun_normal / 切断正規分布（truncated normal）**
+: Flax の `nn.Dense` の kernel の既定の初期化。分散 1/fan_in（fan_in は入力の幅）の正規分布のうち、平均から標準偏差の2倍より外を取り除いた（[-2, 2] で切った）もの。切ると標準偏差が 0.8796 倍に縮むので、1/0.8796 を前もってかけて、結果の標準偏差を sqrt(1/fan_in) に合わせる。nabla では `nabla:truncated-normal`（CDF の区間の一様乱数に erf の逆関数をかける、JAX と同じ方式）に `init-dense` が標準偏差をかけて作る。
+
+**LayerNorm の「速い分散」**
+: 分散を `E[x^2] - E[x]^2` で求める方式（Flax の `use_fast_variance` の既定）。データを1回なぞれば済むが、平均が標準偏差よりずっと大きいと桁落ちする（f32 で平均 3・標準偏差 2 の入力なら 1 桁ほど失う）。nabla の `layer-norm` は Flax と数値で一致させるため同じ式を使う。。平均が標準偏差よりずっと大きい行では分散が 0 に潰れ、出力が `(x - mean) / sqrt(epsilon)` に発散する（たとえば f32 の行 `[1e4, 1e4+1, 1e4+2, 1e4+3]` は E[x^2] と E[x]^2 が同じ値に丸まって分散が 0 になり、出力は ±1500 程度になる。Flax も同じ結果）
+
+**反転 dropout（inverted dropout）**
+: 学習時に要素をランダムに落とし、残した要素を 1/(1-rate) 倍して、出力の期待値を入力と同じに保つ方式。推論時は何もしなくてよい（`deterministic` が真なら入力そのもの）。Flax の `nn.Dropout` も同じ。
+
 **safetensors**
 : 名前を付けたテンソルの束を保存するファイル形式（Hugging Face）。先頭8バイトにJSONヘッダの長さ、次にヘッダ（名前ごとの dtype・形・データの範囲 `data_offsets`）、残りが生のバイト列。コードを実行しない純粋なデータ形式なので、pickle より安全に重みを配れる。nabla は `nabla/nn` で読み書きし、モデルのチェックポイントに使う（フェーズ4）。
 

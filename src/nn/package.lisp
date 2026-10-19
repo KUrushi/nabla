@@ -27,6 +27,15 @@
    #:checkpoint-error
    #:checkpoint-error-reason
    #:checkpoint-error-name
-   #:checkpoint-error-detail)
+   #:checkpoint-error-detail
+   ;; 基本レイヤー（issue #204）。make-* はパラメータを与えて作る（チェックポイントの読み込み・テスト用）
+   #:dense #:make-dense #:init-dense #:dense-kernel #:dense-bias
+   #:layer-norm #:make-layer-norm #:init-layer-norm
+   #:layer-norm-scale #:layer-norm-bias #:layer-norm-epsilon
+   #:embedding #:make-embedding #:init-embedding #:embedding-embedding
+   #:dropout #:make-dropout #:init-dropout #:dropout-rate
+   #:sequential #:make-sequential #:init-sequential #:sequential-layers
+   #:activation #:make-activation #:init-activation #:activation-fn
+   #:relu #:gelu #:softmax #:log-softmax)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー。"))

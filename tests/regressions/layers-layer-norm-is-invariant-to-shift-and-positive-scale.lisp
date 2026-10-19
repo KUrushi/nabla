@@ -1,0 +1,4 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME
+                 LAYERS/LAYER-NORM-IS-INVARIANT-TO-SHIFT-AND-POSITIVE-SCALE
+                 :DATUM "(0 0 5)" :TIMESTAMP 4001379843)

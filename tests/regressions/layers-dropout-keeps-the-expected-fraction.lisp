@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME LAYERS/DROPOUT-KEEPS-THE-EXPECTED-FRACTION :DATUM
+                 "(0 5)" :TIMESTAMP 4001379843)

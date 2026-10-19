@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME LAYERS/LAYER-NORM-SCALE-AND-BIAS-ARE-AFFINE :DATUM "(0)"
+                 :TIMESTAMP 4001379843)

@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME LAYERS/DENSE-IS-AN-AFFINE-MAP-OVER-THE-LAST-AXIS :DATUM
+                 "(0 1 1 1)" :TIMESTAMP 4001379843)
