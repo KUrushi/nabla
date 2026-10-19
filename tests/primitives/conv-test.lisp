@@ -40,18 +40,40 @@
 
 (defun %conv-generator () (%ad-hoc-generator #'%conv-random-case))
 
-(defun %conv-params-of (strides padding lhs-dilation rhs-dilation groups)
+(defun %conv-bgc-random-case ()
+  "%CONV-RANDOM-CASE と同じ形で、feature-group-count が 1 で batch-group-count B（2〜3）の
+ケース (lhs-shape rhs-shape strides padding lhs-dilation rhs-dilation 1 B)（issue #203）。
+lhs のバッチ N は B の倍数、rhs の出力チャネル O も B の倍数。"
+  (loop
+    (let* ((spatial (1+ (random 2)))
+           (bgc (+ 2 (random 2)))
+           (channels (1+ (random 3)))
+           (strides (loop repeat spatial collect (1+ (random 3))))
+           (lhs-dilation (loop repeat spatial collect (1+ (random 2))))
+           (rhs-dilation (loop repeat spatial collect (1+ (random 2))))
+           (padding (loop repeat spatial collect (list (- (random 4) 1) (- (random 4) 1))))
+           (kernel (loop repeat spatial collect (1+ (random 3))))
+           (in-sizes (loop repeat spatial collect (1+ (random 5))))
+           (lhs-shape (append (list (* bgc (1+ (random 2)))) in-sizes (list channels)))
+           (rhs-shape (append kernel (list channels (* bgc (1+ (random 2)))))))
+      (when (every #'plusp
+                   (loop for d in in-sizes for k in kernel for s in strides for p in padding
+                         for ld in lhs-dilation for rd in rhs-dilation
+                         collect (%conv-window-count d k s p ld rd)))
+        (return (list lhs-shape rhs-shape strides padding lhs-dilation rhs-dilation 1 bgc))))))
+
+(defun %conv-params-of (strides padding lhs-dilation rhs-dilation groups &optional (batch-groups 1))
   (list :strides strides :padding padding :lhs-dilation lhs-dilation
-        :rhs-dilation rhs-dilation :feature-group-count groups))
+        :rhs-dilation rhs-dilation :feature-group-count groups :batch-group-count batch-groups))
 
 (defun %conv-eager-result (dtype case)
   "CASE の形のランダムな入力に eager の convolution をかけ、(values 結果 lhs rhs) を返す。"
-  (destructuring-bind (lhs-shape rhs-shape strides padding ld rd groups) case
+  (destructuring-bind (lhs-shape rhs-shape strides padding ld rd groups &optional (bgc 1)) case
     (let* ((lhs (make-random-array (make-array-spec lhs-shape dtype)))
            (rhs (make-random-array (make-array-spec rhs-shape dtype) :seed 1)))
       (values (apply #'%eager-of :convolution (list lhs rhs)
                      (list (nb:array-aval lhs dtype) (nb:array-aval rhs dtype))
-                     (%conv-params-of strides padding ld rd groups))
+                     (%conv-params-of strides padding ld rd groups bgc))
               lhs rhs))))
 
 (test convolution/aval-matches-reference-shape
@@ -90,6 +112,29 @@
                          *dtypes*))
                 :regression-id convolution/eager-matches-reference
                 :regression-file (regression-path "convolution-eager"))))
+
+(test convolution/batch-groups-aval-and-eager-match-reference
+  "batch-group-count B > 1（issue #203）: abstract-eval の出力のバッチは N/B で、eager は
+すべての float dtype で REFERENCE-CONV（バッチ軸と出力チャネルを B 個の塊に分ける別実装）と一致する。"
+  (is (check-it (%ad-hoc-generator #'%conv-bgc-random-case)
+                (lambda (case)
+                  (destructuring-bind (lhs-shape rhs-shape strides padding ld rd groups bgc) case
+                    (and (equal (nb:aval-shape
+                                 (apply #'%abstract-eval-of :convolution
+                                        (list (nb:make-aval lhs-shape :f32) (nb:make-aval rhs-shape :f32))
+                                        (%conv-params-of strides padding ld rd groups bgc)))
+                                (array-dimensions (%conv-eager-result :f32 case)))
+                         (= (floor (first lhs-shape) bgc) (first (array-dimensions (%conv-eager-result :f32 case))))
+                         (every (lambda (dtype)
+                                  (multiple-value-bind (result lhs rhs) (%conv-eager-result dtype case)
+                                    (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
+                                      (allclose (decode-array result dtype)
+                                                (reference-conv (decode-array lhs dtype) (decode-array rhs dtype)
+                                                                strides padding ld rd groups bgc)
+                                                :rtol rtol :atol atol))))
+                                *dtypes*))))
+                :regression-id convolution/batch-groups-aval-and-eager-match-reference
+                :regression-file (regression-path "convolution-batch-groups"))))
 
 ;;; --- JAX のフィクスチャ ---
 
@@ -141,6 +186,13 @@ PRIMITIVE-ERROR を出すなら真。"
     (is (%conv-error-p l r :feature-group-count 0))
     (is (%conv-error-p l r :feature-group-count 2))        ; rhs の入力チャネルが C/G と違う
     (is (%conv-error-p l '(3 3 2 3) :feature-group-count 2)) ; O が G で割り切れない
+    ;; batch-group-count（issue #203）
+    (is (not (%conv-error-p '(2 5 5 4) '(3 3 4 2) :batch-group-count 2)))
+    (is (%conv-error-p '(2 5 5 4) '(3 3 4 2) :batch-group-count 0))
+    (is (%conv-error-p '(2 5 5 4) '(3 3 4 2) :batch-group-count 1.5))
+    (is (%conv-error-p '(3 5 5 4) '(3 3 4 2) :batch-group-count 2))   ; N が B で割り切れない
+    (is (%conv-error-p '(2 5 5 4) '(3 3 4 3) :batch-group-count 2))   ; O が B で割り切れない
+    (is (%conv-error-p '(2 5 5 4) '(3 3 2 2) :batch-group-count 2 :feature-group-count 2)) ; 両方 > 1
     (is (%conv-error-p '(1 2 2 4) r))                        ; 窓より入力が小さい
     (is (%conv-error-p l '(3 3 4)))                          ; rank が違う
     (is (%conv-error-p '(5 4) '(4 2)))                       ; 空間次元が無い
@@ -161,6 +213,15 @@ PRIMITIVE-ERROR を出すなら真。"
                          :rhs-dilation '(1 1) :feature-group-count 1))))
 
 ;;; --- StableHLO の出力（golden） ---
+
+(test convolution/emit-golden-batch-group-count
+  "batch-group-count は StableHLO の batch_group_count にそのまま出る（既定の 1 のときは従来の出力と同じ）。"
+  (is (string= "%0 = stablehlo.convolution(%a, %b) dim_numbers = [b, 0, f]x[0, i, o]->[b, 0, f], window = {stride = [1], pad = [[0, 0]], lhs_dilate = [1], rhs_dilate = [1]} {batch_group_count = 2 : i64, feature_group_count = 1 : i64} : (tensor<4x5x3xf32>, tensor<2x3x6xf32>) -> tensor<2x4x6xf32>"
+               (%emit-of :convolution '("%a" "%b")
+                         (list (nb:make-aval '(4 5 3) :f32) (nb:make-aval '(2 3 6) :f32))
+                         "%0" (nb:make-aval '(2 4 6) :f32)
+                         :strides '(1) :padding '((0 0)) :lhs-dilation '(1) :rhs-dilation '(1)
+                         :feature-group-count 1 :batch-group-count 2))))
 
 (test convolution/emit-golden
   "f32 は stablehlo.convolution 1行、bf16 は f32 に convert して畳み込み、結果を戻す4行になる。"
@@ -200,7 +261,7 @@ convolution の eqn になり、配列とトレーサを混ぜても呼べる。
  (:in (%0 f32 (1 5 5 2)) (%1 f32 (3 3 2 4)))
  (:const)
  (:eqns
-  (%2 f32 (1 3 3 4) := convolution (:strides (1 1) :padding ((0 0) (0 0)) :lhs-dilation (1 1) :rhs-dilation (1 1) :feature-group-count 1) %0 %1))
+  (%2 f32 (1 3 3 4) := convolution (:strides (1 1) :padding ((0 0) (0 0)) :lhs-dilation (1 1) :rhs-dilation (1 1) :feature-group-count 1 :batch-group-count 1) %0 %1))
  (:out %2))"
                (%print-graph-string (nb:with-tracing (x w) (nb:conv-general-dilated x w))
                                     (list (nb:make-aval '(1 5 5 2) :f32) (nb:make-aval '(3 3 2 4) :f32)))))

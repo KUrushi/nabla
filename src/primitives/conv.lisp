@@ -1,7 +1,7 @@
 ;;;; conv: convolution プリミティブ（issue #197）。
 ;;;;
-;;;; StableHLO の convolution（JAX の conv_general_dilated）の順方向。jvp /
-;;;; transpose / バッチ化ルールは持たない（issue #203）。
+;;;; StableHLO の convolution（JAX の conv_general_dilated）。jvp / transpose /
+;;;; バッチ化ルールは src/ad/rules-conv.lisp と src/ad/rules-batch-conv.lisp（issue #203）。
 ;;;;
 ;;;; 配置（dimension numbers）は Flax と同じ channels-last に固定する（パラメタには
 ;;;; しない）。空間次元は 1 以上の任意個（S 個。conv2d なら S=2）:
@@ -13,7 +13,12 @@
 ;;;;   :padding                 長さ S の (low high) のリスト（明示的な値。負も可）
 ;;;;   :lhs-dilation / :rhs-dilation   長さ S の正の整数のリスト
 ;;;;   :feature-group-count     G（C と O が G で割り切れる）
-;;;; v1 で拒否するもの: batch_group_count（常に 1）、整数 dtype、サイズ 0 の次元を持つ
+;;;;   :batch-group-count       B（既定 1。issue #203。N と O が B で割り切れる。G と同時に 1 より
+;;;;                            大きくはできない。lhs のバッチ軸を連続した B 個の塊に分け、g 番目の
+;;;;                            出力チャネルの塊（O/B 個）は g 番目のバッチの塊だけを読む。出力のバッチは
+;;;;                            N/B。ユーザーが直接使う機能ではなく、rhs の転置（JAX の
+;;;;                            _conv_general_dilated_transpose_rhs）が G > 1 のときに現れる）
+;;;; v1 で拒否するもの: 整数 dtype、サイズ 0 の次元を持つ
 ;;;; 入力（N=0 も。JAX は受け付けるが、固定したバックエンドのコンパイラでの空の配列の扱いを確かめていない
 ;;;; ので v1 では拒否する）、出力の空間サイズが 0 以下になる形。SAME / VALID のような名前つき padding はここでは扱わない
 ;;;; （呼ぶ側が low / high を計算する）。
@@ -22,18 +27,8 @@
 ;;;;   floor((dilate(d, lhs) + low + high - dilate(k, rhs)) / stride) + 1
 ;;;;   ただし dilate(x, r) = (x - 1) * r + 1。
 ;;;;
-;;;; issue #203（jvp / transpose / バッチ化）への引き継ぎ: 配置が channels-last 固定で
-;;;; batch_group_count が 1 固定のままだと、JAX の _conv_general_dilated_transpose_lhs /
-;;;; _rhs の写しには足りないものがある。
-;;;;   - rhs の余接線を求める畳み込みでは、軸を入れ替える明示的な stablehlo.transpose
-;;;;     （convolution の前後）が要る。
-;;;;   - グループ畳み込み・depthwise（G > 1）の rhs の転置は batch_group_count =
-;;;;     feature_group_count の畳み込みになる（JAX の _conv_general_dilated_transpose_rhs）。
-;;;;   - lhs の転置で G > 1 のときは、rhs を reshape して入出力チャネルの軸を入れ替える
-;;;;     （JAX の _reshape_axis_out_of / _reshape_axis_into）。
-;;;;   そのため #203 で :batch-group-count パラメタ（既定 1。既存の呼び出しを壊さない）
-;;;;   を足すこと。固定したバックエンドのコンパイラ（docs/stablehlo-ops.md）は batch_group_count = 2 の convolution をコンパイルできる
-;;;;   （advisor が確認済み）。
+;;;; 配置が channels-last 固定なので、転置ルールは明示的な transpose（と rev）を畳み込みの前後に
+;;;; 足して JAX の _conv_general_dilated_transpose_lhs / _rhs を写す（src/ad/rules-conv.lisp）。
 
 (in-package #:nabla)
 
@@ -76,15 +71,15 @@
     (format nil "[b, ~A, f]x[~A, i, o]->[b, ~A, f]" sp sp sp)))
 
 (defun %conv-line (out-name lhs-name rhs-name lhs-type rhs-type out-type
-                   strides padding lhs-dilation rhs-dilation groups)
-  (format nil "~A = stablehlo.convolution(~A, ~A) dim_numbers = ~A, window = ~A {batch_group_count = 1 : i64, feature_group_count = ~D : i64} : (~A, ~A) -> ~A"
+                   strides padding lhs-dilation rhs-dilation groups batch-groups)
+  (format nil "~A = stablehlo.convolution(~A, ~A) dim_numbers = ~A, window = ~A {batch_group_count = ~D : i64, feature_group_count = ~D : i64} : (~A, ~A) -> ~A"
           out-name lhs-name rhs-name
           (%conv-dim-numbers-text (length strides))
           (%conv-window-text strides padding lhs-dilation rhs-dilation)
-          groups lhs-type rhs-type out-type))
+          batch-groups groups lhs-type rhs-type out-type))
 
 (defun %conv-emit-lines (in-names in-avals out-name out-aval strides padding
-                         lhs-dilation rhs-dilation groups)
+                         lhs-dilation rhs-dilation groups batch-groups)
   "convolution の :emit 本体。bf16 / f16 は入力を f32 に convert してから畳み込み、
 結果を戻す（dot-general の issue #54 と同じく、バックエンドが入力の dtype のまま累積して
 eager（single-float 累積）とずれるのを避ける）。"
@@ -96,7 +91,7 @@ eager（single-float 累積）とずれるのを避ける）。"
              (conv (%conv-line acc-name lhs-name rhs-name
                                (type-of-aval (first in-avals)) (type-of-aval (second in-avals))
                                (type-of-aval out-aval)
-                               strides padding lhs-dilation rhs-dilation groups)))
+                               strides padding lhs-dilation rhs-dilation groups batch-groups)))
         (if half
             (format nil "~A~%~A~%~A~%~A"
                     (%dot-convert-line lhs-name (first in-names) (tensor-type-string (first in-avals))
@@ -108,10 +103,11 @@ eager（single-float 累積）とずれるのを避ける）。"
                                        (tensor-type-string out-aval)))
             conv)))))
 
-(defun %conv-eager (arrays in-avals strides padding lhs-dilation rhs-dilation groups)
+(defun %conv-eager (arrays in-avals strides padding lhs-dilation rhs-dilation groups batch-groups)
   "素朴な多重ループによる参照実装。出力の各要素について、カーネルの窓と入力チャネルを
 走査して足す。lhs の添字は「膨らませて padding した座標」から逆算し、lhs-dilation の
-隙間（割り切れない座標）と範囲外は 0 として読み飛ばす。"
+隙間（割り切れない座標）と範囲外は 0 として読み飛ばす。BATCH-GROUPS が 1 より大きいとき、
+出力チャネルの g 番目の塊は lhs のバッチの g 番目の塊（連続した N/B 個）を読む。"
   (let* ((dtype (aval-dtype (first in-avals)))
          (half (member dtype '(:bf16 :f16)))
          (compute-type (if (eq dtype :f64) 'double-float 'single-float))
@@ -122,10 +118,11 @@ eager（single-float 累積）とずれるのを避ける）。"
          (spatial (- (length lhs-shape) 2))
          (in-spatial (subseq lhs-shape 1 (1+ spatial)))
          (kernel-spatial (subseq rhs-shape 0 spatial))
-         (batch (first lhs-shape))
+         (batch (floor (first lhs-shape) batch-groups))
          (in-per-group (nth spatial rhs-shape))
          (out-channels (nth (1+ spatial) rhs-shape))
          (out-per-group (floor out-channels groups))
+         (out-per-batch-group (floor out-channels batch-groups))
          (out-spatial (loop for d in in-spatial for k in kernel-spatial for s in strides
                             for p in padding for ld in lhs-dilation for rd in rhs-dilation
                             collect (%conv-out-size d k s p ld rd)))
@@ -139,7 +136,8 @@ eager（single-float 累積）とずれるのを避ける）。"
           (lambda (out-pos)
             (dotimes (o out-channels)
               (let ((sum (coerce 0 compute-type))
-                    (group (floor o out-per-group)))
+                    (group (floor o out-per-group))
+                    (lhs-n (+ (* (floor o out-per-batch-group) batch) n)))
                 (%dot-for-each-index
                  kernel-spatial
                  (lambda (k-pos)
@@ -152,7 +150,7 @@ eager（single-float 累積）とずれるのを避ける）。"
                                                 (< (floor q ld) size) (floor q ld))))))
                      (when (every #'identity in-pos)
                        (dotimes (i in-per-group)
-                         (incf sum (* (coerce (apply #'aref lhs n
+                         (incf sum (* (coerce (apply #'aref lhs lhs-n
                                                      (append in-pos (list (+ (* group in-per-group) i))))
                                               compute-type)
                                       (coerce (apply #'aref rhs (append k-pos (list i o)))
@@ -162,9 +160,11 @@ eager（single-float 累積）とずれるのを避ける）。"
                 (incf out-index)))))))
     result))
 
-(defprimitive convolution (:strides :padding :lhs-dilation :rhs-dilation :feature-group-count)
+(defprimitive convolution (:strides :padding :lhs-dilation :rhs-dilation :feature-group-count
+                           :batch-group-count)
   :abstract-eval
-  (lambda (in-avals &key strides padding lhs-dilation rhs-dilation feature-group-count)
+  (lambda (in-avals &key strides padding lhs-dilation rhs-dilation feature-group-count
+                      (batch-group-count 1))
     (unless (= (length in-avals) 2)
       (%conv-error in-avals "入力の個数が違う: ~S 個渡されたが 2 個必要" (length in-avals)))
     (let* ((lhs (first in-avals))
@@ -186,6 +186,11 @@ eager（single-float 累積）とずれるのを避ける）。"
       (%conv-check-padding in-avals padding spatial)
       (unless (typep feature-group-count '(integer 1))
         (%conv-error in-avals ":feature-group-count は正の整数でなければならない: ~S" feature-group-count))
+      (unless (typep batch-group-count '(integer 1))
+        (%conv-error in-avals ":batch-group-count は正の整数でなければならない: ~S" batch-group-count))
+      (when (and (> feature-group-count 1) (> batch-group-count 1))
+        (%conv-error in-avals ":feature-group-count ~S と :batch-group-count ~S は同時に 1 より大きくできない"
+                     feature-group-count batch-group-count))
       (let ((channels (car (last lhs-shape)))
             (kernel-in (nth spatial rhs-shape))
             (kernel-out (car (last rhs-shape))))
@@ -196,6 +201,10 @@ eager（single-float 累積）とずれるのを避ける）。"
         (unless (zerop (mod kernel-out feature-group-count))
           (%conv-error in-avals "rhs の出力チャネル数 ~S は feature-group-count ~S で割り切れなければならない"
                        kernel-out feature-group-count))
+        (unless (and (zerop (mod (first lhs-shape) batch-group-count))
+                     (zerop (mod kernel-out batch-group-count)))
+          (%conv-error in-avals "lhs のバッチ ~S と rhs の出力チャネル数 ~S は batch-group-count ~S で割り切れなければならない"
+                       (first lhs-shape) kernel-out batch-group-count))
         (let ((out-spatial (loop for d in (subseq lhs-shape 1 (1+ spatial))
                                  for k in (subseq rhs-shape 0 spatial)
                                  for s in strides for p in padding
@@ -203,12 +212,16 @@ eager（single-float 累積）とずれるのを避ける）。"
                                  collect (%conv-out-size d k s p ld rd))))
           (unless (every #'plusp out-spatial)
             (%conv-error in-avals "出力の空間サイズが 0 以下になる: ~S" out-spatial))
-          (make-aval (append (list (first lhs-shape)) out-spatial (list kernel-out))
+          (make-aval (append (list (floor (first lhs-shape) batch-group-count)) out-spatial
+                             (list kernel-out))
                      (aval-dtype lhs))))))
   :emit
-  (lambda (in-names in-avals out-name out-aval &key strides padding lhs-dilation rhs-dilation feature-group-count)
+  (lambda (in-names in-avals out-name out-aval &key strides padding lhs-dilation rhs-dilation
+                                                 feature-group-count (batch-group-count 1))
     (%conv-emit-lines in-names in-avals out-name out-aval strides padding
-                      lhs-dilation rhs-dilation feature-group-count))
+                      lhs-dilation rhs-dilation feature-group-count batch-group-count))
   :eager
-  (lambda (arrays in-avals &key strides padding lhs-dilation rhs-dilation feature-group-count)
-    (%conv-eager arrays in-avals strides padding lhs-dilation rhs-dilation feature-group-count)))
+  (lambda (arrays in-avals &key strides padding lhs-dilation rhs-dilation feature-group-count
+                             (batch-group-count 1))
+    (%conv-eager arrays in-avals strides padding lhs-dilation rhs-dilation feature-group-count
+                 batch-group-count)))

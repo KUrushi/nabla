@@ -1,6 +1,6 @@
-;;;; shape: reshape / broadcast-in-dim / transpose プリミティブ（issue #31 p4）。
+;;;; shape: reshape / broadcast-in-dim / transpose プリミティブ（issue #31 p4）と rev（issue #203）。
 ;;;;
-;;;; 3つとも値を解釈しない構造だけの演算なので、eager 実装は
+;;;; これらは値を解釈しない構造だけの演算なので、eager 実装は
 ;;;; %SHAPE-EAGER-FILL（shape-common.lisp）に「出力の row-major index から
 ;;;; 入力の row-major index を計算する関数」を渡すだけで書ける。
 ;;;;
@@ -131,3 +131,39 @@
                  do (setf (nth p in-subscripts) s))
            (%shape-row-major-index in-subscripts in-shape in-strides)))
        array))))
+
+;;; rev（軸の反転。issue #203）。JAX の lax.rev / stablehlo.reverse。convolution の lhs の
+;;; 転置（カーネルの空間軸を反転する）で使う。値を解釈しない構造演算なので、他の3つと同じく
+;;; %SHAPE-EAGER-FILL で書く。
+(defprimitive rev (:dims)
+  :abstract-eval
+  (lambda (in-avals &key dims)
+    (%shape-check-arity :rev in-avals 1)
+    (%shape-check-integer-list-param :rev in-avals :dims dims)
+    (let* ((in (first in-avals))
+           (rank (length (aval-shape in))))
+      (unless (and (every (lambda (d) (< -1 d rank)) dims)
+                   (= (length dims) (length (remove-duplicates dims))))
+        (error 'primitive-error :name :rev :in-avals in-avals
+               :format-control "dims ~S は rank ~S の軸の、重複のない部分集合でない"
+               :format-arguments (list dims rank)))
+      in))
+  :emit
+  (lambda (in-names in-avals out-name out-aval &key dims)
+    (declare (ignore in-avals))
+    (format nil "~A = stablehlo.reverse ~A, dims = [~{~D~^, ~}] : ~A"
+            out-name (first in-names) dims (tensor-type-string out-aval)))
+  :eager
+  (lambda (arrays in-avals &key dims)
+    (let* ((shape (aval-shape (first in-avals)))
+           (strides (%shape-strides shape)))
+      (%shape-eager-fill
+       shape (aval-dtype (first in-avals))
+       (lambda (index)
+         (%shape-row-major-index
+          (loop for s in (%shape-subscripts index shape strides)
+                for d in shape
+                for axis from 0
+                collect (if (member axis dims) (- d 1 s) s))
+          shape strides))
+       (first arrays)))))

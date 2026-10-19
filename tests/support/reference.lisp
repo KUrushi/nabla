@@ -406,9 +406,12 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
           (setf (apply #'aref result (first subs) (append placed (last subs)))
                 (coerce (apply #'aref array subs) 'double-float)))))))
 
-(defun reference-conv (lhs rhs strides padding lhs-dilation rhs-dilation groups)
+(defun reference-conv (lhs rhs strides padding lhs-dilation rhs-dilation groups &optional (batch-groups 1))
   "channels-last の畳み込み（lhs [N, 空間..., C]、rhs [空間..., C/G, O]。DOUBLE-FLOAT の
-配列）。STRIDES・LHS-DILATION・RHS-DILATION は空間次元ごとの整数、PADDING は (low high)。"
+配列）。STRIDES・LHS-DILATION・RHS-DILATION は空間次元ごとの整数、PADDING は (low high)。
+BATCH-GROUPS（B。issue #203）が 1 より大きいとき、lhs のバッチ軸を B 個の連続した塊に分け
+（グループ g は N/B 個）、出力チャネルを B 個の連続した塊に分けて、g 番目の出力チャネルの塊が
+g 番目のバッチの塊だけを読む。出力のバッチ軸は N/B。GROUPS と同時に 1 より大きくしない。"
   (let* ((spatial (- (array-rank lhs) 2))
          (padded (%conv-reference-place lhs spatial lhs-dilation padding))
          (padded-spatial (subseq (array-dimensions padded) 1 (1+ spatial)))
@@ -421,7 +424,9 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
          ;; 窓の開始位置を数え上げる（出力サイズの式を使わない）。
          (out-spatial (loop for p in padded-spatial for k in kernel-dilated for s in strides
                             collect (loop for start from 0 by s while (<= (+ start k) p) count t)))
-         (out-shape (append (list (array-dimension lhs 0)) out-spatial (list out-channels)))
+         (out-batch (floor (array-dimension lhs 0) batch-groups))
+         (out-per-bgroup (floor out-channels batch-groups))
+         (out-shape (append (list out-batch) out-spatial (list out-channels)))
          (result (make-array out-shape :element-type 'double-float :initial-element 0.0d0)))
     (dotimes (i (array-total-size result) result)
       (let* ((subs (%row-major-index->subscripts i out-shape))
@@ -429,6 +434,7 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
              (starts (loop for o in (subseq subs 1 (1+ spatial)) for s in strides collect (* o s)))
              (oc (car (last subs)))
              (group (floor oc out-per-group))
+             (lhs-n (+ (* (floor oc out-per-bgroup) out-batch) n))
              (sum 0.0d0))
         (nb::%dot-for-each-index
          kernel-spatial
@@ -436,23 +442,24 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
            (let ((pos (loop for start in starts for k in k-pos for d in rhs-dilation
                             collect (+ start (* k d)))))
              (dotimes (c in-per-group)
-               (incf sum (* (apply #'aref padded n (append pos (list (+ (* group in-per-group) c))))
+               (incf sum (* (apply #'aref padded lhs-n (append pos (list (+ (* group in-per-group) c))))
                             (coerce (apply #'aref rhs (append k-pos (list c oc))) 'double-float)))))))
         (setf (row-major-aref result i) sum)))))
 
-(defun read-conv-fixture ()
-  "tests/fixtures/conv/conv.lisp（JAX の conv_general_dilated の f32 の入出力。生成は
-tests/fixtures/conv/generate.py）を読み、ケースごとの plist
+(defun read-conv-fixture (&optional (file "conv"))
+  "tests/fixtures/conv/FILE.lisp を読み、ケースごとの plist
 (:name :strides :padding :lhs-dilation :rhs-dilation :groups :lhs :rhs :out) のリストを返す。
-:lhs :rhs :out は single-float の配列。"
+既定の \"conv\" は JAX の conv_general_dilated の f32 の入出力（生成は tests/fixtures/conv/generate.py）。
+\"conv-grad\"（issue #203。生成は generate-grad.py）は :batch-groups と、余接線 :ct に対する
+勾配 :dlhs :drhs も持つ。:lhs :rhs :out :ct :dlhs :drhs は single-float の配列。"
   (flet ((to-array (entry)
            (destructuring-bind (shape bits) entry
              (let ((array (make-array shape :element-type 'single-float)))
                (loop for i from 0 for bit in bits
                      do (setf (row-major-aref array i) (nb::%make-single-float bit)))
                array))))
-    (with-open-file (stream (asdf:system-relative-pathname "nabla" "tests/fixtures/conv/conv.lisp"))
+    (with-open-file (stream (asdf:system-relative-pathname "nabla" (format nil "tests/fixtures/conv/~A.lisp" file)))
       (loop for (name . plist) in (let ((*package* (find-package '#:nabla.tests.support))) (read stream))
             collect (list* :name name
                            (loop for (key value) on plist by #'cddr
-                                 append (list key (if (member key '(:lhs :rhs :out)) (to-array value) value))))))))
+                                 append (list key (if (member key '(:lhs :rhs :out :ct :dlhs :drhs)) (to-array value) value))))))))
