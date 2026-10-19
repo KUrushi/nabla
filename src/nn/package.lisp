@@ -33,7 +33,7 @@
    #:layer-norm #:make-layer-norm #:init-layer-norm
    #:layer-norm-scale #:layer-norm-bias #:layer-norm-epsilon
    #:layer-norm-use-scale #:layer-norm-use-bias #:layer-norm-reduction-axes #:layer-norm-feature-axes
-   #:embedding #:make-embedding #:init-embedding #:embedding-embedding
+   #:embedding #:make-embedding #:init-embedding #:embedding-embedding #:embedding-attend
    #:dropout #:make-dropout #:init-dropout #:dropout-rate
    #:sequential #:make-sequential #:init-sequential #:sequential-layers
    #:activation #:make-activation #:init-activation #:activation-fn

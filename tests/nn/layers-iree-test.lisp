@@ -172,3 +172,25 @@ eager と一致する。"
                             "~S" options))
                    (nabla::%jit-cache-forget f)
                    (nabla::%jit-cache-forget g)))))))
+
+(test layers/jit-of-a-tied-embedding-head-matches-eager
+  "init-embedding で作った埋め込みを引きと attend で共有するモデル（ids → 引き → attend）を jit した出力と勾配
+（埋め込みの 1 つの葉に引きと attend の勾配が足し合わさる）が eager と一致する（issue #241）。"
+  (when (%layers-require-iree-or-skip)
+    (let* ((backend (nabla:find-backend :iree))
+           (nabla:*compile-cache-directory* nil)
+           (net (make-tied-embedding-head :embed (init-embedding (nabla:prng-key 3) 9 6)))
+           (ids (make-array '(2 5) :element-type '(signed-byte 32)
+                                   :initial-contents '((1 2 3 4 5) (8 0 8 1 2))))
+           (f (nabla:with-tracing (m ids) (call m ids)))
+           (loss (nabla:with-tracing (m ids) (nabla:reduce-sum (* (call m ids) (call m ids)))))
+           (g (nabla:grad loss))
+           (jf (nabla:jit f :backend backend))
+           (jg (nabla:jit g :backend backend)))
+      (unwind-protect
+           (let ((jit-grad (funcall jg net ids)) (eager-grad (funcall g net ids)))
+             (is (%close-f32 (funcall jf net ids) (funcall f net ids)))
+             (is (typep jit-grad 'tied-embedding-head))
+             (is (every #'%close-f32 (nabla:tree-leaves jit-grad) (nabla:tree-leaves eager-grad))))
+        (nabla::%jit-cache-forget f)
+        (nabla::%jit-cache-forget g)))))
