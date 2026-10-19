@@ -11,6 +11,8 @@
 # 各行の判定:
 #   bug     ファイル: 1 回でもシグナル（終了コード 128 超）で落ちれば REPRODUCED
 #   control ファイル（回避策を入れた形）: 全回コンパイルできれば OK
+#   error-bug ファイル: クラッシュではなく通常のコンパイルエラー（診断を出して終了コード 1）で
+#           落ちるバグ。1 回でも終了コードが 0 でなければ REPRODUCED（対照は control）
 #   run-bug / run-control: コンパイルした vmfb を iree-run-module で local-task device で
 #           実行する版（コンパイルは通り、実行時に落ちるバグ。入力の個数ぶんの --input を
 #           自動で作る）。判定は bug / control と同じ
@@ -65,6 +67,10 @@ CASES=(
   "control while-constant-carry-barrier.mlir"
   "bug     while-i1-carry-returned.mlir"
   "control while-i1-carry-not-returned.mlir"
+  "error-bug    conv-convert-operand-type.mlir"
+  "control      conv-convert-operand-type-barrier.mlir"
+  "error-bug    conv-depthwise-collapse-shape.mlir"
+  "control      conv-depthwise-collapse-shape-barrier.mlir"
   "run-bug     local-task-162-inputs.mlir"
   "run-control local-task-161-inputs.mlir"
   "fail-bug     if-passthrough-operands.mlir"
@@ -168,6 +174,8 @@ for entry in "${CASES[@]}"; do
   done
   if [[ "${kind}" == bug || "${kind}" == run-bug ]]; then
     if ((crashes > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
+  elif [[ "${kind}" == error-bug ]]; then
+    if ((failures > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
   else
     if ((failures == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
   fi
