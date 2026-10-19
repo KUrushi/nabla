@@ -415,7 +415,7 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
 
 ## IREE を上げたときに回避策を外せるか確かめる手順
 
-IREE 3.11.0 のバグ（コンパイラ3件・ランタイム）（issue #73、#165。詳細・最小の再現・上流への報告の下書きは [`docs/iree-upstream-bugs.md`](iree-upstream-bugs.md)）に対して、nabla は回避策を入れている。`third_party/iree.lock` を上げる PR では、次の手順で各バグが直ったかを確かめ、直ったものだけ回避策を外す（外すのは別の PR に分けてよい）。
+IREE 3.11.0 のバグ（issue #73、#165、#199、#203、#220、#226。詳細・最小の再現・上流への報告の下書きは [`docs/iree-upstream-bugs.md`](iree-upstream-bugs.md)）に対して、nabla は回避策を入れている。`third_party/iree.lock` を上げる PR では、次の手順で各バグが直ったかを確かめ、直ったものだけ回避策を外す（外すのは別の PR に分けてよい）。
 
 ### 1. 単体の iree-compile で最小の再現を流す
 
@@ -433,7 +433,11 @@ bug      while-i1-carry-returned.mlir             REPRODUCED      crashes=20/20 
 control  while-i1-carry-not-returned.mlir         OK              crashes=0/20 exit-codes=0
 run-bug     local-task-162-inputs.mlir               REPRODUCED      crashes=20/20 exit-codes=139
 run-control local-task-161-inputs.mlir               OK              crashes=0/20 exit-codes=0
+fail-bug     if-passthrough-operands.mlir             REPRODUCED      failing-runs=2
+fail-control if-passthrough-operands-select.mlir      OK              failing-runs=0
 ```
+
+`fail-bug` / `fail-control` の行（`if-passthrough-operands*.mlir`。`docs/iree-upstream-bugs.md` の 8、#226）は、コンパイルは通り実行時に `ref is null` で失敗するバグの確認で、vmfb を local-task と local-sync の両方で `iree-run-module` に流す。`fail-bug` は pred = 1.0（else の枝）で終了コードが 0 でない実行が 1 回でもあれば `REPRODUCED`、`fail-control` は pred = 0.0 と 1.0 の全ての実行が 0 なら `OK`。`fail-bug` が `NOT-REPRODUCED` になったら、`src/primitives/cond.lisp` の `%cond-emit` が素通しの出力を `stablehlo.select` に書き換える処理（と `cond-passthrough/iree-known-bug-*` のテスト）を外せるか判断する。外すと `stablehlo.if` が素通しの結果をそのまま返す元の形に戻り、`cond/emit-*` の small テストも消す。
 
 `race-bug` / `race-control` の行（`nested-scan-ys-*.mlir`。`docs/iree-upstream-bugs.md` の 7、#220）は、実行時にまれに結果が壊れるバグの確認で、スクリプトが CPU の数だけ負荷をかけながら local-task と local-sync の出力を `--race-runs` 回（既定 4000）比べる。`race-bug` が `NOT-REPRODUCED` になったら、`--race-runs` を増やして（起きる確率は 0.05〜2%）もう一度確かめてから、`src/scan.lisp` の「ys の barrier を付けない」条件（本体の中の制御構造）を外せるか判断する。
 

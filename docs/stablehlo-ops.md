@@ -114,7 +114,7 @@ nabla を使わない最小の再現（`docs/iree-repros/while-constant-carry.ml
 
 | op | 形 | nabla プリミティブ名 | 備考 |
 | --- | --- | --- | --- |
-| if | `%o = "stablehlo.if"(%pred) ({ ...; stablehlo.return %r : T }, { ...; stablehlo.return %r : T }) : (tensor<i1>) -> (T)`（generic 形。リージョンは2つで、外側の SSA 値を直接参照する） | `cond`（公開名 `cond*`） | IREE の `llvm-cpu` でコンパイル・実行できる（`tests/iree/cond-test.lisp`）。複数出力は `%a, %b = ...`、入れ子も可。`stablehlo.case` は添え字が `i32` なので、`i1` の pred を変換せずに使える `if` を選んだ |
+| if | `%o = "stablehlo.if"(%pred) ({ ...; stablehlo.return %r : T }, { ...; stablehlo.return %r : T }) : (tensor<i1>) -> (T)`（generic 形。リージョンは2つで、外側の SSA 値を直接参照する） | `cond`（公開名 `cond*`） | IREE の `llvm-cpu` でコンパイル・実行できる（`tests/iree/cond-test.lisp`）。複数出力は `%a, %b = ...`、入れ子も可。**枝が入力をそのまま返す出力は `stablehlo.if` の結果にしない**（IREE 3.11 が実行時に `ref is null` で落ちるため。`docs/iree-upstream-bugs.md` の 8、#226）。素通しの出力は、if の外の `%o = stablehlo.select %pred, <then 側>, <else 側>` にする（素通しの枝が返す側は 0 の定数 `%cond_z_<出力>`、if の結果は `%cond_if_<出力>`）。結果が残らなければ `stablehlo.if` 自体を出さない（`%cond-emit`）。`stablehlo.case` は添え字が `i32` なので、`i1` の pred を変換せずに使える `if` を選んだ |
 
 ## IREE 未対応・要注意の op（代替・備考）
 
