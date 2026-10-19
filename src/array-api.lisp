@@ -188,6 +188,16 @@ dtype は同じ真偽の rank 0 の PRED を渡したときと同じ）。PRED �
 (defmethod where (pred a b)
   (%t-select pred a b))
 
+;;; --- rsqrt（issue #196） ---
+
+(defun rsqrt (x)
+  "X の平方根の逆数 1/sqrt(X)（要素ごと）。X は浮動小数点の配列・トレーサ・
+数値。配列には eager 実装、トレーサには rsqrt の eqn、数値には CL の
+(/ 1 (sqrt x)) を使う。配列とトレーサでは、負の要素は NaN、0 は +無限大
+になる。数値は CL の演算なので負の値や 0 では複素数・除算エラーになる。
+WITH-TRACING は CL の sqrt と同じく、この関数の呼び出しも書き換える。"
+  (%t-rsqrt x))
+
 ;;; --- stop-gradient（issue #80） ---
 
 (defgeneric stop-gradient (x)

@@ -19,6 +19,7 @@
     "ops/exponential" "ops/exponential_bf16"
     "ops/log" "ops/log_bf16"
     "ops/tanh" "ops/tanh_bf16"
+    "ops/sqrt" "ops/sqrt_bf16" "ops/rsqrt" "ops/rsqrt_bf16"
     "ops/compare" "ops/compare_bf16"
     "ops/select" "ops/select_bf16"
     "ops/convert" "ops/convert_bf16"

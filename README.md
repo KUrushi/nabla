@@ -195,6 +195,8 @@ sbcl --non-interactive --load examples/jit.lisp
 
 **配列の不変性**（issue #166）: nabla は、渡された配列を書き換えない。一方で eager の結果は、入力・閉包で捕まえた配列・graph の定数と `eq` な配列でありうる（`eval-graph`、`with-tracing` で作った関数を配列で直接呼ぶとき、`cond*` / `while-loop` / `scan`、`axes` を空リストで渡した `reduce-sum` / `reduce-max`、jit の `use-eager` リスタート）。JAX と同じく、入力も結果も不変（immutable）として扱うこと。書き換えると graph の定数や jit のキャッシュが壊れうる。
 
+**rsqrt / sqrt**（issue #196）: `rsqrt`（export。`(rsqrt x)` = 1/sqrt(x) を要素ごとに返す関数で、配列・トレーサ・数値を取る。`with-tracing` の中でも同じ関数として書ける）と、CL の `sqrt` を `with-tracing` が書き換えたもの。どちらも bf16 / f16 / f32 / f64 に対応し、負の入力は NaN、`rsqrt(0)` は +無限大。数値（リテラル）の引数は CL の演算にそのまま委ね、負の値や 0 では CL の挙動（複素数・除算エラー）になる（`log` と同じ制限）。
+
 配列レベルの公開 API は9個の総称関数（`array` と `tracer` の両方のメソッドを持つ）: `dot`（最後の軸と最初の軸を縮約する、バッチ無しの `dot-general`。rank 0 は `tracing-error`。配列とトレーサを混ぜて呼ぶと、配列をトレーサと同じ dtype の定数としてリフトする）, `reshape`, `transpose`（`perm` 省略時は軸を逆順にする）, `broadcast-in-dim`, `reduce-sum` / `reduce-max`（`axes` 省略時は全軸を潰す。`axes` を明示的に空リストで渡すと reduce しない＝X をそのまま返す。トレース時は eqn も足さない。省略とは区別される）, `convert`, `where`（`pred`・`a`・`b`。`pred` が真の要素は `a`、偽の要素は `b`。`pred` が eager な bit 配列でも `a`・`b` の少なくとも一方がトレーサなら `pred` を定数としてリフトしてトレースする。`pred` が rank 0 で `a`・`b` が rank 1 以上なら `pred` を分岐の shape にブロードキャストする（`if` の条件も同じ）。`pred` が Lisp のブール値 `t`／`nil` なら、ふつうの `if` と同じく片方の分岐を静的に選び `select` をトレースしない（結果の shape・dtype は同じ真偽の rank 0 の `pred` と同じ）。それ以外のふつうの Lisp の値は `tracing-error`）, `stop-gradient`（issue #80。値は引数そのままで、自動微分では定数として扱われる＝接線がゼロ。任意の dtype を通し、配列には中身の等しい新しい配列を返す。StableHLO では `stablehlo.optimization_barrier` になる）。数値・rank 0 の値は、もう一方の分岐・オペランドの shape・dtype に合わせて自動でブロードキャストされる（それ以外の shape の不一致は `primitive-error`）。`where`（および `if`/`select` への書き換え）の両方の分岐が数値だと dtype を決められず `tracing-error` になる。
 
 **自動微分のコンディション**（`src/ad/rules.lisp`、issue #77）: `autodiff-error`（自動微分の変換が続けられないときの親。ルールの無いプリミティブは子の `no-jvp-rule` / `no-transpose-rule` で、`no-jvp-rule-name` / `no-transpose-rule-name` がプリミティブ名を返す）。jvp / transpose ルールの宣言（`def-jvp-rule` など）と symbolic zero は内部 API で、公開していない。
@@ -210,7 +212,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 
 
-**整数 dtype**（`src/dtype.lisp`、`src/primitives/*.lisp`、issue #126）: `:i32`（Lisp では `(signed-byte 32)`、StableHLO では `i32`）、`:u32`（`(unsigned-byte 32)`、`ui32`）、`:u64`（`(unsigned-byte 64)`、`ui64`。THREE_FRY の状態 `ui64[2]` のために足した）。`add` `sub` `mul` `max` `min` `neg` `compare` `select` `convert` `broadcast-in-dim` `reshape` `transpose` `reduce-sum` `reduce-max` は整数を受け付け、`div` `exp` `log` `tanh` `dot-general` は整数を `primitive-error`（トレース時）で拒否する。整数どうしの演算は dtype が一致していなければならず（暗黙の型昇格はしない）、eager の算術は StableHLO と同じく 2 の補数（符号なしは法 2^n）で折り返す。`convert` は整数 ⇔ 浮動小数点 ⇔ `:i1` を変換できる（浮動小数点 → 整数は 0 方向へ丸め、NaN は 0、範囲外（±無限大を含む）は整数の端に飽和。これはどのバックエンドでも同じになるよう、出力する StableHLO が clamp と select で飽和と NaN → 0 を明示する。整数 → `:bf16` は f32 を経由する2段の convert。→ `:i1` は 0 以外が真）。`with-tracing` の中の整数リテラルは相手の整数 dtype にリフトされる（浮動小数点のリテラルや範囲外の整数は `tracing-error`。浮動小数点のトレーサと組むリテラルは従来どおり `:f32`）。整数の接線は変換の中では常に symbolic zero で、整数の入力に対する `grad` は `autodiff-error`、整数を経由する計算の勾配はゼロ。IREE と PJRT（CPU）の `to-device` / `to-host` は整数に対応する。新しい export はない。
+**整数 dtype**（`src/dtype.lisp`、`src/primitives/*.lisp`、issue #126）: `:i32`（Lisp では `(signed-byte 32)`、StableHLO では `i32`）、`:u32`（`(unsigned-byte 32)`、`ui32`）、`:u64`（`(unsigned-byte 64)`、`ui64`。THREE_FRY の状態 `ui64[2]` のために足した）。`add` `sub` `mul` `max` `min` `neg` `compare` `select` `convert` `broadcast-in-dim` `reshape` `transpose` `reduce-sum` `reduce-max` は整数を受け付け、`div` `exp` `log` `tanh` `sqrt` `rsqrt` `dot-general` は整数を `primitive-error`（トレース時）で拒否する。整数どうしの演算は dtype が一致していなければならず（暗黙の型昇格はしない）、eager の算術は StableHLO と同じく 2 の補数（符号なしは法 2^n）で折り返す。`convert` は整数 ⇔ 浮動小数点 ⇔ `:i1` を変換できる（浮動小数点 → 整数は 0 方向へ丸め、NaN は 0、範囲外（±無限大を含む）は整数の端に飽和。これはどのバックエンドでも同じになるよう、出力する StableHLO が clamp と select で飽和と NaN → 0 を明示する。整数 → `:bf16` は f32 を経由する2段の convert。→ `:i1` は 0 以外が真）。`with-tracing` の中の整数リテラルは相手の整数 dtype にリフトされる（浮動小数点のリテラルや範囲外の整数は `tracing-error`。浮動小数点のトレーサと組むリテラルは従来どおり `:f32`）。整数の接線は変換の中では常に symbolic zero で、整数の入力に対する `grad` は `autodiff-error`、整数を経由する計算の勾配はゼロ。IREE と PJRT（CPU）の `to-device` / `to-host` は整数に対応する。新しい export はない。
 
 
 
@@ -226,7 +228,7 @@ sbcl --non-interactive --load examples/jit.lisp
 
 #### 要素演算のバッチ化ルール（issue #128）
 
-`add sub mul div neg exp log tanh max min compare select convert stop-gradient` は共通のバッチ化ルール1つ（`src/ad/rules-batch-elementwise.lisp`）を持つ。バッチされた引数のバッチ軸がすべて同じ位置ならそのまま元の演算を適用し（`transpose` も `broadcast-in-dim` も足さない）、位置が違うときは先頭へ `transpose` で揃える。バッチされていない引数には `broadcast-in-dim` でその位置に軸を足す（要素演算は形が全引数で一致する前提で、暗黙のスカラー拡張は無い）。`select` は条件だけがバッチされる場合も扱う。
+`add sub mul div neg exp log tanh sqrt rsqrt max min compare select convert stop-gradient` は共通のバッチ化ルール1つ（`src/ad/rules-batch-elementwise.lisp`）を持つ。バッチされた引数のバッチ軸がすべて同じ位置ならそのまま元の演算を適用し（`transpose` も `broadcast-in-dim` も足さない）、位置が違うときは先頭へ `transpose` で揃える。バッチされていない引数には `broadcast-in-dim` でその位置に軸を足す（要素演算は形が全引数で一致する前提で、暗黙のスカラー拡張は無い）。`select` は条件だけがバッチされる場合も扱う。
 
 
 

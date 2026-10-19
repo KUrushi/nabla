@@ -122,6 +122,8 @@ DOUBLE-FLOAT の配列を返す。"
 (def-unary-aval-matches-abstract-eval-test primitives/exp/aval-matches-abstract-eval :exp)
 (def-unary-aval-matches-abstract-eval-test primitives/log/aval-matches-abstract-eval :log)
 (def-unary-aval-matches-abstract-eval-test primitives/tanh/aval-matches-abstract-eval :tanh)
+(def-unary-aval-matches-abstract-eval-test primitives/sqrt/aval-matches-abstract-eval :sqrt)
+(def-unary-aval-matches-abstract-eval-test primitives/rsqrt/aval-matches-abstract-eval :rsqrt)
 
 ;;; --- 性質1': aval(eager) = abstract-eval（max / min。2入力） ---
 
@@ -174,6 +176,8 @@ DOUBLE-FLOAT の配列を返す。"
 (def-unary-eager-matches-reference-test primitives/exp/eager-matches-reference :exp reference-exp :any)
 (def-unary-eager-matches-reference-test primitives/log/eager-matches-reference :log reference-log :positive)
 (def-unary-eager-matches-reference-test primitives/tanh/eager-matches-reference :tanh reference-tanh :any)
+(def-unary-eager-matches-reference-test primitives/sqrt/eager-matches-reference :sqrt reference-sqrt :positive)
+(def-unary-eager-matches-reference-test primitives/rsqrt/eager-matches-reference :rsqrt reference-rsqrt :positive)
 
 (defmacro def-minmax-eager-matches-reference-test (test-name prim-name reference-fn)
   `(test ,test-name
@@ -202,9 +206,9 @@ DOUBLE-FLOAT の配列を返す。"
 ;;; --- 性質3: 不正な入力は PRIMITIVE-ERROR ---
 
 (test primitives/unary/wrong-arity-signals-primitive-error
-  "neg/exp/log/tanh はちょうど1つの入力を要求する。0個・2個ではどちらも
+  "neg/exp/log/tanh/sqrt/rsqrt はちょうど1つの入力を要求する。0個・2個ではどちらも
 PRIMITIVE-ERROR になる。"
-  (dolist (name '(:neg :exp :log :tanh))
+  (dolist (name '(:neg :exp :log :tanh :sqrt :rsqrt))
     (let ((eval (nb::primitive-abstract-eval (nb::find-primitive name))))
       (signals nb:primitive-error (funcall eval '()) "~A: 0個の入力" name)
       (signals nb:primitive-error
@@ -212,8 +216,8 @@ PRIMITIVE-ERROR になる。"
         "~A: 2個の入力" name))))
 
 (test primitives/unary/non-float-dtype-signals-primitive-error
-  ":i1 は浮動小数点ではないので PRIMITIVE-ERROR になる（neg/exp/log/tanh）。"
-  (dolist (name '(:neg :exp :log :tanh))
+  ":i1 は浮動小数点ではないので PRIMITIVE-ERROR になる（neg/exp/log/tanh/sqrt/rsqrt）。"
+  (dolist (name '(:neg :exp :log :tanh :sqrt :rsqrt))
     (signals nb:primitive-error
       (funcall (nb::primitive-abstract-eval (nb::find-primitive name))
                (list (nb:make-aval '(2 3) :i1)))
@@ -284,6 +288,8 @@ PRIMITIVE-ERROR になる。"
 (def-unary-golden-emit-test primitives/exp/emit-matches-fixture :exp "exponential" "exponential_bf16")
 (def-unary-golden-emit-test primitives/log/emit-matches-fixture :log "log" "log_bf16")
 (def-unary-golden-emit-test primitives/tanh/emit-matches-fixture :tanh "tanh" "tanh_bf16")
+(def-unary-golden-emit-test primitives/sqrt/emit-matches-fixture :sqrt "sqrt" "sqrt_bf16")
+(def-unary-golden-emit-test primitives/rsqrt/emit-matches-fixture :rsqrt "rsqrt" "rsqrt_bf16")
 
 (defmacro def-minmax-golden-emit-test (test-name prim-name f32-fixture bf16-fixture)
   `(test ,test-name
@@ -391,11 +397,11 @@ log→exp の2回丸めが入るため許容誤差を緩める）。"
 ;;; --- NaN・境界値の例ベーステスト（全 dtype） ---
 
 (test primitives/unary/nan-propagates
-  "NaN を入力すると neg/exp/log/tanh はすべて NaN を返す（全 dtype）。"
+  "NaN を入力すると neg/exp/log/tanh/sqrt/rsqrt はすべて NaN を返す（全 dtype）。"
   (dolist (dtype *dtypes*)
     (let ((aval (nb:make-aval '() dtype))
           (nan-array (%unary-nan-array dtype)))
-      (dolist (name '(:neg :exp :log :tanh))
+      (dolist (name '(:neg :exp :log :tanh :sqrt :rsqrt))
         (let ((result (funcall (nb::primitive-eager (nb::find-primitive name)) (list nan-array) (list aval))))
           (is (sb-ext:float-nan-p (%decode-unary-scalar dtype (row-major-aref result 0)))
               "~A/~A: NaN 入力の結果が NaN でない" name dtype))))))
@@ -415,6 +421,69 @@ MAX/MIN が引数の順序で挙動を変える問題を再発させないため
           (is (sb-ext:float-nan-p
                (%decode-unary-scalar dtype (row-major-aref (funcall eager (list one nan) (list aval aval)) 0)))
               "~A/~A: 1.0, NaN" name dtype))))))
+
+(defun %unary-eager-scalar (name dtype value)
+  "NAME の eager 実装を VALUE（double）のスカラーに適用し、結果を double で返す。"
+  (let ((aval (nb:make-aval '() dtype)))
+    (%decode-unary-scalar
+     dtype (row-major-aref (funcall (nb::primitive-eager (nb::find-primitive name))
+                                    (list (%unary-scalar-array dtype value)) (list aval))
+                           0))))
+
+(test primitives/sqrt-rsqrt/negative-is-nan
+  "負の入力は sqrt / rsqrt とも NaN になる（複素数を返さない。全 dtype、issue #196）。"
+  (dolist (dtype *dtypes*)
+    (dolist (name '(:sqrt :rsqrt))
+      (is (sb-ext:float-nan-p (%unary-eager-scalar name dtype -4.0d0)) "~A/~A: -4" name dtype)
+      (is (sb-ext:float-nan-p (%unary-eager-scalar name dtype -1.0d-3)) "~A/~A: -1e-3" name dtype))))
+
+(test primitives/sqrt-rsqrt/exact-values-and-boundaries
+  "sqrt(4)=2, rsqrt(4)=0.5, sqrt(0)=0, rsqrt(0)=+無限大, sqrt(-0)=-0 (全 dtype)。"
+  (dolist (dtype *dtypes*)
+    (is (= 2d0 (%unary-eager-scalar :sqrt dtype 4d0)) "sqrt ~A" dtype)
+    (is (= 0.5d0 (%unary-eager-scalar :rsqrt dtype 4d0)) "rsqrt ~A" dtype)
+    (is (= 0d0 (%unary-eager-scalar :sqrt dtype 0d0)) "sqrt 0 ~A" dtype)
+    (let ((r (%unary-eager-scalar :rsqrt dtype 0d0)))
+      (is (and (not (sb-ext:float-nan-p r)) (plusp r) (> r 1d30)) "rsqrt 0 ~A: ~S" dtype r))
+    (let ((r (%unary-eager-scalar :rsqrt dtype -0d0)))
+      (is (and (not (sb-ext:float-nan-p r)) (minusp r) (< r -1d30)) "rsqrt -0 ~A: ~S" dtype r))
+    (let ((r (%unary-eager-scalar :sqrt dtype -0d0)))
+      (is (and (zerop r) (minusp (float-sign r))) "sqrt -0 ~A: ~S" dtype r))))
+
+(test primitives/sqrt-rsqrt/eager-matches-jax-fixture
+  "sqrt / rsqrt の eager 実装は、JAX（jax.lax.sqrt / rsqrt。tests/fixtures/sqrt/generate.py）
+のフィクスチャと全 dtype で一致する（NaN・±無限大・±0 は厳密、それ以外は dtype の許容誤差）。
+入力には ±0・±inf・NaN・負の値・非正規数を含む。"
+  (dolist (dtype *dtypes*)
+    (let* ((rows (load-sqrt-jax-fixture dtype))
+           (x (sqrt-fixture-input-array dtype rows))
+           (aval (nb:make-aval (list (length rows)) dtype)))
+      (is (plusp (length rows)))
+      (loop for (name index) in '((:sqrt 1) (:rsqrt 2))
+            for result = (funcall (nb::primitive-eager (nb::find-primitive name)) (list x) (list aval))
+            do (loop for row in rows for i from 0
+                     do (is (sqrt-fixture-match-p dtype (aref result i) (nth index row))
+                            "~A/~A: 入力ビット ~D, 期待 ~D, 実際 ~S"
+                            name dtype (first row) (nth index row) (aref result i)))))))
+
+(test primitives/rsqrt/public-function-on-arrays-and-numbers
+  "nb:rsqrt は with-tracing の外でも呼べる: 配列には eager のプリミティブ、数値には
+(/ 1 (sqrt x))。"
+  (is (fboundp 'nb:rsqrt))
+  (let ((result (nb:rsqrt (make-array 3 :element-type 'double-float :initial-contents '(4d0 1d0 0.25d0)))))
+    (is (allclose result (make-array 3 :element-type 'double-float :initial-contents '(0.5d0 1d0 2d0)) :dtype :f64)))
+  (is (= 0.5 (nb:rsqrt 4.0))))
+
+(test primitives/sqrt-rsqrt/number-literals-in-with-tracing
+  "with-tracing の中の数値リテラルの (sqrt 4) / (nb:rsqrt 4) は CL の演算で畳まれ、
+トレーサと組める。"
+  (let ((add-rsqrt (nb:trace-to-graph (nb:with-tracing (x) (+ x (nb:rsqrt 4))) (list (nb:make-aval '(2) :f64))))
+        (add-sqrt (nb:trace-to-graph (nb:with-tracing (x) (+ x (sqrt 4))) (list (nb:make-aval '(2) :f64))))
+        (x (make-array 2 :element-type 'double-float :initial-contents '(1d0 2d0))))
+    (is (allclose (nb:eval-graph add-rsqrt x)
+                  (make-array 2 :element-type 'double-float :initial-contents '(1.5d0 2.5d0)) :dtype :f64))
+    (is (allclose (nb:eval-graph add-sqrt x)
+                  (make-array 2 :element-type 'double-float :initial-contents '(3d0 4d0)) :dtype :f64))))
 
 (test primitives/log/zero-is-negative-infinity
   "log(0) は符号によらず負の無限大になる（境界値、全 dtype）。"

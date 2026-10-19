@@ -2,7 +2,7 @@
 ;;;; #80 がこのファイルに他の要素演算を足す）。
 ;;;;
 ;;;; ルールを書く人への制約: 接線は、その被演算子について線形なプリミティブ
-;;;; にしか流さない。接線どうしの積や、接線への exp / log / tanh / max / min /
+;;;; にしか流さない。接線どうしの積や、接線への exp / log / tanh / sqrt / rsqrt / max / min /
 ;;;; compare / reduce-max は禁止。mul / div / dot-general は片側だけが接線に
 ;;;; なるように書く（係数は主値だけから作る）。transpose（#78）はルールが
 ;;;; 出す接線側の eqn をこの線形性に頼って逆向きにたどるため。
@@ -64,6 +64,14 @@
 ;; d tanh(x) = (1 − tanh²(x))·t。
 (def-jvp-partials tanh
   (lambda (primals out) (declare (ignore primals)) (%t-sub 1 (%t-mul out out))))
+
+;; d sqrt(x) = 0.5 / sqrt(x) · t。係数は出力だけから作る。
+(def-jvp-partials sqrt
+  (lambda (primals out) (declare (ignore primals)) (%t-div (%lift-number 0.5 out) out)))
+
+;; d rsqrt(x) = −0.5 · rsqrt(x) / x · t。係数は主値と出力だけから作る。
+(def-jvp-partials rsqrt
+  (lambda (primals out) (%t-mul (%lift-number -0.5 out) (%t-div out (first primals)))))
 
 (defun %balanced-eq (x z y)
   "JAX の _balanced_eq: X が Z（max / min の出力）と等しい要素で、Y も Z と

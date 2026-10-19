@@ -367,6 +367,32 @@ rank 0 で SHAPE が rank 0 でなければ :BROADCAST-IN-DIM で SHAPE まで
 (defmethod %t-log ((a tracer))
   (%trace-op-tracer :log a))
 
+;;; --- %t-sqrt / %t-rsqrt（issue #196）。 ---
+
+(defgeneric %t-sqrt (a)
+  (:documentation "SQRT(A)（トレース対象の (sqrt a)）。"))
+
+(defmethod %t-sqrt ((a real))
+  (%trace-op-real #'sqrt a))
+
+(defmethod %t-sqrt ((a array))
+  (%trace-op-array :sqrt a))
+
+(defmethod %t-sqrt ((a tracer))
+  (%trace-op-tracer :sqrt a))
+
+(defgeneric %t-rsqrt (a)
+  (:documentation "RSQRT(A) = 1/SQRT(A)（トレース対象の (rsqrt a)）。"))
+
+(defmethod %t-rsqrt ((a real))
+  (%trace-op-real (lambda (x) (/ 1 (sqrt x))) a))
+
+(defmethod %t-rsqrt ((a array))
+  (%trace-op-array :rsqrt a))
+
+(defmethod %t-rsqrt ((a tracer))
+  (%trace-op-tracer :rsqrt a))
+
 ;;; --- %t-tanh: TANH(A)（トレース対象の (tanh a)）。 ---
 
 (defgeneric %t-tanh (a)

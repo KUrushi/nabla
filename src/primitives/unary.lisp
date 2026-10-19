@@ -1,4 +1,5 @@
-;;;; primitives/unary: 単項プリミティブ neg / exp / log / tanh（issue #31 p2）。
+;;;; primitives/unary: 単項プリミティブ neg / exp / log / tanh（issue #31 p2）と
+;;;; sqrt / rsqrt（issue #196）。
 ;;;;
 ;;;; いずれも1入力・浮動小数点専用で、出力は入力そのものの AVAL
 ;;;; （%UNARY-FLOAT-ABSTRACT-EVAL、src/primitives/common.lisp）。arith.lisp
@@ -40,6 +41,28 @@ MINUSP は -0.0 を偽にするので、ZEROP のこの分岐が無いと -0.0 �
   "TANH(X)（1要素）。巨大な絶対値の X は ±1.0 になる（オーバーフローしない）。"
   (tanh x))
 
+(defun %sqrt-element (x)
+  "SQRT(X)（1要素）。CL の (sqrt -1.0) は複素数を返すため（%LOG-ELEMENT と同じ
+pitfall）、負の値は明示的に quiet NaN にする。NaN と ±0 はそのまま返す
+（IEEE 754 の sqrt(-0) = -0。ZEROP で先に拾わないと -0.0 が複素数側に落ちうる）。"
+  (cond
+    ((sb-ext:float-nan-p x) x)
+    ((zerop x) x)
+    ((minusp x) (%quiet-nan (if (typep x 'double-float) 'double-float 'single-float)))
+    (t (sqrt x))))
+
+(defun %rsqrt-element (x)
+  "RSQRT(X) = 1/SQRT(X)（1要素）。±0 は ±無限大、負の値は NaN、+無限大は 0。
+NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
+  (let ((double-p (typep x 'double-float)))
+    (cond
+      ((sb-ext:float-nan-p x) x)
+      ((zerop x) (if (minusp (float-sign x))
+                     (if double-p sb-ext:double-float-negative-infinity sb-ext:single-float-negative-infinity)
+                     (if double-p sb-ext:double-float-positive-infinity sb-ext:single-float-positive-infinity)))
+      ((minusp x) (%quiet-nan (if double-p 'double-float 'single-float)))
+      (t (/ 1 (sqrt x))))))
+
 (defun %neg-abstract-eval (in-avals)
   (%unary-numeric-abstract-eval :neg in-avals))
 
@@ -52,6 +75,12 @@ MINUSP は -0.0 を偽にするので、ZEROP のこの分岐が無いと -0.0 �
 (defun %tanh-abstract-eval (in-avals)
   (%unary-float-abstract-eval :tanh in-avals))
 
+(defun %sqrt-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :sqrt in-avals))
+
+(defun %rsqrt-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :rsqrt in-avals))
+
 (defun %neg-emit (in-names out-name out-aval)
   (%emit-elementwise "negate" in-names out-name out-aval))
 
@@ -63,6 +92,12 @@ MINUSP は -0.0 を偽にするので、ZEROP のこの分岐が無いと -0.0 �
 
 (defun %tanh-emit (in-names out-name out-aval)
   (%emit-elementwise "tanh" in-names out-name out-aval))
+
+(defun %sqrt-emit (in-names out-name out-aval)
+  (%emit-elementwise "sqrt" in-names out-name out-aval))
+
+(defun %rsqrt-emit (in-names out-name out-aval)
+  (%emit-elementwise "rsqrt" in-names out-name out-aval))
 
 (defun %neg-eager (arrays in-avals)
   (with-ieee-arithmetic
@@ -79,6 +114,14 @@ MINUSP は -0.0 を偽にするので、ZEROP のこの分岐が無いと -0.0 �
 (defun %tanh-eager (arrays in-avals)
   (with-ieee-arithmetic
     (%elementwise-eager #'%tanh-element arrays in-avals (%tanh-abstract-eval in-avals))))
+
+(defun %sqrt-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%sqrt-element arrays in-avals (%sqrt-abstract-eval in-avals))))
+
+(defun %rsqrt-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%rsqrt-element arrays in-avals (%rsqrt-abstract-eval in-avals))))
 
 (defprimitive neg ()
   :abstract-eval (lambda (in-avals) (%neg-abstract-eval in-avals))
@@ -107,3 +150,17 @@ MINUSP は -0.0 を偽にするので、ZEROP のこの分岐が無いと -0.0 �
           (declare (ignore in-avals))
           (%tanh-emit in-names out-name out-aval))
   :eager (lambda (arrays in-avals) (%tanh-eager arrays in-avals)))
+
+(defprimitive sqrt ()
+  :abstract-eval (lambda (in-avals) (%sqrt-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%sqrt-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%sqrt-eager arrays in-avals)))
+
+(defprimitive rsqrt ()
+  :abstract-eval (lambda (in-avals) (%rsqrt-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%rsqrt-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%rsqrt-eager arrays in-avals)))
