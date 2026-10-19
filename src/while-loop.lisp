@@ -195,21 +195,27 @@ EXPECTED は INIT の葉の AVAL のリスト、ACTUAL は BODY-FN の戻り値�
     (when (null leaves)
       (%while-loop-fail 'while-loop-argument-error
                         "INIT は葉（配列かトレーサ）を1つ以上持つ PyTree でなければならない: ~S" init))
-    (%while-loop-check-leaves leaves)
-    (values leaves treedef)))
+    (values (%while-loop-check-leaves leaves) treedef)))
 
 (defun %while-loop-check-leaves (leaves)
-  (dolist (carry leaves)
-    (unless (or (typep carry 'tracer) (typep carry '(and array (not string))))
-      (%while-loop-fail 'while-loop-argument-error
-                        "carry は配列かトレーサでなければならない: ~S" carry))
-    ;; dtype が一意に決まらない配列（生の (unsigned-byte 16) の bf16 / f16 など）は
-    ;; aval を作れない。トレーサ（dtype を持つ）で渡す。
-    (when (typep carry '(and array (not string)))
-      (handler-case (array-aval carry)
-        (error ()
-          (%while-loop-fail 'while-loop-argument-error
-                            "carry の配列の dtype を決められない（bf16 / f16 はトレーサで渡す）: ~S" carry))))))
+  "葉のリストを検査して、実数の葉を rank 0 の配列に持ち上げたリストを返す（持ち上げ規則は
+SCAN と共有する %REAL-SCALAR-ARRAY。double-float は :F64、整数などそれ以外は :F32）。"
+  (mapcar
+   (lambda (carry)
+     (typecase carry
+       (tracer carry)
+       (real (%real-scalar-array carry))
+       ((and array (not string))
+        ;; dtype が一意に決まらない配列（生の (unsigned-byte 16) の bf16 / f16 など）は
+        ;; aval を作れない。トレーサ（dtype を持つ）で渡す。
+        (handler-case (array-aval carry)
+          (error ()
+            (%while-loop-fail 'while-loop-argument-error
+                              "carry の配列の dtype を決められない（bf16 / f16 はトレーサで渡す）: ~S" carry)))
+        carry)
+       (t (%while-loop-fail 'while-loop-argument-error
+                            "carry は配列・トレーサ・実数でなければならない: ~S" carry))))
+   leaves))
 
 (defun %while-loop-trace-regions (cond-fn body-fn avals treedef)
   "COND-FN / BODY-FN を AVALS（carry の葉の aval、木の形は TREEDEF）でサブグラフにトレースして、検査したうえで、
@@ -264,7 +270,11 @@ CAPTURED は cond と body が捕まえた外側のトレーサの和集合（EQ
 (defun while-loop (cond-fn body-fn init)
   "COND-FN が真の間 BODY-FN を繰り返し、最後の carry を返す（JAX の lax.while_loop）。
 INIT は PyTree（リスト・ベクタ・DEFPYTREE / DEFMODULE の型を入れ子にした木。配列そのもの
-でもよい）で、葉は配列（トレース中はトレーサでもよい）、葉は1つ以上。
+でもよい）で、葉は配列（トレース中はトレーサでもよい）か Lisp の実数、葉は1つ以上。
+実数の葉は rank 0 の配列に持ち上げてから cond-fn / body-fn に渡す（SCAN と同じ規則）:
+double-float は :f64、それ以外（整数・有理数・single-float）は :f32。**整数も :f32 になる**
+ので、整数のカウンタが要るなら :i32 の配列で渡す。BODY-FN が返す実数リテラルも同じ規則で
+持ち上がる（INIT の葉と同じ実数なら aval が一致する）。
 COND-FN / BODY-FN は carry の木を1つ受け取る関数（WITH-TRACING で作る）:
 COND-FN は rank 0 の :i1（比較の結果など）を返し、BODY-FN は INIT と同じ木の形（TREEDEF=）で、
 葉の AVAL（shape・dtype）も同じ carry の木を返す。結果は INIT と同じ木の形で返る。eager の結果は INIT・閉包で捕まえた配列と EQ でありうる（README「配列の不変性」）。
@@ -273,7 +283,7 @@ COND-FN は rank 0 の :i1（比較の結果など）を返し、BODY-FN は INI
 :WHILE-LOOP の eqn（StableHLO では stablehlo.while）としてトレースされる。COND-FN /
 BODY-FN は外側のトレーサを閉包で捕まえてよい（loop 不変の値として扱われる）。
 
-エラー（どれも WHILE-LOOP-ERROR の子）: INIT が PyTree として不正・葉が無い・葉が配列でない、
+エラー（どれも WHILE-LOOP-ERROR の子）: INIT が PyTree として不正・葉が無い・葉が配列・トレーサ・実数でない（文字列など）、
 関数でない、BODY-FN の戻り値が PyTree として不正 → WHILE-LOOP-ARGUMENT-ERROR。BODY-FN の
 戻り値の木の形か葉の AVAL が INIT と違う → WHILE-LOOP-CARRY-MISMATCH（トレース時に検出する。
 0回で終わる場合でも）。COND-FN の結果が rank 0 の :i1 でない → WHILE-LOOP-CONDITION-ERROR。

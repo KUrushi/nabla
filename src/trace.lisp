@@ -174,6 +174,16 @@ TRACING-ERROR を signal する。"
 DTYPE が :I1 なら TRACING-ERROR を signal する。"
   (%filled-array '() dtype number))
 
+(defun %real-dtype (number)
+  "Lisp の実数 NUMBER を配列に持ち上げるときの dtype（DOUBLE-FLOAT は :F64、整数・有理数・
+SINGLE-FLOAT などそれ以外は :F32）。%OUTVAR-OF・scan・while-loop が共有する規則。"
+  (if (typep number 'double-float) :f64 :f32))
+
+(defun %real-scalar-array (number)
+  "Lisp の実数 NUMBER を、%REAL-DTYPE の dtype の rank 0 配列にして返す。整数も :F32 になる
+（整数の carry が要るなら :I32 の配列で渡す）。"
+  (%scalar-array number (%real-dtype number)))
+
 (defun %fill-array (number like-array)
   "NUMBER を LIKE-ARRAY と同じ shape・dtype の配列にして返す（%LIFT-NUMBER の
 eager 版）。LIKE-ARRAY が生の (UNSIGNED-BYTE 16) 配列（bf16/f16）だと dtype が
@@ -250,7 +260,7 @@ TRACING-ERROR を signal する。"
                 :format-arguments (list value))))
      (tracer-var (%resolve-tracer value)))
     ((typep value 'real)
-     (let ((dtype (if (typep value 'double-float) :f64 :f32)))
+     (let ((dtype (%real-dtype value)))
        (tracer-var (%lift-constant (%scalar-array value dtype) (make-aval '() dtype) trace))))
     ((arrayp value)
      (tracer-var (%lift-constant value (array-aval value) trace)))

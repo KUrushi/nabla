@@ -242,7 +242,9 @@ tests/pytree-control-test.lisp）。"
   (signals nb:while-loop-argument-error
     (nb:while-loop *wl-cond* *wl-body* '()))
   (signals nb:while-loop-argument-error
-    (nb:while-loop *wl-cond* *wl-body* (list 1.0 2.0 3.0)))
+    (nb:while-loop *wl-cond* *wl-body* (list "a" "b" "c")))
+  (signals nb:while-loop-argument-error
+    (nb:while-loop *wl-cond* *wl-body* (list (%wl-scalar 0.0) 'x (%wl-scalar 1.0))))
   (signals nb:while-loop-argument-error
     (nb:while-loop *wl-cond* 3 (list (%wl-scalar 0.0))))
   ;; dtype を決められない配列（生の (unsigned-byte 16) = bf16 / f16）も同じコンディション
@@ -250,6 +252,12 @@ tests/pytree-control-test.lisp）。"
     (nb:while-loop *wl-cond* *wl-body*
                    (list (make-array '() :element-type '(unsigned-byte 16)) (%wl-scalar 1.0)
                          (%wl-scalar 1.0)))))
+
+(test while-loop/invalid-init-tree-message-names-init
+  "INIT が PyTree として不正なときのメッセージは、どの引数かを INIT と示す。"
+  (handler-case (nb:while-loop *wl-cond* *wl-body* (cons (%wl-scalar 0.0) 1))
+    (nb:while-loop-argument-error (c) (is (search "INIT" (princ-to-string c))))
+    (:no-error (&rest values) (declare (ignore values)) (fail "エラーにならなかった"))))
 
 (test while-loop/signals-carry-mismatch-at-trace-time
   "body-fn の出力の aval（個数・shape・dtype）か木の形が init と違えば WHILE-LOOP-CARRY-MISMATCH。
@@ -540,3 +548,138 @@ stablehlo.optimization_barrier を通る（引数の x と limit は通らない
   (let ((nb::*stablehlo-region-counter* 4))
     (is (= 5 (nb::%stablehlo-unique-id)))
     (is (= 6 (nb::%stablehlo-unique-id)))))
+
+;;; ---- 実数の carry（issue #227）。葉の Lisp の実数は SCAN と同じ規則で rank 0 の配列に
+;;; 持ち上げる: double-float は :f64、整数・有理数・single-float は :f32（整数も :f32） ----
+
+(defun %wl-lifted (real)
+  "REAL を、規則どおり（double は :f64、それ以外は :f32）に持ち上げた rank 0 配列。"
+  (%wl-scalar real (if (typep real 'double-float) :f64 :f32)))
+
+(defparameter *wl-reals*
+  (list 0 3 -7 1/2 -3/4 0.25 -1.5 2d0 -0.125d0)
+  "整数・有理数・single-float・double-float の実数。")
+
+(defun %wl-real-at (seed)
+  (nth (mod seed (length *wl-reals*)) *wl-reals*))
+
+(defparameter *wl-count-cond* (nb:with-tracing (c) (< (first c) 3.0)))
+
+(test while-loop/real-leaves-equal-array-leaves-eager
+  "PyTree carry の葉に実数（整数・有理数・single・double）を入れても、同じ値を持ち上げた
+rank 0 配列で渡した場合と同じ結果になる（eager）。カウンタの実数 0 も :f32 になる。"
+  (is (check-it
+       (generator (uniform-integer :lo 0 :hi 100000))
+       (lambda (seed)
+         (let* ((r (%wl-real-at seed))
+                (arr (%wl-seed-array seed '(2 3) :f32))
+                (body (nb:with-tracing (c) (list (+ (first c) 1.0) (second c) (third c))))
+                (with-real (nb:while-loop *wl-count-cond* body (list 0 r arr)))
+                (with-array (nb:while-loop *wl-count-cond* body (list (%wl-scalar 0.0) (%wl-lifted r) arr))))
+           (and (equal (array-dimensions (first with-real)) '())
+                (allclose (first with-real) (first with-array) :dtype :f32)
+                (eq (nb:array-dtype (second with-real)) (nb:array-dtype (second with-array)))
+                (allclose (second with-real) (second with-array)
+                          :dtype (nb:array-dtype (second with-array)))
+                (allclose (third with-real) (third with-array) :dtype :f32))))
+       :regression-id while-loop/real-leaves-eager
+       :regression-file (regression-path "while-loop-real-leaves-eager"))))
+
+(test while-loop/real-leaf-dtype-follows-the-scan-rule
+  "実数の葉の dtype は、double-float なら :f64、整数・有理数・single-float なら :f32。"
+  (dolist (case (list (list 0 :f32) (list 5 :f32) (list 1/3 :f32) (list 1.5 :f32) (list 1.5d0 :f64)))
+    (destructuring-bind (real dtype) case
+      (let ((result (nb:while-loop (nb:with-tracing (c) (< (first c) 0.0))
+                                   (nb:with-tracing (c) (list (first c)))
+                                   (list real))))
+        (is (eq dtype (nb:array-dtype (first result))))))))
+
+(test while-loop/body-real-literal-matches-init-lifting
+  "本体が実数リテラルを返しても、init の同じ種類の実数と aval が一致して carry 不一致にならない
+（single と double の両方、eager）。種類が違えば（single の init に double を返す）不一致。"
+  (is (check-it
+       (generator (uniform-integer :lo 0 :hi 100000))
+       (lambda (seed)
+         (let* ((init-real (%wl-real-at seed))
+                ;; init と同じ dtype に持ち上がる別の実数リテラルを返す
+                (literal (if (typep init-real 'double-float) 9.5d0 4))
+                (body (nb:with-tracing (c) (list (+ (first c) 1.0) literal)))
+                (result (nb:while-loop *wl-count-cond* body (list 0 init-real))))
+           (and (allclose (first result) (%wl-scalar 3.0) :dtype :f32)
+                (allclose (second result) (%wl-lifted literal)
+                          :dtype (if (typep init-real 'double-float) :f64 :f32)))))
+       :regression-id while-loop/body-real-literal
+       :regression-file (regression-path "while-loop-body-real-literal")))
+  (signals nb:while-loop-carry-mismatch
+    (nb:while-loop *wl-count-cond*
+                   (nb:with-tracing (c) (list (+ (first c) 1.0) 2d0))
+                   (list 0 1.0)))
+  (signals nb:while-loop-carry-mismatch
+    (nb:while-loop *wl-count-cond*
+                   (nb:with-tracing (c) (list (+ (first c) 1.0) 2))
+                   (list 0 1d0))))
+
+(test while-loop/body-computes-with-real-carry
+  "本体が実数の carry を使って計算する（x を 2 倍に足す）とき、結果は配列で渡した場合と一致する
+（single / double）。"
+  (is (check-it
+       (generator (uniform-integer :lo 0 :hi 100000))
+       (lambda (seed)
+         (let* ((x (float (mod seed 11) 1d0))
+                (single (nb:while-loop *wl-count-cond*
+                                       (nb:with-tracing (c) (list (+ (first c) 1.0) (+ (second c) (second c))))
+                                       (list 0 (float x 1.0))))
+                (double (nb:while-loop (nb:with-tracing (c) (< (first c) 3d0))
+                                       (nb:with-tracing (c) (list (+ (first c) 1d0) (+ (second c) (second c))))
+                                       (list 0d0 x))))
+           (and (allclose (second single) (%wl-scalar (* 8.0 x)) :dtype :f32)
+                (allclose (second double) (%wl-scalar (* 8d0 x) :f64) :dtype :f64))))
+       :regression-id while-loop/body-computes-real
+       :regression-file (regression-path "while-loop-body-computes-real"))))
+
+(test while-loop/real-leaves-in-a-trace-equal-array-leaves
+  "トレース中（trace-to-graph + eval-graph）でも、実数の葉は配列の葉と同じ結果になる。
+init のカウンタは整数 0（:f32 になる）。"
+  (let ((graph-of (lambda (init-fn)
+                    (nb::trace-to-graph
+                     (nb:with-tracing (x) (values-list (nb:while-loop *wl-count-cond*
+                                                                     (nb:with-tracing (c) (list (+ (first c) 1.0) (+ (second c) 1.5) (third c)))
+                                                                     (funcall init-fn x))))
+                     (list (nb:make-aval '(3) :f32))))))
+    (let ((real-graph (funcall graph-of (lambda (x) (list 0 1 x))))
+          (array-graph (funcall graph-of (lambda (x) (list (%wl-scalar 0.0) (%wl-scalar 1.0) x)))))
+      (is (check-it
+           (generator (uniform-integer :lo 0 :hi 100000))
+           (lambda (seed)
+             (let ((x (%wl-seed-array seed '(3) :f32)))
+               (every (lambda (a b) (allclose a b :dtype :f32))
+                      (multiple-value-list (nb:eval-graph real-graph x))
+                      (multiple-value-list (nb:eval-graph array-graph x)))))
+           :regression-id while-loop/real-leaves-traced
+           :regression-file (regression-path "while-loop-real-leaves-traced"))))))
+
+(test while-loop/real-leaves-inside-vmap
+  "vmap の中の while-loop でも実数の葉（整数のカウンタ 0）が動き、バッチ軸の各要素に 3 回
+足した結果になる。"
+  (let ((f (nb:with-tracing (x)
+             (second (nb:while-loop *wl-count-cond*
+                                    (nb:with-tracing (c) (list (+ (first c) 1.0) (+ (second c) 1.0)))
+                                    (list 0 x))))))
+    (is (check-it
+         (generator (uniform-integer :lo 0 :hi 100000))
+         (lambda (seed)
+           (let ((xs (%wl-seed-array seed '(4 2) :f32)))
+             (allclose (funcall (nb:vmap f) xs)
+                       (funcall (nb:with-tracing (x) (+ x 3.0)) xs)
+                       :dtype :f32)))
+         :regression-id while-loop/real-leaves-vmap
+         :regression-file (regression-path "while-loop-real-leaves-vmap")))))
+
+(test while-loop/non-real-leaves-still-signal-argument-error
+  "文字列・シンボル・NIL・文字などの葉は、実数が通るようになっても WHILE-LOOP-ARGUMENT-ERROR。
+複素数も実数ではない。"
+  (dolist (bad (list "text" 'sym #\a #c(1.0 2.0)))
+    (handler-case (nb:while-loop *wl-count-cond* #'identity (list 0 bad))
+      (nb:while-loop-argument-error (c)
+        (is (search "実数" (princ-to-string c))))
+      (:no-error (&rest values) (declare (ignore values)) (fail "エラーにならなかった: ~S" bad)))))
