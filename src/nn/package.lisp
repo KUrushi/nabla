@@ -13,6 +13,12 @@
    #:safetensors-error
    #:safetensors-error-path
    #:safetensors-error-reason
-   #:safetensors-error-detail)
+   #:safetensors-error-detail
+   ;; defmodule（issue #202）
+   #:defmodule
+   #:call
+   #:split-keys
+   #:map-state
+   #:module-slots)
   (:documentation
-   "nabla/nn: モデル記述の層。現在は safetensors の読み書きだけ。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書きと defmodule。"))

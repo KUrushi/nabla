@@ -148,6 +148,9 @@ pretty form を出力する。
 **PyTree / 葉（leaf） / treedef**
 : リストや構造体を入れ子にした木構造で、葉に配列を持つもの。モデルのパラメータ全体を1つの値として `grad` や `jit` に渡すために使う。`tree-flatten` で葉の列（左から順）と木の形に平たくし、`tree-unflatten` で元の形に戻す。nabla で既定の節（子を持つもの）はリストと `simple-vector`、それに `defpytree` で登録した型だけで、`nil` は空の部分木。それ以外（配列・数値・トレーサなど）はすべて葉になる。treedef は葉を取り除いた「木の形」で、節の種類・子の個数・登録した型の補助データ（層の幅のような静的な値）を持ち、`treedef=` で比べる。
 
+**モジュール（module）**
+: nabla では、パラメータを持つ構造体（`defmodule` で定義）。パラメータ・サブモジュール（`:param`）、学習しない状態（`:state`、BatchNorm の統計など）、ハイパーパラメータ（`:static`、treedef の補助データ）を別のスロットに持ち、PyTree に自動登録される。Linen / Equinox と同じく「パラメータの PyTree ＋ 純粋関数」で、`(call module x)` で適用し、`init-<name>` が PRNG キーからパラメータを作る。
+
 **safetensors**
 : 名前を付けたテンソルの束を保存するファイル形式（Hugging Face）。先頭8バイトにJSONヘッダの長さ、次にヘッダ（名前ごとの dtype・形・データの範囲 `data_offsets`）、残りが生のバイト列。コードを実行しない純粋なデータ形式なので、pickle より安全に重みを配れる。nabla は `nabla/nn` で読み書きし、モデルのチェックポイントに使う（フェーズ4）。
 
