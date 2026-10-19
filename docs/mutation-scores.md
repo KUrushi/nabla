@@ -158,6 +158,21 @@ in-place に書く形に変わった（#172 のレビュー）ので、行ごと
 - 第2段で IREE の全 medium テストを変異体ごとに走らせると1体あたり数分かかるので、
   対象の emit に対応するテストを `--test-form` で選ぶ必要がある
 
+### 4.4 `%scan-emit` の追加測定（#237）
+
+#220（PR #236）の検証で `tools/mutate/run.sh src/scan.lisp:243-330` が 12/19（0.63）だった。
+生き残った7体のうち3体は emit した while の形（カウンタの型 `tensor<i32>`、`(subseq out-avals 0 num-carry)`、
+`(subseq return-names 0 num-carry)`）を small で見るテストが無かったためで、
+`scan/emitted-while-has-one-slot-per-counter-carry-and-ys`（PBT。num-carry・num-ys・length・reverse を生成器で変え、
+cond と本体の `^bb0` の引数、`}) : (` の両側の型、本体の `stablehlo.return` の値がどれも
+1 + num-carry + num-ys 個で、カウンタが `tensor<i32>` であることを確かめる）を足して殺した。
+残りの4体（`%scan-emit` の SSA 名の接頭辞 `cc` / `cy` / `bc` / `x` を `""` にする変異）は、名前が一意のまま
+綴りが変わるだけの等価変異体なので `tools/mutate/exclusions.lisp` に入れた。
+
+測り直し（`src/scan.lisp:219-341`、間引かない）は 19体中 殺した 15 / 除外 4 / 生存 0（score 1.0。
+除外前は 15/19）。なお除外は `defun` の全文を埋め込むので、`%scan-emit` を書き換える変更（#233）のあとは
+上の4体を新しい定義で測り直して登録し直す必要がある。
+
 ## 5. 測定で分かった運用上の注意
 
 - **同じチェックアウトで runner を並行に走らせない**。runner は変異体ごとに
