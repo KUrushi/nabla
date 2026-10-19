@@ -324,6 +324,33 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 - **補助データは EQUAL で比べられる値**（数値・文字・シンボル・文字列・パス名と、それらのコンス）に限る（treedef に入り、後で `jit` のキャッシュのキーになるため）。違えば `tree-flatten` が `pytree-error`
 - `tree-unflatten` はリストとベクタの節を新しく作り、葉はそのまま（`eq` で）置く
 
+#### defmodule（`nabla/nn`、issue #202）
+
+Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋関数」を書く。`(defmodule name (slot...) clause...)`:
+
+```lisp
+(nabla.nn:defmodule dense ((w :param) (b :param) (act :static))
+  (:init (key in out act)
+   (destructuring-bind (kw kb) (nabla.nn:split-keys key 2)
+     (make-dense :w (nabla:normal kw (list in out)) :b (nabla:uniform kb (list out)) :act act)))
+  (:call (self x) ...))
+(init-dense (nabla:prng-key 0) 3 4 :relu)    ; => #S(DENSE ...)
+(nabla.nn:call layer x)
+```
+
+| 名前 | 役割 |
+| --- | --- |
+| `defmodule` | 構造体 `name`・コンストラクタ `make-name`（スロットのキーワード引数、すべて必須）・アクセサ `name-slot` を作り、PyTree に登録する。`(:init (key . ll) body)` があれば関数 `init-name`、`(:call (self . ll) body)` があれば `call` のメソッド |
+| `call` | モジュールを引数に適用する総称関数 |
+| `split-keys` `(key n)` | PRNG キーから独立な `n` 個のキーのリスト（eager 専用）。サブモジュールの init に分けて渡す |
+| `map-state` `(function tree)` | `:state` スロットの葉すべてに `function` をかけた同じ形の木。`(map-state #'nabla:stop-gradient model)` で状態を `grad` から外す |
+| `module-slots` `(name-or-instance)` | 宣言順の `(スロット . 種類)`。チェックポイントのパス名（#206）用 |
+
+- スロットの種類: `:param`（省略時。学習する葉・サブモジュール・そのリスト）、`:state`（学習しない状態。葉だが `map-state` で扱う）、`:static`（層の幅などのハイパーパラメータ。葉でなく treedef の補助データ。`equal` で比べられる値に限る）。葉は `:param` / `:state` の宣言順
+- `:call` の本体は `with-tracing` の本体として書く（コードウォークされる。引数リストは必須引数のシンボルだけ、`setq` 禁止、`self` は閉包で捕まえる）ので、`+` `*` や `nb:dot` が配列にもトレーサにも使え、`grad` / `vmap` / `jit` の中で呼べる。`(:init ...)` と `(:call ...)` の節はそれぞれ1つまで。述語 `name-p` と複写関数は作らない。`:static` の値は `equal` で比べられるものに限る（関数は不可。活性化関数はシンボルで持つ。`1e-5` と `1d-5` は別の treedef）。`defmodule` を再評価するときはフォーム全体を評価し直す（構造体だけ再定義すると古い `call` メソッドが残る）
+- 呼び出しの名前は `call`。`apply` は CL のシンボルで、`call` は CL に無い（`call-method` だけ）ので衝突しない
+- `init` はキーを `split-keys` で分けて渡すので、同じキーからは常に同じパラメータ。継承はサポートしない
+
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
 `nabla/nn`（パッケージ `nabla.nn`）の最初の部品。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree のパス名での平坦化は後続の issue）。`(asdf:load-system "nabla/nn")` で使う。

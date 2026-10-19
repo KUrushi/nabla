@@ -530,15 +530,18 @@
 
 ;; nabla/nn: モデル記述の層（issue #194）。最初の部品は safetensors の読み書き（issue #198）。
 (defsystem "nabla/nn"
-  :description "モデル記述の層（safetensors の読み書き。defmodule・レイヤー・オプティマイザは後続）"
+  :description "モデル記述の層（safetensors の読み書きと defmodule。レイヤー・オプティマイザは後続）"
   :depends-on ("nabla")
   :components ((:file "src/nn/package")
                (:file "src/nn/json")
-               (:file "src/nn/safetensors")))
+               (:file "src/nn/safetensors")
+               ;; defmodule（issue #202）
+               (:file "src/nn/module")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
   :description "nabla/nn のテスト"
   :depends-on ("nabla/nn" "nabla/test-support")
   :components ((:file "tests/nn/package")
-               (:file "tests/nn/safetensors-test")))
+               (:file "tests/nn/safetensors-test")
+               (:file "tests/nn/module-test")))
