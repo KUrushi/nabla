@@ -568,7 +568,9 @@
                (:file "src/nn/optimizer")
                ;; dense-general と attention のマスクの部品（issue #208）
                (:file "src/nn/dense-general")
-               (:file "src/nn/attention-mask")))
+               (:file "src/nn/attention-mask")
+               ;; multi-head attention（issue #208）
+               (:file "src/nn/attention")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -592,4 +594,7 @@
                (:file "tests/nn/module-control-test")
                ;; dense-general と attention のマスクの部品（issue #208）
                (:file "tests/nn/dense-general-test")
-               (:file "tests/nn/attention-mask-test")))
+               (:file "tests/nn/attention-mask-test")
+               ;; multi-head attention（issue #208）
+               (:file "tests/nn/attention-test")
+               (:file "tests/nn/attention-iree-test")))

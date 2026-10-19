@@ -60,6 +60,10 @@
    ;; dense-general と attention のマスクの部品（issue #208）
    #:dense-general #:make-dense-general #:init-dense-general #:dense-general-kernel #:dense-general-bias
    #:dense-general-contract-axes
-   #:make-causal-mask #:make-attention-mask #:combine-masks)
+   #:make-causal-mask #:make-attention-mask #:combine-masks
+   ;; multi-head attention（issue #208）
+   #:multi-head-attention #:make-multi-head-attention #:init-multi-head-attention
+   #:multi-head-attention-query #:multi-head-attention-key #:multi-head-attention-value
+   #:multi-head-attention-out #:multi-head-attention-dropout-rate)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention。"))
