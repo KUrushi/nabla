@@ -375,7 +375,9 @@ count、mu（params と同じ形）、nu（同じ形）の順。"
 
 (test (optimizer/clip-by-global-norm-bounds-the-norm :suite :nabla.small)
   "clip-by-global-norm の結果の大域ノルムは max-norm を超えない（f32 の丸めの分だけ余裕を見る）。
-入力のノルムが max-norm 未満なら素通しで、そうでなければ勾配と同じ向きに max-norm へ縮める。"
+入力のノルムが max-norm 未満なら素通しで、そうでなければ勾配と同じ向きに max-norm へ縮める。
+期待する縮める係数は min(1, max-norm / in-norm)。in-norm が 0.999 max-norm 以上 max-norm 未満のときは
+素通しなので、係数を 1 で頭打ちにする（頭打ちにしないと 1 より大きい係数を期待してしまう）。"
   (%pbt (optimizer/clip-norm (seed scale-index max-index)
           (generator (tuple (uniform-integer :lo 0 :hi 10000)
                             (uniform-integer :lo 1 :hi 40)
@@ -390,7 +392,7 @@ count、mu（params と同じ形）、nu（同じ形）の順。"
       (and (<= out-norm (* max-norm (+ 1d0 1d-5)))
            (if (< in-norm (* max-norm 0.999d0))
                (%leaves-equal updates grads)
-               (let ((factor (/ max-norm in-norm)))
+               (let ((factor (min 1d0 (/ max-norm in-norm))))
                  (every (lambda (u g)
                           (let ((expected (make-array (array-dimensions g) :element-type 'single-float)))
                             (dotimes (i (array-total-size g))
