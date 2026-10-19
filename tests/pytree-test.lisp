@@ -222,22 +222,18 @@
   (equal (%children-leaves tree) (nb:tree-leaves tree)))
 
 (def-pytree-property pytree/children-node-p-agrees-with-flatten
-  "node-p は tree-flatten が節として扱うか（treedef の spec が :leaf でないか）と一致し、
-子の個数・補助データも spec と一致する（リスト・ベクタの aux は NIL）。"
+  "全ての部分木で、node-p は treedef が葉の treedef（葉1つの木の形）と違うことと一致し、
+葉は (values nil nil nil) になる。"
   (tree) (generator (tuple (pytree-spec)))
-  (labels ((agrees (node)
-             (let ((spec (nabla::treedef-spec (nb:tree-structure node))))
+  (let ((leaf-treedef (nb:tree-structure 0)))
+    (labels ((agrees (node)
                (multiple-value-bind (children aux node-p) (nb:tree-children node)
-                 (if (eq spec :leaf)
-                     (and (null children) (null aux) (not node-p))
-                     (destructuring-bind (kind &rest more) spec
-                       (let ((spec-aux (if (eq kind :node) (second more) nil))
-                             (spec-children (if (eq kind :node) (cddr more) more)))
-                         (and node-p
-                              (equal spec-aux aux)
-                              (= (length children) (length spec-children))
-                              (every #'agrees children)))))))))
-    (agrees tree)))
+                 (if node-p
+                     (and (not (nb:treedef= (nb:tree-structure node) leaf-treedef))
+                          (every #'agrees children))
+                     (and (nb:treedef= (nb:tree-structure node) leaf-treedef)
+                          (null children) (null aux))))))
+      (agrees tree))))
 
 (def-pytree-property pytree/children-are-the-direct-children
   "リスト・ベクタ・登録した型の子は、構成した順の直下の要素で、aux は登録した型の補助データ。"

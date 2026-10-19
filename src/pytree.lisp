@@ -16,7 +16,8 @@
 ;;;;   EQUAL で比べられる値（数値・文字・シンボル・文字列・パス名と、それらのコンス）に限る。
 ;;;;
 ;;;; 節の判定は %NODE-PARTS の1か所に集め、TREE-FLATTEN と公開の TREE-CHILDREN（#239。
-;;;; PyTree の構造を内部表現を知らずに歩きたい nabla/nn のチェックポイント用）が共有する。
+;;;; PyTree の構造を内部表現を知らずに歩きたい nabla/nn のチェックポイント用）が共有する
+;;;; （vmap の軸の木は NIL を葉とする別の規則で、これは使わない）。
 ;;;;
 ;;;; spec の形（内部。export しない）:
 ;;;;   :leaf                       葉
@@ -149,8 +150,8 @@ FLATTEN が真リストでない子を返したときも PYTREE-ERROR。"
 
 (defun %node-parts (tree)
   "TREE が節なら (VALUES 子のリスト 補助データ 真 種類)、葉なら (VALUES NIL NIL NIL NIL)。
-種類は :LIST・:VECTOR・登録した型名。TREE-FLATTEN と TREE-CHILDREN が共有する、節の判定の
-唯一の定義。真リストでないコンスと、不正な FLATTEN の結果は PYTREE-ERROR。"
+種類は :LIST・:VECTOR・登録した型名。TREE-FLATTEN と TREE-CHILDREN が共有する節の判定
+（vmap の軸の木は NIL を葉とする別の規則）。真リストでないコンスと、不正な FLATTEN の結果は PYTREE-ERROR。"
   (cond
     ((listp tree)
      (unless (%proper-list-p tree)
