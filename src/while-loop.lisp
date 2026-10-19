@@ -1,7 +1,7 @@
 ;;;; while-loop: 反復回数がトレース時に決まらないループ（issue #131）。
 ;;;; JAX の lax.while_loop に相当する、サブグラフを持つ高階プリミティブ。
 ;;;;
-;;;; 公開 API は (WHILE-LOOP COND-FN BODY-FN INIT)。carry は配列（かトレーサ）を葉とする
+;;;; 公開 API は (WHILE-LOOP COND-FN BODY-FN INIT)。carry は配列・トレーサ・実数（rank 0 の配列に持ち上げる。issue #227）を葉とする
 ;;;; PyTree（issue #201。リストは既定の節なのでこれまでの呼び出しはそのまま動く）で、
 ;;;; COND-FN / BODY-FN はどちらも carry の木を1つ受け取る（契約 C4）。内部ではこれまでどおり
 ;;;; フラットな葉のリストで扱い、BODY-FN の戻り値の treedef が INIT と違えば
@@ -62,7 +62,7 @@ WHILE-LOOP-CONDITION-ERROR を見る。"))
 (define-condition while-loop-argument-error (while-loop-error) ()
   (:documentation
    "WHILE-LOOP の引数の型が不正なときに signal する: INIT が PyTree として不正か葉を持たない・
-葉が配列かトレーサでない、COND-FN / BODY-FN が関数でない、BODY-FN の戻り値が PyTree として不正。"))
+葉が配列・トレーサ・実数でない、COND-FN / BODY-FN が関数でない、BODY-FN の戻り値が PyTree として不正。"))
 
 (define-condition while-loop-carry-mismatch (while-loop-error)
   ((expected :initarg :expected :reader while-loop-carry-mismatch-expected)
@@ -194,7 +194,7 @@ EXPECTED は INIT の葉の AVAL のリスト、ACTUAL は BODY-FN の戻り値�
   (multiple-value-bind (leaves treedef) (%while-loop-flatten init "INIT")
     (when (null leaves)
       (%while-loop-fail 'while-loop-argument-error
-                        "INIT は葉（配列かトレーサ）を1つ以上持つ PyTree でなければならない: ~S" init))
+                        "INIT は葉（配列・トレーサ・実数）を1つ以上持つ PyTree でなければならない: ~S" init))
     (values (%while-loop-check-leaves leaves) treedef)))
 
 (defun %while-loop-check-leaves (leaves)

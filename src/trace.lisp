@@ -176,7 +176,8 @@ DTYPE が :I1 なら TRACING-ERROR を signal する。"
 
 (defun %real-dtype (number)
   "Lisp の実数 NUMBER を配列に持ち上げるときの dtype（DOUBLE-FLOAT は :F64、整数・有理数・
-SINGLE-FLOAT などそれ以外は :F32）。%OUTVAR-OF・scan・while-loop が共有する規則。"
+SINGLE-FLOAT などそれ以外は :F32）。%OUTVAR-OF・scan・while-loop が使う規則。cond / vmap / jit / grad は同じ規則を
+それぞれ別に持つ（統一は別 PR）。"
   (if (typep number 'double-float) :f64 :f32))
 
 (defun %real-scalar-array (number)

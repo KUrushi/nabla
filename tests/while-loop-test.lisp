@@ -234,7 +234,7 @@ while の carry）にはその値が1回だけ現れる: carry 2 + 捕捉値 2�
 ;;; ---- 厳格な検査（文書化したコンディション） ----
 
 (test while-loop/rejects-invalid-init
-  "init が PyTree として不正（真リストでないコンス）・葉が無い・葉が配列でない、または関数でない
+  "init が PyTree として不正（真リストでないコンス）・葉が無い・葉が配列・トレーサ・実数でない、または関数でない
 ものを渡すと WHILE-LOOP-ARGUMENT-ERROR（配列そのものや simple-vector は木として受け付ける。
 tests/pytree-control-test.lisp）。"
   (signals nb:while-loop-argument-error
