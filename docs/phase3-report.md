@@ -167,7 +167,7 @@ K = 8・32 の行は別の回の測定で、同じ K でも回によって 1〜2
 - ~~**PJRT では `:i1` が未対応のまま**~~ → #166 (b) で対応した（`:i1` を `PRED` に写し、ホストの BIT 配列と1要素1バイトの間を IREE と同じく詰め直す）。`:i1` の往復、jit の `:i1` の入出力、`cond*` の `pred` を引数で渡す形と比較由来の `:i1` の carry を返す `while-loop`（IREE 3.11 では落ちる形）を `tests/pjrt/i1-test.lisp` が PJRT と eager の一致で確かめる。
 - **PRNG は JAX とビット単位で一致しない**（§3.8）。`rng_bit_generator` の `:i32` のビットと Philox / `DEFAULT` は未対応。
 - **`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」は変わらない**（`cond*` / `while-loop` / `scan` の本体は closure conversion で捕まえられるが、`grad` / `vmap` の `f` は不可）。
-- **`vmap` / `grad` は `f` がリストを返せない**（`(with-tracing ... (values-list ...))` で包む。フェーズ4の PyTree で解消する見込み）。
+- **`vmap` / `grad` は `f` がリストを返せない**（`(with-tracing ... (values-list ...))` で包む。フェーズ4の PyTree で解消する見込み）。→ #199 / #200 で解消
 - **`(vmap f)` / `(grad f)` は呼ぶたびに新しい関数オブジェクト**を作り、ループの中で `(jit (vmap f))` を作ると毎回コンパイルされる（jit キャッシュのキーが関数の同一性のため）。
 - **`while-loop` の捕捉値の重複は取り除いた**（#166 の d。2026-10-04）。cond と body が同じトレーサを捕まえても、オペランド（StableHLO の while の carry）には1回だけ現れる（`cond*` と同じく、両方のサブグラフの invars を「carry、捕捉値の和集合」に揃える）。
 - **#166 にまとめた小さな積み残し**: f64 `normal` の裾（解消済み）、PJRT の `:i1`、`while-loop` の捕捉値の dedupe、eager の `scan` の EQ な carry、`scan` の bf16 生配列、IREE の `scan` テストの追加、`vmap` の多数決の軸。PJRT の `:i1` と dedupe（解消済み）は上の項目のとおり。

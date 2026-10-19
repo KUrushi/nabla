@@ -110,18 +110,70 @@ TRACER をそのまま返す。"
      (%jitted-function-fn f))
     (t (%vmap-error "vmap の対象は WITH-TRACING / DEFJIT / JIT が作った関数でなければならない: ~S" f))))
 
-(defun %vmap-axis-spec-p (spec)
+(defun %vmap-axis-leaf-p (spec)
+  "SPEC が軸の指定の葉（整数か NIL）なら真。"
   (or (null spec) (integerp spec)))
 
-(defun %vmap-per-item (spec count what)
-  "SPEC（整数か NIL なら全体に共通、それ以外はリスト）を COUNT 個の軸指定のリストにする。"
-  (cond
-    ((%vmap-axis-spec-p spec) (make-list count :initial-element spec))
-    ((and (listp spec) (every #'%vmap-axis-spec-p spec))
-     (unless (= (length spec) count)
-       (%vmap-error "~A の個数 ~D が ~D 個と一致しない: ~S" what (length spec) count spec))
-     (copy-list spec))
-    (t (%vmap-error "~A は整数・NIL、またはそのリストでなければならない: ~S" what spec))))
+(defun %vmap-check-axes-tree (axes what)
+  "AXES（IN-AXES / OUT-AXES の木）の葉がすべて整数か NIL で、節がリスト・SIMPLE-VECTOR・
+DEFPYTREE で登録した型のどれかなら、AXES の新しいコピー（節を作り直した木。葉は同じ値）を
+返す。違えば VMAP-ERROR。呼び出し側がコピーを持てば、利用者が後で AXES を書き換えても
+vmap した関数は変わらない。構造が引数・戻り値に合うかは、呼び出し時に
+%VMAP-BROADCAST-AXES が検査する。"
+  (flet ((copy-children (children)
+           (mapcar (lambda (child) (%vmap-check-axes-tree child what)) children)))
+    (cond
+      ((%vmap-axis-leaf-p axes) axes)
+      ((listp axes)
+       (unless (%proper-list-p axes)
+         (%vmap-error "~A は真リストでなければならない" what))
+       (copy-children axes))
+      ((simple-vector-p axes)
+       (coerce (copy-children (coerce axes 'list)) 'simple-vector))
+      ((%pytree-node-entry axes)
+       (let ((entry (%pytree-node-entry axes)))
+         (multiple-value-bind (children aux) (funcall (car entry) axes)
+           (unless (%proper-list-p children)
+             (%vmap-error "~A の型 ~S の FLATTEN が子のリストを返さなかった"
+                          what (class-name (class-of axes))))
+           (funcall (cdr entry) aux (copy-children children)))))
+      (t (%vmap-error "~A の葉は整数か NIL でなければならない: ~S" what axes)))))
+
+(defun %vmap-spec-leaf-count (spec)
+  "treedef の spec（src/pytree.lisp）の葉の個数。"
+  (if (eq spec :leaf)
+      1
+      (reduce #'+ (if (eq (first spec) :node) (nthcdr 3 spec) (rest spec))
+              :key #'%vmap-spec-leaf-count)))
+
+(defun %vmap-broadcast-axes (axes spec what)
+  "AXES（整数・NIL・または SPEC の木の接頭辞）を、SPEC（treedef の spec）の葉ごとの軸のリスト
+にする（JAX の flatten_axes）。整数か NIL は部分木まるごとに効く。節は、種類（リスト・
+SIMPLE-VECTOR・登録した型とその補助データ）と子の個数が SPEC と同じでなければならず、
+合わなければ VMAP-ERROR。"
+  (flet ((structure-mismatch ()
+           (%vmap-error "~A の構造が木の構造に合わない（木の接頭辞でない）: ~S" what axes))
+         (children (axes-children specs)
+           (loop for a in axes-children for s in specs
+                 append (%vmap-broadcast-axes a s what))))
+    (cond
+      ((%vmap-axis-leaf-p axes)
+       (make-list (%vmap-spec-leaf-count spec) :initial-element axes))
+      ((eq spec :leaf) (structure-mismatch))
+      (t
+       (ecase (first spec)
+         (:list (unless (and (listp axes) (= (length axes) (length (rest spec)))) (structure-mismatch))
+          (children axes (rest spec)))
+         (:vector (unless (and (simple-vector-p axes) (= (length axes) (length (rest spec)))) (structure-mismatch))
+          (children (coerce axes 'list) (rest spec)))
+         (:node
+          (destructuring-bind (type aux &rest specs) (rest spec)
+            (let ((entry (%pytree-node-entry axes)))
+              (unless (and entry (eq (class-name (class-of axes)) type)) (structure-mismatch))
+              (multiple-value-bind (axes-children axes-aux) (funcall (car entry) axes)
+                (unless (and (equal aux axes-aux) (= (length axes-children) (length specs)))
+                  (structure-mismatch))
+                (children axes-children specs))))))))))
 
 (defun %vmap-normalize-axis (axis rank what)
   "AXIS（整数。負なら RANK からの相対）を [0, RANK) の整数にする。範囲外は VMAP-ERROR。"
@@ -216,7 +268,7 @@ cond / while-loop / scan のルールも、本体のサブグラフをこの関�
 
 (defun %vmap-walk (graph tracers dims size out-axes)
   "%VMAP-WALK-VALUES で GRAPH をバッチ化して発行し直し、出力ごとに OUT-AXES（整数か NIL。
-正規化前。個数は呼び出し側 %VMAP-CALL が %VMAP-PER-ITEM で出力の個数に揃えてある）の
+正規化前。個数は呼び出し側 %VMAP-CALL が %VMAP-BROADCAST-AXES で出力の葉の個数に揃えてある）の
 位置へ動かした、出力のトレーサのリストを返す。"
   (multiple-value-bind (outs out-dims) (%vmap-walk-values graph tracers dims size)
     (loop for out in outs
@@ -226,10 +278,10 @@ cond / while-loop / scan のルールも、本体のサブグラフをこの関�
           collect (%vmap-finish-output out dim var spec size))))
 
 (defun %vmap-batch-dims (specs avals)
-  "引数ごとの IN-AXES 指定 SPECS を、正規化したバッチ軸（無ければ NIL）のリストにする。"
+  "葉ごとの IN-AXES 指定 SPECS を、正規化したバッチ軸（無ければ NIL）のリストにする。"
   (loop for spec in specs for aval in avals for i from 0
         collect (and spec (%vmap-normalize-axis spec (aval-rank aval)
-                                                (format nil "IN-AXES（引数 ~D）" i)))))
+                                                (format nil "IN-AXES（葉 ~D）" i)))))
 
 (defun %vmap-inner-aval (aval dim)
   "AVAL からバッチ軸 DIM（NIL ならそのまま）を取り除いた aval。"
@@ -239,50 +291,69 @@ cond / while-loop / scan のルールも、本体のサブグラフをこの関�
       aval))
 
 (defun %vmap-call (fn in-axes out-axes args)
-  "FN（TRACEABLE-FUNCTION）を ARGS でバッチ化して呼び、出力を多値で返す。"
+  "FN（TRACEABLE-FUNCTION）を ARGS でバッチ化して呼び、出力を多値で返す。ARGS の各要素と
+FN の戻り値は PyTree（#200）: 葉を並べた平らな関数にしてトレースし、IN-AXES / OUT-AXES は
+木の接頭辞として葉ごとの軸に展開する。"
   (let ((arity (length (traceable-function-lambda-list fn))))
     (unless (= (length args) arity)
       (%vmap-error "引数の個数 ~D が関数の引数の個数 ~D と一致しない" (length args) arity)))
-  (let* ((arguments (mapcar #'%vmap-argument args))
-         (avals (mapcar #'%vmap-argument-aval arguments))
-         (dims (%vmap-batch-dims (%vmap-per-item in-axes (length args) "IN-AXES") avals))
-         (sizes (loop for dim in dims for aval in avals when dim collect (nth dim (aval-shape aval))))
-         (size (first sizes)))
-    (unless sizes
-      (%vmap-error "バッチされた引数が1つもない（IN-AXES ~S）" in-axes))
-    (unless (every (lambda (s) (= s size)) sizes)
-      (%vmap-error "バッチ軸の長さが揃わない: ~S（IN-AXES ~S）" sizes in-axes))
-    (let* ((graph (%call-with-fresh-trace (mapcar #'%vmap-inner-aval avals dims)
-                                          (%traceable-function-function fn)))
-           (out-specs (%vmap-per-item out-axes (length (graph-outvars graph)) "OUT-AXES")))
-      (if *current-trace*
-          (values-list
-           (%vmap-walk graph
-                       (mapcar (lambda (a aval)
-                                 (if (typep a 'tracer) a (%lift-constant a aval *current-trace*)))
-                               arguments avals)
-                       dims size out-specs))
-          (let ((batched (%call-with-fresh-trace
-                          avals
-                          (lambda (&rest tracers)
-                            (values-list (%vmap-walk graph tracers dims size out-specs))))))
-            (apply #'eval-graph batched arguments))))))
+  (multiple-value-bind (leaves in-treedef) (%flatten-arguments args)
+    (let* ((arguments (mapcar #'%vmap-argument leaves))
+           (avals (mapcar #'%vmap-argument-aval arguments))
+           (dims (%vmap-batch-dims (%vmap-broadcast-axes in-axes (treedef-spec in-treedef) "IN-AXES")
+                                   avals))
+           (sizes (loop for dim in dims for aval in avals when dim collect (nth dim (aval-shape aval))))
+           (size (first sizes)))
+      (unless sizes
+        (%vmap-error "バッチされた引数が1つもない（IN-AXES ~S）" in-axes))
+      (unless (every (lambda (s) (= s size)) sizes)
+        (%vmap-error "バッチ軸の長さが揃わない: ~S（IN-AXES ~S）" sizes in-axes))
+      (multiple-value-bind (flat out-treedef-thunk)
+          (%flatten-function (%traceable-function-function fn) in-treedef)
+        (let* ((graph (%call-with-fresh-trace (mapcar #'%vmap-inner-aval avals dims) flat))
+               (out-treedef (funcall out-treedef-thunk))
+               (out-specs (%vmap-broadcast-axes out-axes (treedef-spec out-treedef) "OUT-AXES")))
+          (%unflatten-results
+           out-treedef
+           (if *current-trace*
+               (%vmap-walk graph
+                           (mapcar (lambda (a aval)
+                                     (if (typep a 'tracer) a (%lift-constant a aval *current-trace*)))
+                                   arguments avals)
+                           dims size out-specs)
+               (let ((batched (%call-with-fresh-trace
+                               avals
+                               (lambda (&rest tracers)
+                                 (values-list (%vmap-walk graph tracers dims size out-specs))))))
+                 (multiple-value-list (apply #'eval-graph batched arguments))))))))))
 
 (defun vmap (f &key (in-axes 0) (out-axes 0))
   "F（WITH-TRACING / DEFJIT / JIT が作った関数。JIT は静的引数が無いものだけ）を、
 引数のバッチ軸について一度にまとめて適用する関数を返す。結果は、バッチ軸で切り出した
 各要素に F を適用して、出力の OUT-AXES の位置に積み直したものと一致する。
 
-IN-AXES は引数ごとのバッチ軸（0始まりの整数。負なら末尾から数える）か NIL（その引数は
-バッチしない。F にそのまま渡る）。整数か NIL を1つ渡すと全引数に共通、リストなら引数ごと
-（個数は引数の個数と同じ）。OUT-AXES は出力ごとの、出力のバッチ軸の位置（整数）か NIL。
-NIL にできるのは、出力が引数のバッチに依存しないとき（そうでなければ VMAP-ERROR）。
-バッチに依存しない出力が整数の軸を指定されると、その軸に沿って複製する。
+引数の各要素と F の戻り値は PyTree（リスト・SIMPLE-VECTOR・DEFPYTREE / DEFMODULE で登録した
+型。葉は配列・実数・トレーサ）でよい。戻り値は多値の「値のリスト」を1つの木として扱う
+ので、(VALUES A B) と (LIST A B) は別の形（前者は値が2つ、後者は値が1つでその中身が2つの
+リスト）。F の戻り値と同じ形の木を返す。
 
-次のときは VMAP-ERROR（またはその子）を signal する: IN-AXES / OUT-AXES の個数・型・範囲が
-不正、バッチ軸の長さが引数の間で揃わない、バッチされた引数が1つもない、バッチ軸を持つ値が
-バッチ化ルールの無いプリミティブに渡る（NO-BATCH-RULE）。IN-AXES の個数と型はここで、
-範囲と軸長は呼び出し時に検査する。
+IN-AXES は引数ごとのバッチ軸（0始まりの整数。負なら末尾から数える）か NIL（その部分木は
+バッチしない。F にそのまま渡る）。整数か NIL を1つ渡すと全引数の全葉に共通、リストなら引数
+ごと（個数は引数の個数と同じ）。リストの各要素は、整数・NIL、またはその引数の木の**接頭辞**
+（JAX の flatten_axes と同じ）: 整数・NIL は部分木まるごとに効き、リスト・SIMPLE-VECTOR・
+登録した型の節は、種類と子の個数（登録した型は補助データも）が引数の木と同じで、子を
+それぞれ接頭辞として指定する。例えば (NIL 0 0) は第1引数（モデルの木）をバッチせず、
+第2・第3引数の全葉を軸 0 でバッチする。OUT-AXES も同じ規則で、F の戻り値の木（値ごとの
+リスト）に対する接頭辞（多値なら値ごとのリスト）。NIL にできるのは、その出力が引数の
+バッチに依存しないとき（そうでなければ VMAP-ERROR）。バッチに依存しない出力が整数の軸を
+指定されると、その軸に沿って複製する。F が (LIST A B) を返すなら OUT-AXES は値ごとの
+リストの中のリストで、((軸A 軸B)) と書く（1 や (1) のように値まるごとへの指定も可）。
+
+次のときは VMAP-ERROR（またはその子）を signal する: IN-AXES / OUT-AXES の葉が整数・NIL
+以外、リストの IN-AXES の個数が引数の個数と違う、接頭辞の構造が木に合わない（種類・子の
+個数・補助データの不一致、葉より深い接頭辞。呼び出し時に検査する）、軸の範囲が不正、
+バッチ軸の長さが引数の間で揃わない、バッチされた葉が1つもない、バッチ軸を持つ値が
+バッチ化ルールの無いプリミティブに渡る（NO-BATCH-RULE）。
 
 戻り値はトレースできる関数（TRACEABLE-FUNCTION）なので、配列・実数を渡して直接呼ぶ（eager）
 ほか、(JIT (VMAP F))、WITH-TRACING の本体の中、GRAD の対象の中、別の VMAP の対象の中
@@ -291,8 +362,7 @@ graph を呼び出し元のトレースへ展開する。バッチされてい�
 （バッチ化ルールを呼ばずに）残る。
 
 既知の制限: F が外側のトレースのトレーサを閉包で捕まえていると TRACING-ERROR になる。
-外側の値は F の引数として渡すこと。F はトレーサ・配列・実数を返す（多値は可）が、リストは
-返せない（必要なら (WITH-TRACING (...) (VALUES-LIST ...)) で包む）。複数出力の eqn を
+外側の値は F の引数として渡すこと。複数出力の eqn を
 持つ F（cond* / while-loop / scan）も使える（本体のサブグラフを再帰的にバッチ化する）。jit した関数を渡すと、中の
 TRACEABLE-FUNCTION だけを使い、その JIT の :BACKEND は無視される（GRAD と同じ）。
 
@@ -301,10 +371,14 @@ TRACEABLE-FUNCTION だけを使い、その JIT の :BACKEND は無視される�
 1回だけ作ること（GRAD と同じ）。"
   (let* ((fn (%vmap-traceable f))
          (lambda-list (traceable-function-lambda-list fn)))
-    (%vmap-per-item in-axes (length lambda-list) "IN-AXES")
-    (unless (or (%vmap-axis-spec-p out-axes)
-                (and (listp out-axes) (every #'%vmap-axis-spec-p out-axes)))
-      (%vmap-error "OUT-AXES は整数・NIL、またはそのリストでなければならない: ~S" out-axes))
-    (%make-traceable-function
-     (copy-list lambda-list)
-     (lambda (&rest args) (%vmap-call fn in-axes out-axes args)))))
+    ;; 引数は常にリストなので、整数・NIL でない IN-AXES は引数ごとのリストでなければならない
+    (unless (or (%vmap-axis-leaf-p in-axes) (listp in-axes))
+      (%vmap-error "IN-AXES は整数・NIL、または引数ごとのリストでなければならない: ~S" in-axes))
+    (let ((in-axes (%vmap-check-axes-tree in-axes "IN-AXES"))
+          (out-axes (%vmap-check-axes-tree out-axes "OUT-AXES")))
+      (when (and (consp in-axes) (/= (length in-axes) (length lambda-list)))
+        (%vmap-error "IN-AXES の個数 ~D が引数の個数 ~D と一致しない: ~S"
+                     (length in-axes) (length lambda-list) in-axes))
+      (%make-traceable-function
+       (copy-list lambda-list)
+       (lambda (&rest args) (%vmap-call fn in-axes out-axes args))))))
