@@ -9,6 +9,8 @@
 ;;;;   名前は保つ（Flax の flatten_dict が作る "params.Dense_0.kernel" と同じ名前にできる）。
 ;;;;   defmodule 以外で defpytree した型の子には名前が無いので、FLATTEN が返す子の添字を使い、
 ;;;;   入れ子はそのまま再帰する（"opt.0.0.w"、"opt.2"）。木のルートが葉そのものなら名前は ""。
+;;;;   このパス名の決め方はファイル形式の一部（nabla.checkpoint_version "1"）。名前の付け方を
+;;;;   変えるときは、版を上げて古い版の読み方を残す。
 ;;;; - 木全体が1つの名前空間なので、モデルとオプティマイザ状態は (defmodule train-state
 ;;;;   (params opt)) のように1つの木にまとめれば同じファイルに接頭辞つきで入る
 ;;;;   ("params.w"、"opt.0.mu")。別ファイルにしたければ別々に保存する。API に接頭辞の引数は持たない。
@@ -174,7 +176,7 @@ WRITE-SAFETENSORS のとおり一時ファイル経由で、失敗したら既�
                    (handler-case (nabla:array-dtype leaf dtype)
                      (nabla:dtype-mismatch (c)
                        (%checkpoint-fail :dtype-mismatch name
-                                         "ひな形の葉の要素型 ~S は dtype ~S と合わない（(unsigned-byte 16) は :dtypes で :bf16 か :f16 を言う）"
+                                         "ひな形の葉の要素型 ~S は dtype ~:[（未指定）~;~:*~S~] と合わない（(unsigned-byte 16) は :dtypes で :bf16 か :f16 を言う）"
                                          (nabla:dtype-mismatch-element-type c) dtype)))))
           ((%device-array-p leaf)
            (let ((aval (nabla:device-array-aval leaf)))
