@@ -168,6 +168,18 @@
    #:uniform
    #:normal
    #:prng-error
+   ;; PyTree（issue #195）
+   #:defpytree
+   #:tree-flatten
+   #:tree-unflatten
+   #:tree-leaves
+   #:tree-structure
+   #:tree-map
+   #:treedef
+   #:treedef-num-leaves
+   #:treedef=
+   #:pytree-error
+   #:pytree-structure-mismatch
 
 
 
