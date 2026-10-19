@@ -353,7 +353,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
-`nabla/nn`（パッケージ `nabla.nn`）の最初の部品。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree のパス名での平坦化は後続の issue）。`(asdf:load-system "nabla/nn")` で使う。
+`nabla/nn`（パッケージ `nabla.nn`）の最初の部品。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree をパス名で平坦化して保存・復元するのは次の「チェックポイント」）。`(asdf:load-system "nabla/nn")` で使う。
 
 | 関数 | 役割 |
 | --- | --- |
@@ -366,6 +366,24 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 - dtype の対応: `:f32` `:f64` `:bf16` `:f16` `:i32` `:u32` `:u64` と `:i1`（`BOOL`、1要素1バイト）が `F32` `F64` `BF16` `F16` `I32` `U32` `U64` `BOOL`。bf16 / f16 は `(unsigned-byte 16)` のビット列のまま読み書きするので、書くときは dtype を明示する（省略は `dtype-mismatch`）。`I64` `U8` など他の dtype を含むファイルは `:unknown-dtype`
 - 書くときテンソルは要素の大きい順、同じなら名前順に並べる（入力の順序に依らず同じバイト列。Python の safetensors が書くバイト列とは限らず、保証するのは読み書きの意味が同じこと）。ヘッダは 8 バイト境界まで空白で埋める。ビット列はそのままコピーする（NaN のペイロードも保つ）。ホストはリトルエンディアン前提
 - ヘッダの JSON は自前の最小の読み書き（`src/nn/json.lisp`）。`cl-yason` に頼らず依存を増やさない。小数・指数の数値は読まない（safetensors のヘッダには現れない）
+
+#### チェックポイント（`nabla/nn`、issue #206）
+
+PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ構造のひな形」に unflatten して復元する。
+
+| 関数 | 役割 |
+| --- | --- |
+| `(save-checkpoint path tree &key metadata dtypes)` | `tree` の葉を `path` に保存する（`write-safetensors` 経由なのでアトミック）。葉は配列か `device-array`（`to-host` でホストに戻して書く） |
+| `(load-checkpoint path template &key dtypes)` | `(values 木 メタデータ)`。`template` の葉と名前で対応づけて `tree-unflatten` する。葉は配列・`device-array`・`aval` のどれでもよく、形と dtype だけを使う。復元した葉はホストの新しい配列 |
+| `(tree-paths tree)` | 葉のパス名のリスト（`tree-leaves` と同じ順） |
+| `checkpoint-error` / `-reason` / `-name` / `-detail` | `reason` は `:bad-leaf` `:duplicate-path` `:unknown-path` `:reserved-metadata` `:unsupported-version` `:missing-entries` `:unexpected-entries` `:shape-mismatch` `:dtype-mismatch`（意味は docstring。`name` は原因の葉） |
+
+- パス名は `"."` でつなぐ（`"enc.layers.0.w"`）。リストとベクタの子は添字、`defmodule` の子はスロット名（`:static` は出ない）。Lisp の既定で大文字になるスロット名は小文字にし、`|Dense_0|` のように小文字を含む名前はそのままなので、Flax の `flatten_dict(..., sep=".")` の `"params.Dense_0.kernel"` と同じ名前にできる。`defmodule` 以外で `defpytree` した型の子には名前が無いので、その節の下の葉の通し番号（`"state.0"`）を使う。根が葉なら `""`。名前が衝突する木（スロット名に `.` を含むなど）は `:duplicate-path`
+- モデルとオプティマイザ状態は1つの木にまとめれば同じファイルに入る: `(defmodule train-state ((params) (opt)))` → `"params.w"`、`"opt.0"`。別々に保存してもよい（API に接頭辞は持たない）
+- `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元では、dtype を言っていない `(unsigned-byte 16)` のひな形の葉は bf16 / f16 のどちらのファイルでも受ける（`:dtypes` で言えば照合する）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
+- 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
+- メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
+- Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
 
 #### with-tracing の do ループ（issue #137）
 
