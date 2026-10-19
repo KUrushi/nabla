@@ -7,6 +7,7 @@
 #   scripts/check-iree-repros.sh             # 各ファイルを 10 回ずつコンパイルする
 #   scripts/check-iree-repros.sh --runs 30   # 回数を変える
 #   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 4000。1 回あたり 0.05〜1% でしか起きない）
+#   scripts/check-iree-repros.sh --candidates --race-runs 20000   # 追加で race-candidate（下）も実行する
 #
 # 各行の判定:
 #   bug     ファイル: 1 回でもシグナル（終了コード 128 超）で落ちれば REPRODUCED
@@ -20,6 +21,13 @@
 #           負荷のもとで起きるので、このスクリプトが CPU の数だけ `yes > /dev/null` を
 #           起動し（終了時にこのスクリプトが自分で止める）、かけながら実行する。
 #           race-bug は 1 回でも違えば REPRODUCED、race-control は 0 回なら OK
+#   race-candidate: nabla の emit の改善の候補（issue #233）の形。race-bug と同じ測り方で、
+#           違った回数を数えるだけ。記録（上流の不具合の再現）ではないので判定も終了コードも
+#           変えない。--candidates を付けたときだけ実行する。0 回でも安全の証明にはならない
+#           （Rosetta の VM では race-bug 自体が再現しない。x86 ネイティブの負荷のもとで、
+#           race-bug が REPRODUCED になる環境で、十分な回数 0 になるかを見る）。
+#           候補を足すには docs/iree-repros/ に race 用の形（`// INPUT:` の行つき）を置き、
+#           CANDIDATE_CASES に1行足す
 # 終了コード: 0 = 記録どおり（バグは全部再現し、回避策の形は全部通る）、
 #             1 = 記録と違う（直ったバグがある、または回避策の形が落ちた）、
 #             2 = iree-compile が見つからない・引数の誤り。
@@ -35,6 +43,7 @@ trap 'for pid in "${STRESS_PIDS[@]}"; do kill "${pid}" 2>/dev/null || true; done
 REPRO_DIR="${REPO_ROOT}/docs/iree-repros"
 RUNS=10
 RACE_RUNS=4000
+CANDIDATES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -44,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --race-runs)
       [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "error: --race-runs needs a positive integer" >&2; exit 2; }
       RACE_RUNS="$2"; shift 2 ;;
+    --candidates) CANDIDATES=1; shift ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -67,6 +77,15 @@ CASES=(
   "race-bug     nested-scan-ys-if-race.mlir"
   "race-control nested-scan-ys-if-no-barrier.mlir"
 )
+
+# --candidates のときだけ実行する（docs/iree-upstream-bugs.md の 7、issue #233）
+CANDIDATE_CASES=(
+  "race-candidate nested-scan-ys-index-barrier-race.mlir"
+  "race-candidate nested-scan-ys-joint-barrier-race.mlir"
+  "race-candidate nested-scan-ys-if-index-barrier-race.mlir"
+  "race-candidate nested-scan-ys-if-joint-barrier-race.mlir"
+)
+if ((CANDIDATES)); then CASES+=("${CANDIDATE_CASES[@]}"); fi
 
 # race-* は負荷のもとでしか起きないので、CPU の数だけ busy loop を起動する（trap で止める）
 start_stress() {
@@ -99,7 +118,9 @@ for entry in "${CASES[@]}"; do
     # race_run の中の `exit 2`（コンパイル失敗）は $(...) のサブシェルを抜けるだけだが、
     # 代入の終了コードが 2 になり、set -e がこのスクリプトを止める（意図した挙動）
     bad=$(race_run "${file}")
-    if [[ "${kind}" == race-bug ]]; then
+    if [[ "${kind}" == race-candidate ]]; then
+      verdict="NO-MISMATCH"; if ((bad > 0)); then verdict="RACES"; fi
+    elif [[ "${kind}" == race-bug ]]; then
       if ((bad > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
     else
       if ((bad == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
