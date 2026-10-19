@@ -33,9 +33,8 @@
       (%trace-eqn :transpose (list x) :perm perm)))
 
 (defun %conv-trace-reshape (x shape)
-  (if (equal shape (aval-shape (tracer-aval x)))
-      x
-      (%trace-eqn :reshape (list x) :shape shape)))
+  ;; 呼び出しはすべて軸を分ける・併合するもので rank が変わるので、恒等の reshape にはならない。
+  (%trace-eqn :reshape (list x) :shape shape))
 
 (defun %trace-rev (x dims)
   "X の軸 DIMS を反転する。DIMS が空なら何もしない（空の dims の stablehlo.reverse は出さない）。"

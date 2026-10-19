@@ -125,6 +125,26 @@ batch group（B = 2）で転置の随伴性が成り立つ（PBT が通るべき
                   ((2 5 5 4) (2 2 2 6) (1 1) ((0 0) (0 0)) (1 1) (1 1) 2 1)))
     (is (%conv-adjoint-case-p case) "case ~S" case)))
 
+(defun %transposed-eqn-names (case lhs-linear-p)
+  "CASE の convolution を転置した graph の eqn のプリミティブ名を、名前順に並べたリストで返す。"
+  (sort (mapcar (lambda (e) (nb:primitive-name (nb:eqn-prim e)))
+                (nb:graph-eqns (nb::transpose-graph (%conv-linear-graph case lhs-linear-p) 1)))
+        #'string< :key #'symbol-name))
+
+(test conv-ad/transpose-adds-no-redundant-reshapes-or-transposes
+  "グループの無い畳み込みの転置は、必要な軸の並べ替えだけを足す（恒等の transpose / reshape を足さない）:
+lhs の転置は rev・transpose（入出力チャネルの入れ替え）・convolution、rhs の転置は transpose 3つ
+（lhs のバッチ軸とチャネル軸、ct のバッチ軸、結果の並び）・convolution。feature group があればカーネルの reshape が2つ増え、
+batch group があれば lhs の転置に reshape がさらに2つと transpose が1つ増える。"
+  (let ((plain '((2 5 5 3) (3 3 3 4) (1 1) ((1 1) (1 1)) (1 1) (1 1) 1 1)))
+    (is (equal '(:convolution :rev :transpose) (%transposed-eqn-names plain t)))
+    (is (equal '(:convolution :transpose :transpose :transpose) (%transposed-eqn-names plain nil))))
+  (let ((grouped '((2 5 5 4) (2 2 2 6) (1 1) ((0 0) (0 0)) (1 1) (1 1) 2 1)))
+    (is (equal '(:convolution :reshape :reshape :rev :transpose) (%transposed-eqn-names grouped t))))
+  (let ((batch-grouped '((4 5 3) (2 3 6) (2) ((1 0)) (1) (1) 1 2)))
+    (is (equal '(:convolution :reshape :reshape :reshape :reshape :rev :transpose :transpose)
+               (%transposed-eqn-names batch-grouped t)))))
+
 (test conv-ad/transpose-with-both-operands-linear-signals-autodiff-error
   "両方の入力が線形な convolution（接線どうしの積）の転置は autodiff-error。"
   (let* ((case '((1 5 2) (2 2 3) (1) ((0 0)) (1) (1) 1 1))
@@ -261,6 +281,30 @@ convolution をかけて積み直したものと一致する。"
                   :regression-id conv-ad/vmap-matches-per-slice-reference
                   :regression-file (regression-path "conv-ad-vmap")))))
 
+(defun %vmapped-eqn-names (case in-axes)
+  "CASE の convolution を IN-AXES（lhs, rhs）で vmap した graph の eqn のプリミティブ名を、名前順に並べたリストで返す。"
+  (let* ((f (primitive-function :convolution (%conv-ad-params case) 2))
+         (avals (loop for shape in (list (first case) (second case)) for axis in in-axes
+                      collect (nb:make-aval (if axis (axis-at shape 3 axis) shape) :f64)))
+         (graph (nb:trace-to-graph (nb:vmap f :in-axes in-axes :out-axes 0) avals)))
+    (sort (mapcar (lambda (e) (nb:primitive-name (nb:eqn-prim e))) (nb:graph-eqns graph))
+          #'string< :key #'symbol-name)))
+
+(test conv-ad/vmap-folds-the-batch-into-one-convolution
+  "vmap した畳み込みは、バッチ軸を既存の軸に併合した畳み込み1つに畳まれる（V 回の畳み込みにはならない）。
+グループの無い lhs だけ（バッチ軸 0）のバッチ化は、reshape 2つ（併合と分割）と convolution だけ。
+rhs だけ・両方のときは、併合する軸を動かす transpose と出力のバッチ軸を out-axes に動かす transpose が加わる。
+グループがあるときは、グループを外側に保つための reshape / transpose が増える。"
+  (let ((plain '((2 5 5 3) (3 3 3 4) (1 1) ((1 1) (1 1)) (1 1) (1 1) 1 1))
+        (grouped '((2 5 5 4) (2 2 2 6) (1 1) ((0 0) (0 0)) (1 1) (1 1) 2 1)))
+    (is (equal '(:convolution :reshape :reshape) (%vmapped-eqn-names plain '(0 nil))))
+    (is (equal '(:convolution :reshape :reshape :transpose :transpose) (%vmapped-eqn-names plain '(nil 0))))
+    (is (equal '(:convolution :reshape :reshape :reshape :transpose :transpose :transpose)
+               (%vmapped-eqn-names plain '(0 0))))
+    (is (= 1 (count :convolution (%vmapped-eqn-names grouped '(nil 0)))))
+    (is (> (count :reshape (%vmapped-eqn-names grouped '(nil 0)))
+           (count :reshape (%vmapped-eqn-names plain '(nil 0)))))))
+
 (test conv-ad/vmap-covers-every-mode-and-group-kind
   "固定の例: {通常, feature group, batch group} × {lhs だけ, rhs だけ, 両方}（PBT が各モードを必ず通ることの下限）。"
   (dolist (case '(((2 5 5 3) (3 3 3 4) (1 1) ((1 1) (1 1)) (1 1) (1 1) 1 1)
@@ -268,6 +312,7 @@ convolution をかけて積み直したものと一致する。"
                   ((1 6 4) (3 1 4) (2) ((1 1)) (1) (1) 4 1)
                   ((4 5 3) (2 3 6) (2) ((1 0)) (1) (1) 1 2)))
     (dolist (mode '(0 1 2))
-      (dolist (axes '((0 0 0) (1 2 1) (2 1 2)))
+      ;; (3 3 3) と (0 4 4) は、rhs のバッチ軸が出力チャネル軸より後ろにある場合を通す。
+      (dolist (axes '((0 0 0) (1 2 1) (2 1 2) (3 3 3) (0 4 4)))
         (is (%conv-vmap-property (list case 2 mode (first axes) (second axes) (third axes)))
             "case ~S mode ~S axes ~S" case mode axes)))))

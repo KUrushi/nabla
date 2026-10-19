@@ -214,6 +214,21 @@ PRIMITIVE-ERROR を出すなら真。"
 
 ;;; --- StableHLO の出力（golden） ---
 
+(test convolution/omitted-batch-group-count-means-1
+  "issue #197 の順方向だけの eqn（:batch-group-count を持たない params）と同じく、:batch-group-count を
+省略した abstract-eval・emit・eager は、1 を渡したときと同じ結果になる。"
+  (let* ((lhs (make-random-array (make-array-spec '(2 5 5 4) :f32) :seed 3))
+         (rhs (make-random-array (make-array-spec '(2 2 2 6) :f32) :seed 4))
+         (avals (list (nb:array-aval lhs :f32) (nb:array-aval rhs :f32)))
+         (base '(:strides (1 2) :padding ((0 1) (1 0)) :lhs-dilation (1 1) :rhs-dilation (1 1)
+                 :feature-group-count 2))
+         (out-aval (apply #'%abstract-eval-of :convolution avals base)))
+    (is (equalp out-aval (apply #'%abstract-eval-of :convolution avals :batch-group-count 1 base)))
+    (is (string= (apply #'%emit-of :convolution '("%a" "%b") avals "%0" out-aval :batch-group-count 1 base)
+                 (apply #'%emit-of :convolution '("%a" "%b") avals "%0" out-aval base)))
+    (is (equalp (apply #'%eager-of :convolution (list lhs rhs) avals :batch-group-count 1 base)
+                (apply #'%eager-of :convolution (list lhs rhs) avals base)))))
+
 (test convolution/emit-golden-batch-group-count
   "batch-group-count は StableHLO の batch_group_count にそのまま出る（既定の 1 のときは従来の出力と同じ）。"
   (is (string= "%0 = stablehlo.convolution(%a, %b) dim_numbers = [b, 0, f]x[0, i, o]->[b, 0, f], window = {stride = [1], pad = [[0, 0]], lhs_dilate = [1], rhs_dilate = [1]} {batch_group_count = 2 : i64, feature_group_count = 1 : i64} : (tensor<4x5x3xf32>, tensor<2x3x6xf32>) -> tensor<2x4x6xf32>"
