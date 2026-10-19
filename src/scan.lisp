@@ -374,43 +374,53 @@ while のオペランドが constant にならないので、定数で初期化�
       (length length)
       (t (%scan-error 'scan-length-error "xs が空のときは length が必要")))))
 
-(defun %scan-check-list (value what)
-  (unless (listp value)
-    (%scan-error 'scan-error "~A はリストでなければならない: ~S" what value))
-  value)
+(defun %scan-flatten (tree what)
+  "TREE を (VALUES 葉のリスト treedef) にする。PyTree として不正なら SCAN-ERROR。"
+  (handler-case (tree-flatten tree)
+    (pytree-error (condition)
+      (%scan-error 'scan-error "~A が PyTree として不正: ~A" what condition))))
 
-(defun %scan-trace-body (f carry-avals x-avals)
-  "F を (carry-list x-list) で呼ぶ本体をサブグラフにトレースして、
-(values GRAPH CAPTURED) を返す。GRAPH の invars は carry ++ x ++ captured、
-outvars は carry ++ ys。"
+(defun %scan-trace-body (f carry-avals x-avals carry-treedef x-treedef)
+  "F を (carry-tree x-tree) で呼ぶ本体をサブグラフにトレースして、
+(values GRAPH CAPTURED YS-TREEDEF) を返す。GRAPH の invars は carry ++ x ++ captured、
+outvars は carry ++ ys（どれも葉）。carry と x の木は CARRY-TREEDEF / X-TREEDEF で葉から作り、
+f が返す carry の treedef が CARRY-TREEDEF と違えば SCAN-CARRY-MISMATCH。"
   ;; %TRACE-SUBGRAPH ではなく %CALL-WITH-TRACE を直接使う。公開の f は
-  ;; (carry-list x-list) の2引数（リストを受ける）で、%TRACE-SUBGRAPH が要求する
+  ;; (carry x) の2引数（木を受ける）で、%TRACE-SUBGRAPH が要求する
   ;; 「avals と同じ個数の引数を取る TRACEABLE-FUNCTION」と形が合わないため、
-  ;; トレース用の平らな lambda でリストに詰め直してから f を呼ぶ。親トレースは
+  ;; トレース用の平らな lambda で木に戻してから f を呼ぶ。親トレースは
   ;; %TRACE-SUBGRAPH と同じ *CURRENT-TRACE*（閉包の closure conversion も同じ）。
-  (let ((n-carry (length carry-avals)))
-    (%call-with-trace
-     (append carry-avals x-avals)
-     (lambda (&rest tracers)
-       (multiple-value-bind (new-carry ys)
-           (funcall (%traceable-function-function f) (subseq tracers 0 n-carry) (nthcdr n-carry tracers))
-         (%scan-check-list new-carry "f が返す carry")
-         (%scan-check-list ys "f が返す ys")
-         (unless (= (length new-carry) n-carry)
-           (%scan-error 'scan-carry-mismatch "f が返した carry の個数 ~D が init の個数 ~D と一致しない"
-                        (length new-carry) n-carry))
-         (values-list (append new-carry ys))))
-     *current-trace*)))
+  (let ((n-carry (length carry-avals))
+        (ys-treedef nil))
+    (multiple-value-bind (graph captured)
+        (%call-with-trace
+         (append carry-avals x-avals)
+         (lambda (&rest tracers)
+           (multiple-value-bind (new-carry ys)
+               (funcall (%traceable-function-function f)
+                        (tree-unflatten carry-treedef (subseq tracers 0 n-carry))
+                        (tree-unflatten x-treedef (nthcdr n-carry tracers)))
+             (multiple-value-bind (carry-leaves new-treedef) (%scan-flatten new-carry "f が返す carry")
+               (multiple-value-bind (ys-leaves treedef) (%scan-flatten ys "f が返す ys")
+                 (unless (treedef= carry-treedef new-treedef)
+                   (%scan-error 'scan-carry-mismatch
+                                "f が返した carry の木の形 ~S が init の木の形 ~S と一致しない"
+                                new-treedef carry-treedef))
+                 (setf ys-treedef treedef)
+                 (values-list (append carry-leaves ys-leaves))))))
+         *current-trace*)
+      (values graph captured ys-treedef))))
 
 (defun scan (f init xs &key length reverse)
-  "先頭の軸に沿って F を回し、(VALUES 最終の carry のリスト ys のリスト) を返す
-（JAX の lax.scan に相当）。
+  "先頭の軸に沿って F を回し、(VALUES 最終の carry ys) を返す（JAX の lax.scan に相当）。
 
-F は WITH-TRACING で作った2引数の関数 (carry-list x-list) で、
-(VALUES 新しい carry のリスト y のリスト) を返す。INIT は carry の初期値のリスト、
-XS は走査する配列（トレーサ・配列・実数）のリストで、どれも先頭の軸（長さ N）で
-走査する。ys は各ステップの y を先頭の軸に積んだ配列のリスト。F が返す carry は
-INIT と個数・shape・dtype が同じでなければならない（違えば SCAN-CARRY-MISMATCH）。
+INIT / XS / ys は PyTree（リスト・ベクタ・DEFPYTREE / DEFMODULE の型の入れ子。配列そのものや
+NIL でもよい）。葉はトレーサ・配列・実数で、XS の葉はどれも先頭の軸（長さ N）で走査する。
+内部では葉に flatten して今までどおりフラットなリストで扱い、結果を木に戻す。
+F は WITH-TRACING で作った2引数の関数 (carry x) で、carry は INIT と同じ木、x は XS の
+各葉の先頭の軸を外した（添字 t の行の）同じ木。F は (VALUES 新しい carry y) を返し、
+ys は y と同じ木の形で各葉を先頭の軸に積んだもの。F が返す carry は INIT と木の形
+（TREEDEF=）も葉の shape・dtype も同じでなければならない（違えば SCAN-CARRY-MISMATCH）。
 
 LENGTH は繰り返し回数。XS が空のときは必須で、そうでなければ XS の先頭の軸の長さと
 一致しなければならない（SCAN-LENGTH-ERROR）。長さ 0 の scan は INIT と同じ値の carry を返し、
@@ -421,22 +431,30 @@ EQ でありうる（README「配列の不変性」）。REVERSE が真なら添
 F が閉包で捕まえた外側の値は、ループ不変な入力（consts）になる。トレース中
 （with-tracing・jit の中）でもその場（eager）でも使える。grad は scan を通る（jvp は #135、
 partial eval と transpose は #139。src/ad/rules-scan-reverse.lisp）。vmap は本体を再帰的に
-バッチ化する（xs / ys のバッチ軸は走査の軸の次、1）。引数や F の戻り値の形が不正なときは
+バッチ化する（xs / ys のバッチ軸は走査の軸の次、1）。引数や F の戻り値が PyTree として不正なときは
 SCAN-ERROR（INIT / XS に生の (unsigned-byte 16) の bf16 / f16 配列を渡したときも。
 トレーサで渡す）。"
   (unless (and (typep f 'traceable-function)
                (= 2 (length (traceable-function-lambda-list f))))
     (%scan-error 'scan-error "f は WITH-TRACING で作った2引数 (carry x) の関数でなければならない: ~S" f))
-  (%scan-check-list init "init")
-  (%scan-check-list xs "xs")
-  (let* ((init (mapcar (lambda (v) (%scan-argument v "init の要素")) init))
-         (xs (mapcar (lambda (v) (%scan-argument v "xs の要素")) xs))
+  (multiple-value-bind (init-leaves carry-treedef) (%scan-flatten init "init")
+    (multiple-value-bind (xs-leaves xs-treedef) (%scan-flatten xs "xs")
+      (multiple-value-bind (carry-leaves ys-leaves ys-treedef)
+          (%scan-flat f init-leaves xs-leaves carry-treedef xs-treedef length reverse)
+        (values (tree-unflatten carry-treedef carry-leaves)
+                (tree-unflatten ys-treedef ys-leaves))))))
+
+(defun %scan-flat (f init xs carry-treedef xs-treedef length reverse)
+  "SCAN の本体。INIT / XS は葉のリスト。(VALUES 最終 carry の葉 ys の葉 ys の treedef)。"
+  (let* ((init (mapcar (lambda (v) (%scan-argument v "init の葉")) init))
+         (xs (mapcar (lambda (v) (%scan-argument v "xs の葉")) xs))
          (carry-avals (mapcar #'%scan-value-aval init))
          (xs-avals (mapcar #'%scan-value-aval xs))
          (length (%scan-resolve-length xs-avals length))
          (x-avals (mapcar (lambda (a) (make-aval (rest (aval-shape a)) (aval-dtype a))) xs-avals))
          (n-carry (length init)))
-    (multiple-value-bind (graph captured) (%scan-trace-body f carry-avals x-avals)
+    (multiple-value-bind (graph captured ys-treedef)
+        (%scan-trace-body f carry-avals x-avals carry-treedef xs-treedef)
       (let* ((n-xs (length xs))
              (n-consts (length captured))
              (invars (graph-invars graph))
@@ -465,4 +483,4 @@ SCAN-ERROR（INIT / XS に生の (unsigned-byte 16) の bf16 / f16 配列を渡�
                             params)
                      (apply (primitive-eager (find-primitive :scan))
                             operands (mapcar #'%scan-value-aval operands) params))))
-          (values (subseq results 0 n-carry) (nthcdr n-carry results)))))))
+          (values (subseq results 0 n-carry) (nthcdr n-carry results) ys-treedef))))))

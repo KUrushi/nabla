@@ -233,13 +233,12 @@ while の carry）にはその値が1回だけ現れる: carry 2 + 捕捉値 2�
 
 ;;; ---- 厳格な検査（文書化したコンディション） ----
 
-(test while-loop/rejects-non-list-init
-  "init がリストでない・空・要素が配列でない、または関数でないものを渡すと
-WHILE-LOOP-ARGUMENT-ERROR。"
+(test while-loop/rejects-invalid-init
+  "init が PyTree として不正（真リストでないコンス）・葉が無い・葉が配列でない、または関数でない
+ものを渡すと WHILE-LOOP-ARGUMENT-ERROR（配列そのものや simple-vector は木として受け付ける。
+tests/pytree-control-test.lisp）。"
   (signals nb:while-loop-argument-error
-    (nb:while-loop *wl-cond* *wl-body* (%wl-scalar 0.0)))
-  (signals nb:while-loop-argument-error
-    (nb:while-loop *wl-cond* *wl-body* (vector (%wl-scalar 0.0))))
+    (nb:while-loop *wl-cond* *wl-body* (cons (%wl-scalar 0.0) 1)))
   (signals nb:while-loop-argument-error
     (nb:while-loop *wl-cond* *wl-body* '()))
   (signals nb:while-loop-argument-error
@@ -253,7 +252,7 @@ WHILE-LOOP-ARGUMENT-ERROR。"
                          (%wl-scalar 1.0)))))
 
 (test while-loop/signals-carry-mismatch-at-trace-time
-  "body-fn の出力の aval（個数・shape・dtype）が init と違えば WHILE-LOOP-CARRY-MISMATCH。
+  "body-fn の出力の aval（個数・shape・dtype）か木の形が init と違えば WHILE-LOOP-CARRY-MISMATCH。
 本体が1回も実行されない場合（cond が最初から偽）でも、トレース時に検出する。"
   (let ((cond-fn (nb:with-tracing (c) (< (first c) 0.0)))
         (init (list (%wl-scalar 0.0) (%wl-seed-array 1 '(3) :f32))))
@@ -265,8 +264,11 @@ WHILE-LOOP-ARGUMENT-ERROR。"
       (nb:while-loop cond-fn (nb:with-tracing (c) (list (first c) (nb:convert (second c) :f64))) init))
     (signals nb:while-loop-carry-mismatch
       (nb:while-loop cond-fn (nb:with-tracing (c) (list (first c) (second c) (second c))) init))
+    ;; 木の形が違う（リストでなく葉1つ）本体の戻り値も carry の不一致
+    (signals nb:while-loop-carry-mismatch
+      (nb:while-loop cond-fn (nb:with-tracing (c) (first c)) init))
     (signals nb:while-loop-argument-error
-      (nb:while-loop cond-fn (nb:with-tracing (c) (first c)) init))))
+      (nb:while-loop cond-fn (nb:with-tracing (c) (cons (first c) 1)) init))))
 
 (test while-loop/signals-condition-error-when-cond-is-not-scalar-i1
   "cond-fn の結果が rank 0 の :i1 でなければ WHILE-LOOP-CONDITION-ERROR。"

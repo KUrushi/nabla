@@ -345,12 +345,12 @@ xs の要素が rank 0、length が負、で SCAN-LENGTH-ERROR。"
                      (list (%scan-one '(2))) (list (%scan-one '(3 2))) :length 3)))
 
 (test scan/rejects-malformed-arguments
-  "init / xs がリストでない、f が WITH-TRACING の関数でない、f の戻り値がリストでない、
-carry も ys も無い、で SCAN-ERROR。"
+  "init / xs が PyTree として不正（真リストでないコンス）、f が WITH-TRACING の関数でない、
+f が返す carry の木の形が init と違う、carry も ys も無い、で SCAN-ERROR。"
   (let ((body (nb:with-tracing (c x) x (values c '())))
         (init (list (%scan-one '(2)))))
-    (signals nb:scan-error (nb:scan body (%scan-one '(2)) '() :length 1))
-    (signals nb:scan-error (nb:scan body init (%scan-one '(3 2))))
+    (signals nb:scan-error (nb:scan body (cons (%scan-one '(2)) 1) '() :length 1))
+    (signals nb:scan-error (nb:scan body init (cons (%scan-one '(3 2)) 1)))
     (signals nb:scan-error (nb:scan #'identity init '() :length 1))
     (signals nb:scan-error
       (nb:scan (nb:with-tracing (c x) x (values (first c) '())) init '() :length 1))
@@ -448,9 +448,13 @@ carry を壊さない（ys は1ステップ前の x、最終の carry は最後�
     (is (eq 'double-float (array-element-type (first (nb:scan f (list 0.5d0) '() :length 2)))))
     (is (= 2.5 (row-major-aref (first (nb:scan f (list 0.5) '() :length 2)) 0)))))
 
-(test scan/rejects-non-list-ys
-  "f の2つ目の戻り値（ys）がリストでないと SCAN-ERROR。"
+(test scan/rejects-ys-that-is-not-a-pytree
+  "f の2つ目の戻り値（ys）が PyTree として不正（真リストでないコンス）だと SCAN-ERROR。
+配列そのものは葉1つの木として受け付ける（#201）。"
   (signals nb:scan-error
+    (nb:scan (nb::%make-traceable-function (list 'c 'x) (lambda (c x) (declare (ignore x)) (values c (cons (first c) 1))))
+             (list (%scan-one '(2))) '() :length 1))
+  (finishes
     (nb:scan (nb:with-tracing (c x) x (values c (first c))) (list (%scan-one '(2))) '() :length 1)))
 
 (defun %scan-eqn-case ()
