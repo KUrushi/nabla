@@ -383,3 +383,76 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
           ((zerop e) (and (zerop a) (= (float-sign a) (float-sign e))))
           (t (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
                (<= (abs (- a e)) (+ atol (* rtol (abs e)))))))))
+
+;;; issue #197: convolution の参照実装。プリミティブの eager 実装とは別の作り方をする:
+;;; lhs を膨らませて padding した配列（負の padding は切り落とす）と、rhs を膨らませた
+;;; 配列を実際に作ってから、窓の開始位置を数え上げて素直に相関を取る。
+
+(defun %conv-reference-place (array spatial dilations pads)
+  "ARRAY（[N, 空間..., C]）の各空間軸 i の添字 x の要素を、pads[i].low + x * dilations[i]
+の位置に置いた 0 埋めの配列を返す（範囲外になる要素は捨てる）。"
+  (let* ((shape (array-dimensions array))
+         (new-spatial (loop for d in (subseq shape 1 (1+ spatial))
+                            for dil in dilations for p in pads
+                            collect (+ (if (zerop d) 0 (1+ (* (1- d) dil))) (first p) (second p))))
+         (result (make-array (append (list (first shape)) new-spatial (last shape))
+                             :element-type 'double-float :initial-element 0.0d0)))
+    (dotimes (i (array-total-size array) result)
+      (let* ((subs (%row-major-index->subscripts i shape))
+             (placed (loop for x in (subseq subs 1 (1+ spatial))
+                           for dil in dilations for p in pads
+                           collect (+ (first p) (* x dil)))))
+        (when (every (lambda (pos size) (< -1 pos size)) placed new-spatial)
+          (setf (apply #'aref result (first subs) (append placed (last subs)))
+                (coerce (apply #'aref array subs) 'double-float)))))))
+
+(defun reference-conv (lhs rhs strides padding lhs-dilation rhs-dilation groups)
+  "channels-last の畳み込み（lhs [N, 空間..., C]、rhs [空間..., C/G, O]。DOUBLE-FLOAT の
+配列）。STRIDES・LHS-DILATION・RHS-DILATION は空間次元ごとの整数、PADDING は (low high)。"
+  (let* ((spatial (- (array-rank lhs) 2))
+         (padded (%conv-reference-place lhs spatial lhs-dilation padding))
+         (padded-spatial (subseq (array-dimensions padded) 1 (1+ spatial)))
+         (kernel-spatial (subseq (array-dimensions rhs) 0 spatial))
+         (kernel-dilated (loop for k in kernel-spatial for d in rhs-dilation
+                               collect (1+ (* (1- k) d))))
+         (in-per-group (array-dimension rhs spatial))
+         (out-channels (array-dimension rhs (1+ spatial)))
+         (out-per-group (floor out-channels groups))
+         ;; 窓の開始位置を数え上げる（出力サイズの式を使わない）。
+         (out-spatial (loop for p in padded-spatial for k in kernel-dilated for s in strides
+                            collect (loop for start from 0 by s while (<= (+ start k) p) count t)))
+         (out-shape (append (list (array-dimension lhs 0)) out-spatial (list out-channels)))
+         (result (make-array out-shape :element-type 'double-float :initial-element 0.0d0)))
+    (dotimes (i (array-total-size result) result)
+      (let* ((subs (%row-major-index->subscripts i out-shape))
+             (n (first subs))
+             (starts (loop for o in (subseq subs 1 (1+ spatial)) for s in strides collect (* o s)))
+             (oc (car (last subs)))
+             (group (floor oc out-per-group))
+             (sum 0.0d0))
+        (nb::%dot-for-each-index
+         kernel-spatial
+         (lambda (k-pos)
+           (let ((pos (loop for start in starts for k in k-pos for d in rhs-dilation
+                            collect (+ start (* k d)))))
+             (dotimes (c in-per-group)
+               (incf sum (* (apply #'aref padded n (append pos (list (+ (* group in-per-group) c))))
+                            (coerce (apply #'aref rhs (append k-pos (list c oc))) 'double-float)))))))
+        (setf (row-major-aref result i) sum)))))
+
+(defun read-conv-fixture ()
+  "tests/fixtures/conv/conv.lisp（JAX の conv_general_dilated の f32 の入出力。生成は
+tests/fixtures/conv/generate.py）を読み、ケースごとの plist
+(:name :strides :padding :lhs-dilation :rhs-dilation :groups :lhs :rhs :out) のリストを返す。
+:lhs :rhs :out は single-float の配列。"
+  (flet ((to-array (entry)
+           (destructuring-bind (shape bits) entry
+             (let ((array (make-array shape :element-type 'single-float)))
+               (loop for i from 0 for bit in bits
+                     do (setf (row-major-aref array i) (nb::%make-single-float bit)))
+               array))))
+    (with-open-file (stream (asdf:system-relative-pathname "nabla" "tests/fixtures/conv/conv.lisp"))
+      (loop for (name . plist) in (let ((*package* (find-package '#:nabla.tests.support))) (read stream))
+            collect (list* :name name
+                           (loop for (key value) on plist by #'cddr
+                                 append (list key (if (member key '(:lhs :rhs :out)) (to-array value) value))))))))
