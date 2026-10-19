@@ -365,7 +365,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 
 #### 基本レイヤー（`nabla/nn`、issue #204）
 
-`dense` / `layer-norm` / `embedding` / `dropout` / `sequential` を `defmodule` で作ったもの。初期化と計算は Flax Linen の既定に合わせ、スロット名（チェックポイントのパス名になる）も Flax のパラメータ名と同じ。init は `init-<name>` で、第1引数が PRNG キー。
+`dense` / `layer-norm` / `embedding` / `dropout` / `sequential` / `conv` を `defmodule` で作ったもの。初期化と計算は Flax Linen の既定に合わせ、スロット名（チェックポイントのパス名になる）も Flax のパラメータ名と同じ。init は `init-<name>` で、第1引数が PRNG キー。
 
 | モジュール | スロット | init | 呼び出し |
 | --- | --- | --- | --- |
@@ -375,6 +375,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 | `dropout` | `rate`（`:static`） | `(init-dropout key rate)`（rate は 0 以上 1 以下） | `(call m x key deterministic)`。反転 dropout（保持した要素を `1/(1-rate)` 倍）。`deterministic` が真なら `x` そのもの |
 | `sequential` | `layers`（モジュールのリスト） | `(init-sequential key init-functions)`。各関数に `split-keys` で分けたキーを渡して層を作る | `(call m x)` = 各層を順に適用 |
 | `activation` | `fn`（`:static`。`:relu` `:gelu` `:tanh` `:softmax`） | `(init-activation key fn)` | `(call m x)`。`sequential` の層として活性化関数を並べる |
+| `conv` | `kernel (空間... in/G out)`（HWIO）, `bias (out)`, `strides` / `padding` / `kernel-dilation` / `feature-group-count`（`:static`） | `(init-conv key in out kernel-size &key strides padding kernel-dilation feature-group-count dtype)`。`kernel-size` は空間の次元ごとのリスト（`(3)` で1次元、`(3 3)` で2次元、`(3 3 3)` で3次元。Flax の `nn.Conv` と同じ N 次元）、`strides` と `kernel-dilation` は整数か次元ごとのリスト（既定 1）、`padding` はキーワードの `:same`（既定）/ `:valid` か次元ごとの `((low high) ...)`（Flax の文字列 `"SAME"` は受け付けない）、`feature-group-count` 既定 1。kernel は `lecun_normal`（fan_in = kernel の面積 × in/G）、bias は 0 | `(call m x)`。x は `[N 空間... C]`（2次元なら NHWC）かバッチ軸の無い `[空間... C]`。出力は `conv-general-dilated` + bias |
 
 活性化関数は `nabla.nn` の普通の関数（配列にもトレーサにも使え、`with-tracing` の中でも書ける）: `relu`, `gelu`（Flax の既定の tanh 近似）, `(softmax x &key axis)`, `(log-softmax x &key axis)`（`axis` 既定 -1、負の値は後ろから数える）。コアのプリミティブにはせず、`max` / `exp` / `tanh` / `reduce-*` の合成で書いてある。
 
@@ -383,6 +384,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 - **embedding は gather ではなく one-hot と `dot`**: gather の勾配は scatter-add で、プリミティブ・StableHLO 出力・jvp / transpose / バッチ化ルールが要り、この issue の範囲を超える。one-hot + `dot` は既存の演算だけで、勾配は one-hot の転置との `dot` になる。代償は計算量が ids 数 × 語彙数 × features に比例すること（小さな語彙では問題にならない）。語彙が大きいモデルでは gather が要る。範囲外の id（負・語彙数以上）は 0 の行になる（Flax の `jnp.take` は NaN）
 - **dropout**: モジュールは状態を持たないので、キーと `deterministic` は呼び出しの引数。`deterministic` は Lisp の真偽値で、`jit` では静的引数（`:static-args`）にするか閉包で渡す。`rate = 1` は全部 0（入力に inf / NaN があっても 0。Flax の `zeros_like` と同じ）。`deterministic` が偽でキーが `nil` なら error。`sequential` は1引数の層だけを並べる（Flax の `nn.Sequential` と同じ。dropout は並べられない）
 - 初期値は Flax と分布が同じで、値はビット単位では一致しない（nabla の PRNG は JAX と違う）。Flax との比較は同じパラメータを与えて順伝播と勾配で行う
+- **conv の SAME は Flax（JAX）と同じ**: 出力の長さは `ceil(入力 / stride)`、padding の合計は `max((出力 - 1) stride + 実効 kernel - 入力, 0)`（実効 kernel = `(k - 1) dilation + 1`）で、左が合計の半分（切り捨て）、右が残り。偶数の入力や stride 2 では左右非対称（例: 入力 6、kernel 3、stride 2 は `(0 1)`）。入力の形に依存するので呼ぶたびに計算する。`vmap` の中ではバッチ軸の無い `[H W C]` の画像として書ける。`make-conv` で直接作ったモジュールの strides・padding・dilation も呼ぶたびに `init-conv` と同じに正規化する（`:strides 2` や `:padding :same` が使える）。入力の dilation（転置畳み込み）、CIRCULAR / CAUSAL padding は持たない
 - `use_bias` などのオプションは、必要になった時点で足す
 #### オプティマイザ（`nabla/nn`、issue #205）
 

@@ -113,6 +113,9 @@ pretty form を出力する。
 **channels-last（NHWC / HWIO）**
 : 畳み込み（`convolution` プリミティブ、`conv-general-dilated`）の配列の並べ方。入力と出力は `[N, 空間..., C]`（バッチ・空間の各軸・チャネル。2次元なら NHWC）、カーネルは `[空間..., C/G, O]`（2次元なら HWIO）。Flax と同じで、nabla はこの配置に固定している（StableHLO の `dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f]`）。G は `feature_group_count`（入力チャネルを G 個のグループに分け、グループごとに畳み込む。G = C なら depthwise）。
 
+**SAME / VALID padding**
+: 畳み込みの padding の指定。VALID は padding なし（出力が小さくなる）。SAME は stride 1 なら出力の空間の大きさを入力と同じに、stride があれば `ceil(入力 / stride)` にする。必要な padding の合計は `max((出力 - 1) stride + 実効 kernel - 入力, 0)`（実効 kernel は dilation を含めた `(k - 1) dilation + 1`）で、合計が奇数のときは右（後ろ）に1多く入れる（左が合計の半分の切り捨て）。Flax と JAX の `padtype_to_pads` と同じ。nabla の `conv` は `call` のたびに入力の形から明示の `(low high)` に直して `conv-general-dilated` に渡す。
+
 **batch group（batch_group_count）**
 : 畳み込みの `batch_group_count`（B）。`feature_group_count`（入力チャネルを G 個に分ける）の対になるもので、lhs のバッチ軸を連続した B 個の塊に分け、出力チャネルの B 個の塊がそれぞれ1つのバッチの塊だけを読む（出力のバッチは N/B）。ユーザーが書く畳み込みには出てこず、グループ畳み込み・depthwise（G > 1）の rhs の転置（`grad` の rhs 側）が B = G の畳み込みになる（JAX の `_conv_general_dilated_transpose_rhs`）。nabla では `convolution` プリミティブの内部のパラメタ（issue #203）。
 

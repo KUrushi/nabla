@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME CONV/VMAP-OVER-IMAGES-MATCHES-PER-IMAGE-CALL :DATUM
+                 "(0 1 0 1 0)" :TIMESTAMP 4001383887)
