@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME ATTENTION/MATCHES-THE-LOOP-REFERENCE :DATUM
+                 "(0 1 1 1 1 1 0)" :TIMESTAMP 4001384183)

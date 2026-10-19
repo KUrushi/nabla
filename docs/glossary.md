@@ -163,6 +163,9 @@ pretty form を出力する。
 **dense-general**
 : 「入力の最後の複数の軸をまとめて縮約し、複数の軸の特徴に置き換える」`dense`（Flax の `nn.DenseGeneral`）。縮約する軸の数は `contract-axes`。multi-head attention の q / k / v は `(in) → (heads head-dim)`、出力の射影は `(heads head-dim) → (out)`。
 
+**multi-head attention**
+: Transformer の中心の層。入力から query・key・value を作り（それぞれ「ヘッド」ごとの小さな幅に分ける）、ヘッドごとに `softmax(q k^T / sqrt(幅)) v` を計算して、ヘッドをつなぎ直して出力に射影する。q / k / v と出力の射影は `dense-general`。
+
 **attention のマスク**
 : 見てはいけない位置のスコアを softmax の前に最小の有限値（`-inf` ではなく Flax の `jnp.finfo(dtype).min`）に置き換えること。因果マスクは「位置 i は i より後を見ない」下三角のマスク（言語モデルの学習で未来を見ないため）、padding マスクは長さをそろえるために足した詰め物の位置を隠す。全部が隠れた行は全部同じ値になるので、重みは一様になる（NaN にならない）。
 

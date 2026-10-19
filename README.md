@@ -429,6 +429,20 @@ Flax の `nn.DenseGeneral` と `make_causal_mask` / `make_attention_mask` / `com
 - `contract-axes` は kernel と bias の rank の差から推論せず、`:static` のスロットに持つ（`init-dense-general` が設定する。`make-dense-general` では明示する）。`:static` は葉でないので、チェックポイントのパス名は Flax と同じ `kernel` / `bias` のまま。bias の形が kernel の後ろの軸と合わなければ層名入りの error
 - マスクの部品（bit の配列を返す。1 が「見える」）: `(make-causal-mask length)` は形 `(1 length length)` の因果マスク（クエリ位置 q がキー位置 k 以上で 1。先頭の 1 がヘッドとバッチ軸に広がる）、`(make-attention-mask query-valid key-valid)` は `[... q]` と `[... k]` の有効フラグから padding のマスク `[... 1 q k]`、`(combine-masks &rest masks)` は論理積（ランクが違えば右に揃えてブロードキャスト、`nil` は無視）。multi-head attention の `mask` に渡す
 
+#### multi-head attention（`nabla/nn`、issue #208）
+
+Flax の `nn.MultiHeadDotProductAttention` に合わせたもの。スロット名は Flax のパラメータ名と同じなので、チェックポイントのパス名が Flax の `flatten_dict` と一致する（`query.kernel` / `query.bias` / `key.*` / `value.*` / `out.*`）。`query` `key` `value` `out` は上の `dense-general`。
+
+| モジュール | スロット | init | 呼び出し |
+| --- | --- | --- | --- |
+| `multi-head-attention` | `query` `key` `value` `out`（`dense-general`）, `dropout-rate`（`:static`） | `(init-multi-head-attention key num-heads in-features &key qkv-features kv-features out-features dtype dropout-rate)`。`qkv-features` / `kv-features` / `out-features` の既定は `in-features`（Flax と同じ）。`head-dim = qkv-features / num-heads` | `(call m inputs-q inputs-kv mask key deterministic)` → `[... 長さq out-features]` |
+
+- 入力は `[... 長さ 幅]`（先頭のバッチ軸は何個でもよい。Flax と同じ）。自己 attention は `inputs-q` と `inputs-kv` に同じものを渡す。`mask` は `nil` か bit（`:i1`）の配列で、`[... ヘッド 長さq 長さkv]` に右から揃えてブロードキャストできる形。1 が「見える」。配列でない値（`t` やリスト）は層名入りの error
+- 計算は Flax と同じ順: `softmax((q / sqrt(head-dim)) k^T)` に `v` をかけ、`out` で射影する。マスクで隠す位置には、その dtype（f32 / f64 / bf16 / f16）の最小の有限値（Flax の `jnp.finfo(dtype).min`。`-inf` ではない）を `select` で入れ、最大値を引く `softmax` で正規化する。全部のキーが隠れた行は一様な重みになる（Flax と同じ。NaN にならない）
+- attention の dropout は重みにかける（`dropout` と同じ規則: `deterministic` は Lisp の真偽値で `jit` では静的引数、偽で `dropout-rate > 0` ならキーが要る）。マスクは重みの要素ごとに独立に引く（Flax の `broadcast_dropout=False` と同じ。Flax の既定はバッチ軸とヘッドでマスクを共有するが、nabla の PRNG は JAX とビット単位で一致せず値を比べられないので、素直な独立のほうにした）
+- **バッチ次元は「先頭の任意個」**（`vmap` で足す前提にしない）。学習のコードはバッチ付きの入力を直接渡すのが普通で、Flax のフィクスチャとそのまま比べられる。中身は `dot-general` のバッチ軸（先頭のバッチ軸とヘッド）で書いてあるので、先頭の軸が 0 個でも 2 個でも同じコードで、`vmap` で外側に軸を足すこともできる
+- `key` と `value` は同じ入力 `inputs-kv` から作る（Flax の `inputs_k` と `inputs_v` を別々に渡す形は持たない。交差 attention には足りる）。`use_bias` / `normalize_qk` などのオプションは、必要になった時点で足す
+
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
 `nabla/nn`（パッケージ `nabla.nn`）の部品の1つ。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree をパス名で平坦化して保存・復元するのは次の「チェックポイント」）。`(asdf:load-system "nabla/nn")` で使う。
@@ -523,8 +537,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 ```
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
-src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー（今後オプティマイザ）
-src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、オプティマイザ、チェックポイント、レイヤー
+src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、オプティマイザ、チェックポイント、レイヤー、multi-head attention
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト
