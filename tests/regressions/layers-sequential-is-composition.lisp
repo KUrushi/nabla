@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME LAYERS/SEQUENTIAL-IS-COMPOSITION :DATUM "(0 0)"
+                 :TIMESTAMP 4001379843)

@@ -354,6 +354,28 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 - 呼び出しの名前は `call`。`apply` は CL のシンボルで、`call` は CL に無い（`call-method` だけ）ので衝突しない
 - `init` はキーを `split-keys` で分けて渡すので、同じキーからは常に同じパラメータ。継承はサポートしない
 
+#### 基本レイヤー（`nabla/nn`、issue #204）
+
+`dense` / `layer-norm` / `embedding` / `dropout` / `sequential` を `defmodule` で作ったもの。初期化と計算は Flax Linen の既定に合わせ、スロット名（チェックポイントのパス名になる）も Flax のパラメータ名と同じ。init は `init-<name>` で、第1引数が PRNG キー。
+
+| モジュール | スロット | init | 呼び出し |
+| --- | --- | --- | --- |
+| `dense` | `kernel (in out)`, `bias (out)` | `(init-dense key in out &key dtype)`。kernel は `lecun_normal`（切断正規分布、分散 1/in）、bias は 0 | `(call m x)` = `x kernel + bias`（x は rank 1 以上、最後の軸が in） |
+| `layer-norm` | `scale (f)`, `bias (f)`, `epsilon`（`:static`） | `(init-layer-norm key features &key epsilon dtype)`。scale 1、bias 0、epsilon 既定 `1f-6`（Flax と同じ） | `(call m x)`。最後の軸で正規化。分散は Flax と同じ `E[x^2] - E[x]^2`（0 で切る） |
+| `embedding` | `embedding (vocab features)` | `(init-embedding key vocab features &key dtype)`。`N(0, 1/features)` | `(call m ids)`（整数の配列）。`[ids... features]` を返す |
+| `dropout` | `rate`（`:static`） | `(init-dropout key rate)`（rate は 0 以上 1 以下） | `(call m x key deterministic)`。反転 dropout（保持した要素を `1/(1-rate)` 倍）。`deterministic` が真なら `x` そのもの |
+| `sequential` | `layers`（モジュールのリスト） | `(init-sequential key init-functions)`。各関数に `split-keys` で分けたキーを渡して層を作る | `(call m x)` = 各層を順に適用 |
+| `activation` | `fn`（`:static`。`:relu` `:gelu` `:tanh` `:softmax`） | `(init-activation key fn)` | `(call m x)`。`sequential` の層として活性化関数を並べる |
+
+活性化関数は `nabla.nn` の普通の関数（配列にもトレーサにも使え、`with-tracing` の中でも書ける）: `relu`, `gelu`（Flax の既定の tanh 近似）, `(softmax x &key axis)`, `(log-softmax x &key axis)`（`axis` 既定 -1、負の値は後ろから数える）。コアのプリミティブにはせず、`max` / `exp` / `tanh` / `reduce-*` の合成で書いてある。
+
+決めたこと:
+
+- **embedding は gather ではなく one-hot と `dot`**: gather の勾配は scatter-add で、プリミティブ・StableHLO 出力・jvp / transpose / バッチ化ルールが要り、この issue の範囲を超える。one-hot + `dot` は既存の演算だけで、勾配は one-hot の転置との `dot` になる。代償は計算量が ids 数 × 語彙数 × features に比例すること（小さな語彙では問題にならない）。語彙が大きいモデルでは gather が要る。範囲外の id（負・語彙数以上）は 0 の行になる（Flax の `jnp.take` は NaN）
+- **dropout**: モジュールは状態を持たないので、キーと `deterministic` は呼び出しの引数。`deterministic` は Lisp の真偽値で、`jit` では静的引数（`:static-args`）にするか閉包で渡す。`rate = 1` は全部 0（入力に inf / NaN があっても 0。Flax の `zeros_like` と同じ）。`deterministic` が偽でキーが `nil` なら error。`sequential` は1引数の層だけを並べる（Flax の `nn.Sequential` と同じ。dropout は並べられない）
+- 初期値は Flax と分布が同じで、値はビット単位では一致しない（nabla の PRNG は JAX と違う）。Flax との比較は同じパラメータを与えて順伝播と勾配で行う
+- `use_bias` などのオプションは、必要になった時点で足す
+
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
 `nabla/nn`（パッケージ `nabla.nn`）の部品の1つ。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree をパス名で平坦化して保存・復元するのは次の「チェックポイント」）。`(asdf:load-system "nabla/nn")` で使う。
@@ -448,7 +470,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 ```
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
-src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、PyTree のチェックポイント（今後レイヤー・オプティマイザ）
+src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー（今後オプティマイザ）
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト

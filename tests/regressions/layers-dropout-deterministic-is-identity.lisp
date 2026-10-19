@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME LAYERS/DROPOUT-DETERMINISTIC-IS-IDENTITY :DATUM "(0 0)"
+                 :TIMESTAMP 4001379843)

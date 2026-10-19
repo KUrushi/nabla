@@ -1,0 +1,4 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME
+                 LAYERS/DROPOUT-SAME-KEY-SAME-MASK-DIFFERENT-KEY-DIFFERENT-MASK
+                 :DATUM "(0 10)" :TIMESTAMP 4001379843)

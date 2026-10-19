@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME LAYERS/INIT-IS-DETERMINISTIC-PER-KEY :DATUM "(0 1 1)"
+                 :TIMESTAMP 4001379843)

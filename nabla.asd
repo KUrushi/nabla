@@ -553,7 +553,9 @@
                (:file "src/nn/safetensors")
                ;; defmodule（issue #202）
                (:file "src/nn/module")
-               (:file "src/nn/checkpoint")))
+               (:file "src/nn/checkpoint")
+               ;; 基本レイヤー（issue #204）
+               (:file "src/nn/layers")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -564,4 +566,7 @@
                (:file "tests/nn/module-test")
                ;; defmodule のモデルを jit / grad に渡す（issue #199）
                (:file "tests/nn/module-transform-test")
-               (:file "tests/nn/checkpoint-test")))
+               (:file "tests/nn/checkpoint-test")
+               ;; 基本レイヤー（issue #204）
+               (:file "tests/nn/layers-test")
+               (:file "tests/nn/layers-iree-test")))
