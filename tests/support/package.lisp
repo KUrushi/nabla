@@ -75,6 +75,9 @@
    #:reference-transpose
    ;; issue #31 p5: dot-general
    #:reference-dot-general
+   ;; issue #197: convolution
+   #:reference-conv
+   #:read-conv-fixture
    ;; issue #31 p6: reduce-sum / reduce-max
    #:reference-reduce-max
    ;; フェイク backend（issue #9。nabla:backend プロトコルの参照実装）

@@ -89,6 +89,7 @@
    #:grad-requires-scalar-output-aval
    ;; if を select に、配列レベルの公開 API（issue #32、t2）
    #:dot
+   #:conv-general-dilated
    #:reshape
    #:transpose
    #:broadcast-in-dim

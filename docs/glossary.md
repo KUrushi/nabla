@@ -110,6 +110,9 @@ pretty form を出力する。
 **float trap（浮動小数点例外トラップ）**
 : CPU が0除算・オーバーフロー・不正な演算（0/0 や sqrt(-1) など）を検出したときに、実行を止めてコンディションを signal する仕組み。SBCL は既定で `:overflow` `:invalid` `:divide-by-zero` の3つのトラップを有効にしているため、`(/ 1.0 0.0)` のような計算はそのままだと `division-by-zero` を signal してしまう。StableHLO / IREE は IEEE 754 どおり無限大・NaN を返す（signal しない）ので、nabla のプリミティブの eager 実装は `sb-int:with-float-traps-masked` でこの3つのトラップをマスクしてから計算し、両者の挙動を揃える（`src/primitives/common.lisp` の `with-ieee-arithmetic`）。マスクは要素ごとではなく、eager 呼び出し全体を1回だけ包む（速度のため）。`nabla/iree` では、これに加えて MXCSR（SSE の浮動小数点制御・ステータスレジスタ）の性質に注意が要る：Linux はスレッド生成（`clone(2)`）時に生成元スレッドの MXCSR をそのままコピーするため、IREE のワーカースレッドや LLVM コード生成を生成・実行する瞬間に呼び出し元スレッドがマスクされていないと、生成された側は未マスクのまま動き続ける（issue #53）。`nabla.ffi-support:with-all-float-traps-masked`（`src/ffi-support/float-traps.lisp`。実験の記録は `docs/float-traps-experiments.md`）は SBCL（x86-64）が制御できる5種類すべて（`:underflow` `:overflow` `:inexact` `:invalid` `:divide-by-zero`。6つ目の `:denormalized-operand` は SBCL では 32bit x86 専用で x86-64 には存在しない）をマスクし、`make-device` / `make-session` / `session-append-module` / `invoke` / `compile-stablehlo` などの生成・呼び出し点を包む。
 
+**channels-last（NHWC / HWIO）**
+: 畳み込み（`convolution` プリミティブ、`conv-general-dilated`）の配列の並べ方。入力と出力は `[N, 空間..., C]`（バッチ・空間の各軸・チャネル。2次元なら NHWC）、カーネルは `[空間..., C/G, O]`（2次元なら HWIO）。Flax と同じで、nabla はこの配置に固定している（StableHLO の `dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f]`）。G は `feature_group_count`（入力チャネルを G 個のグループに分け、グループごとに畳み込む。G = C なら depthwise）。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**

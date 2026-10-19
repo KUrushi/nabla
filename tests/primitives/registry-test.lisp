@@ -75,11 +75,13 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 ;;; --- 自動微分のルール（issue #86。フェーズ2の全ルール検査） ---
 
 (defparameter *non-differentiable-primitive-names* '(:rng-bit-generator
-    :shift-right-logical :bitwise-or :bitcast-convert)
+    :shift-right-logical :bitwise-or :bitcast-convert :convolution)
   "意図的に :jvp を持たない本物のプリミティブ。:jvp の無い defprimitive を足すときは、
 ここに理由つきで足すか、jvp ルールを書く。
   - :rng-bit-generator（issue #133）: 状態もビットも整数で接線が常に symbolic zero なので、
     jvp-graph が全入力ゼロのときにルールを呼ばず主値を再発行する。ルールは要らない。
+  - :convolution（issue #197）: 順方向だけ。jvp / transpose / バッチ化ルールは #203 で足す
+    （足したらここと下の *no-batch-rule-primitive-names* から外し、*linear-primitive-names* に足す）。
   （while-loop と cond は issue #134、scan は issue #135 で jvp を持った。逆モードに対応しないのは
   while-loop だけで、linearize が NO-TRANSPOSE-RULE にする。cond は #134、scan は #139。）")
 
@@ -112,9 +114,10 @@ tanh / compare / reduce-max / stop-gradient の jvp は接線について線形�
       (is (or (nb::primitive-jvp prim) (member name *non-differentiable-primitive-names*))
           (format nil "~S に jvp ルールが無い（除外するなら *non-differentiable-primitive-names* に足す）" name)))))
 
-(defparameter *no-batch-rule-primitive-names* '()
+(defparameter *no-batch-rule-primitive-names* '(:convolution)
   "バッチ化ルール（:batch）を持たなくてよいプリミティブ。フェーズ3の終わりの時点では空
-（登録済みのすべてのプリミティブがルールを持つ）。")
+（登録済みのすべてのプリミティブがルールを持つ）だったが、:convolution（issue #197）は
+順方向だけで、ルールは #203 で足す。")
 
 (test registry/every-registered-primitive-has-a-batch-rule-or-is-excluded
   "登録されたすべての（テスト専用でない）プリミティブが :batch を持つか、

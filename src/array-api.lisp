@@ -210,3 +210,45 @@ dtype の配列かトレーサ。配列には中身が等しい新しい配列�
 
 (defmethod stop-gradient ((x tracer))
   (%trace-eqn :stop-gradient (list x)))
+
+;;; --- conv-general-dilated（issue #197。プリミティブは src/primitives/conv.lisp）---
+
+(defgeneric conv-general-dilated (lhs rhs &key strides padding lhs-dilation rhs-dilation feature-group-count)
+  (:documentation
+   "LHS（[N, 空間..., C]）と RHS（[空間..., C/G, O]）の畳み込み（Flax と同じ channels-last の
+NHWC / HWIO。JAX の conv_general_dilated 相当）。空間次元の数 S は rank - 2（1 以上）。
+STRIDES・LHS-DILATION・RHS-DILATION は長さ S の正の整数のリスト（既定はすべて 1）、
+PADDING は長さ S の (low high) のリスト（明示的な値。既定はすべて (0 0)）、
+FEATURE-GROUP-COUNT は G（既定 1）。不正な値は PRIMITIVE-ERROR。float dtype のみ。
+LHS・RHS の片方が配列でもう片方がトレーサなら、配列をトレーサと同じ dtype の定数としてリフトする。"))
+
+(defun %conv-params (lhs-rank strides padding lhs-dilation rhs-dilation groups)
+  "省略されたパラメタを既定値（stride・dilation は 1、padding は (0 0)）で埋めた plist。"
+  ;; rank が 3 未満だと SPATIAL は負になり、既定値のリストは空になる。abstract-eval が拒否する。
+  (let ((spatial (- lhs-rank 2)))
+    (flet ((ones (value) (or value (loop repeat spatial collect 1))))
+      (list :strides (ones strides)
+            :padding (or padding (loop repeat spatial collect (list 0 0)))
+            :lhs-dilation (ones lhs-dilation) :rhs-dilation (ones rhs-dilation)
+            :feature-group-count groups))))
+
+(defmethod conv-general-dilated ((lhs array) (rhs array) &key strides padding lhs-dilation rhs-dilation
+                                                            (feature-group-count 1))
+  (let ((avals (list (array-aval lhs) (array-aval rhs)))
+        (params (%conv-params (array-rank lhs) strides padding lhs-dilation rhs-dilation
+                              feature-group-count)))
+    ;; eager は検査しないので、先に形状推論で不正なパラメタを PRIMITIVE-ERROR にする。
+    (apply (primitive-abstract-eval (find-primitive :convolution)) avals params)
+    (apply (primitive-eager (find-primitive :convolution)) (list lhs rhs) avals params)))
+
+(defmethod conv-general-dilated ((lhs tracer) (rhs tracer) &key strides padding lhs-dilation rhs-dilation
+                                                              (feature-group-count 1))
+  (apply #'%trace-eqn :convolution (list lhs rhs)
+         (%conv-params (aval-rank (tracer-aval lhs)) strides padding lhs-dilation rhs-dilation
+                       feature-group-count)))
+
+(defmethod conv-general-dilated ((lhs array) (rhs tracer) &rest keys)
+  (apply #'conv-general-dilated (%lift-array lhs rhs) rhs keys))
+
+(defmethod conv-general-dilated ((lhs tracer) (rhs array) &rest keys)
+  (apply #'conv-general-dilated lhs (%lift-array rhs lhs) keys))

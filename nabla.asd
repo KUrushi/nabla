@@ -41,6 +41,8 @@
                (:file "src/primitives/stop-gradient")
                ;; issue #31 p5: dot-general
                (:file "src/primitives/dot")
+               ;; convolution（issue #197）
+               (:file "src/primitives/conv")
                ;; graph の eager 評価（issue #39、e0。プリミティブ（p1..p6）が
                ;; まだ無いので src/ir-print の直後に置く。将来のプリミティブは
                ;; この行より前に足す）
@@ -214,6 +216,8 @@
                ;; ベンチマークスクリプトの出力の読み書き（issue #89）
                (:file "tests/bench-test")
                (:file "tests/array-api-test")
+               ;; convolution（issue #197）
+               (:file "tests/primitives/conv-test")
                ;; graph のインライン化と不要 eqn の削除（issue #77、77b）
                (:file "tests/ad/inline-test")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
@@ -390,6 +394,8 @@
                (:file "tests/iree/compare-test")
                ;; issue #31 p5: dot-general
                (:file "tests/iree/dot-test")
+               ;; convolution（issue #197）
+               (:file "tests/iree/conv-test")
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "tests/iree/reduce-test")
                ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
@@ -518,7 +524,9 @@
                (:file "tests/pjrt/rng-test")
                (:file "tests/pjrt/prng-test")
                ;; :i1（PRED）の往復と jit の入出力（issue #166）
-               (:file "tests/pjrt/i1-test")))
+               (:file "tests/pjrt/i1-test")
+               ;; convolution（issue #197）
+               (:file "tests/pjrt/conv-test")))
 
 ;; nabla/nn: モデル記述の層（issue #194）。最初の部品は safetensors の読み書き（issue #198）。
 (defsystem "nabla/nn"
