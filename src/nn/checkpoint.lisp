@@ -7,8 +7,8 @@
 ;;;;   モジュールの子はスロット名（"w"。:static は葉でないので出ない）。スロット名は
 ;;;;   Lisp の既定で大文字になる名前（W）だけを小文字にし、|Dense_0| のように小文字を含む
 ;;;;   名前は保つ（Flax の flatten_dict が作る "params.Dense_0.kernel" と同じ名前にできる）。
-;;;;   defmodule 以外で defpytree した型の子には名前が無いので、その節の下の葉の通し番号を
-;;;;   使う（"state.0"、"state.1"）。木のルートが葉そのものなら名前は ""。
+;;;;   defmodule 以外で defpytree した型の子には名前が無いので、FLATTEN が返す子の添字を使い、
+;;;;   入れ子はそのまま再帰する（"opt.0.0.w"、"opt.2"）。木のルートが葉そのものなら名前は ""。
 ;;;; - 木全体が1つの名前空間なので、モデルとオプティマイザ状態は (defmodule train-state
 ;;;;   (params opt)) のように1つの木にまとめれば同じファイルに接頭辞つきで入る
 ;;;;   ("params.w"、"opt.0.mu")。別ファイルにしたければ別々に保存する。API に接頭辞の引数は持たない。
@@ -45,6 +45,7 @@
    "SAVE-CHECKPOINT / LOAD-CHECKPOINT が、木・ひな形・ファイルの組み合わせを扱えないときに
 signal する。REASON は次のどれか。
   :inconsistent-tree   パス名の順序が TREE-FLATTEN と合わない（defpytree の登録が途中で変わったとき）
+  :empty-segment       名前が空のスロット（|| など）があり、パス名の一部が空になる
   :bad-leaf            配列でも device-array でも（ひな形では aval でも）ない葉
   :duplicate-path      2つの葉が同じパス名になる
   :unknown-path        :dtypes のパス名が木に無い
@@ -64,6 +65,8 @@ NAME は :shape-mismatch / :dtype-mismatch / :bad-leaf / :duplicate-path / :unkn
 
 (defun %segment (symbol)
   (let ((name (symbol-name symbol)))
+    (when (string= name "")
+      (%checkpoint-fail :empty-segment nil "名前が空のスロット（||）はパス名にできない"))
     (if (string= name (string-upcase name)) (string-downcase name) name)))
 
 (defun %join (prefix segment)
@@ -81,12 +84,13 @@ NAME は :shape-mismatch / :dtype-mismatch / :bad-leaf / :duplicate-path / :unkn
            (loop for (slot . kind) in (module-slots tree)
                  unless (eq kind :static)
                    append (%named-leaves (slot-value tree slot) (%join prefix (%segment slot)))))
-          (t (let ((leaves (nabla:tree-leaves tree)))
-               (if (and leaves (null (cdr leaves)) (eq (first leaves) tree))
-                   (list (cons (or prefix "") tree))
-                   (loop for leaf in leaves
-                         for i from 0
-                         collect (cons (%join prefix (princ-to-string i)) leaf))))))))
+          (t (let ((entry (nabla::%pytree-node-entry tree)))
+               (if entry
+                   ;; defmodule 以外の登録した型: FLATTEN が返す子を添字で名前にして再帰する。
+                   ;; 子を取り出す公開 API は無いので core の内部関数 %pytree-node-entry を使う
+                   ;; （順序の食い違いは %paths-and-leaves が検出する）
+                   (indexed (funcall (car entry) tree))
+                   (list (cons (or prefix "") tree))))))))
 
 (defun %paths-and-leaves (tree)
   "(values パス名のリスト 葉のリスト treedef)。TREE-FLATTEN は1回だけ呼ぶ。"
@@ -101,7 +105,7 @@ NAME は :shape-mismatch / :dtype-mismatch / :bad-leaf / :duplicate-path / :unkn
   "TREE の葉のパス名の文字列を、NABLA:TREE-LEAVES と同じ順に並べたリストで返す。
 リストとベクタの子は添字、defmodule のモジュールの子はスロット名（:static は出ない。
 Lisp の既定で大文字になる名前は小文字に、|Dense_0| のように小文字を含む名前はそのまま）、
-defmodule 以外で defpytree した型の子は、その節の下の葉の通し番号。\".\" でつなぐ
+defmodule 以外で defpytree した型の子は、FLATTEN が返す子の添字（入れ子は再帰する）。\".\" でつなぐ
 （\"enc.layers.0.w\"）。木のルートが葉なら \"\"。名前の重複は検査しない
 \(SAVE-CHECKPOINT / LOAD-CHECKPOINT が :duplicate-path にする)。"
   (values (%paths-and-leaves tree)))
@@ -133,7 +137,7 @@ defmodule 以外で defpytree した型の子は、その節の下の葉の通�
 ;;; --- 保存 ---
 
 (defun save-checkpoint (path tree &key metadata dtypes)
-  "TREE の葉をパス名（TREE-PATHS）で safetensors の PATH に保存し、書いたパス名を返す。
+  "TREE の葉をパス名（TREE-PATHS）で safetensors の PATH に保存し、書いたファイルのパス名（絶対化したもの）を返す。
 葉は配列か device-array（TO-HOST でホストに戻す。dtype は aval から）。
 \(unsigned-byte 16) の配列は DTYPES（(パス名 . :bf16 か :f16) のリスト）で dtype を言う
 \(言わなければ NABLA:DTYPE-MISMATCH）。モデルとオプティマイザ状態を同じファイルに
@@ -163,17 +167,15 @@ WRITE-SAFETENSORS のとおり一時ファイル経由で、失敗したら既�
 ;;; --- 復元 ---
 
 (defun %template-shape-and-dtype (name leaf dtypes)
-  "ひな形の葉 LEAF の (values 形 dtype) を返す。dtype が決められない（dtype を言っていない
-\(unsigned-byte 16) の配列）ときは NIL。"
+  "ひな形の葉 LEAF の (values 形 dtype) を返す。"
   (let ((dtype (%dtype-for name dtypes)))
     (cond ((%array-leaf-p leaf)
            (values (array-dimensions leaf)
-                   (if (or dtype (not (equal (array-element-type leaf) '(unsigned-byte 16))))
-                       (handler-case (nabla:array-dtype leaf dtype)
-                         (nabla:dtype-mismatch (c)
-                           (%checkpoint-fail :dtype-mismatch name "ひな形の葉の要素型 ~S は dtype ~S と合わない"
-                                             (nabla:dtype-mismatch-element-type c) dtype)))
-                       nil)))
+                   (handler-case (nabla:array-dtype leaf dtype)
+                     (nabla:dtype-mismatch (c)
+                       (%checkpoint-fail :dtype-mismatch name
+                                         "ひな形の葉の要素型 ~S は dtype ~S と合わない（(unsigned-byte 16) は :dtypes で :bf16 か :f16 を言う）"
+                                         (nabla:dtype-mismatch-element-type c) dtype)))))
           ((%device-array-p leaf)
            (let ((aval (nabla:device-array-aval leaf)))
              (values (nabla:aval-shape aval) (or dtype (nabla:aval-dtype aval)))))
@@ -189,8 +191,9 @@ TEMPLATE は init で作ったモデルなど、保存した木と同じパス�
 \(\"nabla.\" で始まる予約のキーを除く)。
 ファイルとひな形の名前が一致しない（:missing-entries / :unexpected-entries）、形が違う
 \(:shape-mismatch)、dtype が違う（:dtype-mismatch）、版が新しい（:unsupported-version）ときは
-CHECKPOINT-ERROR。dtype を言っていない (unsigned-byte 16) のひな形の葉は bf16 / f16 の
-どちらのファイルでも受けるので、区別したければ DTYPES（SAVE-CHECKPOINT と同じ）で言う。
+CHECKPOINT-ERROR。ひな形の葉が要素型 (unsigned-byte 16) の配列のときは、保存と同じく
+DTYPES で :bf16 か :f16 を言う（言わなければ :dtype-mismatch。device-array と aval の
+ひな形は自分の dtype を持つ）。
 壊れたファイルは SAFETENSORS-ERROR。"
   (multiple-value-bind (paths leaves treedef) (%paths-and-leaves template)
     (let ((names (%check-paths paths dtypes)))
@@ -220,8 +223,8 @@ CHECKPOINT-ERROR。dtype を言っていない (unsigned-byte 16) のひな形�
                               (unless (equal shape (array-dimensions array))
                                 (%checkpoint-fail :shape-mismatch name "形がひな形 ~S とファイル ~S で違う"
                                                   shape (array-dimensions array)))
-                              (unless (if dtype (eq dtype file-dtype) (member file-dtype '(:bf16 :f16)))
+                              (unless (eq dtype file-dtype)
                                 (%checkpoint-fail :dtype-mismatch name "dtype がひな形 ~S とファイル ~S で違う"
-                                                  (or dtype :bf16/f16) file-dtype))
+                                                  dtype file-dtype))
                               array)))
              (remove-if (lambda (item) (eql 0 (search "nabla." (car item)))) metadata))))))))

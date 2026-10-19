@@ -139,8 +139,28 @@
   (let ((leaf (make-array 0 :element-type 'single-float)))
     (is (equal '("") (tree-paths leaf)))
     (is (equal '() (tree-paths nil)))
-    ;; defmodule 以外の登録した型の子には、名前の代わりに葉の通し番号を使う
-    (is (equal '("0" "1.0" "1.1") (tree-paths (list leaf (make-ck-pair :a leaf :b (list leaf))))))))
+    ;; defmodule 以外の登録した型の子には、FLATTEN が返す子の添字を使い、入れ子は再帰する
+    (is (equal '("0" "1.0" "1.1.0") (tree-paths (list leaf (make-ck-pair :a leaf :b (list leaf))))))))
+
+(defstruct ck-adam mu nu count)
+(nabla:defpytree ck-adam
+  :flatten (lambda (a) (values (list (ck-adam-mu a) (ck-adam-nu a) (ck-adam-count a)) nil))
+  :unflatten (lambda (aux children) (declare (ignore aux))
+               (make-ck-adam :mu (first children) :nu (second children) :count (third children))))
+
+(test (checkpoint/registered-node-keeps-nested-module-names :suite :nabla.small)
+  "オプティマイザ状態のような defpytree の節が defmodule のサブ木を持つとき、w / b の名前が残る。"
+  (flet ((layer () (make-ck-layer :w (ck-f32 0.0) :b (ck-f32 0.0) :act :relu)))
+    (let ((state (make-ck-train-state
+                  :params (layer)
+                  :opt (make-ck-adam :mu (layer) :nu (list (layer)) :count (ck-f32 0.0)))))
+      (is (equal '("params.w" "params.b" "opt.0.w" "opt.0.b" "opt.1.0.w" "opt.1.0.b" "opt.2")
+                 (tree-paths state))))))
+
+(defmodule ck-empty ((|| :param)))
+
+(test (checkpoint/empty-slot-names-are-rejected :suite :nabla.small)
+  (is (eq :empty-segment (ck-error-reason (lambda () (tree-paths (make-ck-empty :|| (ck-f32 1.0))))))))
 
 ;;; --- 往復と不一致（medium） ---
 
@@ -185,15 +205,15 @@
          (n (length (nabla:tree-leaves tree))))
     (with-checkpoint-file (path)
       (save-checkpoint path tree :dtypes (ck-dtype-map tree seed))
-      (flet ((outcome (template)
-               (handler-case (progn (load-checkpoint path template) :loaded)
+      (flet ((outcome (template &optional (dtypes (ck-dtype-map tree seed)))
+               (handler-case (progn (load-checkpoint path template :dtypes dtypes) :loaded)
                  (checkpoint-error (c) (list (checkpoint-error-reason c) (checkpoint-error-name c))))))
         (and (equal '(:missing-entries nil)
                     (outcome (list (first tree) (vector (make-array 0 :element-type 'single-float)))))
              (or (zerop n)
                  (let* ((index (mod seed n))
                         (name (nth index (tree-paths tree))))
-                   (and (equal '(:unexpected-entries nil) (outcome (list nil)))
+                   (and (equal '(:unexpected-entries nil) (outcome (list nil) nil))
                         (equal (list :shape-mismatch name) (outcome (ck-perturb-leaf tree index :shape)))
                         (equal (list :dtype-mismatch name) (outcome (ck-perturb-leaf tree index :dtype)))))))))))
 
@@ -207,8 +227,9 @@
       (is (eq :unknown-path (ck-error-reason (lambda () (save-checkpoint path tree :dtypes '(("9" . :bf16)))))))
       (save-checkpoint path tree :dtypes '(("0" . :bf16)))
       (is (eq :bf16 (third (find "0" (read-safetensors path) :key #'first :test #'string=))))
-      ;; ひな形は dtype を言わなくても読めるが、言えば file の dtype と比べる
-      (is (ck-same-leaves-p tree (load-checkpoint path tree)))
+      ;; ひな形の (unsigned-byte 16) の葉も保存と同じく dtype を言う（言わなければ生のビットを
+      ;; bf16 / f16 のどちらのファイルからでも受けてしまう）。言えば file の dtype と比べる
+      (is (eq :dtype-mismatch (ck-error-reason (lambda () (load-checkpoint path tree)))))
       (is (ck-same-leaves-p tree (load-checkpoint path tree :dtypes '(("0" . :bf16)))))
       (is (eq :dtype-mismatch
               (ck-error-reason (lambda () (load-checkpoint path tree :dtypes '(("0" . :f16)))))))

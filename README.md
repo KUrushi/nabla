@@ -353,7 +353,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
-`nabla/nn`（パッケージ `nabla.nn`）の最初の部品。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree をパス名で平坦化して保存・復元するのは次の「チェックポイント」）。`(asdf:load-system "nabla/nn")` で使う。
+`nabla/nn`（パッケージ `nabla.nn`）の部品の1つ。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree をパス名で平坦化して保存・復元するのは次の「チェックポイント」）。`(asdf:load-system "nabla/nn")` で使う。
 
 | 関数 | 役割 |
 | --- | --- |
@@ -376,11 +376,11 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 | `(save-checkpoint path tree &key metadata dtypes)` | `tree` の葉を `path` に保存する（`write-safetensors` 経由なのでアトミック）。葉は配列か `device-array`（`to-host` でホストに戻して書く） |
 | `(load-checkpoint path template &key dtypes)` | `(values 木 メタデータ)`。`template` の葉と名前で対応づけて `tree-unflatten` する。葉は配列・`device-array`・`aval` のどれでもよく、形と dtype だけを使う。復元した葉はホストの新しい配列 |
 | `(tree-paths tree)` | 葉のパス名のリスト（`tree-leaves` と同じ順） |
-| `checkpoint-error` / `-reason` / `-name` / `-detail` | `reason` は `:bad-leaf` `:duplicate-path` `:unknown-path` `:reserved-metadata` `:unsupported-version` `:missing-entries` `:unexpected-entries` `:shape-mismatch` `:dtype-mismatch`（意味は docstring。`name` は原因の葉） |
+| `checkpoint-error` / `-reason` / `-name` / `-detail` | `reason` は `:empty-segment` `:inconsistent-tree` `:bad-leaf` `:duplicate-path` `:unknown-path` `:reserved-metadata` `:unsupported-version` `:missing-entries` `:unexpected-entries` `:shape-mismatch` `:dtype-mismatch`（意味は docstring。`name` は原因の葉） |
 
-- パス名は `"."` でつなぐ（`"enc.layers.0.w"`）。リストとベクタの子は添字、`defmodule` の子はスロット名（`:static` は出ない）。Lisp の既定で大文字になるスロット名は小文字にし、`|Dense_0|` のように小文字を含む名前はそのままなので、Flax の `flatten_dict(..., sep=".")` の `"params.Dense_0.kernel"` と同じ名前にできる。`defmodule` 以外で `defpytree` した型の子には名前が無いので、その節の下の葉の通し番号（`"state.0"`）を使う。根が葉なら `""`。名前が衝突する木（スロット名に `.` を含むなど）は `:duplicate-path`
+- パス名は `"."` でつなぐ（`"enc.layers.0.w"`）。リストとベクタの子は添字、`defmodule` の子はスロット名（`:static` は出ない）。Lisp の既定で大文字になるスロット名は小文字にし、`|Dense_0|` のように小文字を含む名前はそのままなので、Flax の `flatten_dict(..., sep=".")` の `"params.Dense_0.kernel"` と同じ名前にできる。`defmodule` 以外で `defpytree` した型の子には名前が無いので、`flatten` が返す子の添字を使い、入れ子は再帰する（`"opt.0.0.w"`、`"opt.2"`）。スロット名が空のシンボル（`||`）は `:empty-segment`。根が葉なら `""`。名前が衝突する木（スロット名に `.` を含むなど）は `:duplicate-path`
 - モデルとオプティマイザ状態は1つの木にまとめれば同じファイルに入る: `(defmodule train-state ((params) (opt)))` → `"params.w"`、`"opt.0"`。別々に保存してもよい（API に接頭辞は持たない）
-- `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元では、dtype を言っていない `(unsigned-byte 16)` のひな形の葉は bf16 / f16 のどちらのファイルでも受ける（`:dtypes` で言えば照合する）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
+- `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元でも、ひな形の葉が `(unsigned-byte 16)` の配列なら `:dtypes` で言う必要がある（言わなければ `:dtype-mismatch`。bf16 のモデルを f16 のファイルから生のビットで復元する事故を防ぐ。`device-array` と `aval` のひな形は自分の dtype を持つ）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
 - 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
@@ -445,7 +445,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 ```
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
-src/nn/              nabla.nn パッケージ: safetensors の読み書き（今後 defmodule・レイヤー・オプティマイザ）
+src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、PyTree のチェックポイント（今後レイヤー・オプティマイザ）
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト
@@ -460,7 +460,7 @@ third_party/         iree.lock（固定した IREE のコミットとホイー�
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
 
-ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き。issue #198）、`nabla/nn/tests` の11個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
+ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き #198、defmodule #202、PyTree のチェックポイント #206）、`nabla/nn/tests` の11個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
 
 ## 開発の進め方
 

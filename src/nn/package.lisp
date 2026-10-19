@@ -29,4 +29,4 @@
    #:checkpoint-error-name
    #:checkpoint-error-detail)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書きと defmodule。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント。"))
