@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME CONV/SAME-PADDING-FOLLOWS-THE-JAX-FORMULA :DATUM
+                 "(1 1 1 1)" :TIMESTAMP 4001383887)

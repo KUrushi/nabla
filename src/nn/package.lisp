@@ -64,6 +64,9 @@
    ;; multi-head attention（issue #208）
    #:multi-head-attention #:make-multi-head-attention #:init-multi-head-attention
    #:multi-head-attention-query #:multi-head-attention-key #:multi-head-attention-value
-   #:multi-head-attention-out #:multi-head-attention-dropout-rate)
+   #:multi-head-attention-out #:multi-head-attention-dropout-rate
+   ;; conv（issue #207）
+   #:conv #:make-conv #:init-conv #:conv-kernel #:conv-bias #:conv-strides #:conv-padding
+   #:conv-kernel-dilation #:conv-feature-group-count)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv。"))

@@ -570,7 +570,9 @@
                (:file "src/nn/dense-general")
                (:file "src/nn/attention-mask")
                ;; multi-head attention（issue #208）
-               (:file "src/nn/attention")))
+               (:file "src/nn/attention")
+               ;; conv レイヤー（issue #207）
+               (:file "src/nn/conv")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -599,4 +601,7 @@
                (:file "tests/nn/attention-test")
                (:file "tests/nn/attention-iree-test")
                ;; 小さな Transformer を学習する end-to-end テスト（issue #209。examples/transformer.lisp を load する）
-               (:file "tests/nn/transformer-test")))
+               (:file "tests/nn/transformer-test")
+               ;; conv レイヤー（issue #207）
+               (:file "tests/nn/conv-test")
+               (:file "tests/nn/conv-iree-test")))

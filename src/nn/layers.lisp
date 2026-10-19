@@ -152,10 +152,13 @@ X は配列かトレーサ。AXIS が範囲外なら error。"
 (defparameter *truncated-normal-stddev* 0.87962566103423978d0
   "[-2, 2] に切った標準正規分布の標準偏差（Flax の lecun_normal が割る定数）。")
 
+(defun %lecun-normal-of-shape (key shape fan-in dtype)
+  "Flax の lecun_normal: SHAPE の切断正規分布に 1/(0.8796 sqrt(FAN-IN)) をかける。"
+  (%scale-by (nabla:truncated-normal key shape :dtype dtype)
+             (/ (sqrt (/ 1d0 fan-in)) *truncated-normal-stddev*)))
+
 (defun %lecun-normal (key in-features out-features dtype)
-  "Flax の lecun_normal: 切断正規分布に 1/(0.8796 sqrt(fan_in)) をかける。"
-  (%scale-by (nabla:truncated-normal key (list in-features out-features) :dtype dtype)
-             (/ (sqrt (/ 1d0 in-features)) *truncated-normal-stddev*)))
+  (%lecun-normal-of-shape key (list in-features out-features) in-features dtype))
 
 (defun %dense-apply (x kernel bias)
   (%check-last-axis "dense" x kernel)

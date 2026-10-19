@@ -1,0 +1,3 @@
+(in-package #:nabla.nn.tests)
+(REGRESSION-CASE :NAME CONV/ONE-BY-ONE-KERNEL-IS-A-DENSE-OVER-CHANNELS :DATUM
+                 "(0 1 1 1 1)" :TIMESTAMP 4001383887)
