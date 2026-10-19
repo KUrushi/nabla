@@ -21,12 +21,17 @@ sin / cos の入力は |x| <= 100 に限る。XLA の f32 の sin / cos は多�
 ことがある。これは nabla の誤りではなく範囲縮約の実装の差なので、定義域を |x| <= 100 に
 絞って比べる。
 
+実際の生成は macOS arm64 の jax 0.10.2 / jaxlib 0.10.2 で行った（OrbStack の x86_64 VM は Rosetta で AVX が
+無く、jaxlib が起動しないため。XLA の CPU の sin / cos は自前の多項式なので、アーキテクチャによる差は
+f32 の許容誤差よりずっと小さく、x86_64 で作り直しても結果は一致するはず）。
+
 使い方 (x86_64 の VM で、jax[cpu]==0.10.2 の入った venv から。x64 を有効にして f64 も作る):
     python3 tests/fixtures/unary/generate.py
 tests/fixtures/unary/ の下に2つのファイルを書く。
 """
 
 import os
+import platform
 
 import jax
 import jax.numpy as jnp
@@ -60,7 +65,7 @@ def inputs(name, dt, specials, randoms, limit=None):
 def write(path, columns, fns, rng, specials, make_randoms, limit=None):
     with open(path, "w") as f:
         f.write(f";;;; JAX (jax.lax.{' / jax.lax.'.join(columns)}) との突き合わせ用フィクスチャ（issue #223）。\n")
-        f.write(f";;;; 生成: tests/fixtures/unary/generate.py（jax {jax.__version__}）。"
+        f.write(f";;;; 生成: tests/fixtures/unary/generate.py（jax {jax.__version__}、{platform.machine()}）。"
                 f"各行は (dtype 入力 {' '.join(columns)})、値はビットパターン。\n")
         f.write("(\n")
         for name, dt in DTYPES:
