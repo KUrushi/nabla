@@ -390,7 +390,9 @@ o3 は else だけが素通し。素通しの枝の側は 0 の定数（%cond_z_
 
 (test cond/emit-drops-the-if-when-every-output-is-a-passthrough
   "全ての出力がどちらかの枝の素通しなら、stablehlo.if 自体を出さず select だけにする
-（結果が無い stablehlo.if を出さない。scan の本体の制御構造の判定も stablehlo.if の有無で決まる）。"
+（結果が無い stablehlo.if を出さない）。scan の ys の barrier を外す判定（本体のテキストに stablehlo.if が
+あるか）は、この if が消えると「制御構造なし」になり barrier が付く。制御構造が無くなるので、barrier と
+制御構造をはさむ書き込みの競合（上流バグの表の 7）の条件を満たさず、安全。"
   (let ((text (%cond-emit-text (%cond-branch (values u v))
                                (%cond-branch (values v w)))))
     (is (= 0 (%cond-count-lines "stablehlo.if" text)))

@@ -102,7 +102,7 @@ dtype ごとに違う演算が要り、浮動小数点の -0.0 を変えない�
          (then-passes (mapcar (lambda (v) (%cond-passthrough-name then v operands)) (graph-outvars then)))
          (else-passes (mapcar (lambda (v) (%cond-passthrough-name else v operands)) (graph-outvars else)))
          (if-names '()) (if-avals '())
-         (then-keep '()) (else-keep '())
+         (kept '())
          (then-dummies '()) (else-dummies '())
          (selects '()))
     (loop for position from 0
@@ -116,8 +116,7 @@ dtype ごとに違う演算が要り、浮動小数点の -0.0 を変えない�
                     (keep (temp)
                       (push temp if-names)
                       (push aval if-avals)
-                      (push position then-keep)
-                      (push position else-keep)))
+                      (push position kept)))
                (cond
                  ((and (null then-pass) (null else-pass))
                   (keep out))
@@ -138,8 +137,8 @@ dtype ごとに違う演算が要り、浮動小数点の -0.0 を変えない�
               (format nil "~{~A~^, ~} = \"stablehlo.if\"(~A) ({~%~A~%}, {~%~A~%}) : (tensor<i1>) -> (~{~A~^, ~})"
                       (reverse if-names)
                       pred
-                      (%cond-indent (%cond-branch-region then operands (reverse then-keep) then-dummies))
-                      (%cond-indent (%cond-branch-region else operands (reverse else-keep) else-dummies))
+                      (%cond-indent (%cond-branch-region then operands (reverse kept) then-dummies))
+                      (%cond-indent (%cond-branch-region else operands (reverse kept) else-dummies))
                       (mapcar #'tensor-type-string (reverse if-avals))))))
       (format nil "~{~A~^~%~}" (append (and if-text (list if-text)) (reverse selects))))))
 

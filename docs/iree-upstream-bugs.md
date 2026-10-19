@@ -474,7 +474,7 @@ Runtime
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 未報告（ユーザーが報告する）。上流 issue: `<link>` |
+| 状態 | 未報告（ユーザーが報告する）。上流 issue: `<link>`。Rosetta の VM で確認。報告前に x86 ネイティブで確かめる |
 | 再現ファイル | `docs/iree-repros/if-passthrough-operands.mlir`（`stablehlo.if` の then が operand 3 つをそのまま `stablehlo.return` し、1 つだけ計算する。else は 4 つとも計算する）。対照は `if-passthrough-operands-select.mlir`（素通しの結果を if から外し、if の外の `stablehlo.select` にした形。nabla の回避策） |
 | 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=f32=1.0 --input=f32=1.0 --input=f32=2.0 --input=f32=3.0 --input=f32=4.0` で実行する（最初の入力が pred 用で、`< 0.5` なら then）。`--device=local-sync` でも同じ。`scripts/check-iree-repros.sh` の fail-bug / fail-control の行 |
 | 症状 | `iree-src/runtime/src/iree/vm/ref.h:223: INVALID_ARGUMENT; ref is null; while invoking native function hal.buffer_view.create`。素通しの結果を持つ枝**でない**側（else。p = 1.0）を選んだときだけ。素通しの枝を選ぶ側（p = 0.0）は正しい値が返る。結果が関数の戻り値でなく後続の演算で使われると、別のエラー `OUT_OF_RANGE; indirect buffer reference ...`（`command_buffer_validation.c:185`）になる |
@@ -495,7 +495,7 @@ Runtime
 | 片方の枝だけ素通し | 計算する側の値（素通しの枝は 0 の定数を返す） | `select(pred, 素通しの入力, 計算した値)`（素通しが else なら逆順） |
 | 両方の枝が素通し | 外す | `select(pred, then の入力, else の入力)` |
 
-結果が 1 つも残らないときは `stablehlo.if` 自体を出さない。理由: (1) 動く。(2) dtype に依らず、値を変えない（`select` は NaN も -0.0 も整数もビットのまま選ぶ。`x + 0` の類は dtype ごとに演算が違い、-0.0 を壊す）。(3) pred は実行時の値なので、`select(c, x, x)` のように畳み込まれない。(4) emit だけで済み、eqn の形・eager・jvp・vmap は変わらない。コピーの量は、素通しの出力 1 つにつき、素通しの枝の側で 0 の定数の生成（選ばれたときだけ）と、if の後の `select` 1 回（入力 2 つを読み、1 つ書く）。素通しでない出力には何も増えない。
+結果が 1 つも残らないときは `stablehlo.if` 自体を出さない（その `cond*` だけを本体に持つ scan は、`src/scan.lisp` の本体のテキストの判定で「制御構造なし」となり ys の barrier が付くが、制御構造が無いので 7 の競合の条件を満たさず安全）。理由: (1) 動く。(2) dtype に依らず、値を変えない（`select` は NaN も -0.0 も整数もビットのまま選ぶ。`x + 0` の類は dtype ごとに演算が違い、-0.0 を壊す）。(3) pred は実行時の値なので、`select(c, x, x)` のように畳み込まれない。(4) emit だけで済み、eqn の形・eager・jvp・vmap は変わらない。コピーの量は、素通しの出力 1 つにつき、素通しの枝の側で 0 の定数の生成（選ばれたときだけ）と、if の後の `select` 1 回（入力 2 つを読み、1 つ書く）。素通しでない出力には何も増えない。
 
 ### 下書き（英語）
 
@@ -549,7 +549,8 @@ func.func @main(%p: tensor<f32>, %a: tensor<f32>, %b: tensor<f32>, %c: tensor<f3
 
 Whether it fails depends on the layout of the results (C = computed in both regions, P = passed
 through by the first region, the second region computes everything): `CPPP`, `CPPPP`, `CPPPPP`
-and `PCPPP` fail; `PPPC`, `PPPP`, `CPP`, `CCPPP`, `CPPPC`, `CPCPP` and `CPPCP` work.
+and `PCPPP` fail; `PPPC`, `PPP`, `PPPP`, `CPP`, `PPC`, `CCPP`, `CCPPP`, `CPPPC`, `CPCPP`, `CPPCP`, `PCPC`
+and `CPCP` work.
 
 ### What component(s) does this issue relate to?
 

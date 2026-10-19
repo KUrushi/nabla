@@ -127,6 +127,57 @@ then が3つ素通しする形を、スカラーと [2 3] の配列で jit し�
           "then が3つ素通し（形 ~A）" shape))
     (gc-and-run-finalizers)))
 
+(define-iree-test cond-passthrough/jit-branch-returning-captured-arrays-matches-eager
+    "枝が閉包で捕まえた外側の配列（cond* の eqn の追加の入力になる）をそのまま返す形も、jit した結果が
+pred の両方の値で eager と一致する（then が捕捉値を3つ素通し、else は全て計算）。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (nb:*compile-cache-directory* nil))
+    (dolist (shape '(() (2 3)))
+      (let ((f (nb::%make-traceable-function
+                (list 'p 'x0 'x1 'x2 'x3)
+                (lambda (p x0 x1 x2 x3)
+                  (nb:cond* (funcall *cp-lt-half* p)
+                            (nb::%make-traceable-function
+                             (list 'a) (lambda (a) (values (funcall *cp-scale* a) x1 x2 x3)))
+                            (nb::%make-traceable-function
+                             (list 'a) (lambda (a) (values (funcall *cp-scale* a) (funcall *cp-scale* x1)
+                                                           (funcall *cp-scale* x2) (funcall *cp-scale* x3))))
+                            x0)))))
+        (dolist (p '(0.0 1.0))
+          (is (%pc-jit-matches-eager-p f backend (cons (nb::%scalar-array p :f32) (subseq (%cp-operands shape) 0 4)))
+              "捕捉値の素通し（形 ~A、p ~A）" shape p))))
+    (gc-and-run-finalizers)))
+
+(defparameter *cp-add-self* (nb:with-tracing (x) (+ x x)))
+
+(define-iree-test cond-passthrough/jit-i32-passthrough-operands-match-eager
+    "i32 の operand を素通しする cond*（then が3つ素通し、else は全て計算）も、jit した結果が pred の両方の値で
+eager と完全に一致する。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (nb:*compile-cache-directory* nil)
+        (f (nb::%make-traceable-function
+            (list 'p 'x0 'x1 'x2 'x3)
+            (lambda (p x0 x1 x2 x3)
+              (nb:cond* (funcall *cp-lt-half* p)
+                        (nb::%make-traceable-function
+                         (list 'a 'b 'c 'd) (lambda (a b c d) (values (funcall *cp-add-self* a) b c d)))
+                        (nb::%make-traceable-function
+                         (list 'a 'b 'c 'd) (lambda (a b c d) (values (funcall *cp-add-self* a) (funcall *cp-add-self* b)
+                                                                      (funcall *cp-add-self* c) (funcall *cp-add-self* d))))
+                        x0 x1 x2 x3)))))
+    (let ((jf (nb:jit f :backend backend))
+          (xs (loop for i below 4
+                    collect (make-random-array (make-array-spec '(3) :i32) :seed (+ 200 i)))))
+      (unwind-protect
+           (dolist (p '(0.0 1.0))
+             (let ((args (cons (nb::%scalar-array p :f32) xs)))
+               (is (every #'equalp (multiple-value-list (apply jf args)) (multiple-value-list (apply f args)))
+                   "i32 の素通し（p ~A）" p)))
+        (nb::%jit-cache-forget f)))
+    (gc-and-run-finalizers)))
+
 (defparameter *cp-spec-generator*
   (generator (tuple (uniform-integer :lo 1 :hi 6)
                     (list (tuple (uniform-integer :lo 0 :hi 2) (uniform-integer :lo 0 :hi 4)) :min-length 6 :max-length 6)
