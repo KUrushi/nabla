@@ -63,6 +63,20 @@ TRACER を作ることはない。値はすべて WITH-TRACING が渡す）。")
   "TRACER に対応する var の aval を返す。"
   (var-aval (tracer-var tracer)))
 
+(defun value-aval (x)
+  "X の aval（形と dtype）を返す。トレース中のコード（defmodule の :call の本体など）が入力の形を
+知るために使う。受け付けるのは次の3つ: トレーサ（その時点の演算の結果の aval）、dtype が決まる配列
+（ARRAY-AVAL と同じ。(unsigned-byte 16) の配列は bf16 / f16 を区別できないので DTYPE-MISMATCH、
+サポートしない要素型も DTYPE-MISMATCH）、device array（バックエンドの DEVICE-ARRAY-AVAL）。
+それ以外（文字列・数値・リストなど）は TRACING-ERROR。"
+  (cond ((typep x 'tracer) (tracer-aval x))
+        ((and (arrayp x) (not (stringp x))) (array-aval x))
+        ((and (not (stringp x)) (compute-applicable-methods #'device-array-aval (list x)))
+         (device-array-aval x))
+        (t (error 'tracing-error
+                  :format-control "VALUE-AVAL はトレーサ・配列・device array にしか使えない: ~S"
+                  :format-arguments (list x)))))
+
 (defmethod print-object ((tracer tracer) stream)
   (print-unreadable-object (tracer stream :type t)
     (let ((aval (tracer-aval tracer)))
