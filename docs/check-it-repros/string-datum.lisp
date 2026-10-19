@@ -1,12 +1,18 @@
 ;;;; check-it の回帰データ (文字列のまま積まれる) の最小再現。
-;;;; 使い方（docs/upstream-bugs-check-it.md）:
+;;;; 使い方（docs/check-it-upstream-bugs.md）:
 ;;;;   sbcl --non-interactive --load docs/check-it-repros/string-datum.lisp [with-defense]
 ;;;; with-defense を付けると nabla の防御（tests/support/regression.lisp の datum の文字列メソッド）を入れる。
 ;;;; 作業ファイルは一時ディレクトリに作る。
 ;;;; check-it: DalekBaldwin/check-it b79c9103665be3976915b56b570038f03486e62f
 (require :asdf)
+;; 依存の場所は NABLA_LISP_DEPS（scripts/setup-lisp-deps.sh と同じ）を優先し、無ければ既定のパス。
 (asdf:initialize-source-registry
- `(:source-registry (:tree ,(namestring (merge-pathnames ".local/share/nabla/lisp-deps/" (user-homedir-pathname)))) :inherit-configuration))
+ `(:source-registry
+   (:tree ,(let ((env (sb-ext:posix-getenv "NABLA_LISP_DEPS")))
+             (if (and env (plusp (length env)))
+                 (uiop:ensure-directory-pathname env)
+                 (merge-pathnames ".local/share/nabla/lisp-deps/" (user-homedir-pathname)))))
+   :inherit-configuration))
 (asdf:load-system "check-it")
 (defpackage #:repro (:use #:cl #:check-it))
 (in-package #:repro)
@@ -51,8 +57,19 @@
   (report "(b) run 1 (fails, saves)  " (lambda () (run-check gen #'always-fail 'repro::own-id file)))
   (report "(b) run 2 (same test again)" (lambda () (run-check gen #'always-fail 'repro::own-id file))))
 
+;; 経路 (c): 1つのテストの中で、同じ :regression-id の check-it を dtype ごとにループで呼ぶ
+;; （tests/iree/reduce-test.lisp、tests/vmap-elementwise-test.lisp の形）。最初の dtype が
+;; 失敗して保存すると、次の dtype の呼び出しが同じプロセスで再生する。新しいプロセスで
+;; 1回だけ走らせる通常の run-tests.sh / CI でも、失敗が出た時点で踏む。
+(let ((file (fresh-file "c2")) (gen (generator (integer))))
+  (loop for dtype in '(:f32 :bf16)
+        do (report (format nil "(c) loop, dtype ~S (only the first fails)" dtype)
+                   (lambda ()
+                     (run-check gen (if (eq dtype :f32) #'always-fail #'always-pass)
+                                'repro::loop-id file)))))
+
 ;; 対照: 別のプロセスの想定 (ファイルを load し直す) では文字列は積まれない
-(let ((file (fresh-file "c")) (gen (generator (integer))))
+(let ((file (fresh-file "ctl")) (gen (generator (integer))))
   (setf (get 'repro::fresh-id 'check-it::regression-cases) nil)
   (run-check gen #'always-fail 'repro::fresh-id file)
   (setf (get 'repro::fresh-id 'check-it::regression-cases) nil)

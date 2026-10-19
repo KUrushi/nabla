@@ -8,8 +8,8 @@ nabla が固定している check-it（`scripts/setup-lisp-deps.sh` の `b79c910
 
 | 項目 | 値 |
 | --- | --- |
-| check-it | `b79c9103665be3976915b56b570038f03486e62f`（"version info"、2015-07-05）。2026-10-20 に `git ls-remote origin HEAD` で確かめた時点で、上流の HEAD もこのコミット（修正された版は無い） |
-| SBCL | 2.6.7（macOS arm64）。バグは処理系に依存しない（総称関数にメソッドが無いだけ） |
+| check-it | `b79c9103665be3976915b56b570038f03486e62f`（"version info"、コミット日 Sun Jul 5 15:44:49 2015 -0700）。2026-10-20 に fetch して確かめた時点で、上流の master の HEAD もこのコミット。`origin/dev`（2017-06-11）、`nja-master`、`dynenv`、`temp-dev`、`reader-macro` も `src/check-it.lisp` の `save-regression` は同じ（130 行目の `push string`）で、`dev` と master の間に `src/check-it.lisp` を変えるコミットは無い。修正された版は見つからない |
+| SBCL | SBCL 2.6.7（`sbcl --version`、macOS arm64）。バグは処理系に依存しない（総称関数にメソッドが無いだけ） |
 | 確認日 | 2026-10-20 |
 
 ## 1. 保存した失敗例が、同じプロセスの次の実行では文字列のまま再生され NO-APPLICABLE-METHOD で落ちる
@@ -20,13 +20,14 @@ nabla が固定している check-it（`scripts/setup-lisp-deps.sh` の `b79c910
 - **実際**: `NO-APPLICABLE-METHOD`（総称関数 `CHECK-IT::DATUM` に文字列のメソッドが無い）で落ち、本当の失敗が隠れる
 - **原因**: `src/check-it.lisp` の `save-regression`（130 行目）が `(push string (get regression-id 'regression-cases))` で生の文字列を積む。再生側の `check-it%`（102-104 行目）は積まれたものを `regression-case` オブジェクトとみなして `(datum regression-case)` を呼ぶ。`datum` は `regression-case` クラスの reader（15-17 行目）で、文字列のメソッドは無い。ファイルから load した場合は `regression-case%`（22-31 行目）が `read-from-string` した値を持つ `regression-case` オブジェクトを積むので、問題は同一プロセス内の再生だけで起きる
 - **修正案**: 130 行目で `regression-case%` と同じく `regression-case` オブジェクトを積む（`(push (make-instance 'regression-case :name regression-id :datum (read-from-string string) :timestamp (get-universal-time)) ...)`）か、`datum` に文字列のメソッドを足す
-- **nabla 側の回避策**: `tests/support/regression.lisp` で `(defmethod check-it::datum ((datum string)) (read-from-string datum))` を定義する（#220）。回帰 id をテストごとに分けること、`regressions/ids-are-unique`（`tests/regressions.lisp`）は経路 (a) の再発を防ぐが、経路 (b) は防げない
+- **nabla 側の回避策**: `tests/support/regression.lisp` で `(defmethod check-it::datum ((datum string)) (read-from-string datum))` を定義する（#220）。回帰 id をテストごとに分けること、`regressions/ids-are-unique`（`tests/regressions.lisp`）は経路 (a) の再発を防ぐが、(b) と (c) は防げない。(c) は `tests/iree/reduce-test.lisp`（`dolist (dtype '(:f32 :bf16))` の中で同じ id）や `tests/vmap-elementwise-test.lisp`（`%def-elementwise-integer-pbt`）が実際にその形で、新しいプロセスで 1 回だけ走る `scripts/run-tests.sh` / CI でも、失敗が出た時点で 2 つ目以降の呼び出しが踏む（失敗が出なければ踏まない）
 - **nabla での再現結果（2026-10-20）**:
 
   | 経路 | 防御なし | 防御あり |
   | --- | --- | --- |
   | (a) テスト A が失敗して保存 → 同じプロセスで別のテスト B が同じ id で再生 | B が `NO-APPLICABLE-METHOD` | B は通る |
-  | (b) 同じテストが失敗して保存 → 同じプロセスでもう一度実行 | 2 回目が `NO-APPLICABLE-METHOD`（失敗が隠れる） | 2 回目は本来の失敗として報告される |
+  | (b) 同じテストが失敗して保存 → 同じプロセスでもう一度実行（REPL / `fiveam:run!` の再実行） | 2 回目が `NO-APPLICABLE-METHOD`（失敗が隠れる） | 2 回目は本来の失敗として報告される |
+  | (c) 1つのテストの中で、同じ `:regression-id` の `check-it` を dtype ごとにループで呼ぶ（最初の dtype だけ失敗） | 2 つ目の dtype が `NO-APPLICABLE-METHOD` | 2 つ目は通る |
   | 対照: 保存したファイルを load し直してから再生 | 通る（`regression-case` オブジェクトが積まれる） | 通る |
 
 ### 下書き（英語）

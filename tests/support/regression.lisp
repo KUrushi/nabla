@@ -38,12 +38,15 @@ PACKAGE (文字列またはシンボル) が in-package 先になり、既定は
 ;;; 残す理由（issue #245）: 回帰 id をテストごとに分けること（#220 の (1)）と
 ;;; regressions/ids-are-unique（(2)）が防ぐのは、別のテストが同じ id で再生する経路 (a) だけ。
 ;;; 同じテストが失敗した同じプロセスで、もう一度実行される経路 (b)（REPL や
-;;; fiveam:run! の再実行）は防げない。docs/check-it-repros/string-datum.lisp で、
-;;; (a) も (b) もこのメソッドが無いと NO-APPLICABLE-METHOD になることを確かめた。
+;;; fiveam:run! の再実行）と、1つのテストの中で同じ :regression-id の check-it を dtype ごとに
+;;; ループで呼ぶ経路 (c)（tests/iree/reduce-test.lisp、tests/vmap-elementwise-test.lisp）は防げない。
+;;; (c) は新しいプロセスで 1 回走らせる scripts/run-tests.sh / CI でも、失敗が出れば踏む。
+;;; docs/check-it-repros/string-datum.lisp で、(a)(b)(c) のどれもこのメソッドが無いと
+;;; NO-APPLICABLE-METHOD になることを確かめた。
 ;;; tools/mutate の runner は変異体ごとに regression-cases の plist を元に戻すので、
 ;;; runner 自体は (b) を踏まない（tools/mutate/src/runner.lisp の %isolate-mutant-side-effects）。
-;;; 上流（check-it の固定コミットは今も上流の HEAD）の issue は未報告（ユーザーの確認待ち）。
-;;; 下書きは docs/upstream-bugs-check-it.md。報告したらここにリンクを書く。
+;;; 上流（check-it の固定コミットは master の HEAD で、dev などの他ブランチにも修正は無い）の issue は未報告（ユーザーの確認待ち）。
+;;; 下書きは docs/check-it-upstream-bugs.md。報告したらここにリンクを書く。
 ;;; check-it::datum は check-it の内部シンボルなので、上流が直ったら外す
 ;;; （条件は .claude/skills/nabla-testing/SKILL.md の「check-it の固定コミットを上げる条件」）。
 (defmethod check-it::datum ((datum string))
