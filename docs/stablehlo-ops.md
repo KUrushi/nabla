@@ -44,10 +44,10 @@
 | tanh | `%0 = stablehlo.tanh %a : tensor<4xf32>`（pretty、単項） | `tanh` | ○ | ○ | |
 | sqrt | `%0 = stablehlo.sqrt %a : tensor<4xf32>`（pretty、単項） | `sqrt` | ○ | ○ | 負は NaN（issue #196） |
 | rsqrt | `%0 = stablehlo.rsqrt %a : tensor<4xf32>`（pretty、単項） | `rsqrt` | ○ | ○ | 負は NaN、0 は +無限大 |
-| exponential_minus_one | `%0 = stablehlo.exponential_minus_one %a : tensor<4xf32>`（pretty、単項） | `expm1` | ○ | ○ | exp(x) - 1。x が小さくても桁落ちしない（issue #223） |
-| log_plus_one | `%0 = stablehlo.log_plus_one %a : tensor<4xf32>`（pretty、単項） | `log1p` | ○ | ○ | log(1 + x)。x < -1 は NaN、x = -1 は -無限大 |
-| sine | `%0 = stablehlo.sine %a : tensor<4xf32>`（pretty、単項） | `sin` | ○ | ○ | ±無限大は NaN |
-| cosine | `%0 = stablehlo.cosine %a : tensor<4xf32>`（pretty、単項） | `cos` | ○ | ○ | ±無限大は NaN |
+| exponential_minus_one | `%0 = stablehlo.exponential_minus_one %a : tensor<4xf32>`（pretty、単項） | `expm1` | ○ | ○ | exp(x) - 1。x が小さくても桁落ちしない（issue #223）。IREE は f64 の expm1(-0) に +0 を返す（eager と XLA は -0） |
+| log_plus_one | `%0 = stablehlo.log_plus_one %a : tensor<4xf32>`（pretty、単項） | `log1p` | ○ | ○ | log(1 + x)。x < -1 は NaN、x = -1 は -無限大。IREE は f64 の log1p(-0) に +0 を返す（eager と XLA は -0） |
+| sine | `%0 = stablehlo.sine %a : tensor<4xf32>`（pretty、単項） | `sin` | ○ | ○ | ±無限大は NaN。IREE 3.11 の f32 は |x| が大きい（40 以上）と範囲縮約が粗く絶対誤差 ~5e-6（例: cos(-67.5) が XLA の 1.076e-4 に対して 1.023e-4）。IREE は f32 / bf16 / f16 で sin(-0) に +0 を返す（eager と XLA は -0）ので、eager と jit で符号付きゼロが違いうる |
+| cosine | `%0 = stablehlo.cosine %a : tensor<4xf32>`（pretty、単項） | `cos` | ○ | ○ | ±無限大は NaN。IREE 3.11 の f32 は sine と同じく |x| が 40 以上で絶対誤差 ~5e-6 |
 | compare | `%0 = stablehlo.compare LT, %a, %b : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>`（pretty。方向は LT LE GT GE EQ NE、`, FLOAT` の compare_type 付きも可。generic form† `"stablehlo.compare"(%a, %b) {comparison_direction = #stablehlo<comparison_direction LT>}` も通る） | `compare` | ○ | ○ | 出力 dtype は nabla の `:i1`（issue #37）。`:i1` は IREE 側では1要素1バイトの `IREE_HAL_ELEMENT_TYPE_BOOL_8` になり、`to-device` / `to-host` が BIT 配列との間で詰め直す（issue #72）。関数の引数・返り値にも使える |
 | select | `%1 = stablehlo.select %pred, %a, %b : tensor<4xi1>, tensor<4xf32>`（pretty） | `select` | ○ | ○ | |
 | convert | `%0 = stablehlo.convert %a : (tensor<4xf32>) -> tensor<4xbf16>`（pretty） | `convert` | ○ | ○ | |
