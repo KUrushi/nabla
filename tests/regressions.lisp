@@ -47,16 +47,26 @@ regressions.lisp のグロブが再び効かなくなった（今回の直った
 ;;; エントリは regression-case オブジェクトではなく文字列なので、同じプロセスで
 ;;; 後のテストが再生すると NO-APPLICABLE-METHOD CHECK-IT::DATUM ("94169") で
 ;;; 落ちて、本当の失敗が隠れる。マクロが name 引数から id を作るテストも
-;;; あるので、ソースの文面で「id そのもの」と「マクロ名 + name 引数」の重複を調べる。
+;;; あるので、ソースの文面で「id そのもの」と「%with-...-check マクロ + name 引数」の重複を調べる。
+;;; それ以外のマクロ（:regression-id ,name など）が作る id は走査しない。
 
 (defun %test-source-files ()
   (directory (merge-pathnames #p"**/*.lisp"
                               (truename (asdf:system-relative-pathname "nabla" "tests/")))))
 
+(defun %symbol-like-token-p (token)
+  "TOKEN が（ASCII の）シンボルの綴りか。docstring やコメントの文章を id と取り違えない。"
+  (and (plusp (length token))
+       (every (lambda (c) (and (< (char-code c) 128)
+                               (or (alphanumericp c) (find c "-/*+.:<>=%?!_"))))
+              token)))
+
 (defun %source-regression-keys (text)
-  "TEXT にある回帰 id の持ち主を (キー . 出現数) ではなくキーのリストで返す。
-キーは、:regression-id に直接書かれたシンボル（\"id:SYMBOL\"）か、
-%with-...-check マクロ呼び出しの最初の文字列リテラル（\"MACRO:NAME\"）。"
+  "TEXT にある回帰 id の持ち主を、重複を含むキーのリストで返す。
+キーは、:regression-id に直接書かれたシンボル（\"id:SYMBOL\"）か、%with-...-check マクロ呼び出しの
+最初の文字列リテラル（\"MACRO:NAME\"）。:regression-id にコンマで始まる式（,name や ,(intern ...)）を
+書いてマクロの中で id を作るテストは、その式が何になるかをソースから読めないので走査しない
+（マクロ呼び出し側の name の一意性は、各マクロの docstring に書く）。"
   (let ((keys '()))
     (let ((start 0))
       (loop for pos = (search ":regression-id " text :start2 start)
@@ -65,7 +75,7 @@ regressions.lisp のグロブが再び効かなくなった（今回の直った
                       (to (position-if (lambda (c) (member c '(#\Space #\Newline #\))))
                                        text :start from))
                       (token (subseq text from to)))
-                 (unless (or (zerop (length token)) (member (char token 0) (quote (#\, #\"))))
+                 (when (%symbol-like-token-p token)
                    (push (format nil "id:~A" (string-upcase token)) keys))
                  (setf start from))))
     (let ((start 0))
@@ -75,7 +85,7 @@ regressions.lisp のグロブが再び効かなくなった（今回の直った
                       (macro (subseq text (1+ pos) to))
                       (open (position #\" text :start to))
                       (close (and open (position #\" text :start (1+ open)))))
-                 (when (and open close (search "-check" macro))
+                 (when (and open close (%symbol-like-token-p macro) (search "-check" macro))
                    (push (format nil "~A:~A" macro (subseq text (1+ open) close)) keys))
                  (setf start (1+ pos)))))
     keys))

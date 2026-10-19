@@ -10,8 +10,8 @@
         collect (make-random-array (make-array-spec (nb:aval-shape aval) (nb:aval-dtype aval))
                                    :seed (+ seed i))))
 
-(defun %scan-iree-matches-eager-p (backend module graph seed &key atol)
-  "MODULE の実行結果と eager が、f32 の既定の許容誤差（ATOL を渡せば atol だけ置き換え）で一致するか。"
+(defun %scan-iree-matches-eager-p (backend module graph seed &key atol rtol)
+  "MODULE の実行結果と eager が、f32 の既定の許容誤差（ATOL / RTOL を渡せばそれぞれ置き換え）で一致するか。"
   (let* ((arrays (%scan-iree-arrays graph seed))
          (avals (mapcar #'nb:var-aval (nb:graph-invars graph)))
          (device-arrays nil)
@@ -29,20 +29,20 @@
                              (and (equal (array-dimensions host) (array-dimensions e))
                                   (if (eq (nb:aval-dtype (nb:var-aval var)) :i1)
                                       (equalp host e)
-                                      (allclose host e :dtype (nb:aval-dtype (nb:var-aval var)) :atol atol)))))
+                                      (allclose host e :dtype (nb:aval-dtype (nb:var-aval var)) :atol atol :rtol rtol)))))
                          results expected (nb:graph-outvars graph)))))
       (dolist (r results) (release-device-array r))
       (dolist (da device-arrays) (release-device-array da)))))
 
-(defmacro %with-scan-iree-check ((graph name &key atol) message)
+(defmacro %with-scan-iree-check ((graph name &key atol rtol) message)
   "NAME は回帰 id（scan/iree-NAME）と回帰ファイル（iree-scan-NAME.lisp）になるので、テストごとに
 一意にする。id を共有すると、片方が保存した失敗例をもう片方が再生してしまう（issue #220）。
-重複は tests/support-test.lisp の regressions/ids-are-unique が検査する。"
+重複は tests/regressions.lisp の regressions/ids-are-unique が検査する。"
   `(let* ((backend (nabla:find-backend :iree))
           (module (nabla:backend-load backend (nabla:backend-compile backend (nb:emit-stablehlo ,graph)))))
      (unwind-protect
           (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
-                        (lambda (seed) (%scan-iree-matches-eager-p backend module ,graph seed :atol ,atol))
+                        (lambda (seed) (%scan-iree-matches-eager-p backend module ,graph seed :atol ,atol :rtol ,rtol))
                         :regression-id ,(intern (string-upcase (format nil "scan/iree-~A" name)))
                         :regression-file (regression-path ,(format nil "iree-scan-~A" name)
                                                           :package "NABLA.IREE.TESTS"))
@@ -297,7 +297,8 @@ IREE と eager で一致する（dynamic_slice の結果を rank 0 に reshape �
 δ + |w|·e_c + e_h ≦ δ + e_c + e_h（e_c は c の誤差、e_h は外側の carry h の誤差）で、
 内側の carry は h から始まる。外側 OUTER-LENGTH ステップ × 内側 INNER-LENGTH ステップの誤差は
 漸化式で上から抑えられる。最悪の積み重ねなので大きく見えるが、順序や添字の取り違えは
-値が O(0.1) ずれるので検出力は保たれる（実測は 10 万 seed で seed 94169 の 1.7e-6 が最大）。"
+値が O(0.1) ずれるので検出力は保たれる。実測の最大誤差は 3000 seed で seed 94169 の 1.75e-6（典型は 1.2e-7）で、
+この上界の 1/35。出力が 0 付近でも誤差は途中の値で決まるので、atol は値でなく上界で決めて rtol は 0 にする。"
   (let* ((u (dtype-unit-roundoff :f32))
          (delta (* 13 u))
          (e 0d0))
@@ -331,10 +332,10 @@ graph の引数 w を閉包で捕まえる。"
 外側の引数を閉包で捕まえる）が、IREE と eager で一致する。"
   (skip-unless-iree :library :both)
   (let ((graph (%scan-iree-nested-graph nil t)))
-    (%with-scan-iree-check (graph "nested-forward-reverse" :atol (%scan-iree-nested-atol 4 2)) "IREE の入れ子の scan（外側 順・内側 逆）の結果が eager と一致しなかった")))
+    (%with-scan-iree-check (graph "nested-forward-reverse" :atol (%scan-iree-nested-atol 4 2) :rtol 0d0) "IREE の入れ子の scan（外側 順・内側 逆）の結果が eager と一致しなかった")))
 
 (define-iree-test scan/iree-nested-reverse-forward-matches-eager
     "逆方向の外側の scan の中で順方向の内側の scan を回す入れ子の scan も、IREE と eager で一致する。"
   (skip-unless-iree :library :both)
   (let ((graph (%scan-iree-nested-graph t nil)))
-    (%with-scan-iree-check (graph "nested-reverse-forward" :atol (%scan-iree-nested-atol 4 2)) "IREE の入れ子の scan（外側 逆・内側 順）の結果が eager と一致しなかった")))
+    (%with-scan-iree-check (graph "nested-reverse-forward" :atol (%scan-iree-nested-atol 4 2) :rtol 0d0) "IREE の入れ子の scan（外側 逆・内側 順）の結果が eager と一致しなかった")))

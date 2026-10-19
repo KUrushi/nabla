@@ -708,3 +708,24 @@ bf16 へ丸める実装（sm_75 の cuda）と、f32 で累積して最後に1�
                           (rational (accumulation-atol :bf16 n (reduce #'+ terms :key #'abs)))))))
                 :regression-id support/accumulation-atol/bounds-bf16-per-step-vs-f32-accumulation
                 :regression-file (regression-path "accumulation-atol-bounds-bf16-per-step-vs-f32-accumulation"))))
+
+(test support/check-it-replays-a-failure-saved-in-the-same-process
+  "check-it が失敗例を保存した（生の文字列が回帰ケースに積まれる）あと、同じ id で走らせても
+NO-APPLICABLE-METHOD CHECK-IT::DATUM で落ちず、保存した値で再生される（issue #220）。"
+  (let ((id 'support/check-it-replay-sample))
+    (unwind-protect
+         (uiop:with-temporary-file (:stream out :pathname path :keep nil)
+           (format out "(in-package #:nabla.tests)~%")
+           (finish-output out)
+           (let ((check-it:*check-it-output* (make-broadcast-stream))
+                 (replayed '()))
+             (flet ((replay-run (test)
+                      (check-it (generator (uniform-integer :lo 5 :hi 5)) test
+                                :regression-id support/check-it-replay-sample
+                                :regression-file path)))
+               (is (not (replay-run (lambda (x) (declare (ignore x)) nil)))
+                   "最初の失敗が失敗として報告されない")
+               (is (replay-run (lambda (x) (push x replayed) t))
+                   "保存された失敗例の再生が落ちた")
+               (is (member 5 replayed) "保存された値 5 が再生されなかった: ~S" replayed))))
+      (remprop id 'check-it::regression-cases))))
