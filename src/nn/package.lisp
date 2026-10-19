@@ -19,6 +19,14 @@
    #:call
    #:split-keys
    #:map-state
-   #:module-slots)
+   #:module-slots
+   ;; チェックポイント（issue #206）
+   #:save-checkpoint
+   #:load-checkpoint
+   #:tree-paths
+   #:checkpoint-error
+   #:checkpoint-error-reason
+   #:checkpoint-error-name
+   #:checkpoint-error-detail)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書きと defmodule。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント。"))

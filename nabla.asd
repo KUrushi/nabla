@@ -552,7 +552,8 @@
                (:file "src/nn/json")
                (:file "src/nn/safetensors")
                ;; defmodule（issue #202）
-               (:file "src/nn/module")))
+               (:file "src/nn/module")
+               (:file "src/nn/checkpoint")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -562,4 +563,5 @@
                (:file "tests/nn/safetensors-test")
                (:file "tests/nn/module-test")
                ;; defmodule のモデルを jit / grad に渡す（issue #199）
-               (:file "tests/nn/module-transform-test")))
+               (:file "tests/nn/module-transform-test")
+               (:file "tests/nn/checkpoint-test")))
