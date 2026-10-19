@@ -4,7 +4,7 @@
 ;;;;
 ;;;; システムは nabla / nabla/test-support / nabla/tests / nabla/ffi-support /
 ;;;; nabla/ffi-support/tests / nabla/iree / nabla/iree/tests / nabla/pjrt /
-;;;; nabla/pjrt/tests（と nabla/nn / nabla/data の予定）。nabla/ffi-support は IREE と PJRT が
+;;;; nabla/pjrt/tests / nabla/nn / nabla/nn/tests（と nabla/data の予定）。nabla/ffi-support は IREE と PJRT が
 ;;;; 共有する FFI 保護（issue #79）で、nabla/iree 無しでロードできる。
 ;;;;
 ;;;; 1つの defsystem に1つの :components エントリを1行、で揃えている。
@@ -519,3 +519,18 @@
                (:file "tests/pjrt/prng-test")
                ;; :i1（PRED）の往復と jit の入出力（issue #166）
                (:file "tests/pjrt/i1-test")))
+
+;; nabla/nn: モデル記述の層（issue #194）。最初の部品は safetensors の読み書き（issue #198）。
+(defsystem "nabla/nn"
+  :description "モデル記述の層（safetensors の読み書き。defmodule・レイヤー・オプティマイザは後続）"
+  :depends-on ("nabla")
+  :components ((:file "src/nn/package")
+               (:file "src/nn/json")
+               (:file "src/nn/safetensors")))
+
+;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
+(defsystem "nabla/nn/tests"
+  :description "nabla/nn のテスト"
+  :depends-on ("nabla/nn" "nabla/test-support")
+  :components ((:file "tests/nn/package")
+               (:file "tests/nn/safetensors-test")))

@@ -320,6 +320,22 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 - **補助データは EQUAL で比べられる値**（数値・文字・シンボル・文字列・パス名と、それらのコンス）に限る（treedef に入り、後で `jit` のキャッシュのキーになるため）。違えば `tree-flatten` が `pytree-error`
 - `tree-unflatten` はリストとベクタの節を新しく作り、葉はそのまま（`eq` で）置く
 
+#### safetensors の読み書き（`nabla/nn`、issue #198）
+
+`nabla/nn`（パッケージ `nabla.nn`）の最初の部品。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree のパス名での平坦化は後続の issue）。`(asdf:load-system "nabla/nn")` で使う。
+
+| 関数 | 役割 |
+| --- | --- |
+| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、失敗しても既存のファイルは壊れない |
+| `(read-safetensors path)` | `(values entries metadata)` |
+| `(encode-safetensors entries &key metadata)` / `(decode-safetensors octets &key path)` | ファイルを介さないバイト列版 |
+| `safetensors-error` / `-path` / `-reason` / `-detail` | 壊れた入力・不正な引数のコンディション。`reason` は `:truncated` `:header-length` `:invalid-header` `:unknown-dtype` `:size-mismatch` `:bad-offsets` `:invalid-bool` `:invalid-entries`（意味は docstring） |
+
+- `entries` は `(名前 配列 [dtype])` のリスト（読むと `(名前 配列 dtype)`、ファイル内のデータの順）。metadata は `(キー . 値)`（文字列）のリスト
+- dtype の対応: `:f32` `:f64` `:bf16` `:f16` `:i32` `:u32` `:u64` と `:i1`（`BOOL`、1要素1バイト）が `F32` `F64` `BF16` `F16` `I32` `U32` `U64` `BOOL`。bf16 / f16 は `(unsigned-byte 16)` のビット列のまま読み書きするので、書くときは dtype を明示する（省略は `dtype-mismatch`）。`I64` `U8` など他の dtype を含むファイルは `:unknown-dtype`
+- 書くときテンソルは要素の大きい順、同じなら名前順に並べる（入力の順序に依らず同じバイト列。Python の safetensors が書くバイト列とは限らず、保証するのは読み書きの意味が同じこと）。ヘッダは 8 バイト境界まで空白で埋める。ビット列はそのままコピーする（NaN のペイロードも保つ）。ホストはリトルエンディアン前提
+- ヘッダの JSON は自前の最小の読み書き（`src/nn/json.lisp`）。`cl-yason` に頼らず依存を増やさない。小数・指数の数値は読まない（safetensors のヘッダには現れない）
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
@@ -380,9 +396,11 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 ```
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
+src/nn/              nabla.nn パッケージ: safetensors の読み書き（今後 defmodule・レイヤー・オプティマイザ）
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト
+tests/nn/            nabla/nn/tests のテスト
 tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
@@ -393,7 +411,7 @@ third_party/         iree.lock（固定した IREE のコミットとホイー�
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
 
-ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）の9つに加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
+ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き。issue #198）、`nabla/nn/tests` の11個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
 
 ## 開発の進め方
 
