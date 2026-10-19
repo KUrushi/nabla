@@ -36,6 +36,15 @@
         (is (search "local-sync" (princ-to-string condition)))))
     (gc-and-run-finalizers)))
 
+(define-iree-test input-limit/local-task-named-by-string-also-refuses-170-inputs
+    "ドライバを文字列 \"local-task\" で指定した backend でも、入力 170 個は iree-too-many-inputs に
+なる（キーワードでない指定で検査をすり抜けてプロセスが落ちないこと）。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:make-backend :iree :target :local :driver "local-task"))
+        (nb:*compile-cache-directory* nil))
+    (signals nabla.iree:iree-too-many-inputs (%input-limit-jit-call backend 170))
+    (gc-and-run-finalizers)))
+
 (define-iree-test input-limit/local-task-runs-161-inputs
     "境界の入力 161 個は local-task でも動き、eager と一致する。"
   (skip-unless-iree :library :both)

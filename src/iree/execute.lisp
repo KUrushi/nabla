@@ -49,8 +49,10 @@ CALL-INVOKE 本体は WITH-ALL-FLOAT-TRAPS-MASKED（src/ffi-support/float-traps.
 場合に備えて同じマスクを及ぼす）。"
   (dolist (argument arguments)
     (%check-invoke-argument argument session))
+  ;; ドライバはキーワードでも文字列でも指定できるので、canonical な名前で比べる
   (let ((driver (device-driver (session-device session))))
-    (when (and (eq driver :local-task) (> (length arguments) +local-task-max-inputs+))
+    (when (and (string= (device-name (session-device session)) "local-task")
+               (> (length arguments) +local-task-max-inputs+))
       (error 'iree-too-many-inputs :count (length arguments) :limit +local-task-max-inputs+
                                    :driver driver)))
   (with-all-float-traps-masked
