@@ -243,6 +243,10 @@ while のオペランドが constant にならないので、定数で初期化�
                (zero (format nil "~A_z" p))
                (inner (%stablehlo-region-lines
                        body :arg-names (append const-names body-carry x-names)))
+               ;; 本体の中に別の while（入れ子の scan・while-loop）があるか。ある scan は ys に
+               ;; barrier を付けない（下の注）
+               (nested-while-p (some (lambda (line) (search "stablehlo.while" line)) inner))
+               (ys-barrier-p (and (/= length 1) (not nested-while-p)))
                (return-names (%scan-return-names (car (last inner))))
                (new-carry (subseq return-names 0 num-carry))
                (y-values (nthcdr num-carry return-names)))
@@ -281,7 +285,15 @@ while のオペランドが constant にならないので、定数で初期化�
                    ;; 1行ぶんのコピーで済む。初期値の作り方の約束は %scan-ys-init-lines。
                    ;; 長さ 1 は1回しか書かないので付けない（初期値も constant のままで、
                    ;; in-place に書き換えないので、同じ constant を共有しても壊れない）。
-                   (unless (= length 1)
+                   ;; ただし本体の中に別の while がある scan（入れ子の scan）には付けない。
+                   ;; IREE 3.11 の local-task は、外側の ys の barrier の結果に内側の while
+                   ;; をまたいで dynamic_update_slice すると、負荷のもとで（実測 1〜2%）外側の
+                   ;; ys の1行を 0 のまま返す。local-sync・worker 数 1 では起きず、barrier を
+                   ;; 外すと 1500 回で 0 回（docs/iree-upstream-bugs.md の 7、
+                   ;; docs/iree-repros/nested-scan-ys-barrier-race.mlir）。barrier を外すと
+                   ;; 外側の ys は更新のたびに丸ごとコピーされる（外側の長さの2乗。内側の scan は
+                   ;; 影響を受けない）。
+                   (when ys-barrier-p
                      (loop for buffer in body-ys for kept in body-kept for aval in ys-avals
                            collect (format nil "~A = stablehlo.optimization_barrier ~A : ~A"
                                            kept buffer (tensor-type-string aval))))
@@ -306,7 +318,7 @@ while のオペランドが constant にならないので、定数で初期化�
                    ;; 本体（最後の stablehlo.return は外す）
                    (butlast inner)
                    ;; y_t を書き込む
-                   (loop for y in y-values for buffer in (if (= length 1) body-ys body-kept)
+                   (loop for y in y-values for buffer in (if ys-barrier-p body-kept body-ys)
                          for aval in ys-avals for j from 0
                          for rank = (aval-rank aval)
                          for row = (make-aval (rest (aval-shape aval)) (aval-dtype aval))

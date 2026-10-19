@@ -273,6 +273,34 @@ optimization_barrier の組を1つずつ持ち、同じ型の2つの ys も別�
     (is (null (search "broadcast_in_dim" text)) "長さ 1 の scan の ys の初期値が broadcast_in_dim で作られている")
     (is (null (search "bk0" text)) "長さ 1 の scan の本体に ys の barrier がある")))
 
+(test scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body
+  "本体の中に別の while（入れ子の scan）がある scan は、ys のバッファを optimization_barrier に通さない
+（IREE 3.11 の local-task が、外側の ys の barrier の結果へ内側の while をまたいで書くと、負荷のもとで
+外側の ys の1行を 0 のまま返す。docs/iree-upstream-bugs.md の 7）。いちばん内側の scan は通す。
+実行時の確認は scripts/check-iree-repros.sh（まれに起きるので、既定のスイートには置かない）。"
+  (let* ((graph (nb::trace-to-graph
+                 (nb:with-tracing (h xss)
+                   (multiple-value-bind (carry ys)
+                       (nb:scan (nb:with-tracing (outer xs)
+                                  (multiple-value-bind (inner-carry inner-ys)
+                                      (nb:scan (nb:with-tracing (carry x)
+                                                 (let ((g (+ (first carry) (first x))))
+                                                   (values (list g) (list g))))
+                                               (list (first outer)) (list (first xs)))
+                                    (values (list (first inner-carry)) (list (first inner-ys)))))
+                                (list h) (list xss))
+                     (values (first carry) (first ys))))
+                 (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 2 3) :f32))))
+         (lines (%scan-text-lines (nb:emit-stablehlo graph)))
+         (barriers (remove-if-not (lambda (line) (and (search "optimization_barrier %" line)
+                                                      (search "_by0 :" line)))
+                                  lines)))
+    (is (= 1 (length barriers))
+        "ys の barrier は内側の scan の1つだけのはず: ~S" barriers)
+    (is (search "tensor<2x3xf32>" (first barriers)) "残った barrier が内側の ys（2x3）のものでない: ~S" barriers)
+    (is (= 1 (count-if (lambda (line) (search "_bk0 = " line)) lines))
+        "bk0 は内側の scan の1つだけのはず")))
+
 (test scan/emits-a-distinct-salt-for-each-scan-ys-init
   "同じ入力の順方向と逆方向の scan を並べても、カウンタと ys の初期値のスカラーを通す
 optimization_barrier のオペランドは scan ごとに違う（モジュールの中で一意な整数の constant も通す）。
