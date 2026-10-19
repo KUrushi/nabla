@@ -116,6 +116,8 @@ I/O とスレッドを使うので medium）。
 - `tree-map #'identity x` = `x`
 - `tree-leaves x` の長さ = `flatten` した葉の数
 - 同じ構造の木に `tree-map` した結果は、元と同じ構造を持つ
+- 節の葉は、子の葉を先頭から順に連結したもの（葉の順を固定する。`nil` は葉を持たない）
+- `tree-map` の f は葉の数だけ flatten の順に呼ばれ、形の違う木を渡すと `pytree-structure-mismatch`
 
 ### safetensors
 
@@ -277,7 +279,7 @@ regression-id regression-file)`。次の2点に注意する。
   (is (check-it (generator (pytree-spec))
                 (lambda (tree)
                   (multiple-value-bind (leaves treedef) (nb:tree-flatten tree)
-                    (tree-equal* tree (nb:tree-unflatten treedef leaves))))
+                    (pytree-equal tree (nb:tree-unflatten treedef leaves))))
                 :regression-id pytree/flatten-roundtrip
                 :regression-file (regression-path "pytree-roundtrip"))))
 ```
@@ -329,7 +331,7 @@ runner はこれを下げて実行する。fiveam も同名の `*num-trials*` �
 | --- | --- |
 | `array-spec` 生成器 | rank 0〜4、各次元 1〜8 の形状と dtype の組を作る。`:dtypes` で候補を絞れる |
 | `make-random-array` | spec と固定シードから配列を作る。`:domain` で定義域（正の数だけ、など）を指定できる |
-| `pytree-spec` 生成器（未実装） | リスト・ベクタ・`defmodule` 構造体を入れ子にした木を作る予定（フェーズ1で PyTree を実装するときに追加する。それまでは `tests/support/` に存在しない） |
+| `pytree-spec` 生成器 / `pytree-equal`（`tests/support/pytree.lisp`、issue #195） | リスト・`simple-vector`・テスト用に `defpytree` で登録した `pytree-test-pair`（子 2つと補助データ `tag`）を入れ子にし、葉に -100..100 の整数を持つ木を作る。`pytree-equal` は形・`tag`・葉（`eql`）を比べる。`defmodule` の構造体（#202）ができたら生成器に足す |
 | `uniform-integer` / `uniform-real` 生成器 | `check-it::*size*` にクランプされない、指定した範囲全体から一様に選ぶ整数・実数の生成器。下の「check-it の落とし穴」を読んでから `(integer lo hi)` / `(real lo hi)` の代わりに使う |
 | `allclose` / `approx=` | dtype ごとの既定の許容誤差で比べ、失敗時に最大誤差とその位置を出力する |
 | `regression-path` | `tests/regressions/<名前>.lisp` のパスを返す |

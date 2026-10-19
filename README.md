@@ -298,6 +298,28 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 
 
 
+#### PyTree（issue #195）
+
+リスト・`simple-vector`・`defpytree` で登録した型を入れ子にした木（PyTree†）の操作。フェーズ4で `jit` / `grad` / `vmap` / 制御構造の引数と戻り値を PyTree に一般化する土台（組み込みは #199〜#201）。
+
+| 関数 | 役割 |
+| --- | --- |
+| `(tree-flatten tree)` | 葉を左から順に並べたリストと treedef の2値 |
+| `(tree-unflatten treedef leaves)` | treedef の形の木を葉のリストから作る（葉の個数が違えば `pytree-error`） |
+| `(tree-leaves tree)` / `(tree-structure tree)` | `tree-flatten` の1つ目 / 2つ目の値 |
+| `(tree-map function tree &rest more-trees)` | 葉ごとに `function` を呼んだ同じ形の木。複数の木は同じ位置の葉を引数にし、形が違えば `pytree-structure-mismatch` |
+| `(defpytree type :flatten f :unflatten g)` | クラス名 `type` を節として登録する。`f` は `(object) → (values 子のリスト 補助データ)`、`g` は `(aux children) → object` |
+| `treedef` / `treedef-num-leaves` / `treedef=` | 木の形（不透明な構造体）、その葉の個数、形の比較 |
+| `pytree-error` / `pytree-structure-mismatch` | 不正な木・引数のコンディション / その子で、形の不一致 |
+
+決めたこと:
+
+- **節はリストと `simple-vector`（要素型 `t`）だけ**。型特化した配列（`(simple-array single-float (3))` などの1次元の配列も）・文字列・数値・トレーサは葉。nabla の配列は要素型 `t` を使わないので、配列の葉とベクタの節が紛れない
+- **`nil` は空の部分木**（葉にならない）。真リストでないコンス（`(1 . 2)`）は `pytree-error`
+- **登録の無い型はすべて葉**（JAX と同じ）。plist / alist / ハッシュ表や構造体を節にするには `defpytree` で明示的に登録する。登録はクラス名で引き、サブクラスには継承しない。リスト・ベクタなど組み込みの型は登録できない
+- **補助データは EQUAL で比べられる値**（数値・文字・シンボル・文字列・パス名と、それらのコンス）に限る（treedef に入り、後で `jit` のキャッシュのキーになるため）。違えば `tree-flatten` が `pytree-error`
+- `tree-unflatten` はリストとベクタの節を新しく作り、葉はそのまま（`eq` で）置く
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
