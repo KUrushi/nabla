@@ -67,12 +67,12 @@ f16 / f64 は上記すべての op で advisor が確認済み（フィクスチ
 実行できる。IREE は既定で f64 を f32 に落とす（`demoteF64ToF32 = true`、
 `compiler/src/iree/compiler/Pipelines/Options.h`）ので、`compile-flags` は
 `--iree-input-demote-f64-to-f32=false` を付ける。llvm-cpu では
-exponential / log / tanh の f64 版が多項式近似されず（`MathTransformPass.cpp`
+exponential / log / tanh（と exponential_minus_one / log_plus_one / sine / cosine）の f64 版が多項式近似されず（`MathTransformPass.cpp`
 の近似・f32 展開は f32 以下の型だけが対象）libm の `exp` / `log` / `tanh`
-の呼び出しとして残る。既定の embedded ELF（`-nostdlib -static`）ではこれが
+の呼び出し（expm1 / log1p / sin / cos も同様。issue #223）として残る。既定の embedded ELF（`-nostdlib -static`）ではこれが
 リンクできずにコンパイルが失敗する（`iree-lld: error: undefined symbol:
 tanh`）。そこで `backend-compile` は、StableHLO のテキストに f64 の
-この3つがあるとき（`nabla.iree::%needs-libm-p`）だけ
+この7つ（`*libm-f64-ops*`）があるとき（`nabla.iree::%needs-libm-p`）だけ
 `--iree-llvmcpu-link-embedded=false` を付け、ランタイムが dlopen で読み込む
 system library を作る。読み込み時にプロセスの libm に解決されるので、f64 の
 この3つも `jit` できる。代わりにそのモジュールのコンパイルには `ld.lld` が
