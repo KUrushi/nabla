@@ -62,6 +62,36 @@ DTYPE-MISMATCH）。"))
 (defmethod dot ((a tracer) (b array))
   (dot a (%lift-array b a)))
 
+;;; --- dot-general: バッチ次元と縮約次元を明示する（issue #208）---
+
+(defgeneric dot-general (a b &key lhs-contracting rhs-contracting lhs-batch rhs-batch)
+  (:documentation
+   "StableHLO の dot_general。LHS-CONTRACTING / RHS-CONTRACTING は縮約する軸（A と B で
+同じ個数、同じ長さ）、LHS-BATCH / RHS-BATCH はバッチ軸（既定は空。先頭でなくてもよい）。結果の軸は
+バッチ軸（LHS-BATCH の順）、A の残りの軸、B の残りの軸の順。attention の
+`(dot-general q k :lhs-batch '(0 2) :rhs-batch '(0 2) :lhs-contracting '(3) :rhs-contracting '(3))`
+のように使う。軸の検査は dot-general プリミティブが行い、食い違えば PRIMITIVE-ERROR。
+A・B の片方が配列、もう片方がトレーサなら、DOT と同じく配列をトレーサと同じ dtype の定数に
+リフトする。"))
+
+(defmethod dot-general ((a array) (b array) &key lhs-contracting rhs-contracting lhs-batch rhs-batch)
+  (let ((avals (list (array-aval a) (array-aval b)))
+        (params (list :lhs-contracting lhs-contracting :rhs-contracting rhs-contracting
+                      :lhs-batch lhs-batch :rhs-batch rhs-batch)))
+    ;; eager は検査しないので、先に形状推論で不正なパラメタを PRIMITIVE-ERROR にする。
+    (apply (primitive-abstract-eval (find-primitive :dot-general)) avals params)
+    (apply (primitive-eager (find-primitive :dot-general)) (list a b) avals params)))
+
+(defmethod dot-general ((a tracer) (b tracer) &key lhs-contracting rhs-contracting lhs-batch rhs-batch)
+  (%trace-eqn :dot-general (list a b) :lhs-contracting lhs-contracting :rhs-contracting rhs-contracting
+                                      :lhs-batch lhs-batch :rhs-batch rhs-batch))
+
+(defmethod dot-general ((a array) (b tracer) &rest params &key &allow-other-keys)
+  (apply #'dot-general (%lift-array a b) b params))
+
+(defmethod dot-general ((a tracer) (b array) &rest params &key &allow-other-keys)
+  (apply #'dot-general a (%lift-array b a) params))
+
 ;;; --- reshape ---
 
 (defgeneric reshape (x shape)

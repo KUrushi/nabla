@@ -486,3 +486,44 @@ NO-APPLICABLE-METHOD ではなく TRACING-ERROR になる。"
       (nb:trace-to-graph (nb:with-tracing (x) (nb:where t x d3)) (list (nb:make-aval '(3) :f32))))
     (signals nb:dtype-mismatch
       (nb:trace-to-graph (nb:with-tracing (x) (nb:where nil x d3)) (list (nb:make-aval '(3) :f32))))))
+
+;;; --- dot-general（バッチ次元と縮約次元を明示する。issue #208）---
+
+(test array-api/dot-general-matches-reference-eagerly-and-traced
+  "DOT-GENERAL は、バッチ次元（先頭でなくてもよい）と複数の縮約次元を指定でき、eager の結果が
+参照実装 REFERENCE-DOT-GENERAL と一致し、トレースして EVAL-GRAPH した結果も eager と一致する。
+形は [b, m, h, d] × [b, n, h, d] を b と h をバッチ、d を縮約にした attention のスコアの形。"
+  (is (check-it (generator (tuple (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 3)
+                                   (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 3)
+                                   (uniform-integer :lo 1 :hi 3)
+                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                (lambda (args)
+                  (destructuring-bind (b m n h d seed) args
+                    (let* ((q (make-random-array (make-array-spec (list b m h d) :f64) :seed seed))
+                           (k (make-random-array (make-array-spec (list b n h d) :f64) :seed (+ seed 1)))
+                           (params '(:lhs-contracting (3) :rhs-contracting (3) :lhs-batch (0 2) :rhs-batch (0 2)))
+                           (eager (apply #'nb:dot-general q k params))
+                           (graph-fn (nb:with-tracing (q k)
+                                       (nb:dot-general q k :lhs-contracting '(3) :rhs-contracting '(3)
+                                                           :lhs-batch '(0 2) :rhs-batch '(0 2)))))
+                      (and (equal (list b h m n) (array-dimensions eager))
+                           (allclose eager (reference-dot-general q k '(3) '(3) '(0 2) '(0 2))
+                                     :dtype :f64 :rtol 1d-12 :atol 1d-12)
+                           (equalp eager
+                                   (nb:eval-graph (nb:trace-to-graph graph-fn (list (nb:array-aval q) (nb:array-aval k)))
+                                                  q k))))))
+                :regression-id array-api/dot-general-matches-reference-eagerly-and-traced
+                :regression-file (regression-path "array-api-dot-general-matches-reference"))))
+
+(test array-api/dot-general-with-bad-parameters-signals-primitive-error
+  "縮約次元の個数が合わない・リストでない軸・大きさが合わない軸・整数の配列の DOT-GENERAL は、トレースしても
+eager でも PRIMITIVE-ERROR（生の type-error ではない）。"
+  (signals nb:primitive-error
+    (nb:trace-to-graph (nb:with-tracing (a b) (nb:dot-general a b :lhs-contracting '(1) :rhs-contracting '()))
+                       (list (nb:make-aval '(2 3) :f32) (nb:make-aval '(2 3) :f32))))
+  (let ((a (make-array '(2 3) :element-type 'single-float :initial-element 1.0))
+        (ints (make-array '(2 3) :element-type '(signed-byte 32) :initial-element 1)))
+    (signals nb:primitive-error (nb:dot-general a a :lhs-contracting '(1) :rhs-contracting '()))
+    (signals nb:primitive-error (nb:dot-general a a :lhs-contracting 1 :rhs-contracting 1))
+    (signals nb:primitive-error (nb:dot-general a a :lhs-contracting '(0) :rhs-contracting '(1)))
+    (signals nb:primitive-error (nb:dot-general ints ints :lhs-contracting '(1) :rhs-contracting '(1)))))
