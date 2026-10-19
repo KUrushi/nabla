@@ -1,8 +1,8 @@
 # IREE 上流に報告するバグ（issue #73、#165、#199、#203、#220、#226、#243）
 
-nabla が固定している IREE 3.11.0 で見つけたバグ8件（1〜5 はコンパイラ、6〜8 はランタイム）の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165 / #243）にも同じリンクを記録する。
+nabla が固定している IREE 3.11.0 で見つけたバグ8件（1〜5 はコンパイラ、6〜8 はランタイム）の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はリポジトリのオーナーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165 / #243）にも同じリンクを記録する。
 
-**報告者への注意**: iree-org/iree は issue にも AI ツール利用方針（[iree.dev の contributing](https://iree.dev/developers/general/contributing/#ai-tool-use)）を適用し、報告者が要約を自分で書くこと、LLM を使った部分（コマンド・再現 IR を含む）を理解して確認すること、相当に使った場合は issue の冒頭か末尾にその旨を書くことを求めている（2026-10-19 に既存 issue #24753 の bot コメントで確認）。下の英語の下書きは出発点であり、投稿前に報告者が読み直して自分の言葉に直し、必要なら断り書きを足す。
+**起票前の注意**: iree-org/iree の既存 issue #24753 に付いた bot コメント（2026-10-19 に確認）によると、IREE は issue にも AI ツール利用方針を適用し、要約を起票者が自分で書くこと、LLM を使った部分（コマンド・再現 IR を含む）を理解して確認すること、相当に使った場合は issue の冒頭か末尾にその旨を書くことを求めている。これは bot コメントを読んだだけなので、投稿前に iree.dev の方針の原文（<https://iree.dev/developers/general/contributing/#ai-tool-use>）を確認すること。下の英語の下書きは出発点であり、投稿前にリポジトリのオーナーが読み直して自分の言葉に直す。
 
 IREE を上げたときに、これらのバグが直ったかを確かめて回避策を外す手順は [`docs/iree-build.md`](iree-build.md) の「IREE を上げたときに回避策を外せるか確かめる手順」にある。
 
@@ -29,13 +29,13 @@ $NABLA_IREE_HOME/bin/iree-compile \
 
 | # | 再現ファイル | 落ちる pass | 症状 | 再現率（単体の iree-compile） | 回避策の形 | nabla の issue | 上流 issue |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `dot-general-k0.mlir` | `AnnotateDispatchesPass`（Flow） | SIGFPE（整数 0 除算、終了コード 136） | 決定的（24/24） | （ファイル無し。dot_general を出さずゼロ定数にする） | #62、#73 | 未報告（ユーザーが報告する）: `<link>` |
-| 2 | `while-constant-carry.mlir` | `ScheduleAllocationPass`（Stream の AffinityAnalysis） | SIGSEGV（終了コード 139） | 非決定的。49/50（30/30 と 19/20） | `while-constant-carry-barrier.mlir`: 0/20 | #165 | 未報告（ユーザーが報告する）: `<link>` |
-| 3 | `while-i1-carry-returned.mlir` | `ConvertToStreamPass`（`ScfWhileOpConversion`） | SIGSEGV（139）または `LLVM ERROR: out of memory` で SIGABRT（134） | 落ちること自体は決定的（33/33）、どちらのシグナルかは非決定的 | `while-i1-carry-not-returned.mlir`: 0/20（回避策ではなく、戻り値にしない対照） | #131、#165 | 未報告（ユーザーが報告する）: `<link>` |
+| 1 | `dot-general-k0.mlir` | `AnnotateDispatchesPass`（Flow） | SIGFPE（整数 0 除算、終了コード 136） | 決定的（24/24） | （ファイル無し。dot_general を出さずゼロ定数にする） | #62、#73 | 下書き済み・未報告（起票はリポジトリのオーナー）: `<link>` |
+| 2 | `while-constant-carry.mlir` | `ScheduleAllocationPass`（Stream の AffinityAnalysis） | SIGSEGV（終了コード 139） | 非決定的。49/50（30/30 と 19/20） | `while-constant-carry-barrier.mlir`: 0/20 | #165 | 下書き済み・未報告（起票はリポジトリのオーナー）: `<link>` |
+| 3 | `while-i1-carry-returned.mlir` | `ConvertToStreamPass`（`ScfWhileOpConversion`） | SIGSEGV（139）または `LLVM ERROR: out of memory` で SIGABRT（134） | 落ちること自体は決定的（33/33）、どちらのシグナルかは非決定的 | `while-i1-carry-not-returned.mlir`: 0/20（回避策ではなく、戻り値にしない対照） | #131、#165 | 下書き済み・未報告（起票はリポジトリのオーナー）: `<link>` |
 
 ## 1. K=0 の `stablehlo.dot_general` で AnnotateDispatches が整数 0 除算（#73）
 
-- **状態**: 未報告（ユーザーが報告する）。上流 issue: `<link>`
+- **状態**: 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>`
 - **再現ファイル**: [`docs/iree-repros/dot-general-k0.mlir`](iree-repros/dot-general-k0.mlir)
 - **期待**: コンパイルが通る（K=0 の行列積は空和なので結果は全 0。少なくともクラッシュせずにエラーで止まる）
 - **実際**: `uninitialized values` の警告を2回出した後、`AnnotateDispatchesPass` の中で SIGFPE（x86 の整数 0 除算 #DE）。毎回落ちる
@@ -128,7 +128,7 @@ process; we work around it by not emitting `dot_general` when K = 0.
 
 ## 2. 定数で初期化した carry がループを駆動する `stablehlo.while` で AffinityAnalysis が segfault（#165 の 1）
 
-- **状態**: 未報告（ユーザーが報告する）。上流 issue: `<link>`
+- **状態**: 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>`
 - **再現ファイル**: [`docs/iree-repros/while-constant-carry.mlir`](iree-repros/while-constant-carry.mlir)。対照（回避策を入れた形）: [`while-constant-carry-barrier.mlir`](iree-repros/while-constant-carry-barrier.mlir)（定数を `stablehlo.optimization_barrier` に通しただけで、ほかは同じ）
 - **期待**: コンパイルが通る
 - **実際**: `ScheduleAllocationPass` の Stream AffinityAnalysis（`ValueConsumerAffinityPVS::updateValue` → `Explorer::walkTransitiveUses` の再帰）で SIGSEGV。非決定的で、50 回中 49 回落ちた（30/30 と 19/20）。対照は 20/20 通る
@@ -250,7 +250,7 @@ use-after-free / dangling reference in the DFX solver state.
 
 ## 3. 比較から作った `i1` の while carry を関数から返すと ConvertToStream が落ちる（#165 の 2）
 
-- **状態**: 未報告（ユーザーが報告する）。上流 issue: `<link>`
+- **状態**: 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>`
 - **再現ファイル**: [`docs/iree-repros/while-i1-carry-returned.mlir`](iree-repros/while-i1-carry-returned.mlir)。対照: [`while-i1-carry-not-returned.mlir`](iree-repros/while-i1-carry-not-returned.mlir)（同じ while で、`i1` の carry ではなく f32 の carry を返す）
 - **期待**: コンパイルが通る
 - **実際**: `ConvertToStreamPass` の `ScfWhileOpConversion` → `ConversionPatternRewriterImpl::applySignatureConversion` の中で、SIGSEGV（`memcpy` の中）か `LLVM ERROR: out of memory` / `Allocation failed` の SIGABRT。33 回中 33 回落ちる（シグナルは 139 と 134 が混ざる。`%r#0` と `%r#1` の両方を返す元の形でも 11/11）。対照は 20/20 通る
@@ -358,9 +358,10 @@ LLVM 23.0.0git, optimized build), Linux x86_64.
 
 ## 4. f32 に convert した畳み込みで片方の operand が元の dtype に戻る（#203）
 
-- **状態**: 下書き済み・未報告（メンテナの確認待ち）。上流 issue: `<link>`
+- **状態**: 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>`
 - **上流の状況**（2026-10-19 検索）: 検索語 `optimization_barrier convolution bf16`、`optimization_barrier convolution`、`convolution bf16`、`compatible element type`、`stablehlo convolution convert`、`convert f32 convolution bf16`: 同じ症状の issue は無し。近いが別物: [#7612](https://github.com/iree-org/iree/issues/7612)（Open、古い mhlo の bf16 畳み込みが `hal.command_buffer.fill_buffer` で失敗。別の経路）
 - **再現ファイル**: [`docs/iree-repros/conv-convert-operand-type.mlir`](iree-repros/conv-convert-operand-type.mlir)（対照: `conv-convert-operand-type-barrier.mlir`）
+- **確認した環境**: Linux x86_64 VM（OrbStack、Rosetta）、2026-10-19。コンパイルエラーは決定的で、Rosetta に依らない
 - **期待**: bf16 の2入力を `stablehlo.convert` で f32 にして f32 で畳み込み、結果を bf16 に戻す形がコンパイルできる
 - **実際**: `expects lhs and rhs to have compatible element type. Got: 'bf16' and 'f32'`（クラッシュではなく通常のコンパイルエラー）。カーネルが `stablehlo.transpose`（入出力チャネルの入れ替え）を経ているときに出る。`reverse` + convert + convolution は通る。convert を transpose の前に置いても、片方の入力だけの `optimization_barrier` でも直らない。f16 も同じ
 - **原因の見立て**: convert を畳み込みの operand に畳み込む（折り畳む）最適化が、片方の operand だけ元の dtype に戻すように見える（未調査）
@@ -368,9 +369,9 @@ LLVM 23.0.0git, optimized build), Linux x86_64.
 
 ### 下書き（英語）
 
-````markdown
 **Title**: `[StableHLO] stablehlo.convolution on two stablehlo.convert-to-f32 operands fails verification: "expects lhs and rhs to have compatible element type. Got: 'bf16' and 'f32'"`
 
+````markdown
 ### What happened?
 
 Compiling a `stablehlo.convolution` whose two operands are `stablehlo.convert`s of bf16 tensors to f32
@@ -382,9 +383,9 @@ error: expects lhs and rhs to have compatible element type. Got: 'bf16' and 'f32
 ```
 
 It looks as if one operand of the convolution is rewritten back to its pre-convert bf16 type
-while the other keeps f32. It only happens when the kernel goes through a `stablehlo.transpose`
-(the `[0, 1, 3, 2]` swap of the input/output channels); with a `stablehlo.reverse` instead of
-the transpose it compiles. Moving the convert before the transpose, or putting only one of the two
+while the other keeps f32. In this (non-depthwise) shape it only happens when the kernel goes through a
+`stablehlo.transpose` (the `[0, 1, 3, 2]` swap of the input/output channels); with a
+`stablehlo.reverse` instead of the transpose it compiles. Moving the convert before the transpose, or putting only one of the two
 operands through `stablehlo.optimization_barrier`, does not help. f16 behaves like bf16.
 Passing both converted operands through a single (multi-value) `stablehlo.optimization_barrier`
 makes it compile, so we use that as a workaround. This is an ordinary diagnostic, not a crash.
@@ -427,9 +428,10 @@ pass performs the fold; a guess is a convert-folding rewrite that only updates o
 
 ## 5. O/G = 1 の depthwise 畳み込みを bf16 / f16 から f32 に convert すると tensor.collapse_shape で落ちる（#203）
 
-- **状態**: 下書き済み・未報告（メンテナの確認待ち）。上流 issue: `<link>`
+- **状態**: 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>`
 - **上流の状況**（2026-10-19 検索）: 検索語 `collapse_shape depthwise`、`tensor.collapse_shape expected collapsed type`、`depthwise`、`feature_group_count`: 同じ症状の issue は無し。近いが別物: [#19284](https://github.com/iree-org/iree/issues/19284)（Open、flux の text encoder で `tensor.collapse_shape` の検証が落ちる。型が違う原因）、[#17714](https://github.com/iree-org/iree/issues/17714)（Open、`feature_group_count` を持つ畳み込みの StableHLOToLinalgConvolution の assert。f32 の別の形）
 - **再現ファイル**: [`docs/iree-repros/conv-depthwise-collapse-shape.mlir`](iree-repros/conv-depthwise-collapse-shape.mlir)（対照: `conv-depthwise-collapse-shape-barrier.mlir`）
+- **確認した環境**: Linux x86_64 VM（OrbStack、Rosetta）、2026-10-19。コンパイルエラーは決定的で、Rosetta に依らない
 - **期待**: コンパイルが通る（f32 のままなら通る）
 - **実際**: `'tensor.collapse_shape' op expected collapsed type to be 'tensor<3x2x3xbf16>', but got 'tensor<3x2x3xf32>'`（rhs `[3, 2, 1, 3]`、`feature_group_count = 3`）。前方の畳み込みの時点で落ちる（nabla issue #197 で入った形）
 - **原因の見立て**: #4 と同じ（convert の折り畳み後に dtype が食い違う）
@@ -439,9 +441,9 @@ pass performs the fold; a guess is a convert-folding rewrite that only updates o
 
 ### 下書き（英語）
 
-````markdown
 **Title**: `[StableHLO] depthwise stablehlo.convolution (O/G = 1) on operands converted from bf16 fails: tensor.collapse_shape expected collapsed type tensor<3x2x3xbf16>, got tensor<3x2x3xf32>`
 
+````markdown
 ### What happened?
 
 A depthwise `stablehlo.convolution` (`feature_group_count` = C, kernel `[kh, kw, 1, C]`) whose operands
@@ -493,11 +495,11 @@ leaves the operand types inconsistent): conv-convert-operand-type.mlir fails wit
 
 ## 6. local-task device で入力が 162 個以上の関数を呼ぶと NULL を参照して落ちる（#199）
 
-コンパイルは通り、**実行時**に落ちる（このファイルの他の3件はコンパイラが落ちる）。`main` の入力（テンソル）の個数だけで決まり、入力の形・演算には依らない。
+コンパイルは通り、**実行時**に落ちる（1〜5 はコンパイラが落ちる・エラーになる。6〜8 は実行時）。`main` の入力（テンソル）の個数だけで決まり、入力の形・演算には依らない。
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 下書き済み・未報告（メンテナの確認待ち）。上流 issue: `<link>` |
+| 状態 | 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>` |
 | 上流の状況（2026-10-19 検索） | 検索語 `162 inputs`、`iree_task_call_initialize`、`task_call_initialize`、`local-task segfault`、`too many arguments local-task`: 該当なし |
 | 再現ファイル | `docs/iree-repros/local-task-162-inputs.mlir`（入力 162 個、各 `tensor<3xf32>` に `tanh` して 162 個を返す）。対照は `local-task-161-inputs.mlir`（161 個） |
 | 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=3xf32=1,2,3 …`（入力の個数ぶん）で実行する。`scripts/check-iree-repros.sh` が自動でやる |
@@ -547,7 +549,7 @@ Runtime
 
 | 項目 | 内容 |
 | --- | --- |
-| 状態 | 下書き済み・未報告（メンテナの確認待ち）。上流 issue: `<link>` |
+| 状態 | 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>` |
 | 上流の状況（2026-10-19 検索） | 検索語 `optimization_barrier`、`local-task race`、`local-task nondeterministic`、`dynamic_update_slice local-task`、`local-task wrong results`: 該当なし（`dynamic_update_slice` の既存 issue #9293 / #6013 は閉じていて別件） |
 | 再現ファイル | `docs/iree-repros/nested-scan-ys-barrier-race.mlir`（外側の `stablehlo.while` の本体が ys `tensor<4x3xf32>` を `optimization_barrier` に通し、内側の `stablehlo.while` を回してから、その結果へ `dynamic_update_slice` する）と、内側を `stablehlo.if`（`cond*`）に替えた `nested-scan-ys-if-race.mlir`。対照はどちらも barrier を外しただけの `nested-scan-ys-no-barrier.mlir` / `nested-scan-ys-if-no-barrier.mlir` |
 | 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=3xf32=0.5,-0.25,0.9` で何度も実行し、`--device=local-sync` の出力と比べる。CPU に負荷が要る（`yes > /dev/null` を CPU の数だけ動かす）。`scripts/check-iree-repros.sh` が負荷の起動から比較までやる |
@@ -598,7 +600,7 @@ Runtime
 | 項目 | 内容 |
 | --- | --- |
 | 状態 | 下書き済み・未報告（起票はリポジトリのオーナー）。上流 issue: `<link>`。Rosetta の VM で確認。報告前に x86 ネイティブで確かめる |
-| 上流の状況（2026-10-19 検索） | [iree-org/iree#24753](https://github.com/iree-org/iree/issues/24753)（Open、2026-07-23 起票）が関連: JAX が出した StableHLO（i32 の入出力を素通しする関数）が 3.12.0rc で `OUT_OF_RANGE; indirect buffer reference slot 0 ...`（`command_buffer_validation.c:185`）、failure mode を反転すると `ref is null; while invoking native function hal.buffer_view.create` で失敗し、3.11.0 では通ると報告している。nabla の症状（3.11.0）と同じ2つのエラーだが、起きる版と最小の形が違うので重複とは断定できない。報告するときはこの issue を参照し、同じ根（素通しの出力のバッファ参照）かをメンテナに尋ねる。他の検索語（`stablehlo.if ref is null`、`stablehlo.if passthrough`、`scf.if yield function argument`、`hal.buffer_view.create`）に該当は無し。なお 3.12.0rc で nabla の再現が直っているかは未確認（IREE を上げるときの確認手順で見る） |
+| 上流の状況（2026-10-19 検索） | [iree-org/iree#24753](https://github.com/iree-org/iree/issues/24753)（Open、2026-07-23 起票）が関連: JAX が出した StableHLO（i32 の入出力を素通しする関数）が 3.12.0rc で `OUT_OF_RANGE; indirect buffer reference slot 0 ...`（`command_buffer_validation.c:185`）、failure mode を反転すると `ref is null; while invoking native function hal.buffer_view.create` で失敗し、3.11.0 では通ると報告している。nabla の症状（3.11.0）と同じ2つのエラーだが、起きる版と最小の形が違うので重複とは断定できない。報告するときはこの issue を参照し、同じ根（素通しの出力のバッファ参照）かを IREE のメンテナに尋ねる。他の検索語（`stablehlo.if ref is null`、`stablehlo.if passthrough`、`scf.if yield function argument`、`hal.buffer_view.create`）に該当は無し。なお 3.12.0rc で nabla の再現が直っているかは未確認（IREE を上げるときの確認手順で見る） |
 | 再現ファイル | `docs/iree-repros/if-passthrough-operands.mlir`（`stablehlo.if` の then が operand 3 つをそのまま `stablehlo.return` し、1 つだけ計算する。else は 4 つとも計算する）。対照は `if-passthrough-operands-select.mlir`（素通しの結果を if から外し、if の外の `stablehlo.select` にした形。nabla の回避策） |
 | 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=f32=1.0 --input=f32=1.0 --input=f32=2.0 --input=f32=3.0 --input=f32=4.0` で実行する（最初の入力が pred 用で、`< 0.5` なら then）。`--device=local-sync` でも同じ。`scripts/check-iree-repros.sh` の fail-bug / fail-control の行 |
 | 症状 | `iree-src/runtime/src/iree/vm/ref.h:223: INVALID_ARGUMENT; ref is null; while invoking native function hal.buffer_view.create`。素通しの結果を持つ枝**でない**側（else。p = 1.0）を選んだときだけ。素通しの枝を選ぶ側（p = 0.0）は正しい値が返る。結果が関数の戻り値でなく後続の演算で使われると、別のエラー `OUT_OF_RANGE; indirect buffer reference ...`（`command_buffer_validation.c:185`）になる |
@@ -683,4 +685,12 @@ Runtime (possibly the compiler's handling of `scf.if` results that alias functio
 ### Version information
 
 `iree-base-compiler==3.11.0` from PyPI (`IREE compiler version 3.11.0rc20260316 @ e4a3b0405d7d23554da26403658d0e8c3c5ecf25`), runtime built from the same commit, Linux x86_64.
+
+### Additional context
+
+Possibly related: #24753 reports the same two error messages (`ref is null` in
+`hal.buffer_view.create`, and `indirect buffer reference ... OUT_OF_RANGE`) on 3.12.0rc and says
+3.11.0 works. Our module fails on 3.11.0, and we have not tried 3.12.0rc, so this may be a
+different trigger of the same symptom. Verified on an x86_64 Linux VM running under Rosetta
+(not yet on native x86).
 ````

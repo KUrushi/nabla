@@ -423,7 +423,7 @@ IREE 3.11.0 のバグ（issue #73、#165、#199、#203、#220、#226、#243。�
 NABLA_IREE_HOME=<新しい版のインストール先> scripts/check-iree-repros.sh --runs 20
 ```
 
-`docs/iree-repros/` の各ファイルを `--runs` 回コンパイルし、1行ずつ判定を出す。終了コードは、記録どおり（バグは全部再現し、回避策の形は全部通る）なら 0、どれか違えば 1。IREE 3.11.0 での出力:
+`docs/iree-repros/` の各ファイルを `--runs` 回コンパイルし、1行ずつ判定を出す。終了コードは、記録どおり（バグは全部再現し、回避策の形は全部通る）なら 0、どれか違えば 1。IREE 3.11.0 での出力（複数の環境で取った行の合成。4・5 の `error-bug` の行は Rosetta の VM で `--runs 2` で取った。`run-bug` と `race-bug` は Rosetta の VM では再現しない）:
 
 ```
 bug      dot-general-k0.mlir                      REPRODUCED      crashes=20/20 exit-codes=136
@@ -459,12 +459,15 @@ NABLA_IREE_HOME=<新しい版> NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 
 次のテスト（`nabla/iree/tests` の medium）は、**バグが IREE に残っていることを確かめる**ので、バグが直ると失敗する。失敗したら、それが「直った」という合図で、下の撤去条件に従って回避策とテストを一緒に消す。
 
-| バグ | ガードテスト（`tests/iree/`） | 直ったときの結果 |
+| バグ（`iree-upstream-bugs.md` の番号） | ガードテスト（`tests/iree/`） | 直ったときの結果 |
 | --- | --- | --- |
 | 1. K=0 の dot_general | ガードテストは無い。`float-traps-test.lisp` の `float-traps/zero-size-dot-general-poisons-compiler-then-fails-clearly` は、K=0 がコンパイルできた場合（`K0-RESULT=COMPILED-OK`）も通るように書いてある | 失敗しない。手順 1 の `dot-general-k0.mlir` で判断する |
 | 2. 定数の carry の while | `while-loop-test.lisp` の `while-loop/iree-known-bug-constant-carry-crashes-the-compiler`（子プロセスで 10 回コンパイルし、1 回でも落ちることを確かめる） | 失敗する |
 | 3. `i1` の carry を返す while | `while-loop-test.lisp` の `while-loop/iree-known-limitation-i1-carry-returned-crashes-the-compiler` | 失敗する |
-| 4. local-task の入力 162 個以上（実行時） | `input-limit-test.lisp` の `input-limit/iree-known-bug-local-task-162-inputs-crashes`（`iree-run-module` を子プロセスで実行し、162 個で落ちること） | 失敗する |
+| 4・5. bf16 / f16 を convert した畳み込み（#203） | `conv-grad-test.lisp` の `convolution/iree-bf16-convert-conv-bugs-still-reproduce` | 失敗する |
+| 6. local-task の入力 162 個以上（実行時） | `input-limit-test.lisp` の `input-limit/iree-known-bug-local-task-162-inputs-crashes`（`iree-run-module` を子プロセスで実行し、162 個で落ちること） | 失敗する |
+| 7. 制御構造をはさんだ ys の barrier の race | ガードテストは無い（まれにしか起きない）。手順 1 の `race-bug` で判断する | 失敗しない |
+| 8. `stablehlo.if` の素通し（#226） | `cond-passthrough-test.lisp` の `cond-passthrough/iree-known-bug-passthrough-operands-fail-at-run-time`（子プロセスで実行して失敗すること） | 失敗する |
 
 回避策が新しい版でも効いていることは、`while-loop/iree-constant-carry-with-barrier-compiles-repeatedly`・`tests/iree/scan-test.lisp`・`tests/iree/dot-test.lisp` の `dot-general/zero-contracting-compiles-and-matches-eager` が引き続き確かめる（こちらは失敗してはいけない）。
 

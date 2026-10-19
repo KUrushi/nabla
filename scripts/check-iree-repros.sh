@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# docs/iree-repros/ の最小再現（IREE のコンパイラのバグ。docs/iree-upstream-bugs.md）を
-# 単体の iree-compile にかけ、バグが今も再現するかを報告する。IREE を上げたときに
+# docs/iree-repros/ の最小再現（IREE 3.11 のバグ 1〜8。docs/iree-upstream-bugs.md）を
+# 単体の iree-compile / iree-run-module にかけ、バグが今も再現するかを報告する。IREE を上げたときに
 # 回避策を外せるかの最初の確認に使う（手順は docs/iree-build.md）。
 #
 # 使い方:
-#   scripts/check-iree-repros.sh             # 各ファイルを 10 回ずつコンパイルする
+#   scripts/check-iree-repros.sh             # 各ファイルを 10 回ずつコンパイル（run-* は実行も）する
 #   scripts/check-iree-repros.sh --runs 30   # 回数を変える
 #   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 4000。1 回あたり 0.05〜1% でしか起きない）
 #
