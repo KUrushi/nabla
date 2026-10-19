@@ -31,12 +31,13 @@
     "ops/reduce_add" "ops/reduce_add_bf16"
     "ops/reduce_max" "ops/reduce_max_bf16"
     "ops/optimization_barrier" "ops/optimization_barrier_bf16"
-    "ops/convolution" "ops/convolution_bf16")
-  "docs/stablehlo-ops.md の表に載る、対象19 op + constant + optimization_barrier + convolution の22行それぞれの
+    "ops/convolution" "ops/convolution_bf16"
+    "ops/reverse" "ops/reverse_bf16")
+  "docs/stablehlo-ops.md の表に載る、対象19 op + constant + optimization_barrier + convolution + reverse の23行それぞれの
 f32 / bf16 フィクスチャ名（tests/fixtures/stablehlo/<名前>.mlir、拡張子
 なし）。このリストと docs/stablehlo-ops.md の表、
-tests/fixtures/stablehlo/ops/ 配下のファイルの3つは、常に同じ44個
-（22行 × 2）を指す。")
+tests/fixtures/stablehlo/ops/ 配下のファイルの3つは、常に同じ46個
+（23行 × 2）を指す。")
 
 (define-iree-test ops/all-fixtures-compile-to-non-empty-vmfb
     "docs/stablehlo-ops.md の表にある全フィクスチャ（f32 と bf16）について、
@@ -54,7 +55,7 @@ backend-compile が非空の (simple-array (unsigned-byte 8) (*)) を返し、
 (defun %stablehlo-ops-doc-row-count ()
   "docs/stablehlo-ops.md の「## 対応表」節にある表のデータ行数を返す。
 ヘッダ行・区切り行（`| --- | ... |`）は ○ を含まないので、表の節の中で
-○ を含む行だけを数えれば、データ行（19 op + constant + optimization_barrier + convolution の22行）の数になる。"
+○ を含む行だけを数えれば、データ行（19 op + constant + optimization_barrier + convolution + reverse の23行）の数になる。"
   (let* ((path (asdf:system-relative-pathname "nabla" "docs/stablehlo-ops.md"))
          (lines (uiop:read-file-lines path))
          (start (position-if (lambda (line) (search "## 対応表" line)) lines)))

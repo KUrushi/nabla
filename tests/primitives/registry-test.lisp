@@ -75,13 +75,11 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 ;;; --- 自動微分のルール（issue #86。フェーズ2の全ルール検査） ---
 
 (defparameter *non-differentiable-primitive-names* '(:rng-bit-generator
-    :shift-right-logical :bitwise-or :bitcast-convert :convolution)
+    :shift-right-logical :bitwise-or :bitcast-convert)
   "意図的に :jvp を持たない本物のプリミティブ。:jvp の無い defprimitive を足すときは、
 ここに理由つきで足すか、jvp ルールを書く。
   - :rng-bit-generator（issue #133）: 状態もビットも整数で接線が常に symbolic zero なので、
     jvp-graph が全入力ゼロのときにルールを呼ばず主値を再発行する。ルールは要らない。
-  - :convolution（issue #197）: 順方向だけ。jvp / transpose / バッチ化ルールは #203 で足す
-    （足したらここと下の *no-batch-rule-primitive-names* から外し、*linear-primitive-names* に足す）。
   （while-loop と cond は issue #134、scan は issue #135 で jvp を持った。逆モードに対応しないのは
   while-loop だけで、linearize が NO-TRANSPOSE-RULE にする。cond は #134、scan は #139。）")
 
@@ -97,9 +95,9 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 (defparameter *linear-primitive-names*
   '(:add :sub :neg :convert :reshape :transpose :broadcast-in-dim :reduce-sum
-    :select :mul :div :dot-general :cond :scan)
+    :select :mul :div :dot-general :cond :scan :convolution :rev)
   "接線について線形に使われうる（:transpose を持つべき）プリミティブ。mul / div /
-dot-general は片側だけが線形、select は条件以外の分岐が線形、cond は pred 以外の入力が線形（枝が線形な cond だけが transpose される。issue #134）、scan（issue #139）は
+dot-general / convolution（issue #203。lhs と rhs の双線形）は片側だけが線形、rev（軸の反転）は線形、select は条件以外の分岐が線形、cond は pred 以外の入力が線形（枝が線形な cond だけが transpose される。issue #134）、scan（issue #139）は
 partial eval で分けた線形な scan（残差を consts / xs で受ける）が線形。max / min / exp / log /
 tanh / compare / reduce-max / stop-gradient の jvp は接線について線形な式（mul、select
 など）だけを出すので、transpose ルールは要らない。")
@@ -114,10 +112,9 @@ tanh / compare / reduce-max / stop-gradient の jvp は接線について線形�
       (is (or (nb::primitive-jvp prim) (member name *non-differentiable-primitive-names*))
           (format nil "~S に jvp ルールが無い（除外するなら *non-differentiable-primitive-names* に足す）" name)))))
 
-(defparameter *no-batch-rule-primitive-names* '(:convolution)
-  "バッチ化ルール（:batch）を持たなくてよいプリミティブ。フェーズ3の終わりの時点では空
-（登録済みのすべてのプリミティブがルールを持つ）だったが、:convolution（issue #197）は
-順方向だけで、ルールは #203 で足す。")
+(defparameter *no-batch-rule-primitive-names* '()
+  "バッチ化ルール（:batch）を持たなくてよいプリミティブ。空（登録済みのすべてのプリミティブが
+ルールを持つ。:convolution は issue #197 で順方向だけ足され、ルールは #203 で足した）。")
 
 (test registry/every-registered-primitive-has-a-batch-rule-or-is-excluded
   "登録されたすべての（テスト専用でない）プリミティブが :batch を持つか、

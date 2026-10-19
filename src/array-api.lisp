@@ -230,7 +230,10 @@ LHS・RHS の片方が配列でもう片方がトレーサなら、配列をト�
       (list :strides (ones strides)
             :padding (or padding (loop repeat spatial collect (list 0 0)))
             :lhs-dilation (ones lhs-dilation) :rhs-dilation (ones rhs-dilation)
-            :feature-group-count groups))))
+            :feature-group-count groups
+            ;; 公開 API には出さない（issue #203）。rhs の転置が G > 1 のときに現れる内部のパラメタで、
+            ;; make-eqn がキーの完全一致を求めるので、ここで既定値を明示する。
+            :batch-group-count 1))))
 
 (defmethod conv-general-dilated ((lhs array) (rhs array) &key strides padding lhs-dilation rhs-dilation
                                                             (feature-group-count 1))

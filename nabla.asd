@@ -71,6 +71,8 @@
                (:file "src/ad/transpose")
                ;; 形状・縮約・dot-general の jvp ルール（issue #81）
                (:file "src/ad/rules-shape")
+               ;; convolution と rev の jvp / transpose ルール（issue #203）
+               (:file "src/ad/rules-conv")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -90,6 +92,8 @@
                ;; バッチ化ルール（要素演算は #128、形状演算は #129）
                (:file "src/ad/rules-batch-elementwise")
                (:file "src/ad/rules-batch-shape")
+               ;; convolution と rev のバッチ化ルール（issue #203）
+               (:file "src/ad/rules-batch-conv")
 
 
 
@@ -261,6 +265,10 @@
 
 
                (:file "tests/vmap-shape-test")
+               ;; rev と convolution の jvp / transpose / バッチ化ルール（issue #203）。
+               ;; jvp-shape-test / transpose-rules-test / vmap-shape-test のヘルパーを使う
+               (:file "tests/primitives/rev-test")
+               (:file "tests/ad/conv-ad-test")
 
 
 
@@ -396,6 +404,8 @@
                (:file "tests/iree/dot-test")
                ;; convolution（issue #197）
                (:file "tests/iree/conv-test")
+               ;; convolution の jvp / transpose / バッチ化ルール（issue #203）
+               (:file "tests/iree/conv-grad-test")
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "tests/iree/reduce-test")
                ;; 浮動小数点例外トラップの一括マスク（issue #53、x1）
