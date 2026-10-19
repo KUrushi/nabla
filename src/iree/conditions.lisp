@@ -11,6 +11,26 @@
    "nabla.iree が signal するすべてのエラーの root コンディション。
 NABLA:BACKEND-ERROR の subtype（issue #9 の backend プロトコル）。"))
 
+(define-condition iree-too-many-inputs (iree-error)
+  ((count :initarg :count :reader iree-too-many-inputs-count)
+   (limit :initarg :limit :reader iree-too-many-inputs-limit)
+   (driver :initarg :driver :reader iree-too-many-inputs-driver))
+  (:report
+   (lambda (condition stream)
+     (format stream
+             "IREE 3.11 の ~(~A~) device は入力が ~D 個以上の関数を呼ぶと~
+ iree_task_call_initialize で NULL を参照して落ちる（入力 ~D 個。docs/iree-upstream-bugs.md）。~
+ 回避策: 入力の個数（jit した関数の引数の木の葉の個数）を ~D 個以下にするか、~
+ (make-backend :iree :driver :local-sync) で local-sync device を使う。"
+             (iree-too-many-inputs-driver condition)
+             (1+ (iree-too-many-inputs-limit condition))
+             (iree-too-many-inputs-count condition)
+             (iree-too-many-inputs-limit condition))))
+  (:documentation
+   "local-task device で、入力が COUNT 個（LIMIT を超える）の関数を INVOKE しようとした
+ときに signal する。IREE 3.11 の local-task ドライバは入力が 162 個以上だと
+iree_task_call_initialize で NULL を参照してプロセスごと落ちるため、呼ぶ前に拒否する。"))
+
 (define-condition iree-library-not-found (iree-error)
   ((path :initarg :path :reader iree-library-not-found-path)
    (home :initarg :home :reader iree-library-not-found-home)

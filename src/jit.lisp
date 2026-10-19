@@ -91,6 +91,13 @@ STATIC-ARGS は FN の仮引数リストへの0始まりの位置のリスト。
 配列を静的引数にすると、キャッシュの比較は EQUAL（＝配列は同一性）に
 なることに注意する。
 
+動的引数と戻り値は PyTree（リスト・SIMPLE-VECTOR・DEFPYTREE で登録した型）でもよい。
+葉は配列・device array・実数（rank 0 の配列として扱う）で、
+要素型 T の SIMPLE-VECTOR は配列ではなく節（葉に分かれる）なので、ベクタの配列を渡すときは
+型特化した配列（nabla の配列）にする。キャッシュのキーには葉の
+aval と動的引数の treedef が入る（木の形が違えば別のコンパイル）。戻り値は FN の戻り値と
+同じ形（多値は多値、木は同じ形の木）で、葉は host 配列。
+
 BACKEND は NIL（呼び出し時に *DEFAULT-BACKEND* を使う）・BACKEND の
 KIND（keyword）・BACKEND のインスタンスのいずれか。
 
@@ -125,22 +132,25 @@ FN が TRACEABLE-FUNCTION でない、STATIC-ARGS が不正（整数でない・
         (setf (aref result position) (pop dynamic-values))))
     (coerce result 'list)))
 
-(defun %jit-trace (fn avals static-positions static-values)
+(defun %jit-trace (fn avals static-positions static-values in-treedef)
   "FN（TRACEABLE-FUNCTION）を、STATIC-POSITIONS の引数を STATIC-VALUES に
-固定した上で、残りの引数を AVALS（動的引数の分だけの長さ）でトレースし、
-GRAPH を返す。
+固定した上で、残りの動的引数の木（IN-TREEDEF は動的引数の木のリストの treedef）の
+葉を AVALS（葉の個数だけの長さ）でトレースし、(VALUES GRAPH 戻り値の treedef) を返す。
+戻り値の treedef は FN の戻り値（多値）をリストにした形で、%UNFLATTEN-RESULTS が使う。
 
 STATIC-POSITIONS の引数はトレース対象の本体には普通の Lisp の値として
 渡る（クロージャに閉じ込める。トレーサにはしない）ので、本体の中で
 その値を使った分岐や形状計算がそのまま働く。"
   (let* ((arity (length (traceable-function-lambda-list fn)))
-         (dynamic-lambda-list (loop repeat (- arity (length static-positions)) collect (gensym "DYN")))
-         (wrapper (%make-traceable-function
-                   dynamic-lambda-list
-                   (lambda (&rest dynamic-args)
-                     (apply (%traceable-function-function fn)
-                            (%jit-merge-args arity static-positions static-values dynamic-args))))))
-    (trace-to-graph wrapper avals)))
+         (merged (lambda (&rest dynamic-args)
+                   (apply (%traceable-function-function fn)
+                          (%jit-merge-args arity static-positions static-values dynamic-args)))))
+    (multiple-value-bind (flat out-treedef) (%flatten-function merged in-treedef)
+      (let ((graph (trace-to-graph
+                    (%make-traceable-function (loop repeat (length avals) collect (gensym "LEAF"))
+                                              flat)
+                    avals)))
+        (values graph (funcall out-treedef))))))
 
 ;;; --- 引数から aval を求める ---
 
@@ -159,6 +169,16 @@ device array にしてから渡すよう案内する JIT-ERROR に変換する�
 
 ;;; --- %jit-execute ---
 
+(defun %jit-leaf-array (leaf)
+  "引数の木の葉 LEAF が Lisp の実数なら rank 0 の配列（DOUBLE-FLOAT は :F64、それ以外は :F32。
+grad と同じ）にして返す。配列と device array はそのまま返し、それ以外は JIT-ERROR。"
+  (cond
+    ((realp leaf) (%scalar-array leaf (if (typep leaf 'double-float) :f64 :f32)))
+    ((and (arrayp leaf) (not (stringp leaf))) leaf)
+    ;; device array は backend ごとのクラスなので、DEVICE-ARRAY-AVAL のメソッドがあるかで判定する
+    ((and (not (stringp leaf)) (compute-applicable-methods #'device-array-aval (list leaf))) leaf)
+    (t (%jit-error "引数の木の葉は配列・device array・実数でなければならない: ~S" leaf))))
+
 (defun %jit-to-device-argument (backend value aval)
   "VALUE（配列または device array）を、必要なら BACKEND 上の device array に
 してから返す。VALUE がすでに CL の配列でなければ（device array なら）
@@ -167,14 +187,14 @@ device array にしてから渡すよう案内する JIT-ERROR に変換する�
       (to-device value backend :dtype (aval-dtype aval))
       value))
 
-(defun %jit-execute (backend module arrays avals)
+(defun %jit-execute (backend module arrays avals out-treedef)
   "ARRAYS（配列または device array のリスト。AVALS はそれぞれの aval）を
 必要なら BACKEND 上の device array にしてから MODULE を BACKEND-INVOKE し、
-結果を TO-HOST した多値で返す（出力が無ければ (VALUES)）。"
+結果を TO-HOST して OUT-TREEDEF の形の戻り値（多値。出力が無ければ (VALUES)）にして返す。"
   (let* ((device-arrays (mapcar (lambda (value aval) (%jit-to-device-argument backend value aval))
                                  arrays avals))
          (results (multiple-value-list (apply #'backend-invoke backend module "main" device-arrays))))
-    (values-list (mapcar #'to-host results))))
+    (%unflatten-results out-treedef (mapcar #'to-host results))))
 
 ;;; --- キャッシュ ---
 ;;;
@@ -206,12 +226,15 @@ BACKEND-UNLOAD する。")
   "キャッシュミスして実際にトレース・コンパイルした回数（内部の統計。
 テストが nb::*jit-miss-count* で読む）。")
 
-(defstruct (%jit-entry (:constructor %make-jit-entry (graph text module)))
+(defstruct (%jit-entry (:constructor %make-jit-entry (graph text module out-treedef)))
   "%JIT-FUNCTION-CACHE の ENTRIES に入るエントリ。GRAPH は phase 2 の grad や
-診断が必要とするので保持する。"
+診断が必要とするので保持する。OUT-TREEDEF は戻り値（多値）をリストにした木の treedef
+で、実行結果の葉から戻り値を作るのに使う（キーには入らない: 同じ入力の形からは
+トレースが同じ戻り値の形を作る）。"
   graph
   text
-  module)
+  module
+  out-treedef)
 
 (defstruct (%jit-function-cache (:constructor %make-jit-function-cache ()))
   "1つの TRACEABLE-FUNCTION のキャッシュ。ENTRIES はキー（%JIT-CACHE-KEY）から
@@ -224,16 +247,19 @@ FN への参照は持たない（FN の finalizer がこの構造体を捕まえ
   (entries (make-hash-table :test 'equal))
   (pending (make-hash-table :test 'equal)))
 
-(defun %jit-cache-key (backend avals static-values)
-  "%JIT-FUNCTION-CACHE の ENTRIES（EQUAL）に使うキーを返す。AVALS は AVAL の
-リスト（構造体は EQUAL が EQ 相当になってしまうため、(shape dtype) のリストに
-正規化する）。BACKEND インスタンス自体は EQUAL の中で EQ 比較される。
+(defun %jit-cache-key (backend avals static-values treedef)
+  "%JIT-FUNCTION-CACHE の ENTRIES（EQUAL）に使うキーを返す。AVALS は動的引数の
+葉の AVAL のリスト（構造体は EQUAL が EQ 相当になってしまうため、(shape dtype) の
+リストに正規化する）、TREEDEF は動的引数の木のリストの treedef（#199。同じ aval の
+葉でも、木の形が違えば別のエントリにする。treedef の spec は EQUAL で比べられる）。
+BACKEND インスタンス自体は EQUAL の中で EQ 比較される。
 BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでもコンパイル
 フラグ等が呼び出しごとに変わりうるため（design tab の「ターゲット（GPU
 世代を含む）」の文言）。"
   (list backend
         (backend-fingerprint backend)
         (mapcar (lambda (aval) (list (aval-shape aval) (aval-dtype aval))) avals)
+        (treedef-spec treedef)
         static-values))
 
 (defun %jit-unload-entries (cache)
@@ -356,7 +382,7 @@ JIT-ERROR になる誤りなので、スレッドをまたぐ待ちの循環ま�
 
 (defun %jit-cache-lookup-or-compile (fn key backend graph-thunk)
   "FN のキャッシュから KEY に対応するエントリを引く。無ければ GRAPH-THUNK
-（引数無しの関数で、GRAPH を返す）を呼んでトレースし、EMIT-STABLEHLO ->
+（引数無しの関数で、(VALUES GRAPH 戻り値の treedef) を返す）を呼んでトレースし、EMIT-STABLEHLO ->
 %JIT-COMPILE-AND-LOAD（BACKEND 上に、GRAPH 付きで診断できる形で）した
 結果を新しいエントリとして書き込む。
 
@@ -373,10 +399,10 @@ JIT-COMPILE-ERROR などで非局所脱出しても、UNWIND-PROTECT が KEY の
                (progn
                  (sb-thread:with-mutex (*jit-cache-lock*)
                    (incf *jit-miss-count*))
-                 (let* ((graph (funcall graph-thunk))
-                        (text (emit-stablehlo graph))
-                        (module (%jit-compile-and-load backend text graph)))
-                   (setf entry (%make-jit-entry graph text module))))
+                 (multiple-value-bind (graph out-treedef) (funcall graph-thunk)
+                   (let* ((text (emit-stablehlo graph))
+                          (module (%jit-compile-and-load backend text graph)))
+                     (setf entry (%make-jit-entry graph text module out-treedef)))))
             (sb-thread:with-mutex ((%jit-function-cache-lock cache))
               (remhash key (%jit-function-cache-pending cache))
               (when entry
@@ -384,18 +410,22 @@ JIT-COMPILE-ERROR などで非局所脱出しても、UNWIND-PROTECT が KEY の
               (sb-thread:condition-broadcast (%jit-function-cache-ready cache))))
           entry))))
 
-(defun %jit-eager-fallback (graph dynamic-values)
-  "GRAPH を DYNAMIC-VALUES（配列または device array のリスト）に対して
-EVAL-GRAPH で評価し、多値で返す（USE-EAGER リスタートの本体。device array は
-先に TO-HOST してから渡す）。"
-  (apply #'eval-graph graph (mapcar (lambda (value) (if (arrayp value) value (to-host value))) dynamic-values)))
+(defun %jit-eager-fallback (graph leaves out-treedef)
+  "GRAPH を LEAVES（動的引数の葉。配列または device array のリスト）に対して
+EVAL-GRAPH で評価し、OUT-TREEDEF の形の戻り値（多値）にして返す（USE-EAGER リスタートの
+本体。device array は先に TO-HOST してから渡す）。"
+  (%unflatten-results
+   out-treedef
+   (multiple-value-list
+    (apply #'eval-graph graph (mapcar (lambda (value) (if (arrayp value) value (to-host value))) leaves)))))
 
 (defun %jit-call (jitted args)
   "JITTED（JITTED-FUNCTION）の呼び出しの糸口。引数の個数を確かめ、静的引数を
-切り出し、動的引数から aval を求め、backend を解決し、キャッシュを引いて
-（無ければコンパイルして）%JIT-EXECUTE する。
+切り出し、動的引数（PyTree。#199）を flatten して葉から aval を求め、backend を解決し、
+キャッシュ（キーは葉の aval と動的引数の treedef）を引いて（無ければコンパイルして）
+%JIT-EXECUTE する。戻り値は FN の戻り値と同じ形の木（多値も同じ）。
 
-動的引数のどれかが TRACER なら（別の関数のトレース中に呼ばれたなら）、
+動的引数の葉のどれかが TRACER なら（別の関数のトレース中に呼ばれたなら）、
 コンパイルせずに FN の本体をそのトレースの中で呼ぶ（呼び出し元の graph に
 展開する。JAX の jit の入れ子と同じ）。
 
@@ -428,32 +458,42 @@ EVAL-GRAPH で読み替えたり、実行をやり直したりする意味が無
                    (push arg dynamic-values)))
       (setf static-values (nreverse static-values)
             dynamic-values (nreverse dynamic-values))
-      (when (some (lambda (value) (typep value 'tracer)) dynamic-values)
-        (return-from %jit-call
-          (apply (%traceable-function-function fn)
-                 (%jit-merge-args arity static-positions static-values dynamic-values))))
-      (let* ((backend (%jit-resolve-backend jitted))
-             (avals (mapcar #'%jit-argument-aval dynamic-values))
-             (key (%jit-cache-key backend avals static-values))
-             ;; 最後にトレースした graph。コンパイルに失敗したら、それが
-             ;; USE-EAGER で評価する graph になる（トレースし直さない）。
-             (traced-graph nil)
-             (graph-thunk (lambda ()
-                            (setf traced-graph (%jit-trace fn avals static-positions static-values))))
-             (entry (loop
-                      (restart-case
-                          (return (%jit-cache-lookup-or-compile fn key backend graph-thunk))
-                        (use-eager ()
-                          :report "この呼び出しだけ eager（eval-graph）で実行する"
-                          (return-from %jit-call
-                            (%jit-eager-fallback (or traced-graph (funcall graph-thunk)) dynamic-values)))
-                        (recompile ()
-                          :report "もう一度コンパイルする"
-                          nil)))))
-        ;; 実行が終わるまで FN を生かしておく（FN が GC されると、その
-        ;; finalizer が実行中の module を BACKEND-UNLOAD してしまう）。
-        (sb-sys:with-pinned-objects (fn)
-          (%jit-execute backend (%jit-entry-module entry) dynamic-values avals))))))
+      (multiple-value-bind (leaves in-treedef) (%flatten-arguments dynamic-values)
+        (when (some (lambda (value) (typep value 'tracer)) leaves)
+          (return-from %jit-call
+            (apply (%traceable-function-function fn)
+                   (%jit-merge-args arity static-positions static-values dynamic-values))))
+        (let* ((backend (%jit-resolve-backend jitted))
+               (leaves (mapcar #'%jit-leaf-array leaves))
+               (avals (mapcar #'%jit-argument-aval leaves))
+               (key (%jit-cache-key backend avals static-values in-treedef))
+               ;; 最後にトレースした graph と戻り値の treedef。コンパイルに失敗したら、
+               ;; それが USE-EAGER で評価する graph になる（トレースし直さない）。
+               (traced-graph nil)
+               (traced-out-treedef nil)
+               (graph-thunk (lambda ()
+                              (multiple-value-bind (graph out-treedef)
+                                  (%jit-trace fn avals static-positions static-values in-treedef)
+                                (setf traced-graph graph
+                                      traced-out-treedef out-treedef)
+                                (values graph out-treedef))))
+               (entry (loop
+                        (restart-case
+                            (return (%jit-cache-lookup-or-compile fn key backend graph-thunk))
+                          (use-eager ()
+                            :report "この呼び出しだけ eager（eval-graph）で実行する"
+                            (return-from %jit-call
+                              (progn
+                                (unless traced-graph (funcall graph-thunk))
+                                (%jit-eager-fallback traced-graph leaves traced-out-treedef))))
+                          (recompile ()
+                            :report "もう一度コンパイルする"
+                            nil)))))
+          ;; 実行が終わるまで FN を生かしておく（FN が GC されると、その
+          ;; finalizer が実行中の module を BACKEND-UNLOAD してしまう）。
+          (sb-sys:with-pinned-objects (fn)
+            (%jit-execute backend (%jit-entry-module entry) leaves avals
+                          (%jit-entry-out-treedef entry))))))))
 
 ;;; --- defjit（issue #34、wave 4 j2） ---
 

@@ -10,6 +10,9 @@
 # 各行の判定:
 #   bug     ファイル: 1 回でもシグナル（終了コード 128 超）で落ちれば REPRODUCED
 #   control ファイル（回避策を入れた形）: 全回コンパイルできれば OK
+#   run-bug / run-control: コンパイルした vmfb を iree-run-module で local-task device で
+#           実行する版（コンパイルは通り、実行時に落ちるバグ。入力の個数ぶんの --input を
+#           自動で作る）。判定は bug / control と同じ
 # 終了コード: 0 = 記録どおり（バグは全部再現し、回避策の形は全部通る）、
 #             1 = 記録と違う（直ったバグがある、または回避策の形が落ちた）、
 #             2 = iree-compile が見つからない・引数の誤り。
@@ -18,6 +21,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NABLA_IREE_HOME="${NABLA_IREE_HOME:-${HOME}/.local/share/nabla/iree-3.11.0}"
 IREE_COMPILE="${NABLA_IREE_HOME}/bin/iree-compile"
+IREE_RUN="${NABLA_IREE_HOME}/bin/iree-run-module"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "${WORK_DIR}"' EXIT
 REPRO_DIR="${REPO_ROOT}/docs/iree-repros"
 RUNS=10
 
@@ -30,8 +36,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! -x "${IREE_COMPILE}" ]]; then
-  echo "error: iree-compile not found at ${IREE_COMPILE}. Set NABLA_IREE_HOME." >&2
+if [[ ! -x "${IREE_COMPILE}" || ! -x "${IREE_RUN}" ]]; then
+  echo "error: iree-compile / iree-run-module not found under ${NABLA_IREE_HOME}/bin. Set NABLA_IREE_HOME." >&2
   exit 2
 fi
 
@@ -42,6 +48,8 @@ CASES=(
   "control while-constant-carry-barrier.mlir"
   "bug     while-i1-carry-returned.mlir"
   "control while-i1-carry-not-returned.mlir"
+  "run-bug     local-task-162-inputs.mlir"
+  "run-control local-task-161-inputs.mlir"
 )
 
 "${IREE_COMPILE}" --version | sed -n '2p'
@@ -53,19 +61,31 @@ for entry in "${CASES[@]}"; do
     code=0
     # set -e のもとで落ちる子プロセスを数えるため、終了コードは || で拾う。
     # { } 2>/dev/null は bash 自身の「Segmentation fault」の通知も黙らせる
-    { "${IREE_COMPILE}" --iree-hal-target-device=local \
-        --iree-hal-local-target-device-backends=llvm-cpu \
-        "${REPRO_DIR}/${file}" -o /dev/null >/dev/null; } 2>/dev/null || code=$?
+    if [[ "${kind}" == run-* ]]; then
+      # コンパイルは通り、実行時（local-task device）に落ちるバグ。main の入力の個数ぶん
+      # --input=3xf32=1,2,3 を作って実行する
+      { "${IREE_COMPILE}" --iree-hal-target-device=local \
+          --iree-hal-local-target-device-backends=llvm-cpu \
+          "${REPRO_DIR}/${file}" -o "${WORK_DIR}/m.vmfb" >/dev/null; } 2>/dev/null || { echo "error: ${file} did not compile" >&2; exit 2; }
+      inputs=$(grep -m1 'func.func @main' "${REPRO_DIR}/${file}" | grep -o '%a[0-9]*:' | wc -l)
+      input_args=(); for ((j = 0; j < inputs; j++)); do input_args+=(--input=3xf32=1,2,3); done
+      { "${IREE_RUN}" --device=local-task --module="${WORK_DIR}/m.vmfb" --function=main \
+          "${input_args[@]}" >/dev/null; } 2>/dev/null || code=$?
+    else
+      { "${IREE_COMPILE}" --iree-hal-target-device=local \
+          --iree-hal-local-target-device-backends=llvm-cpu \
+          "${REPRO_DIR}/${file}" -o /dev/null >/dev/null; } 2>/dev/null || code=$?
+    fi
     if ((code > 128)); then crashes=$((crashes + 1)); fi
     if ((code != 0)); then failures=$((failures + 1)); fi
     case " ${codes} " in *" ${code} "*) ;; *) codes="${codes:+${codes} }${code}" ;; esac
   done
-  if [[ "${kind}" == bug ]]; then
+  if [[ "${kind}" == bug || "${kind}" == run-bug ]]; then
     if ((crashes > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
   else
     if ((failures == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
   fi
-  printf '%-8s %-40s %-15s crashes=%d/%d exit-codes=%s\n' \
+  printf '%-11s %-40s %-15s crashes=%d/%d exit-codes=%s\n' \
     "${kind}" "${file}" "${verdict}" "${crashes}" "${RUNS}" "${codes}"
 done
 exit "${status}"

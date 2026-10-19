@@ -431,7 +431,11 @@ bug      while-constant-carry.mlir                REPRODUCED      crashes=19/20 
 control  while-constant-carry-barrier.mlir        OK              crashes=0/20 exit-codes=0
 bug      while-i1-carry-returned.mlir             REPRODUCED      crashes=20/20 exit-codes=134 139
 control  while-i1-carry-not-returned.mlir         OK              crashes=0/20 exit-codes=0
+run-bug     local-task-162-inputs.mlir               REPRODUCED      crashes=20/20 exit-codes=139
+run-control local-task-161-inputs.mlir               OK              crashes=0/20 exit-codes=0
 ```
+
+最後の2行（`run-bug` / `run-control`）はコンパイルした vmfb を `iree-run-module --device=local-task` で実行する版で、入力 162 個以上の関数を local-task device で呼ぶと落ちるバグ（#199）の確認。直ったら `nabla.iree` の `+local-task-max-inputs+` の検査（`src/iree/execute.lisp`）も外す。
 
 `while-constant-carry.mlir` は非決定的に落ちる（3.11.0 では 50 回中 49 回）ので、`NOT-REPRODUCED` を「直った」と判断するのは `--runs 50` 以上で 1 回も落ちなかったときにする。`bug` の行が `NOT-REPRODUCED` になったら、上流の issue（`docs/iree-upstream-bugs.md` の各節）が閉じているかも確かめる。
 
@@ -448,6 +452,7 @@ NABLA_IREE_HOME=<新しい版> NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 | 1. K=0 の dot_general | ガードテストは無い。`float-traps-test.lisp` の `float-traps/zero-size-dot-general-poisons-compiler-then-fails-clearly` は、K=0 がコンパイルできた場合（`K0-RESULT=COMPILED-OK`）も通るように書いてある | 失敗しない。手順 1 の `dot-general-k0.mlir` で判断する |
 | 2. 定数の carry の while | `while-loop-test.lisp` の `while-loop/iree-known-bug-constant-carry-crashes-the-compiler`（子プロセスで 10 回コンパイルし、1 回でも落ちることを確かめる） | 失敗する |
 | 3. `i1` の carry を返す while | `while-loop-test.lisp` の `while-loop/iree-known-limitation-i1-carry-returned-crashes-the-compiler` | 失敗する |
+| 4. local-task の入力 162 個以上（実行時） | `input-limit-test.lisp` の `input-limit/iree-known-bug-local-task-162-inputs-crashes`（`iree-run-module` を子プロセスで実行し、162 個で落ちること） | 失敗する |
 
 回避策が新しい版でも効いていることは、`while-loop/iree-constant-carry-with-barrier-compiles-repeatedly`・`tests/iree/scan-test.lisp`・`tests/iree/dot-test.lisp` の `dot-general/zero-contracting-compiles-and-matches-eager` が引き続き確かめる（こちらは失敗してはいけない）。
 

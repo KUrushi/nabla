@@ -301,6 +301,8 @@
                (:file "tests/prng-test")
                ;; PyTree（issue #195）
                (:file "tests/pytree-test")
+               ;; jit / grad / value-and-grad の PyTree（issue #199）
+               (:file "tests/pytree-function-test")
 
 
 
@@ -430,6 +432,10 @@
                (:file "tests/iree/jit-dtype-test")
                ;; (jit (grad f)) の IREE 実行（issue #86）
                (:file "tests/iree/grad-test")
+               ;; jit / grad の PyTree の IREE 実行（issue #199）
+               (:file "tests/iree/pytree-function-test")
+               ;; local-task device の入力 162 個以上のバグの回避（issue #199）
+               (:file "tests/iree/input-limit-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
                (:file "tests/iree/mlp-train-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
@@ -551,7 +557,9 @@
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
   :description "nabla/nn のテスト"
-  :depends-on ("nabla/nn" "nabla/test-support")
+  :depends-on ("nabla/nn" "nabla/iree" "nabla/test-support")
   :components ((:file "tests/nn/package")
                (:file "tests/nn/safetensors-test")
-               (:file "tests/nn/module-test")))
+               (:file "tests/nn/module-test")
+               ;; defmodule のモデルを jit / grad に渡す（issue #199）
+               (:file "tests/nn/module-transform-test")))

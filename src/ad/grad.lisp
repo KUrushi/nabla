@@ -58,52 +58,80 @@
     (t (%grad-signal-autodiff "grad した関数の引数は配列・実数・トレーサでなければならない: ~S" arg))))
 
 (defun %grad-check-output (graph)
-  "GRAPH の出力が、rank 0 の浮動小数点ちょうど1つであることを確かめる。そうでなければ
+  "GRAPH の1つの出力が rank 0 の浮動小数点であることを確かめる。そうでなければ
 GRAD-REQUIRES-SCALAR-OUTPUT。"
-  (let ((outvars (graph-outvars graph)))
-    (unless (= 1 (length outvars))
+  ;; 出力がちょうど1つであることは %GRAD-CHECK-SINGLE-OUTPUT が先に確かめている
+  (let ((aval (var-aval (first (graph-outvars graph)))))
+    (unless (and (zerop (aval-rank aval)) (%float-dtype-p (aval-dtype aval)))
       (error 'grad-requires-scalar-output
-             :format-control "微分する関数は出力をちょうど1つ返さなければならない（~D 個返した）"
-             :format-arguments (list (length outvars))))
-    (let ((aval (var-aval (first outvars))))
-      (unless (and (zerop (aval-rank aval)) (%float-dtype-p (aval-dtype aval)))
-        (error 'grad-requires-scalar-output
-               :aval aval
-               :format-control "微分する関数の出力は rank 0 の浮動小数点でなければならない: shape ~S、dtype ~S"
-               :format-arguments (list (aval-shape aval) (aval-dtype aval)))))
-    (var-aval (first outvars))))
+             :aval aval
+             :format-control "微分する関数の出力は rank 0 の浮動小数点でなければならない: shape ~S、dtype ~S"
+             :format-arguments (list (aval-shape aval) (aval-dtype aval))))
+    aval))
+
+(defun %grad-check-single-output (out-treedef)
+  "戻り値の treedef OUT-TREEDEF（値のリストの形）が、木で包まない葉1つなら何もしない。
+そうでなければ GRAD-REQUIRES-SCALAR-OUTPUT（葉が1つでも、リストなどで包んだ戻り値は拒否する）。"
+  (unless (treedef= out-treedef (tree-structure (list 0)))
+    (error 'grad-requires-scalar-output
+           :format-control "微分する関数は出力をスカラー1つ（木で包まない）返さなければならない（葉 ~D 個の形 ~S を返した）"
+           :format-arguments (list (treedef-num-leaves out-treedef) out-treedef))))
 
 (defun %grad-call (fn positions argnums value-p args)
   "FN（TRACEABLE-FUNCTION）を ARGS でトレースして微分し、GRAD / VALUE-AND-GRAD の
 結果を返す（多値）。POSITIONS は検査済みの argnums の整数のリスト、ARGNUMS は
-利用者が渡したそのままの値（整数かリストか。戻り値の形を決める）。"
+利用者が渡したそのままの値（整数かリストか。戻り値の形を決める）。
+
+ARGS の各要素は PyTree（#199）: 引数ごとに flatten した葉を並べてトレースし、微分した
+引数の勾配は、その引数と同じ treedef の木に戻して返す。"
   (let ((arity (length (traceable-function-lambda-list fn))))
     (unless (= (length args) arity)
       (%grad-signal-autodiff "引数の個数 ~D が関数の引数の個数 ~D と一致しない" (length args) arity)))
-  (let* ((arguments (mapcar #'%grad-argument args))
-         (avals (mapcar (lambda (a) (if (typep a 'tracer) (tracer-aval a) (array-aval a))) arguments))
-         (graph (%call-with-fresh-trace avals (%traceable-function-function fn)))
-         (out-aval (%grad-check-output graph)))
-    (loop for p in positions
-          unless (%float-dtype-p (aval-dtype (nth p avals)))
-            do (%grad-signal-autodiff "引数 ~D の dtype ~S は浮動小数点でないので勾配を取れない"
-                                      p (aval-dtype (nth p avals))))
-    (let* ((sorted (sort (copy-list positions) #'<))
-           (nonzero (loop for i below (length avals) collect (and (member i sorted) t)))
-           (vjp (vjp-graph graph :nonzero nonzero))
-           (seed (%scalar-array 1 (aval-dtype out-aval)))
-           (results
-             (if *current-trace*
-                 (inline-graph vjp
-                               (append (mapcar (lambda (a aval)
-                                                 (if (typep a 'tracer) a (%lift-constant a aval *current-trace*)))
-                                               arguments avals)
-                                       (list (%lift-constant seed out-aval *current-trace*))))
-                 (multiple-value-list (apply #'eval-graph vjp (append arguments (list seed))))))
-           (value (first results))
-           (grads (mapcar (lambda (p) (nth (position p sorted) (rest results))) positions)))
-      (let ((grad (if (integerp argnums) (first grads) grads)))
-        (if value-p (values value grad) grad)))))
+  (let* ((sorted (sort (copy-list positions) #'<))
+         (flattened (mapcar (lambda (arg)
+                              (multiple-value-bind (leaves treedef) (tree-flatten arg)
+                                (cons (mapcar #'%grad-argument leaves) treedef)))
+                            args))
+         (leaves-per-arg (mapcar #'car flattened))
+         (arguments (apply #'append leaves-per-arg))
+         (avals (mapcar (lambda (a) (if (typep a 'tracer) (tracer-aval a) (array-aval a))) arguments)))
+    ;; 微分する引数の葉はすべて浮動小数点でなければならない（トレースの前に確かめる）
+    (loop for position in sorted
+          do (dolist (leaf (nth position leaves-per-arg))
+               (let ((dtype (aval-dtype (if (typep leaf 'tracer) (tracer-aval leaf) (array-aval leaf)))))
+                 (unless (%float-dtype-p dtype)
+                   (%grad-signal-autodiff "引数 ~D の葉の dtype ~S は浮動小数点でないので勾配を取れない"
+                                          position dtype)))))
+    (multiple-value-bind (flat out-treedef)
+        (%flatten-function (%traceable-function-function fn) (tree-structure args))
+      (let* ((graph (%call-with-fresh-trace avals flat))
+             (out-aval (progn (%grad-check-single-output (funcall out-treedef))
+                              (%grad-check-output graph)))
+             (nonzero (loop for position from 0
+                            for leaves in leaves-per-arg
+                            append (make-list (length leaves) :initial-element (and (member position sorted) t))))
+             (vjp (vjp-graph graph :nonzero nonzero))
+             (seed (%scalar-array 1 (aval-dtype out-aval)))
+             (results
+               (if *current-trace*
+                   (inline-graph vjp
+                                 (append (mapcar (lambda (a aval)
+                                                   (if (typep a 'tracer) a (%lift-constant a aval *current-trace*)))
+                                                 arguments avals)
+                                         (list (%lift-constant seed out-aval *current-trace*))))
+                   (multiple-value-list (apply #'eval-graph vjp (append arguments (list seed))))))
+             (flat-grads (rest results))
+             (grad-by-position '()))
+        ;; 微分した引数の勾配の葉は引数の順に並んでいる。引数ごとに切り出して木に戻す
+        (loop for position from 0
+              for (leaves . treedef) in flattened
+              when (member position sorted)
+                do (push (cons position (tree-unflatten treedef (subseq flat-grads 0 (length leaves))))
+                         grad-by-position)
+                   (setf flat-grads (nthcdr (length leaves) flat-grads)))
+        (let* ((grads (mapcar (lambda (p) (cdr (assoc p grad-by-position))) positions))
+               (grad (if (integerp argnums) (first grads) grads)))
+          (if value-p (values (first results) grad) grad))))))
 
 (defun %make-grad-function (f argnums value-p)
   (let* ((fn (%grad-traceable f))
@@ -121,6 +149,9 @@ GRAD-REQUIRES-SCALAR-OUTPUT。"
 ARGNUMS は微分する引数の位置（0始まりの整数、または整数のリスト。既定は0）。
 整数なら勾配の配列を1つ、リストならリストの順に勾配のリストを返す（JAX と同じ）。
 勾配の shape・dtype はその引数と同じ。微分する引数は浮動小数点でなければならない。
+引数は PyTree（リスト・SIMPLE-VECTOR・DEFPYTREE で登録した型）でもよく、その勾配は
+その引数と同じ treedef の木になる。木の葉は配列・実数・トレーサで、微分する引数の葉は
+すべて浮動小数点でなければならない。F の出力は rank 0 の浮動小数点1つ（木で包まない）。
 ARGNUMS が範囲外・重複などで不正なら、ここで AUTODIFF-ERROR を signal する。
 
 戻り値はトレースできる関数（TRACEABLE-FUNCTION）なので、次のどれでも使える:
@@ -129,8 +160,7 @@ ARGNUMS が範囲外・重複などで不正なら、ここで AUTODIFF-ERROR �
 - (JIT (GRAD F))、WITH-TRACING の本体の中、別の GRAD の対象の中（高階微分。
   (GRAD (GRAD F)) の形で使える）。トレース中の呼び出しは、微分した graph を
   呼び出し元のトレースへ展開する
-  - ARGNUMS がリストのとき、勾配のリストは JIT の出力にできない（JIT は配列か
-    トレーサだけを返せる）。(WITH-TRACING (...) (VALUES-LIST (FUNCALL g ...))) で包む
+  - ARGNUMS がリストのときの勾配のリストも、JIT の出力にできる（JIT の戻り値は PyTree）
 
 既知の制限: F が外側のトレースのトレーサを閉包で捕まえていると TRACING-ERROR になる。
 外側の値は F の引数として渡すこと。

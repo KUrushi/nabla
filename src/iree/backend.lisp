@@ -35,6 +35,10 @@ CPU に依存する。BACKEND-FINGERPRINT に含めて、キャッシュキー�
            :documentation ":local または :cuda。")
    (cuda-arch :initarg :cuda-arch :initform nil :reader %iree-backend-cuda-arch
               :documentation "\"sm_80\" のような文字列、または NIL（IREE の既定）。")
+   (driver :initarg :driver :initform nil :reader %iree-backend-driver
+           :documentation "NIL（TARGET の既定のドライバ）または :local-sync など、MAKE-DEVICE に
+渡すドライバ。入力が 162 個以上の関数は local-task では呼べない（IREE 3.11 のバグ）ため、
+:local の回避策として :local-sync を選べる。")
    (device :initform nil :accessor %iree-backend-device
            :documentation "遅延生成する nabla.iree:device。最初の BACKEND-LOAD /
 TO-DEVICE まで NIL のまま。")
@@ -46,11 +50,12 @@ TO-DEVICE まで NIL のまま。")
 （llvm-cpu、target-cpu=host）、:cuda なら CUDA-ARCH（例 \"sm_80\"、NIL なら
 IREE の既定）向けにコンパイル・実行する。MAKE-BACKEND :IREE で作る。"))
 
-(defmethod nabla:make-backend ((kind (eql :iree)) &key (target :local) cuda-arch)
+(defmethod nabla:make-backend ((kind (eql :iree)) &key (target :local) cuda-arch driver)
   "TARGET（:local または :cuda）向けの IREE-BACKEND を作る。生成時に
 compiler / runtime それぞれの共有ライブラリの有無を probe し、無い方に
 ついて（両方無ければ compiler の方を先に）IREE-LIBRARY-NOT-FOUND を
-signal する。device はまだ作らない（ファイル先頭のコメント参照）。"
+signal する。DRIVER（:local-sync など）を渡すと、TARGET の既定のドライバの代わりに
+それで device を作る。device はまだ作らない（ファイル先頭のコメント参照）。"
   (ecase target
     (:local)
     (:cuda))
@@ -61,7 +66,7 @@ signal する。device はまだ作らない（ファイル先頭のコメント
     (unless (iree-available-p :library :runtime)
       (error 'iree-library-not-found
              :path (%library-path home :runtime) :home home :library :runtime)))
-  (make-instance 'iree-backend :target target :cuda-arch cuda-arch))
+  (make-instance 'iree-backend :target target :cuda-arch cuda-arch :driver driver))
 
 (defun %iree-backend-ensure-device (backend)
   "BACKEND の device を、まだ無ければ (MAKE-DEVICE (BACKEND-TARGET BACKEND))
@@ -73,7 +78,7 @@ IREE-BACKEND 経由の呼び出しだけをここで包まない）。"
   (sb-thread:with-mutex ((%iree-backend-device-lock backend))
     (or (%iree-backend-device backend)
         (setf (%iree-backend-device backend)
-              (make-device (nabla:backend-target backend))))))
+              (make-device (or (%iree-backend-driver backend) (nabla:backend-target backend)))))))
 
 (defmethod nabla:backend-fingerprint ((backend iree-backend))
   "BACKEND-COMPILE の出力を左右するものすべて（コンパイラのリビジョン、

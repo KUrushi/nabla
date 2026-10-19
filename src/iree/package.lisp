@@ -48,6 +48,11 @@
    #:iree-compile-error-phase
    #:iree-compile-error-diagnostics
    #:iree-compile-error-message
+   #:iree-too-many-inputs
+   #:iree-too-many-inputs-count
+   #:iree-too-many-inputs-limit
+   #:iree-too-many-inputs-driver
+   #:+local-task-max-inputs+
    #:iree-object-released
    #:iree-object-released-kind
    #:iree-object-released-context
