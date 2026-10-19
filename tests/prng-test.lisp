@@ -672,3 +672,63 @@ Newton 法 y ← y - (erf(y) - x) √π/2 e^(y^2) で更新が 2^-150 を下回�
         (progn (format t "~&erf-inv ~S x = ~S: ~S, 参照値 ~S~%" dtype x y
                        (coerce reference 'double-float))
                nil))))
+
+;;; --- truncated-normal（issue #204。Flax の lecun_normal の初期化に要る） ---
+
+(defun %truncated-normal-cdf (lower upper)
+  "[LOWER, UPPER] に切った標準正規分布の累積分布関数。"
+  (let ((lo (%std-normal-cdf lower)) (hi (%std-normal-cdf upper)))
+    (lambda (x) (/ (- (%std-normal-cdf x) lo) (- hi lo)))))
+
+(test prng/truncated-normal-passes-ks-test-and-stays-in-bounds
+  "truncated-normal（f32 / f64、既定の [-2, 2] と [-1, 3]）の標本が、境界の内側にあり、切った正規分布に
+対する KS 検定を通る（固定のシード、有意水準 1e-3）。"
+  (let ((n *prng-sample-size*))
+    (dolist (spec '((:f32 -2 2 11) (:f64 -2 2 12) (:f32 -1 3 13) (:f64 -1 3 14)))
+      (destructuring-bind (dtype lower upper seed) spec
+        (let* ((array (if (and (= lower -2) (= upper 2))
+                          (nb:truncated-normal (nb:prng-key seed) (list n) :dtype dtype)
+                          (nb:truncated-normal (nb:prng-key seed) (list n) :dtype dtype
+                                                                           :lower lower :upper upper)))
+               (samples (%prng-samples array))
+               (d (%ks-statistic samples (%truncated-normal-cdf lower upper))))
+          (is (eq (if (eq dtype :f32) 'single-float 'double-float) (array-element-type array)))
+          (is (every (lambda (x) (<= lower x upper)) samples) "~S: 境界の外の値がある" spec)
+          (is (<= d (%ks-critical n)) "~S: KS 統計量 ~F が臨界値 ~F を超えた" spec d (%ks-critical n)))))))
+
+(test prng/truncated-normal-has-the-flax-lecun-variance-factor
+  "[-2, 2] に切った標準正規分布の標準偏差は 0.87962566...（Flax の lecun_normal が割る定数）。n = 200000 の標本の
+標準偏差が、3.29 標準誤差以内でこれに一致する。"
+  (let* ((n 200000)
+         (samples (%prng-samples (nb:truncated-normal (nb:prng-key 3) (list n)))))
+    (multiple-value-bind (mean variance) (%mean-and-variance samples)
+      (is (<= (abs mean) (* *prng-z* (/ 0.8796d0 (sqrt n)))) "平均 ~F" mean)
+      (is (<= (abs (- (sqrt variance) 0.87962566103423978d0)) (* *prng-z* 0.005d0)) "標準偏差 ~F" (sqrt variance)))))
+
+(def-prng-property prng/truncated-normal-is-deterministic-and-key-sensitive
+  "同じキー・形・境界からは同じ値、別のキーからは別の値（形は SHAPE のとおり）。"
+  (seed) (%prng-seed-generator)
+  (let ((a (nb:truncated-normal (nb:prng-key seed) '(3 4)))
+        (b (nb:truncated-normal (nb:prng-key seed) '(3 4)))
+        (c (nb:truncated-normal (nb:prng-key (1+ seed)) '(3 4))))
+    (and (equalp a b) (not (equalp a c)) (equal '(3 4) (array-dimensions a)))))
+
+(test prng/truncated-normal-rejects-bad-arguments
+  "LOWER < UPPER でない、境界が [-5, 5] の外、dtype が :f32 / :f64 でない、キーが不正なときは prng-error。"
+  (let ((key (nb:prng-key 1)))
+    (signals nb:prng-error (nb:truncated-normal key '(2) :lower 1 :upper 1))
+    (signals nb:prng-error (nb:truncated-normal key '(2) :lower 2 :upper -2))
+    (signals nb:prng-error (nb:truncated-normal key '(2) :lower -6 :upper 2))
+    (signals nb:prng-error (nb:truncated-normal key '(2) :upper 5.5))
+    (signals nb:prng-error (nb:truncated-normal key '(2) :dtype :bf16))
+    (signals nb:prng-error (nb:truncated-normal (make-array 3 :element-type '(unsigned-byte 32)) '(2)))
+    (signals nb:prng-error (nb:truncated-normal key '(0)))
+    ;; 境界ちょうどの [-5, 5] と [-4.5, 4.5] は受け付ける
+    (dolist (bounds '((-5 5) (-4.5 4.5) (-5 -4)))
+      (destructuring-bind (lower upper) bounds
+        (is (every (lambda (x) (<= lower x upper))
+                   (%prng-samples (nb:truncated-normal key '(50) :lower lower :upper upper :dtype :f64))))))
+    ;; キーの検査のエラーは関数名を名指しする
+    (is (search "truncated-normal"
+                (handler-case (nb:truncated-normal (make-array 3 :element-type '(unsigned-byte 32)) '(2))
+                  (nb:prng-error (condition) (princ-to-string condition)))))))

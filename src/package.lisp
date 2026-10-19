@@ -98,7 +98,7 @@
    #:convert
    #:where
    #:rsqrt
-   #:stop-gradient
+   #:stop-gradient #:value-aval
    ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
    #:emit-stablehlo
    #:primitive-not-emittable
@@ -169,6 +169,7 @@
    #:fold-in
    #:uniform
    #:normal
+   #:truncated-normal
    #:prng-error
    ;; PyTree（issue #195）
    #:defpytree

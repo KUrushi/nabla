@@ -193,6 +193,23 @@ rng-bit-generator の :u32 の出力は多次元だと配置が形に依存す�
          (u (%prng-uniform key shape dtype lowest 1)))
     (%t-mul (%prng-erf-inv u) (sqrt 2d0))))
 
+(defun %erf-double (x)
+  "erf(x)（double-float。|x| <= 5/√2 でテイラー級数。誤差は 1e-10 より小さい）。"
+  (let ((sum 0d0) (term x))
+    (loop for n from 0 below 80
+          do (incf sum (/ term (+ (* 2 n) 1)))
+             (setf term (/ (* term (- (* x x))) (+ n 1))))
+    (* sum (/ 2 (sqrt pi)))))
+
+(defun %prng-truncated-normal (key shape dtype lower upper)
+  "[LOWER, UPPER] に切った標準正規分布。JAX の truncated_normal と同じく、CDF の区間
+\(erf(LOWER/√2), erf(UPPER/√2)) の一様乱数に erf の逆関数をかけて √2 倍し、丸めのはみ出しを境界で切る。"
+  (let* ((lo (%erf-double (/ lower (sqrt 2d0))))
+         (hi (%erf-double (/ upper (sqrt 2d0))))
+         (u (%prng-uniform key shape dtype lo hi))
+         (x (%t-mul (%prng-erf-inv u) (sqrt 2d0))))
+    (%t-min (%t-max x lower) upper)))
+
 (defun %prng-split (key n)
   (%prng-bits key (list n 2) :u32))
 
@@ -295,3 +312,20 @@ eager・JIT・VMAP の中のどこでも使える。"
   (%prng-check-shape shape)
   (%prng-check-float-dtype dtype)
   (%prng-dispatch (list key) (lambda (k) (%prng-normal k shape dtype))))
+
+(defun truncated-normal (key shape &key (dtype :f32) (lower -2) (upper 2))
+  "KEY から、標準正規分布を [LOWER, UPPER] に切った分布に従う乱数の配列（またはトレーサ）を返す。
+LOWER < UPPER は [-5, 5] の実数（既定 [-2, 2]。境界を [-5, 5] に限るのは、それより外では f32 の
+erf(UPPER/√2) が 1 に丸まり、erf の逆関数が無限大を返して境界の反対側に切り詰められてしまうため。境界の
+CDF の値は |x| <= 5/√2 に使える %ERF-DOUBLE（テイラー級数）で求める）、SHAPE と DTYPE は NORMAL と同じ。同じ KEY・SHAPE・DTYPE・
+境界からは常に同じ値になる。方式は JAX の truncated_normal と同じ（CDF の区間の一様乱数に erf の
+逆関数をかけ、丸めではみ出した値を境界で切る）。Flax の lecun_normal 初期化はこれに
+1/0.87962566...（[-2, 2] に切った標準正規分布の標準偏差）で割った標準偏差をかける。
+eager・JIT・VMAP の中のどこでも使える。"
+  (%prng-check-key "truncated-normal" key)
+  (%prng-check-shape shape)
+  (%prng-check-float-dtype dtype)
+  (unless (and (realp lower) (realp upper) (< lower upper) (<= -5 lower) (<= upper 5))
+    (%prng-error "LOWER < UPPER で、どちらも [-5, 5] の実数でなければならない: ~S ~S" lower upper))
+  (let ((lower (coerce lower 'double-float)) (upper (coerce upper 'double-float)))
+    (%prng-dispatch (list key) (lambda (k) (%prng-truncated-normal k shape dtype lower upper)))))

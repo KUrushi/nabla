@@ -464,3 +464,31 @@ TRACING-ERROR を signal する。"
         (fn (nb:with-tracing (x y) (+ x y))))
     (signals nb:tracing-error (nb:trace-to-graph fn (list aval)))
     (signals nb:tracing-error (nb:trace-to-graph fn (list aval aval aval)))))
+
+(test trace/value-aval-gives-the-aval-of-arrays-and-tracers
+  "VALUE-AVAL は配列にもトレーサにもその aval を返す（形と dtype が分かる）。トレーサの aval は
+トレース中の演算の結果の aval（reduce-sum で形が変わる）。device array はその aval。文字列・数値・リストは
+TRACING-ERROR、dtype が決まらない配列（u16・simple-vector）は DTYPE-MISMATCH。"
+  (let ((array (make-array '(2 3) :element-type 'single-float :initial-element 1.0))
+        (seen nil))
+    (flet ((record (aval) (push aval seen)))
+      (is (equal '((2 3) :f32)
+                 (list (nb:aval-shape (nb:value-aval array)) (nb:aval-dtype (nb:value-aval array)))))
+      (nb:trace-to-graph (nb:with-tracing (x)
+                           (funcall #'record (nb:value-aval x))
+                           (funcall #'record (nb:value-aval (nb:reduce-sum x :axes '(1))))
+                           x)
+                         (list (nb:make-aval '(2 3) :f32))))
+    (is (equal '((2) (2 3)) (mapcar #'nb:aval-shape seen)))
+    (is (eq :f32 (nb:aval-dtype (first seen))))
+    ;; device array（フェイク backend のもの）は backend の device-array-aval
+    (let ((device-array (nb:to-device array (nb:make-backend :fake))))
+      (is (equal '((2 3) :f32)
+                 (list (nb:aval-shape (nb:value-aval device-array))
+                       (nb:aval-dtype (nb:value-aval device-array))))))
+    ;; 受け付けないもの: 文字列・数値・リストは tracing-error、dtype が決まらない配列は dtype-mismatch
+    (signals nb:tracing-error (nb:value-aval 1.0))
+    (signals nb:tracing-error (nb:value-aval "abc"))
+    (signals nb:tracing-error (nb:value-aval '(1 2)))
+    (signals nb:dtype-mismatch (nb:value-aval (make-array 2 :element-type '(unsigned-byte 16))))
+    (signals nb:dtype-mismatch (nb:value-aval (vector 1 2)))))
