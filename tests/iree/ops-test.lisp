@@ -20,6 +20,8 @@
     "ops/log" "ops/log_bf16"
     "ops/tanh" "ops/tanh_bf16"
     "ops/sqrt" "ops/sqrt_bf16" "ops/rsqrt" "ops/rsqrt_bf16"
+    "ops/expm1" "ops/expm1_bf16" "ops/log1p" "ops/log1p_bf16"
+    "ops/sin" "ops/sin_bf16" "ops/cos" "ops/cos_bf16"
     "ops/compare" "ops/compare_bf16"
     "ops/select" "ops/select_bf16"
     "ops/convert" "ops/convert_bf16"

@@ -2,7 +2,7 @@
 ;;;; #80 がこのファイルに他の要素演算を足す）。
 ;;;;
 ;;;; ルールを書く人への制約: 接線は、その被演算子について線形なプリミティブ
-;;;; にしか流さない。接線どうしの積や、接線への exp / log / tanh / sqrt / rsqrt / max / min /
+;;;; にしか流さない。接線どうしの積や、接線への exp / log / tanh / sqrt / rsqrt / expm1 / log1p / sin / cos / max / min /
 ;;;; compare / reduce-max は禁止。mul / div / dot-general は片側だけが接線に
 ;;;; なるように書く（係数は主値だけから作る）。transpose（#78）はルールが
 ;;;; 出す接線側の eqn をこの線形性に頼って逆向きにたどるため。
@@ -72,6 +72,23 @@
 ;; d rsqrt(x) = −0.5 · rsqrt(x) / x · t。係数は主値と出力だけから作る。
 (def-jvp-partials rsqrt
   (lambda (primals out) (%t-mul (%lift-number -0.5 out) (%t-div out (first primals)))))
+
+;; d expm1(x) = exp(x)·t = (expm1(x) + 1)·t。係数は出力だけから作る。
+(def-jvp-partials expm1
+  (lambda (primals out) (declare (ignore primals)) (%t-add out 1)))
+
+;; d log1p(x) = t / (1 + x)。接線を主値 1 + x で割る（線形）。
+(def-jvp-rule log1p (primals out tangents)
+  (declare (ignore out))
+  (%t-div (first tangents) (%t-add 1 (first primals))))
+
+;; d sin(x) = cos(x)·t。係数は主値だけから作る。
+(def-jvp-partials sin
+  (lambda (primals out) (declare (ignore out)) (%t-cos (first primals))))
+
+;; d cos(x) = −sin(x)·t。係数は主値だけから作る。
+(def-jvp-partials cos
+  (lambda (primals out) (declare (ignore out)) (%t-neg (%t-sin (first primals)))))
 
 (defun %balanced-eq (x z y)
   "JAX の _balanced_eq: X が Z（max / min の出力）と等しい要素で、Y も Z と

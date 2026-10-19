@@ -1,5 +1,5 @@
 ;;;; primitives/unary: 単項プリミティブ neg / exp / log / tanh（issue #31 p2）と
-;;;; sqrt / rsqrt（issue #196）。
+;;;; sqrt / rsqrt（issue #196）、expm1 / log1p / sin / cos（issue #223）。
 ;;;;
 ;;;; いずれも1入力・浮動小数点専用で、出力は入力そのものの AVAL
 ;;;; （%UNARY-FLOAT-ABSTRACT-EVAL、src/primitives/common.lisp）。arith.lisp
@@ -63,6 +63,71 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
       ((minusp x) (%quiet-nan (if double-p 'double-float 'single-float)))
       (t (/ 1 (sqrt x))))))
 
+;;; expm1 / log1p / sin / cos は、全 dtype とも「入力を double に直して計算し、入力の
+;;; 型（single / double）に丸める」。f32 / bf16 / f16 の入力は single で渡ってくるが、
+;;; double の結果を single に丸める（RNE）ので、単精度の式を使うより誤差が小さい。
+;;; CL に expm1 / log1p は無いので Kahan の形で書く。
+
+(defun %round-like (value x)
+  "VALUE（double）を X と同じ型（single-float または double-float）に丸める。
+VALUE が無限大・NaN のときはそのまま同じ型の無限大・NaN になる。"
+  (if (typep x 'double-float) value (coerce value 'single-float)))
+
+(defun %expm1-double (x)
+  "EXPM1(X) = exp(X) - 1（X は double）。Kahan の形: u = exp(x) として、u = 1 なら x
+（x が極小でも ±0 の符号を保って x を返す）、u - 1 = -1 なら -1、それ以外は (u - 1) x / log(u)。
+特殊値は明示的に分岐する: NaN はそのまま、+無限大は +無限大、-無限大は -1、u が +無限大
+（exp がオーバーフロー）なら +無限大（(u - 1) x / log(u) は inf / inf で NaN になる）。"
+  (cond
+    ((sb-ext:float-nan-p x) x)
+    ((sb-ext:float-infinity-p x) (if (plusp x) x -1d0))
+    (t (let ((u (exp x)))
+         (cond
+           ((= u 1d0) x)
+           ((= (- u 1d0) -1d0) -1d0)
+           ((sb-ext:float-infinity-p u) u)
+           (t (/ (* (- u 1d0) x) (log u))))))))
+
+(defun %log1p-double (x)
+  "LOG1P(X) = log(1 + X)（X は double）。Kahan の形: u = 1 + x として、u = 1 なら x
+（x が極小でも ±0 の符号を保つ）、それ以外は log(u) x / (u - 1)。特殊値は明示的に分岐する
+（%LOG-ELEMENT と同じく CL の log は負で複素数を返す）: NaN はそのまま、X < -1 は quiet NaN、
+X = -1 は -無限大、+無限大は +無限大。"
+  (cond
+    ((sb-ext:float-nan-p x) x)
+    ((< x -1d0) (%quiet-nan 'double-float))
+    ((= x -1d0) sb-ext:double-float-negative-infinity)
+    ((sb-ext:float-infinity-p x) x)
+    (t (let ((u (+ 1d0 x)))
+         (if (= u 1d0)
+             x
+             (/ (* (log u) x) (- u 1d0)))))))
+
+(defun %expm1-element (x)
+  "EXPM1(X)（1要素。X は single-float または double-float）。"
+  (%round-like (%expm1-double (coerce x 'double-float)) x))
+
+(defun %log1p-element (x)
+  "LOG1P(X)（1要素。X は single-float または double-float）。"
+  (%round-like (%log1p-double (coerce x 'double-float)) x))
+
+(defun %sin-element (x)
+  "SIN(X)（1要素）。double で計算して丸める。±無限大は NaN（CL の (sin inf) の挙動に
+頼らず明示する）、NaN はそのまま。sin(-0) = -0。"
+  (let ((d (coerce x 'double-float)))
+    (cond
+      ((sb-ext:float-nan-p d) x)
+      ((sb-ext:float-infinity-p d) (%quiet-nan (if (typep x 'double-float) 'double-float 'single-float)))
+      (t (%round-like (sin d) x)))))
+
+(defun %cos-element (x)
+  "COS(X)（1要素）。double で計算して丸める。±無限大は NaN、NaN はそのまま。"
+  (let ((d (coerce x 'double-float)))
+    (cond
+      ((sb-ext:float-nan-p d) x)
+      ((sb-ext:float-infinity-p d) (%quiet-nan (if (typep x 'double-float) 'double-float 'single-float)))
+      (t (%round-like (cos d) x)))))
+
 (defun %neg-abstract-eval (in-avals)
   (%unary-numeric-abstract-eval :neg in-avals))
 
@@ -81,6 +146,18 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
 (defun %rsqrt-abstract-eval (in-avals)
   (%unary-float-abstract-eval :rsqrt in-avals))
 
+(defun %expm1-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :expm1 in-avals))
+
+(defun %log1p-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :log1p in-avals))
+
+(defun %sin-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :sin in-avals))
+
+(defun %cos-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :cos in-avals))
+
 (defun %neg-emit (in-names out-name out-aval)
   (%emit-elementwise "negate" in-names out-name out-aval))
 
@@ -98,6 +175,18 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
 
 (defun %rsqrt-emit (in-names out-name out-aval)
   (%emit-elementwise "rsqrt" in-names out-name out-aval))
+
+(defun %expm1-emit (in-names out-name out-aval)
+  (%emit-elementwise "exponential_minus_one" in-names out-name out-aval))
+
+(defun %log1p-emit (in-names out-name out-aval)
+  (%emit-elementwise "log_plus_one" in-names out-name out-aval))
+
+(defun %sin-emit (in-names out-name out-aval)
+  (%emit-elementwise "sine" in-names out-name out-aval))
+
+(defun %cos-emit (in-names out-name out-aval)
+  (%emit-elementwise "cosine" in-names out-name out-aval))
 
 (defun %neg-eager (arrays in-avals)
   (with-ieee-arithmetic
@@ -122,6 +211,22 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
 (defun %rsqrt-eager (arrays in-avals)
   (with-ieee-arithmetic
     (%elementwise-eager #'%rsqrt-element arrays in-avals (%rsqrt-abstract-eval in-avals))))
+
+(defun %expm1-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%expm1-element arrays in-avals (%expm1-abstract-eval in-avals))))
+
+(defun %log1p-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%log1p-element arrays in-avals (%log1p-abstract-eval in-avals))))
+
+(defun %sin-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%sin-element arrays in-avals (%sin-abstract-eval in-avals))))
+
+(defun %cos-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%cos-element arrays in-avals (%cos-abstract-eval in-avals))))
 
 (defprimitive neg ()
   :abstract-eval (lambda (in-avals) (%neg-abstract-eval in-avals))
@@ -164,3 +269,31 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
           (declare (ignore in-avals))
           (%rsqrt-emit in-names out-name out-aval))
   :eager (lambda (arrays in-avals) (%rsqrt-eager arrays in-avals)))
+
+(defprimitive expm1 ()
+  :abstract-eval (lambda (in-avals) (%expm1-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%expm1-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%expm1-eager arrays in-avals)))
+
+(defprimitive log1p ()
+  :abstract-eval (lambda (in-avals) (%log1p-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%log1p-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%log1p-eager arrays in-avals)))
+
+(defprimitive sin ()
+  :abstract-eval (lambda (in-avals) (%sin-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%sin-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%sin-eager arrays in-avals)))
+
+(defprimitive cos ()
+  :abstract-eval (lambda (in-avals) (%cos-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%cos-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%cos-eager arrays in-avals)))

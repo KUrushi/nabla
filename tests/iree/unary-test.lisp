@@ -72,6 +72,43 @@ DEFINE-IREE-TEST を作る。DOMAIN は入力の生成域（log は 0除算・�
                                     "~A/~A: 入力ビット ~D, 期待 ~D, 実際 ~S"
                                     mlir-op dtype (first row) (nth index row) (aref host i)))))))))))
 
+(def-iree-unary-test iree/expm1/f32/matches-eager :expm1 :f32 "exponential_minus_one" :any)
+(def-iree-unary-test iree/expm1/bf16/matches-eager :expm1 :bf16 "exponential_minus_one" :any)
+(def-iree-unary-test iree/expm1/f64/matches-eager :expm1 :f64 "exponential_minus_one" :any)
+(def-iree-unary-test iree/log1p/f32/matches-eager :log1p :f32 "log_plus_one" :positive)
+(def-iree-unary-test iree/log1p/bf16/matches-eager :log1p :bf16 "log_plus_one" :positive)
+(def-iree-unary-test iree/log1p/f64/matches-eager :log1p :f64 "log_plus_one" :positive)
+(def-iree-unary-test iree/sin/f32/matches-eager :sin :f32 "sine" :any)
+(def-iree-unary-test iree/sin/bf16/matches-eager :sin :bf16 "sine" :any)
+(def-iree-unary-test iree/sin/f64/matches-eager :sin :f64 "sine" :any)
+(def-iree-unary-test iree/cos/f32/matches-eager :cos :f32 "cosine" :any)
+(def-iree-unary-test iree/cos/bf16/matches-eager :cos :bf16 "cosine" :any)
+(def-iree-unary-test iree/cos/f64/matches-eager :cos :f64 "cosine" :any)
+
+(define-iree-test iree/expm1-log1p-sin-cos/matches-jax-fixture
+    "expm1 / log1p / sin / cos（f32 / f64 / bf16 / f16）を IREE の local backend で実行した結果は、JAX の
+フィクスチャ（tests/fixtures/unary/）と一致する（NaN・±無限大・±0 は厳密、それ以外は dtype の許容誤差）。
+sin / cos の入力は |x| ≤ 100（generate.py）。"
+  (skip-unless-iree :library :both)
+  (loop for (file ops) in '(("jax-expm1-log1p.lisp" (("expm1" "exponential_minus_one") ("log1p" "log_plus_one")))
+                            ("jax-sin-cos.lisp" (("sin" "sine") ("cos" "cosine"))))
+        do (dolist (dtype '(:f32 :f64 :bf16 :f16))
+             (let* ((rows (load-unary-jax-fixture file dtype))
+                    (x (sqrt-fixture-input-array dtype rows))
+                    (aval (nb:make-aval (list (length rows)) dtype)))
+               (loop for (name mlir-op) in ops
+                     for index from 1
+                     do (with-one-op-module
+                            ((backend module) (list aval) aval
+                             (list (format nil "%0 = stablehlo.~A %a0 : ~A" mlir-op (nb::tensor-type-string aval))))
+                          (with-device-arrays ((da (to-device x backend :dtype dtype)))
+                            (with-device-arrays ((result (nabla:backend-invoke backend module "main" da)))
+                              (let ((host (to-host result)))
+                                (loop for row in rows for i from 0
+                                      do (is (sqrt-fixture-match-p dtype (aref host i) (nth index row))
+                                             "~A/~A: 入力ビット ~D, 期待 ~D, 実際 ~S"
+                                             name dtype (first row) (nth index row) (aref host i))))))))))))
+
 (defmacro def-iree-minmax-test (test-name prim-name dtype mlir-op)
   "PRIM-NAME（:MAX/:MIN）・DTYPE（:F32/:BF16）・MLIR-OP から、shape (4 8) の
 1演算モジュールを IREE の local backend でコンパイル・実行し、PRIM-NAME の
