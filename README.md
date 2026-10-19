@@ -469,6 +469,7 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 | `(tree-flatten tree)` | 葉を左から順に並べたリストと treedef の2値 |
 | `(tree-unflatten treedef leaves)` | treedef の形の木を葉のリストから作る（葉の個数が違えば `pytree-error`） |
 | `(tree-leaves tree)` / `(tree-structure tree)` | `tree-flatten` の1つ目 / 2つ目の値 |
+| `(tree-children object)` | 節なら `(values 子のリスト 補助データ t)`、葉なら `(values nil nil nil)`。節の判定は `tree-flatten` と同じ（`nil` は子の無いリストの節）。子0個の節と葉は3つ目の値で区別でき、子を再帰でたどった葉の列は `tree-leaves` と一致する。リスト・ベクタの補助データは `nil` |
 | `(tree-map function tree &rest more-trees)` | 葉ごとに `function` を呼んだ同じ形の木。複数の木は同じ位置の葉を引数にし、形が違えば `pytree-structure-mismatch` |
 | `(defpytree type :flatten f :unflatten g)` | クラス名 `type` を節として登録する。`f` は `(object) → (values 子のリスト 補助データ)`、`g` は `(aux children) → object` |
 | `treedef` / `treedef-num-leaves` / `treedef=` | 木の形（不透明な構造体）、その葉の個数、形の比較 |

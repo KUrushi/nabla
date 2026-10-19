@@ -80,18 +80,16 @@ NAME は :shape-mismatch / :dtype-mismatch / :bad-leaf / :duplicate-path / :unkn
            (loop for child in children
                  for i from 0
                  append (%named-leaves child (%join prefix (princ-to-string i))))))
-    (cond ((listp tree) (indexed tree))
-          ((simple-vector-p tree) (indexed (coerce tree 'list)))
-          ((and (typep tree 'structure-object) (module-slots tree))
+    (cond ((and (typep tree 'structure-object) (module-slots tree))
            (loop for (slot . kind) in (module-slots tree)
                  unless (eq kind :static)
                    append (%named-leaves (slot-value tree slot) (%join prefix (%segment slot)))))
-          (t (let ((entry (nabla::%pytree-node-entry tree)))
-               (if entry
-                   ;; defmodule 以外の登録した型: FLATTEN が返す子を添字で名前にして再帰する。
-                   ;; 子を取り出す公開 API は無いので core の内部関数 %pytree-node-entry を使う
-                   ;; （順序の食い違いは %paths-and-leaves が検出する）
-                   (indexed (funcall (car entry) tree))
+          (t (multiple-value-bind (children aux node-p) (nabla:tree-children tree)
+               (declare (ignore aux))
+               ;; リスト・ベクタと、defmodule 以外で登録した型: 子を添字で名前にして再帰する
+               ;; （順序の食い違いは %paths-and-leaves が検出する）
+               (if node-p
+                   (indexed children)
                    (list (cons (or prefix "") tree))))))))
 
 (defun %paths-and-leaves (tree)

@@ -357,3 +357,17 @@
                                (fiveam:get-test symbol))
                        collect symbol)))
     (fiveam:run! names)))
+
+(test (nn/sources/do-not-reference-core-internals :suite :nabla.medium)
+  "src/nn/ 以下の .lisp（再帰）には、core の内部シンボルを参照する NABLA:: と NB:: が
+一度も現れない（nn は core の公開 API だけを使う。issue #239。コメントや docstring の
+言及も数える）。"
+  (let ((offending nil))
+    (dolist (path (directory (merge-pathnames "**/*.lisp"
+                                              (asdf:system-relative-pathname "nabla/nn" "src/nn/"))))
+      (with-open-file (stream path :direction :input :external-format :utf-8)
+        (let* ((text (make-string (file-length stream)))
+               (text (string-downcase (subseq text 0 (read-sequence text stream)))))
+          (when (or (search "nabla::" text) (search "nb::" text))
+            (push path offending)))))
+    (is (null offending) "core の内部シンボルを参照する nn のファイル: ~S" offending)))
