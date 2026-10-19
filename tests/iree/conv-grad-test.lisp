@@ -158,7 +158,9 @@ emit は f32 の2入力をまとめて optimization_barrier に通して避け�
               backend (uiop:read-file-string
                        (asdf:system-relative-pathname "nabla" (format nil "docs/iree-repros/~A" file))))
              t)
-    (error () nil)))
+    ;; IREE のコンパイルエラーだけを「再現した」と数える（ファイルが無いなどの
+    ;; 別のエラーでガードが素通りしないように）
+    (nabla.iree:iree-compile-error () nil)))
 
 (define-iree-test convolution/iree-bf16-convert-conv-bugs-still-reproduce
     "docs/iree-repros/ の conv-convert-operand-type.mlir（transpose を経たカーネルの bf16 → f32 の畳み込み）と
