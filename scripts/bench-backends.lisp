@@ -279,7 +279,7 @@ IREE の system は読むが、コンパイラの dlopen は backend を使う�
               (let* ((fn (funcall (sym "NABLA" "%JITTED-FUNCTION-FN") jitted))
                      (avals (mapcar (sym "NABLA" "%JIT-ARGUMENT-AVAL") args))
                      graph text octets module)
-                (note "stage/trace" (elapsed-ms (setf graph (funcall (sym "NABLA" "%JIT-TRACE") fn avals nil nil))))
+                (note "stage/trace" (elapsed-ms (setf graph (funcall (sym "NABLA" "%JIT-TRACE") fn avals nil nil (nabla-call "TREE-STRUCTURE" args)))))
                 (note "stage/emit-stablehlo" (elapsed-ms (setf text (nabla-call "EMIT-STABLEHLO" graph))))
                 (note "stage/backend-compile" (elapsed-ms (setf octets (nabla-call "BACKEND-COMPILE" backend text))))
                 (note "stage/backend-load" (elapsed-ms (setf module (nabla-call "BACKEND-LOAD" backend octets))))

@@ -120,4 +120,14 @@
    #:pytree-spec
    #:pytree-test-pair
    #:make-pytree-test-pair
-   #:pytree-equal))
+   #:pytree-equal
+   ;; 配列を葉に持つ木（issue #199）
+   #:pytree-test-pair-left
+   #:pytree-test-pair-right
+   #:pytree-test-pair-tag
+   #:*pytree-leaf-op*
+   #:*pytree-add-op*
+   #:pytree-array-tree
+   #:pytree-map-function
+   #:pytree-loss-function
+   #:pytree-loss-oracle))

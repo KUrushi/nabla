@@ -1,6 +1,6 @@
-# IREE 上流に報告するコンパイラのバグ（issue #73、#165、#203）
+# IREE 上流に報告するバグ（issue #73、#165、#199、#203）
 
-nabla が固定している IREE 3.11.0 のコンパイラで見つけたバグ5件の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165）にも同じリンクを記録する。
+nabla が固定している IREE 3.11.0 で見つけたバグ6件（1〜3・5〜6 はコンパイラ、4 はランタイム）の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165）にも同じリンクを記録する。
 
 IREE を上げたときに、これらのバグが直ったかを確かめて回避策を外す手順は [`docs/iree-build.md`](iree-build.md) の「IREE を上げたときに回避策を外せるか確かめる手順」にある。
 
@@ -371,3 +371,51 @@ LLVM 23.0.0git, optimized build), Linux x86_64.
 - **nabla 側の回避策**: #4 と同じ `optimization_barrier`。同じテストが守っている
 
 なお、この2件は SIGSEGV ではなく通常のコンパイルエラーなので、`scripts/check-iree-repros.sh`（クラッシュの数を数える）の対象には入れていない。確かめるには上の `iree-compile` のコマンドを使う。
+
+## 6. local-task device で入力が 162 個以上の関数を呼ぶと NULL を参照して落ちる（#199）
+
+コンパイルは通り、**実行時**に落ちる（このファイルの他の3件はコンパイラが落ちる）。`main` の入力（テンソル）の個数だけで決まり、入力の形・演算には依らない。
+
+| 項目 | 内容 |
+| --- | --- |
+| 再現ファイル | `docs/iree-repros/local-task-162-inputs.mlir`（入力 162 個、各 `tensor<3xf32>` に `tanh` して 162 個を返す）。対照は `local-task-161-inputs.mlir`（161 個） |
+| 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=3xf32=1,2,3 …`（入力の個数ぶん）で実行する。`scripts/check-iree-repros.sh` が自動でやる |
+| 症状 | SIGSEGV（終了コード 139）。161 個までは通り、162 個で決定的に落ちる |
+| 落ちる場所 | `iree_task_call_initialize` ← `iree_hal_task_queue_issue_cmd_allocate`（local-task ドライバの runtime） |
+| 回避策 | `--device=local-sync` は 170 個・309 個の入力でも通る。nabla では `(make-backend :iree :driver :local-sync)` で選べる |
+| nabla の対応 | `nabla.iree:invoke` が local-task device で入力 162 個以上を呼ぶ前に `iree-too-many-inputs`（`iree-error` の子）を signal する（`+local-task-max-inputs+` = 161） |
+
+jit した関数の入力の個数は、引数の PyTree の葉の個数に等しい（#199）。Adam の学習ステップ（パラメータ + m + v + バッチ）のような大きなモデルは、この上限に当たりうる。
+
+2つ目の観察（別の制限）: 入力 170 個で全部を足していく要素ごとの加算の連鎖（`sum170.mlir` 相当）は、モジュールのロード時に `hal.command_buffer.dispatch ... OUT_OF_RANGE; binding count 51 > 32` で失敗する（1つの dispatch に融合されるオペランドが多すぎる。160 個でも `41 > 32`）。こちらはロードの失敗（`iree-status-error`）で、プロセスは落ちない。
+
+### 下書き（英語）
+
+````markdown
+### What happened?
+
+With the local-task HAL driver, invoking a function with 162 or more tensor inputs
+crashes the process with a NULL dereference in `iree_task_call_initialize`
+(called from `iree_hal_task_queue_issue_cmd_allocate`). 161 inputs work, 162 inputs
+crash every time. `--device=local-sync` runs the same module with 170 and 309 inputs.
+
+### Steps to reproduce your issue
+
+`func.func @main(%a0: tensor<3xf32>, ..., %a161: tensor<3xf32>) -> (tensor<3xf32>, ...)`
+returning `stablehlo.tanh %aN` for every input (see local-task-162-inputs.mlir).
+
+```sh
+iree-compile --iree-hal-target-device=local --iree-hal-local-target-device-backends=llvm-cpu \
+  local-task-162-inputs.mlir -o m.vmfb
+iree-run-module --device=local-task --module=m.vmfb --function=main \
+  $(for i in $(seq 162); do printf -- '--input=3xf32=1,2,3 '; done)   # exit 139
+```
+
+### What component(s) does this issue relate to?
+
+Runtime
+
+### Version information
+
+`iree-base-compiler==3.11.0` from PyPI (`IREE compiler version 3.11.0rc20260316 @ e4a3b0405d7d23554da26403658d0e8c3c5ecf25`), runtime built from the same commit, Linux x86_64.
+````

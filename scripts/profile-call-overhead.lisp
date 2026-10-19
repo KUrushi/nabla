@@ -120,7 +120,7 @@ THUNK の値を CLEANUP に渡す（SETUP と CLEANUP は時間に入れない�
                (args (append params (list x y)))
                (avals (mapcar (sym "NABLA" "%JIT-ARGUMENT-AVAL") args))
                (graph (funcall (sym "NABLA" "%JIT-TRACE") (funcall (sym "NABLA" "%JITTED-FUNCTION-FN") jitted)
-                               avals nil nil))
+                               avals nil nil (nabla-call "TREE-STRUCTURE" args)))
                (module (compile-text backend (nabla-call "EMIT-STABLEHLO" graph)))
                (inputs (mapcar (lambda (a) (nabla-call "TO-DEVICE" a backend)) args)))
           (flet ((invoke (_) (declare (ignore _))

@@ -237,3 +237,40 @@ FUNCTION は葉の数だけ、TREE-FLATTEN の葉の順に呼ばれる。"
                             collect (apply function leaf
                                            (loop for cell on more-leaves
                                                  collect (pop (car cell)))))))))
+
+;;; --- 関数の引数・戻り値を PyTree にする部品（内部。export しない） ---
+;;;
+;;; jit / grad / vmap / 制御構造（#199〜#201）が共有する。方針: 木を受けて木を返す関数 F を、
+;;; 引数の木を flatten して葉のリストにし、葉だけを受けて葉だけを返す関数（今までのトレースの
+;;; 経路がそのまま使える形）に変えてトレースする。F の戻り値（多値）は「値のリスト」という
+;;; 1つの木として flatten するので、多値で返す関数も、木を1つ返す関数も同じ扱いになる
+;;; （(values a b) と (list a b) は treedef が違う: 前者は (:list * *)、後者は (:list (:list * *))）。
+
+(defun %flatten-arguments (args)
+  "引数の木のリスト ARGS を、(VALUES 葉のリスト treedef) にする（TREE-FLATTEN と同じ。
+名前で意図を示すためのもの）。葉のリストは引数を先頭から順に flatten して連結したもの、
+treedef は ARGS 全体の形（jit のキャッシュのキーに入れる）。treedef に ARGS の個数も
+入っているので、個数の違う呼び出しとは区別される。引数ごとの葉の個数が要るときは
+(LENGTH (TREE-LEAVES ARG)) を引数ごとに求める。"
+  (tree-flatten args))
+
+(defun %flatten-function (fn in-treedef)
+  "FN（引数の木を受け取る関数）を、葉だけを受け取る関数にして返す。IN-TREEDEF は引数の木の
+リストの treedef（%FLATTEN-ARGUMENTS の2つ目の値）。返す関数は葉を IN-TREEDEF で引数に
+戻して FN を呼び、FN の戻り値（多値）をリストにして flatten した葉を多値で返す。
+
+2つ目の値は引数なしの関数で、返す関数が最後に走ったときの戻り値の treedef（値のリストの
+形。まだ走っていなければ NIL）を返す。トレースの前後で読む。"
+  (let ((out-treedef nil))
+    (values
+     (lambda (&rest leaves)
+       (multiple-value-bind (out-leaves treedef)
+           (tree-flatten (multiple-value-list (apply fn (tree-unflatten in-treedef leaves))))
+         (setf out-treedef treedef)
+         (values-list out-leaves)))
+     (lambda () out-treedef))))
+
+(defun %unflatten-results (out-treedef leaves)
+  "%FLATTEN-FUNCTION の戻り値の treedef OUT-TREEDEF と葉のリスト LEAVES から、元の関数の
+戻り値を作って多値で返す（値が1つなら1つの木、複数なら多値、0個なら (VALUES)）。"
+  (values-list (tree-unflatten out-treedef leaves)))

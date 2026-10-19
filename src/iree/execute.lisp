@@ -18,6 +18,11 @@ plain ERROR を signal する。"
   (unless (eq (device-array-device argument) (session-device session))
     (error "invoke: 引数の device-array は SESSION の device とは別の device で作られている")))
 
+(defconstant +local-task-max-inputs+ 161
+  "IREE 3.11 の local-task device で安全に呼べる関数の入力の最大個数。162 個以上だと
+iree_task_call_initialize（iree_hal_task_queue_issue_cmd_allocate 経由）が NULL を参照して
+プロセスが落ちる（docs/iree-repros/local-task-162-inputs.mlir）。local-sync は影響を受けない。")
+
 (defun invoke (session full-name &rest arguments)
   "SESSION にロード済みの FULL-NAME（\"module.main\" のような完全修飾名）の
 関数を、ARGUMENTS（device-array のリスト）を入力にして呼び出す。
@@ -44,6 +49,12 @@ CALL-INVOKE 本体は WITH-ALL-FLOAT-TRAPS-MASKED（src/ffi-support/float-traps.
 場合に備えて同じマスクを及ぼす）。"
   (dolist (argument arguments)
     (%check-invoke-argument argument session))
+  ;; ドライバはキーワードでも文字列でも指定できるので、canonical な名前で比べる
+  (let ((driver (device-driver (session-device session))))
+    (when (and (string= (device-name (session-device session)) "local-task")
+               (> (length arguments) +local-task-max-inputs+))
+      (error 'iree-too-many-inputs :count (length arguments) :limit +local-task-max-inputs+
+                                   :driver driver)))
   (with-all-float-traps-masked
     (with-call (call session full-name)
       (dolist (argument arguments)

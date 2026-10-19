@@ -155,7 +155,7 @@ allclose で比べる）。1回目の呼び出しで *jit-miss-count* が1増え
 静的値 N=3 が使われたことの pin）。"
   (let* ((f (nb:with-tracing (a n b) (nb:broadcast-in-dim (+ a b) (list n 2) '(1))))
          (avals (list (nb:make-aval '() :f32) (nb:make-aval '(2) :f32)))
-         (graph (nb::%jit-trace f avals '(1) '(3))))
+         (graph (nb::%jit-trace f avals '(1) '(3) (nb:tree-structure '(0 0)))))
     (is (= 2 (length (nb:graph-invars graph))))
     (is (equal '(3 2) (nb:aval-shape (nb:var-aval (first (nb:graph-outvars graph))))))))
 
