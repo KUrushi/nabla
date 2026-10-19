@@ -597,4 +597,6 @@
                (:file "tests/nn/attention-mask-test")
                ;; multi-head attention（issue #208）
                (:file "tests/nn/attention-test")
-               (:file "tests/nn/attention-iree-test")))
+               (:file "tests/nn/attention-iree-test")
+               ;; 小さな Transformer を学習する end-to-end テスト（issue #209。examples/transformer.lisp を load する）
+               (:file "tests/nn/transformer-test")))
