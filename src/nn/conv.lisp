@@ -11,7 +11,8 @@
 ;;;;   受け付ける形を増やさないため）。SAME は Flax（JAX の lax.padtype_to_pads）と同じ: 出力の長さ ceil(入力 / stride)、padding の合計
 ;;;;   max((出力 - 1) stride + 実効 kernel - 入力, 0)、左（low）が合計の半分（切り捨て）、右が残り。
 ;;;;   実効 kernel = (k - 1) dilation + 1。SAME は入力の形に依存するので呼び出しのたびに計算する。
-;;;;   Flax の CIRCULAR / CAUSAL / REFLECT と整数の padding は持たない（必要になったら足す）。
+;;;;   Flax の CIRCULAR / CAUSAL / REFLECT と整数の padding は持たない（README の「Flax との差」に理由。CAUSAL は
+;;;;   明示の padding ((k-1)d 0) で書ける）。
 ;;;; - stride と kernel-dilation は正の整数か、空間の次元ごとの正の整数のリスト。入力の dilation
 ;;;;   （転置畳み込み）の引数は持たない（README の「やらないこと」）。
 ;;;; - use_bias（issue #241）: :static の `use-bias`（既定は真）。偽のとき bias は NIL（空の部分木。パス名は

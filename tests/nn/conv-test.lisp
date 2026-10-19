@@ -482,3 +482,30 @@ bias のある conv との差はチャネルごとに bias そのもの。"
                                            :padding :same :kernel-dilation '(1 1) :feature-group-count 1
                                            :use-bias nil)
                                 (%rand '(1 5 5 3) 2)))))))
+
+;;; --- 因果畳み込みは明示の padding で書ける（Flax の CAUSAL を持たない代わり。issue #241、README）---
+
+(def-conv-property conv/explicit-left-padding-makes-a-causal-convolution
+  "1 次元の conv に明示の padding ((k-1) d 0)（Flax の CAUSAL と同じ左だけの padding。d は kernel の dilation）を渡すと、
+出力の長さは入力と同じで、位置 t の出力は t より後の入力を変えても変わらない。t の入力を変えると t の出力は変わる。"
+  (seed n k d) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 3 :hi 9)
+                      (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 2))
+  (let* ((module (init-conv (nabla:prng-key seed) 2 3 (list k) :kernel-dilation d
+                                                             :padding (list (list (* (1- k) d) 0))))
+         (x (%rand (list 1 n 2) seed))
+         (t0 (floor n 2))
+         (changed-after (let ((y (make-array (list 1 n 2) :element-type 'single-float)))
+                          (dotimes (i (array-total-size x) y)
+                            (setf (row-major-aref y i)
+                                  (if (> (floor i 2) t0) (+ 1.5 (row-major-aref x i)) (row-major-aref x i))))))
+         (changed-at (let ((y (make-array (list 1 n 2) :element-type 'single-float)))
+                       (dotimes (i (array-total-size x) y)
+                         (setf (row-major-aref y i)
+                               (if (= (floor i 2) t0) (+ 1.5 (row-major-aref x i)) (row-major-aref x i))))))
+         (out (call module x))
+         (after (call module changed-after))
+         (at (call module changed-at)))
+    (and (equal (list 1 n 3) (array-dimensions out))
+         (loop for pos from 0 to t0
+               always (loop for c below 3 always (= (aref out 0 pos c) (aref after 0 pos c))))
+         (loop for c below 3 thereis (/= (aref out 0 t0 c) (aref at 0 t0 c))))))
