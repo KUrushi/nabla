@@ -162,6 +162,17 @@ pretty form を出力する。
 
 **反転 dropout（inverted dropout）**
 : 学習時に要素をランダムに落とし、残した要素を 1/(1-rate) 倍して、出力の期待値を入力と同じに保つ方式。推論時は何もしなくてよい（`deterministic` が真なら入力そのもの）。Flax の `nn.Dropout` も同じ。
+**オプティマイザ（optimizer）/ 勾配変換（gradient transformation）**
+: 勾配から更新量を作る `init`（パラメータ → 状態）と `update`（勾配・状態・パラメータ → 更新量・新しい状態）の組。Optax の `GradientTransformation` と同じで、`sgd` や `adam` だけでなく、勾配のクリップや学習率の掛け算のような小さな変換も同じ型なので、`chain` で順に合成できる（nabla では `nabla.nn:chain`、`defoptimizer`）。状態はパラメータと同じ構造の木（`mu`・`nu` など）とステップ数 `count` を持つ PyTree で、`update` は純粋関数なので、学習ステップ全体を `jit` できる。
+
+**Adam / AdamW / バイアス補正**
+: 勾配の指数移動平均 `mu`（1次モーメント）と、勾配の二乗の指数移動平均 `nu`（2次モーメント）で更新量 `mu / (√nu + ε)` を作る最適化手法。`mu`・`nu` は0から始めるので最初の数ステップは小さく偏る。その分を `1 - b^t`（`b` は減衰率、`t` はステップ数）で割って直すのがバイアス補正。AdamW は重み減衰（weight decay）を勾配に混ぜず、Adam の更新量に `wd × パラメータ` として足す（decoupled weight decay）。
+
+**学習率スケジュール（learning rate schedule）**
+: ステップ数 `count` から学習率を返す関数。一定（constant）、直線で動かす（linear。warmup は 0 から目標値へ上げるこの形）、半周期の cosine で下げる（cosine decay）など。nabla ではステップ数を状態の中の rank 0 の配列に持つので、`jit` したままステップごとに値が変わる。
+
+**大域ノルムによるクリップ（clip by global norm）**
+: 全パラメータの勾配をひとつのベクトルとみなしたときのノルム（二乗和の平方根）が上限を超えたら、向きを変えずに全体を上限まで縮める。勾配爆発を抑える。
 
 **safetensors**
 : 名前を付けたテンソルの束を保存するファイル形式（Hugging Face）。先頭8バイトにJSONヘッダの長さ、次にヘッダ（名前ごとの dtype・形・データの範囲 `data_offsets`）、残りが生のバイト列。コードを実行しない純粋なデータ形式なので、pickle より安全に重みを配れる。nabla は `nabla/nn` で読み書きし、モデルのチェックポイントに使う（フェーズ4）。

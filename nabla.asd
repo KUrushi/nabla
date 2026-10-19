@@ -559,7 +559,9 @@
                (:file "src/nn/module")
                (:file "src/nn/checkpoint")
                ;; 基本レイヤー（issue #204）
-               (:file "src/nn/layers")))
+               (:file "src/nn/layers")
+               ;; オプティマイザ（Optax 相当、issue #205）
+               (:file "src/nn/optimizer")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -575,4 +577,7 @@
                (:file "tests/nn/layers-test")
                (:file "tests/nn/layers-iree-test")
                ;; defmodule のモデルを vmap に渡す（issue #200）
-               (:file "tests/nn/module-vmap-test")))
+               (:file "tests/nn/module-vmap-test")
+               ;; オプティマイザ（Optax 相当、issue #205）
+               (:file "tests/nn/optimizer-test")
+               (:file "tests/nn/optimizer-train-test")))

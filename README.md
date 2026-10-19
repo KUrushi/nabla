@@ -384,6 +384,39 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 - **dropout**: モジュールは状態を持たないので、キーと `deterministic` は呼び出しの引数。`deterministic` は Lisp の真偽値で、`jit` では静的引数（`:static-args`）にするか閉包で渡す。`rate = 1` は全部 0（入力に inf / NaN があっても 0。Flax の `zeros_like` と同じ）。`deterministic` が偽でキーが `nil` なら error。`sequential` は1引数の層だけを並べる（Flax の `nn.Sequential` と同じ。dropout は並べられない）
 - 初期値は Flax と分布が同じで、値はビット単位では一致しない（nabla の PRNG は JAX と違う）。Flax との比較は同じパラメータを与えて順伝播と勾配で行う
 - `use_bias` などのオプションは、必要になった時点で足す
+#### オプティマイザ（`nabla/nn`、issue #205）
+
+Optax 相当。オプティマイザは `init`（パラメータの木 → 状態の木）と `update`（更新量の木・状態・パラメータ → 更新量の木と新しい状態）の組で、状態はモデルと同じ構造の PyTree、`update` は純粋関数。学習ステップ全体を `jit` できる。
+
+```lisp
+(let* ((opt (nabla.nn:chain (nabla.nn:clip-by-global-norm 1.0)
+                            (nabla.nn:adam (nabla.nn:warmup-cosine-decay-schedule 0.0 1e-3 100 1000))))
+       (state (nabla.nn:optimizer-init opt model)))
+  (multiple-value-bind (updates state) (nabla.nn:optimizer-update opt grads state model)
+    (values (nabla.nn:apply-updates model updates) state)))
+```
+
+| 名前 | 役割 |
+| --- | --- |
+| `optimizer` | init と update の組の型。`defoptimizer` か下の関数で作る |
+| `optimizer-init` `(optimizer params)` | 状態を作る。`params` はモデルでもよい |
+| `optimizer-update` `(optimizer updates state &optional params)` | `(values 更新量 新しい状態)`。`params` は `adamw` のように値を使う変換だけが読む。木の構造が違えば `pytree-structure-mismatch` |
+| `apply-updates` `(params updates)` | 各葉に更新量を足した同じ構造の木 |
+| `defoptimizer` `(name (hyper...) (:init (params) ...) (:update (updates state params) ...))` | `name` というオプティマイザを返す関数を定義する。本体は `with-tracing` の本体（`defmodule` の `:call` と同じ） |
+| `sgd` `(lr &key momentum nesterov)` | `lr` は実数かスケジュール。`momentum` 付きは先に `momentum-trace` を通す |
+| `adam` `(lr &key b1 b2 eps eps-root)` / `adamw` `(lr &key ... weight-decay)` | Optax の既定値（0.9, 0.999, 1e-8, 0, adamw の decay は 1e-4）。adamw は decoupled weight decay（mask は未対応）で、`update` に `params` が要る |
+| `chain` `(&rest optimizers)` | 左から順に適用する。結合的で、引数なしは恒等。状態は各状態のリスト |
+| `clip-by-global-norm` `(max-norm)` | 全葉をまとめたノルムが `max-norm` を超えるとき向きを変えずに縮める |
+| `scale` `(factor)` / `scale-by-adam` / `scale-by-schedule` `(schedule)` / `momentum-trace` `(decay &key nesterov)` / `add-decayed-weights` `(wd)` | 上を組み立てる部品（Optax の同名の変換。`trace` は CL の `trace` と衝突するので `momentum-trace`） |
+| `constant-schedule` `(v)` / `linear-schedule` `(init end steps &key transition-begin)` / `cosine-decay-schedule` `(init steps &key alpha)` / `warmup-cosine-decay-schedule` `(init peak warmup decay &key end-value)` | 学習率スケジュール。`count`（rank 0 の `:i32`）を受け取って rank 0 の `:f32` を返す関数 |
+
+- **ステップ数は状態の中の rank 0 の `:i32` の配列**（`count`）で、Lisp の整数ではない。jit の入力として渡るので、ステップごとに再コンパイルされず、スケジュールの値も毎ステップ変わる。`update` ごとに 1 増える（`:i32` の最大値で止まる）
+- 状態は `defmodule` の構造体（`adam-state` の `count` `mu` `nu`、`momentum-state` の `trace`、`schedule-state` の `count`）で、スロット名がチェックポイントのパス名になる。状態を持たない変換の状態は `nil`。葉の並びは Optax の `tree_leaves` と同じ
+- 数値は Optax と f32 の許容誤差で一致する（`tests/fixtures/optimizer/`）。cos と pow のプリミティブが無いので、cosine は sin の Taylor 展開（打ち切り誤差は 1e-11 未満で、f32 の丸め程度の差が残る）、adam のバイアス補正 `1 - b^t` は `-expm1` の Taylor 展開と `1 - exp(-t log b)` で計算する
+- **チェックポイントとの関係**: `chain` の状態はリストなので、パス名は位置で決まる（`1.0.mu.l1.w` の `0` は chain の何番目か）。chain の途中に変換を足すと古いチェックポイントは読めなくなる（`checkpoint-error`）。状態のスロットはすべて `:state` で、`(save-checkpoint path (list model opt-state))` で1ファイルに入る。`optimizer-update` / `apply-updates` に渡す葉は、jit の外ではホストの配列（`device-array` は eager では扱えない。`to-host` で戻す）
+- **`chain` は `check-it:chain` と名前が衝突する**。check-it も使うパッケージ（テストなど）では `(:shadowing-import-from #:nabla.nn #:chain)` を書く
+- 対象は f32 / f64 のパラメータ。スカラー（学習率・バイアス補正）は葉の dtype に合わせて `convert` する。bf16 / f16 は未対応
+- IREE 3.11 の local-task は jit の入力が 162 個以上だと落ちる（`iree-too-many-inputs`）。adam の学習ステップの入力は パラメータ + `mu` + `nu` + `count` + バッチ なので、パラメータの葉が 50 個を超えるモデルでは足りなくなる
 
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
@@ -480,6 +513,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
 src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー（今後オプティマイザ）
+src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、オプティマイザ、チェックポイント、レイヤー
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト
