@@ -6,22 +6,25 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 
 ## 現状
 
-フェーズ0（IREE 疎通）は完了した。GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は、2026-10-10 に Colab の Tesla T4 で確かめた（`scripts/colab-gpu-check.sh`、結果は [docs/iree-build.md](docs/iree-build.md)）。詳しい知見は [docs/phase0-report.md](docs/phase0-report.md) にまとめてある。
+フェーズ0〜3は完了した。フェーズ4（Flax 相当）の主要部分ができ、モデルを書いて学習し、保存するところまでを下の「チュートリアル」の節で通して試せる。
 
-フェーズ1（トレースと jit。親 issue #35）も完了した。得た知見は [docs/phase1-report.md](docs/phase1-report.md) にまとめてある。
-
-現在はフェーズ2（grad。逆伝播）に着手している。
+- フェーズ0（IREE 疎通）: GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は、2026-10-10 に Colab の Tesla T4 で確かめた（`scripts/colab-gpu-check.sh`、結果は [docs/iree-build.md](docs/iree-build.md)）。知見は [docs/phase0-report.md](docs/phase0-report.md)
+- フェーズ1（トレースと jit。親 issue #35）: 知見は [docs/phase1-report.md](docs/phase1-report.md)
+- フェーズ2（grad。2層 MLP の学習、PJRT バックエンドと IREE の比較。親 issue #90）: 知見は [docs/phase2-report.md](docs/phase2-report.md)
+- フェーズ3（vmap・制御構造 `cond*` / `while-loop` / `scan`・PRNG。親 issue #124）: 知見は [docs/phase3-report.md](docs/phase3-report.md)
+- フェーズ4（Flax 相当。親 issue #194）は進行中。できたもの: PyTree と、それを受け取る `jit` / `grad` / `vmap` / 制御構造、`defmodule`、基本レイヤー（`dense` / `layer-norm` / `embedding` / `dropout` / `sequential`）、`dense-general` と multi-head attention、オプティマイザ（Optax 相当）、safetensors とチェックポイント、小さな Transformer を Flax と数値を合わせて学習する例、このチュートリアル。畳み込みの層（#207）など、残りは親 issue #194 で管理している
+- フェーズ5（Grain 相当。データ供給）は未着手
 
 ロードマップ（計画タブより）:
 
-| フェーズ | 目標 | 目安 |
+| フェーズ | 目標 | 状態 |
 | --- | --- | --- |
 | 0. IREE 疎通 | Lisp から IREE を動かす | 完了 |
 | 1. トレースと jit | Lisp 関数から StableHLO を出す | 完了 |
-| 2. grad | 逆伝播 | 1〜1.5ヶ月 |
-| 3. vmap と制御構造 | JAX 相当の変換を揃える | 1〜1.5ヶ月 |
-| 4. Flax 相当 | モデル記述 | 1〜2ヶ月 |
-| 5. Grain 相当 | データ供給 | 2〜3週間 |
+| 2. grad | 逆伝播 | 完了 |
+| 3. vmap と制御構造 | JAX 相当の変換を揃える | 完了 |
+| 4. Flax 相当 | モデル記述 | 進行中 |
+| 5. Grain 相当 | データ供給 | 未着手 |
 
 ## 要件
 
@@ -170,6 +173,149 @@ sbcl --non-interactive --load examples/jit.lisp
 ```
 
 `defjit` は `with-tracing` で本体をトレース対象にしてから `jit` した通常の Lisp 関数を定義する。1回目の呼び出しでトレース・emit・コンパイルし、`add2` の同一性（このマクロ展開1回分）・引数の `aval`・`*default-backend*` が変わらない限り、2回目以降はインメモリのキャッシュを引くだけでコンパイルし直さない（同じ `defjit` フォームを再評価すると、古いキャッシュは捨てて次の呼び出しで作り直す）。`tests/iree/jit-test.lisp` の `example/jit-lisp/prints-expected-sum` がこの例を `load` して出力を確認している。jit の IREE 経由 end-to-end テストは、他の `nabla/iree` の medium テストと同じ既定の small+medium スイート・同じ SBCL プロセスで動く（issue #34）。
+
+## チュートリアル（モデル定義から学習・保存まで）
+
+`defmodule` でモデルを書き、PRNG キーで初期化し、`jit` した学習ステップ（`value-and-grad` + オプティマイザ）を手書きのループで回し、モデルとオプティマイザの状態を1つのチェックポイントに保存して、復元して続きを学習するまでを、XOR 風の2クラス分類（2層 MLP）で説明する。コードは全部 [`examples/tutorial.lisp`](examples/tutorial.lisp) にあり、下のコードブロックはそのファイルの該当部分をそのまま貼ったもの。`tests/nn/tutorial-test.lisp` が (1) README のブロックと例のファイルが一字一句同じであること、(2) 例が動いて損失が下がること、(3) 保存・復元した続きが止めずに続けた学習とビットまで同じであること、を毎回確かめるので、コードが古くなると既定のテストスイートが落ちる。README を直すときは、先に `examples/tutorial.lisp` を直し、`[[tutorial:名前]]` で挟んだ部分を貼り直す。
+
+以降のコードブロックは、次のパッケージ（`nabla/nn` と `nabla/iree` をロードした後）で書いている。`nabla.nn` のシンボル（`defmodule` `call` `chain` `adam` `save-checkpoint` など）はそのまま、コアの関数は `nabla:` を付けて呼ぶ（`nabla:jit` `nabla:value-and-grad` `nabla:with-tracing` など）。
+
+```lisp
+(require :asdf)
+(asdf:load-system "nabla/nn")
+(asdf:load-system "nabla/iree")
+(defpackage #:nabla-example-tutorial
+  (:use #:cl #:nabla.nn))
+(in-package #:nabla-example-tutorial)
+```
+
+```sh
+export CL_SOURCE_REGISTRY="$PWD/:${NABLA_LISP_DEPS:-$HOME/.local/share/nabla/lisp-deps}//:"
+sbcl --non-interactive --load examples/tutorial.lisp
+```
+
+出力の例（30 ステップ学習 → 保存 → 復元 → 30 ステップ続ける。数値は検査していない。テストが確かめるのは損失が下がることと、復元した続きが一致すること）:
+
+```
+loss[0] = 0.7050
+loss[29] = 0.4449
+復元して続けた loss[59] = 0.1164
+```
+
+### 1. モデルを `defmodule` で書く
+
+モデルは「パラメータの PyTree ＋ 純粋関数」。スロット（`hidden` `out`）が子のモジュールで、`:init` が PRNG キーから初期値を作り、`:call` が順伝播になる。キーは `split-keys` で独立な部分キーに分けて、子に1つずつ渡す（同じキーからは常に同じ初期値になる）。`dense` や `layer-norm` などの層は `nabla.nn` にある。
+
+<!-- tutorial:model -->
+```lisp
+;; 2層 MLP の分類器。dense は nabla.nn の層、(key in width classes) の key は PRNG キー。
+(defmodule mlp (hidden out)
+  (:init (key in width classes)
+   (destructuring-bind (hidden-key out-key) (split-keys key 2)
+     (make-mlp :hidden (init-dense hidden-key in width)
+               :out (init-dense out-key width classes))))
+  (:call (self x)
+   (call (mlp-out self) (tanh (call (mlp-hidden self) x)))))
+```
+
+`(init-mlp (nabla:prng-key 0) 2 16 2)` で入力 2・隠れ 16・クラス 2 のモデルができる。`call` は総称関数で、`(call model x)` が順伝播。`:call` の本体は `with-tracing` の本体として書かれるので、`jit` / `grad` / `vmap` の中でそのまま呼べる。
+
+### 2. データ
+
+乱数の配列は `nabla:uniform` / `nabla:normal` に PRNG キーを渡して作る。ステップ番号を `nabla:fold-in` でキーに混ぜると、ステップごとに別の、でも再現できるバッチになる。
+
+<!-- tutorial:data -->
+```lisp
+;; XOR 風の2クラス分類。x は [-1, 1) の2次元の点で、x0 * x1 > 0 ならクラス 1、そうでなければクラス 0。
+;; y はクラスの one-hot（f32 の (batch 2)）。ステップ番号 step から決まるので、何度呼んでも同じ。
+(defun make-batch (step &key (batch-size 32))
+  (let* ((key (nabla:fold-in (nabla:prng-key 100) step))
+         (x (nabla:uniform key (list batch-size 2) :minval -1 :maxval 1))
+         (y (make-array (list batch-size 2) :element-type 'single-float :initial-element 0.0)))
+    (dotimes (i batch-size)
+      (setf (aref y i (if (> (* (aref x i 0) (aref x i 1)) 0) 1 0)) 1.0))
+    (values x y)))
+```
+
+### 3. `jit` した学習ステップ
+
+`value-and-grad` は、第1引数がモデル（木）でも、勾配を同じ構造の木で返す。オプティマイザは `chain` で部品（ここでは大域ノルムのクリップと Adam）を組み合わせる。`optimizer-update` は更新量と新しい状態を返し、`apply-updates` がモデルに足す。学習ステップ全体が純粋関数なので、ひとまとめに `jit` できる。`jit` した関数はループの外で1回だけ作る（2回目以降の呼び出しはコンパイルしない）。
+
+<!-- tutorial:train-step -->
+```lisp
+;; 損失は交差エントロピー。サンプル数は one-hot の総和 (reduce-sum y) で割る。
+;; value-and-grad の引数 model が木（defmodule）でも、grad は同じ構造の木で返る。
+;; 学習ステップ (model opt-state x y) → (values 損失 新しい model 新しい opt-state) は jit する。
+;; jit はループの外で1回だけ作る（2回目以降の呼び出しはコンパイルしない）。
+(defun make-optimizer ()
+  (chain (clip-by-global-norm 1.0) (adam 0.05)))
+
+(defun make-train-step (optimizer)
+  (let ((value-and-grad
+          (nabla:value-and-grad
+           (nabla:with-tracing (model x y)
+             (- (/ (nabla:reduce-sum (* y (log-softmax (call model x))))
+                   (nabla:reduce-sum y)))))))
+    (nabla:jit (nabla:with-tracing (model opt-state x y)
+                 (multiple-value-bind (loss grads) (funcall value-and-grad model x y)
+                   (multiple-value-bind (updates new-state)
+                       (optimizer-update optimizer grads opt-state model)
+                     (values loss (apply-updates model updates) new-state)))))))
+```
+
+オプティマイザの状態（Adam の `mu` / `nu` / `count`）もモデルと同じ PyTree で、`(optimizer-init optimizer model)` で作る。ステップ数 `count` は配列なので、ステップごとに再コンパイルされない。
+
+### 4. 手書きのループ
+
+ループは普通の Lisp で書く。ステップが返す新しいモデルと状態を、次のステップに渡す。
+
+<!-- tutorial:loop -->
+```lisp
+;; 手書きのループ。FROM から TO の手前までのステップを回し、損失のリストと最後の model / opt-state を返す。
+(defun run-steps (train-step model opt-state from to)
+  (let ((losses '()))
+    (loop for step from from below to
+          do (multiple-value-bind (x y) (make-batch step)
+               (multiple-value-bind (loss new-model new-state) (funcall train-step model opt-state x y)
+                 (push (aref loss) losses)
+                 (setf model new-model opt-state new-state))))
+    (values (nreverse losses) model opt-state)))
+```
+
+### 5. チェックポイントの保存と復元
+
+モデルとオプティマイザの状態は、1つのリストにまとめれば1ファイル（safetensors）に入る。パス名は `0.hidden.kernel`（リストの添字とスロット名を `.` でつないだもの）のようになる。復元には同じ構造の「ひな形」を渡す。値は使わず、名前・形・dtype の照合と、`tree-unflatten` の型情報にだけ使う。名前の過不足や形・dtype の違いは `checkpoint-error` になる。
+
+<!-- tutorial:checkpoint -->
+```lisp
+;; model と opt-state を1つのリストにして1ファイル（safetensors）に保存する。
+;; 復元には同じ構造の「ひな形」が要る（葉の名前・形・dtype を照合する）。
+(defun save-training (path model opt-state)
+  (save-checkpoint path (list model opt-state)))
+
+(defun load-training (path template-model template-opt-state)
+  (destructuring-bind (model opt-state) (load-checkpoint path (list template-model template-opt-state))
+    (values model opt-state)))
+```
+
+復元したモデルと状態から `run-steps` を続けると、止めずに続けた学習と（ビットまで）同じ損失の列になる。
+
+### 6. （おまけ）サンプルごとの勾配
+
+`vmap` と `grad` を重ねると、バッチの各サンプルの勾配を一度に求められる。`in-axes` が `nil` の引数（モデル）はバッチせず、`0` の引数（`x` と `y`）だけを軸 0 でバッチする。
+
+<!-- tutorial:per-example -->
+```lisp
+;; vmap でサンプルごとの勾配。パラメータはバッチせず (in-axes が nil)、x と y だけを軸 0 でバッチする。
+;; 戻り値は model と同じ構造の木で、各葉に先頭のバッチ軸がつく。
+(defun per-example-grads (model x y)
+  (funcall (nabla:vmap (nabla:grad (nabla:with-tracing (model x y)
+                                      (- (nabla:reduce-sum (* y (log-softmax (call model x)))))))
+                       :in-axes '(nil 0 0))
+           model x y))
+```
+
+次に読むもの: 「公開 API」の defmodule・基本レイヤー・オプティマイザ・チェックポイントの各節と、全部を使った Transformer の例。
 
 ## 公開 API
 
@@ -563,7 +709,7 @@ tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
 docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase3-report.md
-examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp, transformer.lisp（この README の使用例）
+examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp, transformer.lisp, tutorial.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```

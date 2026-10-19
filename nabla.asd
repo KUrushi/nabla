@@ -604,4 +604,6 @@
                (:file "tests/nn/transformer-test")
                ;; conv レイヤー（issue #207）
                (:file "tests/nn/conv-test")
-               (:file "tests/nn/conv-iree-test")))
+               (:file "tests/nn/conv-iree-test")
+               ;; README のチュートリアル（issue #210。examples/tutorial.lisp を load し、README のコードブロックと突き合わせる）
+               (:file "tests/nn/tutorial-test")))

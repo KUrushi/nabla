@@ -729,3 +729,30 @@ NO-APPLICABLE-METHOD CHECK-IT::DATUM で落ちず、保存した値で再生さ�
                    "保存された失敗例の再生が落ちた")
                (is (member 5 replayed) "保存された値 5 が再生されなかった: ~S" replayed))))
       (remprop id 'check-it::regression-cases))))
+
+;;; --- どのスイートにも属さないテストが無いこと ---
+
+(defun %suite-member-names (suite-name)
+  "スイート SUITE-NAME に（入れ子のスイートを含めて）属するテストとスイートの名前のリスト。"
+  (let ((names '()))
+    (maphash (lambda (name unused)
+               (declare (ignore unused))
+               (push name names)
+               (when (typep (fiveam:get-test name) 'fiveam::test-suite)
+                 (setf names (append (%suite-member-names name) names))))
+             (fiveam::tests (fiveam:get-test suite-name)))
+    names))
+
+(test (suite/every-loaded-test-belongs-to-a-nabla-suite :suite :nabla.small)
+  "ロード済みのテストはすべて :nabla.small / :nabla.medium / :nabla.large のどれかに属する。
+\(test name ...) に :suite を書き忘れる（in-suite も無い）と FiveAM の既定のスイートに入り、
+run-tests が一度も実行しないので、そのテストの守るはずの性質が静かに無くなる。"
+  (let ((covered (append (%suite-member-names :nabla.small)
+                         (%suite-member-names :nabla.medium)
+                         (%suite-member-names :nabla.large)))
+        (orphans '()))
+    (maphash (lambda (name test)
+               (when (and (typep test 'fiveam::test-case) (not (member name covered)))
+                 (push name orphans)))
+             fiveam::*test*)
+    (is (null orphans) "どのスイートにも属さないテスト: ~S" orphans)))
