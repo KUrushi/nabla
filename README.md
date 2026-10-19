@@ -515,13 +515,13 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 
 | モジュール | スロット | init | 呼び出し |
 | --- | --- | --- | --- |
-| `dense` | `kernel (in out)`, `bias (out)` | `(init-dense key in out &key dtype)`。kernel は `lecun_normal`（切断正規分布、分散 1/in）、bias は 0 | `(call m x)` = `x kernel + bias`（x は rank 1 以上、最後の軸が in） |
+| `dense` | `kernel (in out)`, `bias (out)`, `use-bias`（`:static`） | `(init-dense key in out &key dtype use-bias)`。kernel は `lecun_normal`（切断正規分布、分散 1/in）、bias は 0。`use-bias` 既定は真（Flax の `use_bias`） | `(call m x)` = `x kernel + bias`（x は rank 1 以上、最後の軸が in）。bias が `nil` なら足さない |
 | `layer-norm` | `scale (f)`, `bias (f)`, `epsilon`（`:static`） | `(init-layer-norm key features &key epsilon dtype)`。scale 1、bias 0、epsilon 既定 `1f-6`（Flax と同じ） | `(call m x)`。最後の軸で正規化。分散は Flax と同じ `E[x^2] - E[x]^2`（0 で切る） |
 | `embedding` | `embedding (vocab features)` | `(init-embedding key vocab features &key dtype)`。`N(0, 1/features)` | `(call m ids)`（整数の配列）。`[ids... features]` を返す |
 | `dropout` | `rate`（`:static`） | `(init-dropout key rate)`（rate は 0 以上 1 以下） | `(call m x key deterministic)`。反転 dropout（保持した要素を `1/(1-rate)` 倍）。`deterministic` が真なら `x` そのもの |
 | `sequential` | `layers`（モジュールのリスト） | `(init-sequential key init-functions)`。各関数に `split-keys` で分けたキーを渡して層を作る | `(call m x)` = 各層を順に適用 |
 | `activation` | `fn`（`:static`。`:relu` `:gelu` `:tanh` `:softmax`） | `(init-activation key fn)` | `(call m x)`。`sequential` の層として活性化関数を並べる |
-| `conv` | `kernel (空間... in/G out)`（HWIO）, `bias (out)`, `strides` / `padding` / `kernel-dilation` / `feature-group-count`（`:static`） | `(init-conv key in out kernel-size &key strides padding kernel-dilation feature-group-count dtype)`。`kernel-size` は空間の次元ごとのリスト（`(3)` で1次元、`(3 3)` で2次元、`(3 3 3)` で3次元。Flax の `nn.Conv` と同じ N 次元）、`strides` と `kernel-dilation` は整数か次元ごとのリスト（既定 1）、`padding` はキーワードの `:same`（既定）/ `:valid` か次元ごとの `((low high) ...)`（Flax の文字列 `"SAME"` は受け付けない）、`feature-group-count` 既定 1。kernel は `lecun_normal`（fan_in = kernel の面積 × in/G）、bias は 0 | `(call m x)`。x は `[N 空間... C]`（2次元なら NHWC）かバッチ軸の無い `[空間... C]`。出力は `conv-general-dilated` + bias |
+| `conv` | `kernel (空間... in/G out)`（HWIO）, `bias (out)`, `strides` / `padding` / `kernel-dilation` / `feature-group-count` / `use-bias`（`:static`） | `(init-conv key in out kernel-size &key strides padding kernel-dilation feature-group-count dtype use-bias)`。`kernel-size` は空間の次元ごとのリスト（`(3)` で1次元、`(3 3)` で2次元、`(3 3 3)` で3次元。Flax の `nn.Conv` と同じ N 次元）、`strides` と `kernel-dilation` は整数か次元ごとのリスト（既定 1）、`padding` はキーワードの `:same`（既定）/ `:valid` か次元ごとの `((low high) ...)`（Flax の文字列 `"SAME"` は受け付けない）、`feature-group-count` 既定 1、`use-bias` 既定は真。kernel は `lecun_normal`（fan_in = kernel の面積 × in/G）、bias は 0 | `(call m x)`。x は `[N 空間... C]`（2次元なら NHWC）かバッチ軸の無い `[空間... C]`。出力は `conv-general-dilated` + bias |
 
 活性化関数は `nabla.nn` の普通の関数（配列にもトレーサにも使え、`with-tracing` の中でも書ける）: `relu`, `gelu`（Flax の既定の tanh 近似）, `(softmax x &key axis)`, `(log-softmax x &key axis)`（`axis` 既定 -1、負の値は後ろから数える）。コアのプリミティブにはせず、`max` / `exp` / `tanh` / `reduce-*` の合成で書いてある。
 
@@ -531,7 +531,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 - **dropout**: モジュールは状態を持たないので、キーと `deterministic` は呼び出しの引数。`deterministic` は Lisp の真偽値で、`jit` では静的引数（`:static-args`）にするか閉包で渡す。`rate = 1` は全部 0（入力に inf / NaN があっても 0。Flax の `zeros_like` と同じ）。`deterministic` が偽でキーが `nil` なら error。`sequential` は1引数の層だけを並べる（Flax の `nn.Sequential` と同じ。dropout は並べられない）
 - 初期値は Flax と分布が同じで、値はビット単位では一致しない（nabla の PRNG は JAX と違う）。Flax との比較は同じパラメータを与えて順伝播と勾配で行う
 - **conv の SAME は Flax（JAX）と同じ**: 出力の長さは `ceil(入力 / stride)`、padding の合計は `max((出力 - 1) stride + 実効 kernel - 入力, 0)`（実効 kernel = `(k - 1) dilation + 1`）で、左が合計の半分（切り捨て）、右が残り。偶数の入力や stride 2 では左右非対称（例: 入力 6、kernel 3、stride 2 は `(0 1)`）。入力の形に依存するので呼ぶたびに計算する。`vmap` の中ではバッチ軸の無い `[H W C]` の画像として書ける。`make-conv` で直接作ったモジュールの strides・padding・dilation も呼ぶたびに `init-conv` と同じに正規化する（`:strides 2` や `:padding :same` が使える）。入力の dilation（転置畳み込み）、CIRCULAR / CAUSAL padding は持たない
-- `use_bias` などのオプションは、必要になった時点で足す
+- **`use_bias`（dense / dense-general / conv / multi-head-attention。issue #241）**: Flax と同じ引数名（`init-*` の `:use-bias`、既定は真）。`:static` のスロット `use-bias` を持ち、偽のとき `bias` スロットは `nil`（空の部分木）になる。`nil` は葉でないので、チェックポイントのパス名は変わらず（`kernel` だけになる）、Flax の「bias のパラメータが無い」と一致する。`call` は bias が `nil` なら足さない。`use-bias` と `bias` が食い違う（真なのに `nil`、偽なのにある）モジュールは `call` が層名入りの error にする。`make-dense` / `make-conv` / `make-dense-general` はスロットがすべて必須なので `:use-bias` も明示する（#241 以前に作ったコードは `:use-bias t` を足す）。`multi-head-attention` は `:use-bias` を query / key / value / out の 4 つの `dense-general` すべてに渡す（Flax の `use_bias` も 4 つの `DenseGeneral` すべてに効く）。`multi-head-attention` 自身に `use-bias` のスロットは持たない（各射影が持つ）
 #### オプティマイザ（`nabla/nn`、issue #205）
 
 Optax 相当。オプティマイザは `init`（パラメータの木 → 状態の木）と `update`（更新量の木・状態・パラメータ → 更新量の木と新しい状態）の組で、状態はモデルと同じ構造の PyTree、`update` は純粋関数。学習ステップ全体を `jit` できる。
@@ -572,7 +572,7 @@ Flax の `nn.DenseGeneral` と `make_causal_mask` / `make_attention_mask` / `com
 
 | モジュール | スロット | init | 呼び出し |
 | --- | --- | --- | --- |
-| `dense-general` | `kernel (in... features...)`, `bias (features...)`, `contract-axes`（`:static`。縮約する入力の軸の数） | `(init-dense-general key in-shape features &key dtype)`（形は整数かそのリスト。`contract-axes` は `in-shape` の長さ）。kernel は平らな形の `lecun_normal` を reshape したもの、bias は 0 | `(call m x)`。x の最後の `contract-axes` 個の軸を縮約して特徴の軸に置き換える。q / k / v は `(in) → (heads head-dim)`、out は `(heads head-dim) → (out)` |
+| `dense-general` | `kernel (in... features...)`, `bias (features...)`, `contract-axes` / `use-bias`（`:static`。`contract-axes` は縮約する入力の軸の数） | `(init-dense-general key in-shape features &key dtype use-bias)`（形は整数かそのリスト。`contract-axes` は `in-shape` の長さ。`use-bias` 既定は真）。kernel は平らな形の `lecun_normal` を reshape したもの、bias は 0 | `(call m x)`。x の最後の `contract-axes` 個の軸を縮約して特徴の軸に置き換える。q / k / v は `(in) → (heads head-dim)`、out は `(heads head-dim) → (out)` |
 
 - `contract-axes` は kernel と bias の rank の差から推論せず、`:static` のスロットに持つ（`init-dense-general` が設定する。`make-dense-general` では明示する）。`:static` は葉でないので、チェックポイントのパス名は Flax と同じ `kernel` / `bias` のまま。bias の形が kernel の後ろの軸と合わなければ層名入りの error
 - マスクの部品（bit の配列を返す。1 が「見える」）: `(make-causal-mask length)` は形 `(1 length length)` の因果マスク（クエリ位置 q がキー位置 k 以上で 1。先頭の 1 がヘッドとバッチ軸に広がる）、`(make-attention-mask query-valid key-valid)` は `[... q]` と `[... k]` の有効フラグから padding のマスク `[... 1 q k]`、`(combine-masks &rest masks)` は論理積（ランクが違えば右に揃えてブロードキャスト、`nil` は無視）。multi-head attention の `mask` に渡す
@@ -583,13 +583,13 @@ Flax の `nn.MultiHeadDotProductAttention` に合わせたもの。スロット�
 
 | モジュール | スロット | init | 呼び出し |
 | --- | --- | --- | --- |
-| `multi-head-attention` | `query` `key` `value` `out`（`dense-general`）, `dropout-rate`（`:static`） | `(init-multi-head-attention key num-heads in-features &key qkv-features kv-features out-features dtype dropout-rate)`。`qkv-features` / `kv-features` / `out-features` の既定は `in-features`（Flax と同じ）。`head-dim = qkv-features / num-heads` | `(call m inputs-q inputs-kv mask key deterministic)` → `[... 長さq out-features]` |
+| `multi-head-attention` | `query` `key` `value` `out`（`dense-general`）, `dropout-rate`（`:static`） | `(init-multi-head-attention key num-heads in-features &key qkv-features kv-features out-features dtype dropout-rate use-bias)`。`qkv-features` / `kv-features` / `out-features` の既定は `in-features`（Flax と同じ）。`head-dim = qkv-features / num-heads` | `(call m inputs-q inputs-kv mask key deterministic)` → `[... 長さq out-features]` |
 
 - 入力は `[... 長さ 幅]`（先頭のバッチ軸は何個でもよい。Flax と同じ）。自己 attention は `inputs-q` と `inputs-kv` に同じものを渡す。`mask` は `nil` か bit（`:i1`）の配列で、`[... ヘッド 長さq 長さkv]` に右から揃えてブロードキャストできる形。1 が「見える」。配列でない値（`t` やリスト）は層名入りの error
 - 計算は Flax と同じ順: `softmax((q / sqrt(head-dim)) k^T)` に `v` をかけ、`out` で射影する。マスクで隠す位置には、その dtype（f32 / f64 / bf16 / f16）の最小の有限値（Flax の `jnp.finfo(dtype).min`。`-inf` ではない）を `select` で入れ、最大値を引く `softmax` で正規化する。全部のキーが隠れた行は一様な重みになる（Flax と同じ。NaN にならない）
 - attention の dropout は重みにかける（`dropout` と同じ規則: `deterministic` は Lisp の真偽値で `jit` では静的引数、偽で `dropout-rate > 0` ならキーが要る）。マスクは重みの要素ごとに独立に引く（Flax の `broadcast_dropout=False` と同じ。Flax の既定はバッチ軸とヘッドでマスクを共有するが、nabla の PRNG は JAX とビット単位で一致せず値を比べられないので、素直な独立のほうにした）
 - **バッチ次元は「先頭の任意個」**（`vmap` で足す前提にしない）。学習のコードはバッチ付きの入力を直接渡すのが普通で、Flax のフィクスチャとそのまま比べられる。中身は `dot-general` のバッチ軸（先頭のバッチ軸とヘッド）で書いてあるので、先頭の軸が 0 個でも 2 個でも同じコードで、`vmap` で外側に軸を足すこともできる
-- `key` と `value` は同じ入力 `inputs-kv` から作る（Flax の `inputs_k` と `inputs_v` を別々に渡す形は持たない。交差 attention には足りる）。`use_bias` / `normalize_qk` などのオプションは、必要になった時点で足す
+- `key` と `value` は同じ入力 `inputs-kv` から作る（Flax の `inputs_k` と `inputs_v` を別々に渡す形は持たない。交差 attention には足りる）。`normalize_qk` などのオプションは、必要になった時点で足す
 
 #### 小さな Transformer を学習する例（`examples/transformer.lisp`、issue #209）
 

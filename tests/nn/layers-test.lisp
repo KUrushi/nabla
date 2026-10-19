@@ -95,7 +95,7 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
                      "~A: ~D 番目の勾配が Flax と一致しない" name i)))))
 
 (defun %fx-dense (case prefix)
-  (make-dense :kernel (%fx-array case (concatenate 'string prefix "kernel"))
+  (make-dense :use-bias t :kernel (%fx-array case (concatenate 'string prefix "kernel"))
               :bias (%fx-array case (concatenate 'string prefix "bias"))))
 
 (defparameter *layers-case-table*
@@ -125,6 +125,21 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
                                           (%fx-dense case "2."))))
          (nabla:with-tracing (m x) (call m x)) nil))
   "(ケース名 モデルを作る関数 順伝播（traceable-function (m x)） x が整数か)。medium からも使う。")
+
+(defparameter *layers-extra-case-table*
+  (list
+   (list "dense-no-bias"
+         (lambda (case) (make-dense :kernel (%fx-array case "kernel") :bias nil :use-bias nil))
+         (nabla:with-tracing (m x) (call m x)) nil))
+  "issue #241 で足した Flax との差のケース（*layers-case-table* と同じ形）。フィクスチャの再生成が要る。
+medium からも使う。")
+
+(test layers/extra-cases-match-flax
+  "Flax の nn.Dense(use_bias=False) のフィクスチャで、eager の出力と kernel・入力の勾配が一致する
+（bias の勾配は無い）。"
+  (dolist (entry *layers-extra-case-table*)
+    (destructuring-bind (name make forward ints) entry
+      (%check-flax-case name (funcall make (%fx-case name)) forward :ints ints))))
 
 (test layers/forward-and-grads-match-flax
   "dense（rank 3 と rank 1 の入力）、layer-norm（平均のずれた入力と分散がほぼ 0 の入力）、embedding、
@@ -166,7 +181,7 @@ relu / gelu / softmax（軸 -1 と 0）/ log-softmax、dense + relu + dense の 
         (is (<= (abs (- max flax-max)) (* 0.03 flax-max)))))
     (is (equal '(256) (array-dimensions (dense-bias dense))))
     (is (every #'zerop (%elements (dense-bias dense))))
-    (is (equal '(("kernel" . :param) ("bias" . :param)) (%slot-names 'dense)))))
+    (is (equal '(("kernel" . :param) ("bias" . :param) ("use-bias" . :static)) (%slot-names 'dense)))))
 
 (test layers/embedding-init-matches-flax
   "init-embedding (1000 × 64) の embedding は N(0, 1/features)（Flax の embed 初期化）: 標準偏差が
@@ -302,7 +317,7 @@ kernel と bias の形は (in out) と (out)。"
   "dense の出力は x kernel + bias（行ごと）。入力は rank 1 から 3。"
   (seed rank in out) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3)
                             (uniform-integer :lo 1 :hi 5) (uniform-integer :lo 1 :hi 5))
-  (let* ((dense (make-dense :kernel (%rand (list in out) seed) :bias (%rand (list out) (+ seed 1))))
+  (let* ((dense (make-dense :use-bias t :kernel (%rand (list in out) seed) :bias (%rand (list out) (+ seed 1))))
          (shape (append (make-list (1- rank) :initial-element 2) (list in)))
          (x (%rand shape seed))
          (y (call dense x))
@@ -523,7 +538,7 @@ tanh 近似の定義式（係数 0.044715d0）と一致する（相対誤差 1e-
 (test layers/dense-feature-mismatch-error-names-the-layer
   "入力の最後の軸の長さが kernel の in と違うとき、eager でも grad のトレースの中でも、エラーは dense の検査が出す
 （メッセージに dense と期待する長さが入っている）。"
-  (let* ((dense (make-dense :kernel (%rand '(4 3) 1) :bias (%rand '(3) 2)))
+  (let* ((dense (make-dense :use-bias t :kernel (%rand '(4 3) 1) :bias (%rand '(3) 2)))
          (bad (%rand '(2 5) 3))
          (loss (nabla:with-tracing (m x) (nabla:reduce-sum (call m x)))))
     (dolist (thunk (list (lambda () (call dense bad))
@@ -542,3 +557,68 @@ tanh 近似の定義式（係数 0.044715d0）と一致する（相対誤差 1e-
     (is (equal (mapcar #'zerop (%elements out32)) (mapcar #'zerop (%elements out64))))
     (is (some #'zerop (%elements out32)))
     (is (notevery #'zerop (%elements out32)))))
+
+;;; --- use_bias（issue #241）---
+
+(defun %dtype-keyword (array)
+  (if (eq 'double-float (array-element-type array)) :f64 :f32))
+
+(defun %zero-bias-twin (model)
+  "bias が NIL の MODEL（dense / dense-general）と同じ kernel で、bias が 0 の（use-bias が真の）モデル。"
+  (etypecase model
+    (dense (make-dense :kernel (dense-kernel model)
+                       :bias (nabla.nn::%filled (last (array-dimensions (dense-kernel model))) (%dtype-keyword (dense-kernel model)) 0)
+                       :use-bias t))
+    (dense-general (make-dense-general :kernel (dense-general-kernel model)
+                                       :bias (nabla.nn::%filled (nthcdr (dense-general-contract-axes model)
+                                                              (array-dimensions (dense-general-kernel model)))
+                                                      (%dtype-keyword (dense-general-kernel model)) 0)
+                                       :contract-axes (dense-general-contract-axes model) :use-bias t))))
+
+(def-layer-property layers/dense-without-bias-is-dense-with-zero-bias
+  "use-bias が偽の dense は、同じ kernel で bias が 0 の dense と同じ出力と kernel の勾配を返す。bias は NIL
+（空の部分木）で葉は kernel の 1 つだけ、チェックポイントのパス名は kernel のまま。bias のある dense との差は
+行ごとに bias そのもの（入力は rank 1 から 3）。"
+  (seed rank in out) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3)
+                            (uniform-integer :lo 1 :hi 5) (uniform-integer :lo 1 :hi 5))
+  (let* ((plain (init-dense (nabla:prng-key seed) in out :use-bias nil))
+         (twin (%zero-bias-twin plain))
+         (biased (make-dense :kernel (dense-kernel plain) :bias (%rand (list out) (+ seed 1)) :use-bias t))
+         (x (%rand (append (make-list (1- rank) :initial-element 2) (list in)) seed))
+         (ct (%rand (append (make-list (1- rank) :initial-element 2) (list out)) (+ seed 2)))
+         (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (call m x) ct))))
+         (grad (funcall (nabla:grad loss) plain x ct))
+         (twin-grad (funcall (nabla:grad loss) twin x ct)))
+    (and (null (dense-bias plain)) (not (dense-use-bias plain))
+         (equalp (call twin x) (call plain x))
+         (equal '("kernel") (nabla.nn:tree-paths plain))
+         (= 1 (length (nabla:tree-leaves grad)))
+         (null (dense-bias grad))
+         (equalp (dense-kernel twin-grad) (dense-kernel grad))
+         (let ((with (call biased x)) (without (call plain x)))
+           (loop for i below (array-total-size with)
+                 always (< (abs (- (row-major-aref with i) (row-major-aref without i)
+                                   (aref (dense-bias biased) (mod i out))))
+                           1d-5))))))
+
+(test layers/dense-use-bias-init-slots-and-misuse
+  "init-dense の use-bias の既定は真（bias は 0）。偽なら bias は NIL。use-bias は :static でスロットの最後。
+真偽値でない use-bias、use-bias が真なのに bias が NIL、偽なのに bias がある dense は dense の名前入りの error。"
+  (let ((with (init-dense (nabla:prng-key 1) 3 2))
+        (without (init-dense (nabla:prng-key 1) 3 2 :use-bias nil)))
+    (is (eq t (dense-use-bias with)))
+    (is (equal '(2) (array-dimensions (dense-bias with))))
+    (is (null (dense-bias without)))
+    (is (null (dense-use-bias without)))
+    (is (equalp (dense-kernel with) (dense-kernel without)) "use-bias は kernel の初期値に影響しない")
+    (is (equal '("kernel" "bias") (nabla.nn:tree-paths with)))
+    (is (equal '("kernel") (nabla.nn:tree-paths without)))
+    (is (equal '(("kernel" . :param) ("bias" . :param) ("use-bias" . :static)) (%slot-names 'dense)))
+    (is (not (nabla:treedef= (nabla:tree-structure with) (nabla:tree-structure without)))))
+  (flet ((names (thunk) (search "dense" (or (%error-message thunk) ""))))
+    (is (names (lambda () (init-dense (nabla:prng-key 1) 3 2 :use-bias 1))) "use-bias が真偽値でない")
+    (is (names (lambda () (call (make-dense :kernel (%rand '(3 2) 1) :bias nil :use-bias t) (%rand '(3) 2))))
+        "use-bias が真なのに bias が無い")
+    (is (names (lambda () (call (make-dense :kernel (%rand '(3 2) 1) :bias (%rand '(2) 1) :use-bias nil)
+                                (%rand '(3) 2))))
+        "use-bias が偽なのに bias がある")))

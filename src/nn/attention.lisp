@@ -21,6 +21,10 @@
 ;;;;   dropout と同じ）。Flax の既定の broadcast_dropout=True（マスクをバッチ軸とヘッドで共有する）とは違い、
 ;;;;   重みの要素ごとに独立のマスクを引く（Flax の broadcast_dropout=False と同じ）。PRNG が JAX と
 ;;;;   ビット単位で一致しないので Flax と値を比べられず、独立なマスクのほうが素直なため。
+;;;; - use_bias（issue #241）: init の :use-bias（既定は真）を query / key / value / out の 4 つの
+;;;;   dense-general すべてに渡す（Flax の use_bias も 4 つの DenseGeneral すべてに効く）。偽なら 4 つとも
+;;;;   bias は NIL（パス名は query.kernel など kernel だけ）。use-bias は各 dense-general が持つので、
+;;;;   multi-head-attention 自身のスロットにはしない（食い違うスロットを増やさない）。
 ;;;; - ロジックは `defmodule` の外の `defun` に出す。トレースされる部品は
 ;;;;   `(funcall (load-time-value (nabla:with-tracing ...)) 引数...)` の形（layers.lisp と同じ）。
 
@@ -122,7 +126,9 @@
       (call (multi-head-attention-out model) (%attention-context weights v batch-rank)))))
 
 (defmodule multi-head-attention (query key value out (dropout-rate :static))
-  (:init (key num-heads in-features &key qkv-features kv-features out-features (dtype :f32) (dropout-rate 0))
+  (:init (key num-heads in-features &key qkv-features kv-features out-features (dtype :f32) (dropout-rate 0)
+                                      (use-bias t))
+   (%check-use-bias "multi-head-attention" use-bias)
    (let* ((qkv-features (or qkv-features in-features))
           (kv-features (or kv-features in-features))
           (out-features (or out-features in-features)))
@@ -135,10 +141,10 @@
      (let ((head-dim (floor qkv-features num-heads))
            (keys (split-keys key 4)))
        (make-multi-head-attention
-        :query (init-dense-general (first keys) in-features (list num-heads head-dim) :dtype dtype)
-        :key (init-dense-general (second keys) kv-features (list num-heads head-dim) :dtype dtype)
-        :value (init-dense-general (third keys) kv-features (list num-heads head-dim) :dtype dtype)
-        :out (init-dense-general (fourth keys) (list num-heads head-dim) out-features :dtype dtype)
+        :query (init-dense-general (first keys) in-features (list num-heads head-dim) :dtype dtype :use-bias use-bias)
+        :key (init-dense-general (second keys) kv-features (list num-heads head-dim) :dtype dtype :use-bias use-bias)
+        :value (init-dense-general (third keys) kv-features (list num-heads head-dim) :dtype dtype :use-bias use-bias)
+        :out (init-dense-general (fourth keys) (list num-heads head-dim) out-features :dtype dtype :use-bias use-bias)
         :dropout-rate dropout-rate))))
   (:call (self inputs-q inputs-kv mask key deterministic)
    (%multi-head-attention-apply self inputs-q inputs-kv mask key deterministic)))

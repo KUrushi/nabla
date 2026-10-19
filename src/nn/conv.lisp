@@ -13,7 +13,9 @@
 ;;;;   実効 kernel = (k - 1) dilation + 1。SAME は入力の形に依存するので呼び出しのたびに計算する。
 ;;;;   Flax の CIRCULAR / CAUSAL / REFLECT と整数の padding は持たない（必要になったら足す）。
 ;;;; - stride と kernel-dilation は正の整数か、空間の次元ごとの正の整数のリスト。入力の dilation
-;;;;   （転置畳み込み）と use_bias の引数は持たない（dense と同じく、必要になったら足す）。
+;;;;   （転置畳み込み）の引数は持たない（README の「やらないこと」）。
+;;;; - use_bias（issue #241）: :static の `use-bias`（既定は真）。偽のとき bias は NIL（空の部分木。パス名は
+;;;;   kernel のまま）で、call は bias を足さない。ほかは layers.lisp の dense と同じ。
 ;;;; - Flax の nn.Conv と同じく空間の次元数は N（kernel-size の長さ。1 次元・2 次元・3 次元…）。call は
 ;;;;   kernel の rank から N を決める。
 ;;;; - strides・padding・kernel-dilation は call のたびに正規化する（init と同じ検査）ので、make-conv で
@@ -68,14 +70,14 @@
 ;;; --- 計算 ---
 
 (defun %conv-core (x kernel bias strides padding dilations groups)
-  "バッチ付きの畳み込み + bias（PADDING は軸ごとの (low high)）。"
-  (funcall (load-time-value
-            (nabla:with-tracing (x kernel bias strides padding dilations groups)
-              (let ((y (nabla:conv-general-dilated x kernel :strides strides :padding padding
-                                                            :rhs-dilation dilations
-                                                            :feature-group-count groups)))
-                (+ y (%broadcast-last bias (%shape y))))))
-           x kernel bias strides padding dilations groups))
+  "バッチ付きの畳み込み + bias（BIAS が NIL なら足さない。PADDING は軸ごとの (low high)）。"
+  (%add-bias (funcall (load-time-value
+                       (nabla:with-tracing (x kernel strides padding dilations groups)
+                         (nabla:conv-general-dilated x kernel :strides strides :padding padding
+                                                              :rhs-dilation dilations
+                                                              :feature-group-count groups)))
+                      x kernel strides padding dilations groups)
+             bias))
 
 (defun %add-batch-axis (x)
   (funcall (load-time-value (nabla:with-tracing (x shape) (nabla:reshape x shape))) x (cons 1 (%shape x))))
@@ -83,7 +85,8 @@
 (defun %drop-batch-axis (y)
   (funcall (load-time-value (nabla:with-tracing (y shape) (nabla:reshape y shape))) y (rest (%shape y))))
 
-(defun %conv-apply (x kernel bias strides padding dilations groups)
+(defun %conv-apply (x kernel bias strides padding dilations groups use-bias)
+  (%check-bias-slot "conv" use-bias bias)
   (let* ((kernel-shape (%shape kernel))
          (spatial (- (length kernel-shape) 2))
          (x-shape (%shape x))
@@ -99,7 +102,7 @@
     (unless (= (car (last x-shape)) (* groups (nth spatial kernel-shape)))
       (error "conv: 入力のチャネル数が ~D でなければならない（kernel ~S、グループ数 ~D、入力の形 ~S）"
              (* groups (nth spatial kernel-shape)) kernel-shape groups x-shape))
-    (unless (equal (%shape bias) (last kernel-shape))
+    (when (and bias (not (equal (%shape bias) (last kernel-shape))))
       (error "conv: bias の形が出力のチャネル数 (~D) と合わない: ~S" (car (last kernel-shape)) (%shape bias)))
     (let* ((batched (if unbatched (%add-batch-axis x) x))
            (sizes (subseq (%shape batched) 1 (1+ spatial)))
@@ -110,9 +113,11 @@
 ;;; --- モジュール ---
 
 (defmodule conv (kernel bias (strides :static) (padding :static) (kernel-dilation :static)
-                          (feature-group-count :static))
+                          (feature-group-count :static) (use-bias :static))
   (:init (key in-features out-features kernel-size
-          &key (strides 1) (padding :same) (kernel-dilation 1) (feature-group-count 1) (dtype :f32))
+          &key (strides 1) (padding :same) (kernel-dilation 1) (feature-group-count 1) (dtype :f32)
+            (use-bias t))
+   (%check-use-bias "conv" use-bias)
    (unless (and (plusp (or (%list-length kernel-size) 0))
                 (every (lambda (k) (and (integerp k) (plusp k))) kernel-size))
      (error "conv: kernel-size は1つ以上の正の整数のリストでなければならない: ~S" kernel-size))
@@ -125,11 +130,12 @@
    (let ((per-group (floor in-features feature-group-count)))
      (make-conv :kernel (%lecun-normal-of-shape key (append kernel-size (list per-group out-features))
                                                 (* (reduce #'* kernel-size) per-group) dtype)
-                :bias (%filled (list out-features) dtype 0)
+                :bias (and use-bias (%filled (list out-features) dtype 0))
                   :strides (%spatial-list "strides" strides (length kernel-size))
                   :padding (%normalize-padding padding (length kernel-size))
                   :kernel-dilation (%spatial-list "kernel-dilation" kernel-dilation (length kernel-size))
-                  :feature-group-count feature-group-count)))
+                  :feature-group-count feature-group-count
+                  :use-bias use-bias)))
   (:call (self x)
    (%conv-apply x (conv-kernel self) (conv-bias self) (conv-strides self) (conv-padding self)
-                  (conv-kernel-dilation self) (conv-feature-group-count self))))
+                  (conv-kernel-dilation self) (conv-feature-group-count self) (conv-use-bias self))))

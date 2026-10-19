@@ -7,7 +7,12 @@
 ;;;; - dense: kernel (in out)、bias (out)。kernel は lecun_normal = fan_in の分散 1/in の切断正規分布
 ;;;;   （[-2, 2] で切った標準正規分布に 1/(0.87962566 sqrt(in)) をかける。Flax の
 ;;;;   variance_scaling(1, "fan_in", "truncated_normal")）。bias は 0。y = x kernel + bias で、x は
-;;;;   rank 1 以上（最後の軸が in）。use_bias の引数は持たない（必要になったら足す）。
+;;;;   rank 1 以上（最後の軸が in）。
+;;;; - use_bias（dense / dense-general / conv / multi-head-attention。issue #241）: Flax の use_bias と同じ引数
+;;;;   （init の :use-bias、既定は真）。:static のスロット `use-bias` を持ち、偽のとき `bias` スロットは NIL
+;;;;   （空の部分木）にする。NIL は葉でないので、チェックポイントのパス名は変わらず（kernel だけになる）、Flax の
+;;;;   「bias のパラメータが無い」と一致する。call は bias が NIL なら足さない。use-bias と bias が食い違う
+;;;;   （真なのに NIL、偽なのにある）モジュールは make-* で作れても call が error にする（%check-bias-slot）。
 ;;;; - layer-norm: 最後の軸で正規化。Flax と同じ「速い分散」 var = max(mean(x^2) - mean(x)^2, 0)、
 ;;;;   epsilon の既定 1e-6（f64 は 1d-6）、y = (x - mean) * rsqrt(var + epsilon) * scale + bias。
 ;;;;   scale は 1、bias は 0。
@@ -160,20 +165,37 @@ X は配列かトレーサ。AXIS が範囲外なら error。"
 (defun %lecun-normal (key in-features out-features dtype)
   (%lecun-normal-of-shape key (list in-features out-features) in-features dtype))
 
-(defun %dense-apply (x kernel bias)
-  (%check-last-axis "dense" x kernel)
-  (funcall (load-time-value
-            (nabla:with-tracing (x kernel bias)
-              (let ((y (nabla:dot x kernel)))
-                (+ y (%broadcast-last bias (%shape y))))))
-           x kernel bias))
+(defun %check-use-bias (name use-bias)
+  "USE-BIAS が T か NIL であることを確かめる（init の引数）。"
+  (unless (member use-bias '(t nil))
+    (error "~A: use-bias は T か NIL でなければならない: ~S" name use-bias)))
 
-(defmodule dense (kernel bias)
-  (:init (key in-features out-features &key (dtype :f32))
+(defun %check-bias-slot (name use-bias bias)
+  "USE-BIAS（:static のスロット）と BIAS（NIL か配列）が食い違っていないことを確かめる。"
+  (cond ((and use-bias (null bias))
+         (error "~A: use-bias が真なのに bias が NIL（bias の配列を渡すか、use-bias を NIL にする）" name))
+        ((and (not use-bias) bias)
+         (error "~A: use-bias が偽なのに bias がある（bias は NIL にする）" name))))
+
+(defun %add-bias (y bias)
+  "Y の最後の軸に BIAS（最後の軸の長さのベクトル）を足す。BIAS が NIL なら Y そのもの。"
+  (if bias
+      (funcall (load-time-value (nabla:with-tracing (y bias) (+ y (%broadcast-last bias (%shape y))))) y bias)
+      y))
+
+(defun %dense-apply (x kernel bias use-bias)
+  (%check-last-axis "dense" x kernel)
+  (%check-bias-slot "dense" use-bias bias)
+  (%add-bias (funcall (load-time-value (nabla:with-tracing (x kernel) (nabla:dot x kernel))) x kernel) bias))
+
+(defmodule dense (kernel bias (use-bias :static))
+  (:init (key in-features out-features &key (dtype :f32) (use-bias t))
+   (%check-use-bias "dense" use-bias)
    (make-dense :kernel (%lecun-normal key in-features out-features dtype)
-               :bias (%filled (list out-features) dtype 0)))
+               :bias (and use-bias (%filled (list out-features) dtype 0))
+               :use-bias use-bias))
   (:call (self x)
-   (%dense-apply x (dense-kernel self) (dense-bias self))))
+   (%dense-apply x (dense-kernel self) (dense-bias self) (dense-use-bias self))))
 
 ;;; --- layer-norm ---
 

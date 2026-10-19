@@ -40,9 +40,11 @@
   "フィクスチャのケース名。medium からも使う。")
 
 (defun %att-projection (case prefix)
-  (make-dense-general :kernel (%fx-array case (concatenate 'string prefix ".kernel"))
-                      :bias (%fx-array case (concatenate 'string prefix ".bias"))
-                      :contract-axes (if (string= prefix "out") 2 1)))
+  (let ((bias (%fx-entry case (concatenate 'string prefix ".bias"))))
+    (make-dense-general :use-bias (and bias t)
+                        :kernel (%fx-array case (concatenate 'string prefix ".kernel"))
+                        :bias (and bias (%fx-array case (concatenate 'string prefix ".bias")))
+                        :contract-axes (if (string= prefix "out") 2 1))))
 
 (defun %att-model (case)
   (make-multi-head-attention :query (%att-projection case "query") :key (%att-projection case "key")
@@ -124,6 +126,20 @@
         (loop for a in actual for e in expected for leaf in (%att-grad-names case)
               do (%att-check-leaf name leaf a e))))))
 
+(defparameter *attention-no-bias-case-names* '("self-no-bias" "cross-padding-no-bias")
+  "use_bias=False のフィクスチャのケース名（フィクスチャの再生成が要る）。medium からも使う。")
+
+(test attention/without-bias-matches-flax
+  "Flax の MultiHeadDotProductAttention(use_bias=False) のフィクスチャ（自己 attention と、padding マスク付きの交差
+attention）で、出力と kernel・入力の勾配が一致する。4 つの射影の bias はどれも NIL。"
+  (dolist (name *attention-no-bias-case-names*)
+    (let ((model (%att-model (%att-case name))))
+      (is (every #'null (mapcar (lambda (f) (dense-general-bias (funcall f model)))
+                                '(multi-head-attention-query multi-head-attention-key
+                                  multi-head-attention-value multi-head-attention-out)))
+          "~A: bias が NIL でない" name))
+    (%check-attention-case name)))
+
 (test attention/forward-and-grads-match-flax
   "マスクなし・因果・padding（全部のキーが隠れた行を含む）・交差（入力の幅が違う）・バッチ軸なし・
 バッチ軸2つ（因果 + padding）の各ケースで、順伝播の出力と、パラメータと入力の勾配が Flax と一致する。"
@@ -183,13 +199,13 @@
 
 (defun %random-attention (seed in kv-in heads dim out)
   "f64 の乱数のパラメータの multi-head-attention（bias も 0 でない）。"
-  (flet ((proj (s fan features) (make-dense-general :kernel (%rand (append (list fan) features) s :f64)
+  (flet ((proj (s fan features) (make-dense-general :use-bias t :kernel (%rand (append (list fan) features) s :f64)
                                                     :bias (%rand features (+ s 1) :f64)
                                                     :contract-axes 1)))
     (make-multi-head-attention
      :query (proj seed in (list heads dim)) :key (proj (+ seed 10) kv-in (list heads dim))
      :value (proj (+ seed 20) kv-in (list heads dim))
-     :out (make-dense-general :kernel (%rand (list heads dim out) (+ seed 30) :f64)
+     :out (make-dense-general :use-bias t :kernel (%rand (list heads dim out) (+ seed 30) :f64)
                               :bias (%rand (list out) (+ seed 31) :f64)
                               :contract-axes 2)
      :dropout-rate 0)))
@@ -294,16 +310,16 @@ softmax）と一致する。全部のキーが隠れた行も含む。"
   "スコアが大きくても（最大値を引くので）出力は有限で、重みは 1 に正規化される: kv の値が全部同じ
 ベクトル v なら、出力は（スコアによらず）v の out への射影そのもの。"
   (let* ((model (make-multi-head-attention
-                 :query (make-dense-general :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
+                 :query (make-dense-general :use-bias t :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
                                             :bias (make-array '(1 2) :element-type 'single-float :initial-element 0.0)
                                             :contract-axes 1)
-                 :key (make-dense-general :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
+                 :key (make-dense-general :use-bias t :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
                                           :bias (make-array '(1 2) :element-type 'single-float :initial-element 0.0)
                                           :contract-axes 1)
-                 :value (make-dense-general :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 0.0)
+                 :value (make-dense-general :use-bias t :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 0.0)
                                             :bias (make-array '(1 2) :element-type 'single-float :initial-contents '((1.0 2.0)))
                                             :contract-axes 1)
-                 :out (make-dense-general :kernel (make-array '(1 2 2) :element-type 'single-float
+                 :out (make-dense-general :use-bias t :kernel (make-array '(1 2 2) :element-type 'single-float
                                                                        :initial-contents '(((1.0 0.0) (0.0 1.0))))
                                           :bias (make-array '(2) :element-type 'single-float :initial-element 0.0)
                                           :contract-axes 2)
@@ -316,6 +332,67 @@ softmax）と一致する。全部のキーが隠れた行も含む。"
                                          :dtype :f32 :rtol 1d-5 :atol 1d-5)))))
 
 ;;; --- init ---
+
+(defun %zero-bias-attention (model)
+  "bias が NIL の MODEL と同じ kernel で bias が 0 の multi-head-attention。"
+  (flet ((twin (f) (%zero-bias-twin (funcall f model))))
+    (make-multi-head-attention :query (twin 'multi-head-attention-query) :key (twin 'multi-head-attention-key)
+                               :value (twin 'multi-head-attention-value) :out (twin 'multi-head-attention-out)
+                               :dropout-rate 0)))
+
+(def-layer-property attention/without-bias-is-the-zero-bias-model
+  "use-bias が偽の multi-head-attention は、4 つの射影（query / key / value / out）のどれにも bias が無い（NIL）。
+出力は、同じ kernel で bias が 0 のモデルと、ループの参照実装（f64、マスクの有無）の両方と一致し、葉は 4 つの kernel
+だけ（パス名は query.kernel key.kernel value.kernel out.kernel）、勾配の葉も 4 つで 0 bias のモデルの kernel の勾配と
+等しい。"
+  (seed batch tq tk heads dim masked) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 2)
+                                             (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 4)
+                                             (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 3)
+                                             (uniform-integer :lo 0 :hi 1))
+  (let* ((features (* heads dim))
+         (plain (init-multi-head-attention (nabla:prng-key seed) heads features :use-bias nil :dtype :f64))
+         (twin (%zero-bias-attention plain))
+         (x (%rand (list batch tq features) (+ seed 1) :f64))
+         (kv (%rand (list batch tk features) (+ seed 2) :f64))
+         (mask (when (plusp masked) (%random-bits (list batch 1 tq tk) (+ seed 3))))
+         (out (call plain x kv mask nil t))
+         (ct (%rand (array-dimensions out) (+ seed 4) :f64))
+         (loss (nabla:with-tracing (m x kv mask ct) (nabla:reduce-sum (* (call m x kv mask nil t) ct))))
+         (grad (funcall (nabla:grad loss) plain x kv mask ct))
+         (twin-grad (funcall (nabla:grad loss) twin x kv mask ct)))
+    (and (every #'null (mapcar (lambda (f) (dense-general-bias (funcall f plain)))
+                               '(multi-head-attention-query multi-head-attention-key
+                                 multi-head-attention-value multi-head-attention-out)))
+         (every #'null (mapcar (lambda (f) (dense-general-use-bias (funcall f plain)))
+                               '(multi-head-attention-query multi-head-attention-key
+                                 multi-head-attention-value multi-head-attention-out)))
+         (equal '("query.kernel" "key.kernel" "value.kernel" "out.kernel") (nabla.nn:tree-paths plain))
+         (equalp out (call twin x kv mask nil t))
+         (allclose out (%ref-attention twin x kv mask) :dtype :f64)
+         (= 4 (length (nabla:tree-leaves grad)))
+         (every #'equalp
+                (mapcar #'dense-general-kernel
+                        (list (multi-head-attention-query grad) (multi-head-attention-key grad)
+                              (multi-head-attention-value grad) (multi-head-attention-out grad)))
+                (mapcar #'dense-general-kernel
+                        (list (multi-head-attention-query twin-grad) (multi-head-attention-key twin-grad)
+                              (multi-head-attention-value twin-grad) (multi-head-attention-out twin-grad)))))))
+
+(test attention/use-bias-init-and-misuse
+  "init-multi-head-attention の use-bias の既定は真（4 つの射影に bias）。真偽値でなければ層の名前入りの error。
+use-bias が偽でも qkv / kv / out の幅の指定は効く。"
+  (let ((with (init-multi-head-attention (nabla:prng-key 1) 2 4))
+        (without (init-multi-head-attention (nabla:prng-key 1) 2 4 :qkv-features 6 :kv-features 5 :out-features 3
+                                                                    :use-bias nil)))
+    (is (every #'dense-general-use-bias (list (multi-head-attention-query with) (multi-head-attention-out with))))
+    (is (equal '(4 2 3) (array-dimensions (dense-general-kernel (multi-head-attention-query without)))))
+    (is (equal '(5 2 3) (array-dimensions (dense-general-kernel (multi-head-attention-key without)))))
+    (is (equal '(2 3 3) (array-dimensions (dense-general-kernel (multi-head-attention-out without)))))
+    (is (equal '("query.kernel" "query.bias" "key.kernel" "key.bias" "value.kernel" "value.bias"
+                 "out.kernel" "out.bias")
+               (nabla.nn:tree-paths with))))
+  (is (search "multi-head-attention"
+              (or (%error-message (lambda () (init-multi-head-attention (nabla:prng-key 1) 2 4 :use-bias 1))) ""))))
 
 (test attention/init-shapes-names-and-distribution-match-flax
   "init-multi-head-attention (4 ヘッド、qkv = 64、入力 64) の形が Flax と同じ: query/key/value の kernel (64 4 16)、
