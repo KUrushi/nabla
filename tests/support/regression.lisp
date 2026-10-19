@@ -25,3 +25,14 @@ PACKAGE (文字列またはシンボル) が in-package 先になり、既定は
       (with-open-file (stream path :direction :output :if-does-not-exist :create)
         (format stream "~&(in-package #:~(~A~))~%" (string package))))
     path))
+
+;;; check-it のバグへの対処（issue #220）。check-it.lisp の SAVE-REGRESSION は、失敗例を
+;;; ファイルに追記するのと同時に (push string (get regression-id 'regression-cases)) で
+;;; 生の文字列をそのまま積む。ところが再生側（check-it%）は積まれたものを REGRESSION-CASE
+;;; オブジェクトとみなして (datum regression-case) を呼ぶ。そのため、同じプロセスで失敗した
+;;; あとに同じ id でもう一度 check-it を走らせる（同じテストの再実行、id の共有）と、
+;;; NO-APPLICABLE-METHOD CHECK-IT::DATUM ("94169") で落ち、本当の失敗が隠れる。
+;;; ファイルから load した REGRESSION-CASE は、DATUM を read-from-string した値を持つので、
+;;; 文字列に対する DATUM も同じ読み方で値を返す。
+(defmethod check-it::datum ((datum string))
+  (read-from-string datum))

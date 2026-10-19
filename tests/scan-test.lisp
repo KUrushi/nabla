@@ -273,6 +273,100 @@ optimization_barrier の組を1つずつ持ち、同じ型の2つの ys も別�
     (is (null (search "broadcast_in_dim" text)) "長さ 1 の scan の ys の初期値が broadcast_in_dim で作られている")
     (is (null (search "bk0" text)) "長さ 1 の scan の本体に ys の barrier がある")))
 
+(test scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body
+  "本体の中に別の while（入れ子の scan）がある scan は、ys のバッファを optimization_barrier に通さない
+（IREE 3.11 の local-task が、外側の ys の barrier の結果へ内側の while をまたいで書くと、負荷のもとで
+外側の ys の1行を 0 のまま返す。docs/iree-upstream-bugs.md の 7）。いちばん内側の scan は通す。
+実行時の確認は scripts/check-iree-repros.sh（まれに起きるので、既定のスイートには置かない）。"
+  (let* ((graph (nb::trace-to-graph
+                 (nb:with-tracing (h xss)
+                   (multiple-value-bind (carry ys)
+                       (nb:scan (nb:with-tracing (outer xs)
+                                  (multiple-value-bind (inner-carry inner-ys)
+                                      (nb:scan (nb:with-tracing (carry x)
+                                                 (let ((g (+ (first carry) (first x))))
+                                                   (values (list g) (list g))))
+                                               (list (first outer)) (list (first xs)))
+                                    (values (list (first inner-carry)) (list (first inner-ys)))))
+                                (list h) (list xss))
+                     (values (first carry) (first ys))))
+                 (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 2 3) :f32))))
+         (lines (%scan-text-lines (nb:emit-stablehlo graph)))
+         (barriers (remove-if-not (lambda (line) (and (search "optimization_barrier %" line)
+                                                      (search "_by0 :" line)))
+                                  lines)))
+    (is (= 1 (length barriers))
+        "ys の barrier は内側の scan の1つだけのはず: ~S" barriers)
+    (is (search "tensor<2x3xf32>" (first barriers)) "残った barrier が内側の ys（2x3）のものでない: ~S" barriers)
+    (is (= 1 (count-if (lambda (line) (search "_bk0 = " line)) lines))
+        "bk0 は内側の scan の1つだけのはず")))
+
+(test scan/scan-with-cond-in-body-has-no-ys-barrier
+  "本体の中に cond*（stablehlo.if）がある scan も ys の barrier を付けない（while と同じく、barrier の結果へ
+制御構造をはさんで書くと、IREE 3.11 の local-task が負荷のもとで ys の行を 0 のまま返す。
+docs/iree-upstream-bugs.md の 7）。本体に制御構造の無い scan（長さ 4）は付ける。"
+  (flet ((graph (with-cond)
+           (nb::trace-to-graph
+            (nb:with-tracing (h xs)
+              (multiple-value-bind (carry ys)
+                  (nb:scan (nb:with-tracing (carry x)
+                             (let ((h (if with-cond
+                                          (nb:cond* (< (nb:reduce-sum (first carry)) 0.5)
+                                                    (nb:with-tracing (c) (tanh c))
+                                                    (nb:with-tracing (c) (tanh (tanh c)))
+                                                    (first carry))
+                                          (tanh (first carry)))))
+                               (values (list (+ h (first x))) (list h))))
+                           (list h) (list xs))
+                (values (first carry) (first ys))))
+            (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 3) :f32)))))
+    (let ((plain (nb:emit-stablehlo (graph nil)))
+          (with-cond (nb:emit-stablehlo (graph t))))
+      (is (search "stablehlo.if" with-cond) "cond* が stablehlo.if として出ていない")
+      (is (search "_bk0 = stablehlo.optimization_barrier" plain) "制御構造の無い scan に ys の barrier が無い")
+      (is (null (search "_bk0" with-cond)) "cond* を含む本体に ys の barrier がある")
+      (is (search "stablehlo.dynamic_update_slice %scan_" with-cond) "dynamic_update_slice が出ていない"))))
+
+(test scan/emits-the-reverse-index-only-for-reverse-scans
+  "reverse の scan は書き込み先の添字を length-1-i（%<p>_idx = subtract）にし、順方向の scan は
+カウンタ（%<p>_bi）をそのまま使う。"
+  (flet ((text (reverse)
+           (nb:emit-stablehlo
+            (nb::trace-to-graph
+             (nb:with-tracing (h xs)
+               (multiple-value-bind (carry ys)
+                   (nb:scan (nb:with-tracing (carry x)
+                              (let ((h (+ (first carry) (first x))))
+                                (values (list h) (list h))))
+                            (list h) (list xs) :reverse reverse)
+                 (values (first carry) (first ys))))
+             (list (nb:make-aval '(3) :f32) (nb:make-aval '(4 3) :f32))))))
+    (let ((fwd (text nil)) (rev (text t)))
+      (is (null (search "_idx" fwd)) "順方向の scan に _idx がある")
+      (is (search "_idx = stablehlo.subtract" rev) "reverse の scan の添字が subtract でない")
+      (is (search "stablehlo.dynamic_slice %" rev :start2 (search "_idx = stablehlo.subtract" rev))
+          "reverse の x_t の読み出しが _idx の後ろに無い")
+      (let ((slice (search "stablehlo.dynamic_slice" rev)))
+        (is (search "_idx" rev :start2 slice :end2 (search "sizes" rev :start2 slice))
+            "reverse の dynamic_slice が _idx を使っていない"))
+      (let ((slice (search "stablehlo.dynamic_slice" fwd)))
+        (is (search "_bi" fwd :start2 slice :end2 (search "sizes" fwd :start2 slice))
+            "順方向の dynamic_slice がカウンタ _bi を使っていない")))))
+
+(test scan/length-zero-emits-no-while
+  "長さ 0 の scan は while を出さず、carry を reshape で素通しにし、ys は空の定数にする。"
+  (let ((text (nb:emit-stablehlo
+               (nb::trace-to-graph
+                (nb:with-tracing (h xs)
+                  (multiple-value-bind (carry ys)
+                      (nb:scan (nb:with-tracing (carry x) (values (list (+ (first carry) (first x))) (list (first x))))
+                               (list h) (list xs))
+                    (values (first carry) (first ys))))
+                (list (nb:make-aval '(3) :f32) (nb:make-aval '(0 3) :f32))))))
+    (is (null (search "stablehlo.while" text)) "長さ 0 の scan が while を出している")
+    (is (search "stablehlo.reshape" text) "carry が reshape で素通しになっていない")
+    (is (search "tensor<0x3xf32>" text) "ys が空の形の定数になっていない")))
+
 (test scan/emits-a-distinct-salt-for-each-scan-ys-init
   "同じ入力の順方向と逆方向の scan を並べても、カウンタと ys の初期値のスカラーを通す
 optimization_barrier のオペランドは scan ごとに違う（モジュールの中で一意な整数の constant も通す）。

@@ -415,7 +415,7 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
 
 ## IREE を上げたときに回避策を外せるか確かめる手順
 
-IREE 3.11.0 のコンパイラのバグ3件（issue #73、#165。詳細・最小の再現・上流への報告の下書きは [`docs/iree-upstream-bugs.md`](iree-upstream-bugs.md)）に対して、nabla は回避策を入れている。`third_party/iree.lock` を上げる PR では、次の手順で各バグが直ったかを確かめ、直ったものだけ回避策を外す（外すのは別の PR に分けてよい）。
+IREE 3.11.0 のバグ（コンパイラ3件・ランタイム）（issue #73、#165。詳細・最小の再現・上流への報告の下書きは [`docs/iree-upstream-bugs.md`](iree-upstream-bugs.md)）に対して、nabla は回避策を入れている。`third_party/iree.lock` を上げる PR では、次の手順で各バグが直ったかを確かめ、直ったものだけ回避策を外す（外すのは別の PR に分けてよい）。
 
 ### 1. 単体の iree-compile で最小の再現を流す
 
@@ -435,7 +435,9 @@ run-bug     local-task-162-inputs.mlir               REPRODUCED      crashes=20/
 run-control local-task-161-inputs.mlir               OK              crashes=0/20 exit-codes=0
 ```
 
-最後の2行（`run-bug` / `run-control`）はコンパイルした vmfb を `iree-run-module --device=local-task` で実行する版で、入力 162 個以上の関数を local-task device で呼ぶと落ちるバグ（#199）の確認。直ったら `nabla.iree` の `+local-task-max-inputs+` の検査（`src/iree/execute.lisp`）も外す。
+`race-bug` / `race-control` の行（`nested-scan-ys-*.mlir`。`docs/iree-upstream-bugs.md` の 7、#220）は、実行時にまれに結果が壊れるバグの確認で、スクリプトが CPU の数だけ負荷をかけながら local-task と local-sync の出力を `--race-runs` 回（既定 4000）比べる。`race-bug` が `NOT-REPRODUCED` になったら、`--race-runs` を増やして（起きる確率は 0.05〜2%）もう一度確かめてから、`src/scan.lisp` の「ys の barrier を付けない」条件（本体の中の制御構造）を外せるか判断する。
+
+`run-bug` / `run-control` の行はコンパイルした vmfb を `iree-run-module --device=local-task` で実行する版で、入力 162 個以上の関数を local-task device で呼ぶと落ちるバグ（#199）の確認。直ったら `nabla.iree` の `+local-task-max-inputs+` の検査（`src/iree/execute.lisp`）も外す。
 
 `while-constant-carry.mlir` は非決定的に落ちる（3.11.0 では 50 回中 49 回）ので、`NOT-REPRODUCED` を「直った」と判断するのは `--runs 50` 以上で 1 回も落ちなかったときにする。`bug` の行が `NOT-REPRODUCED` になったら、上流の issue（`docs/iree-upstream-bugs.md` の各節）が閉じているかも確かめる。
 

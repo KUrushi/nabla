@@ -18,7 +18,11 @@
     (%with-scan-iree-check (graph "vjp-partial") "IREE の部分的な scan の vjp graph の結果が eager と一致しなかった")))
 
 (define-iree-test vjp-scan/iree-elman-grad-matches-eager
-    "Elman 型の RNN（h' = tanh(W h + U x + b)、損失は最後の h の総和）の grad graph が IREE と eager で一致する。"
+    "Elman 型の RNN（h' = tanh(W h + U x + b)、損失は最後の h の総和）の grad graph が IREE と eager で一致する。
+入力は ±0.3 に縮める（[-1, 1) のままだと W の行の和が 1 を超えて逆向きの伝播が増幅され、和が打ち消し合う
+出力（seed 23260 の db[1]、値 -0.03）で誤差 1.46e-6 が f32 の既定の atol 1e-6 を超える。at-size テストと同じ、
+勾配が発散しない well-conditioned な範囲。縮めたあとの最大誤差は 3000 seed で 3.7e-8 で、既定の許容誤差に収まる。
+issue #220）"
   (skip-unless-iree :library :both)
   (let* ((f (nb:with-tracing (w u b h0 xs)
               (nb:reduce-sum
@@ -28,7 +32,8 @@
                                (list h0) (list xs) :length 5)))))
          (graph (nb::trace-to-graph
                  (let ((g (nb:grad f :argnums '(0 1 2 3 4))))
-                   (nb:with-tracing (w u b h0 xs) (values-list (funcall g w u b h0 xs))))
+                   (nb:with-tracing (w u b h0 xs)
+                     (values-list (funcall g (* w 0.3) (* u 0.3) (* b 0.3) (* h0 0.3) (* xs 0.3)))))
                  (list (nb:make-aval '(3 3) :f32) (nb:make-aval '(3 3) :f32) (nb:make-aval '(3) :f32)
                        (nb:make-aval '(3) :f32) (nb:make-aval '(5 3) :f32)))))
     (%with-scan-iree-check (graph "elman-grad") "IREE の RNN の grad graph の結果が eager と一致しなかった")))
