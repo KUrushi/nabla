@@ -109,6 +109,30 @@ def extra_cases(rng):
     cases = []
     cases.append(case("dense-no-bias", nn.Dense(4, use_bias=False), {"kernel": rnd(rng, 5, 4)},
                       rnd(rng, 2, 3, 5), rnd(rng, 2, 3, 4)))
+
+    # layer-norm の use_scale / use_bias / reduction_axes / feature_axes。平均がずれた入力
+    # （generate の layer-norm と同じ。許容誤差は layers-test.lisp の %case-tolerance）
+    x = rnd(rng, 2, 3, 6, scale=2.0, shift=3.0)
+    ct = rnd(rng, 2, 3, 6)
+    scale6 = rnd(rng, 6, scale=0.5, shift=1.0)
+    bias6 = rnd(rng, 6)
+    cases.append(case("layer-norm-no-scale", nn.LayerNorm(epsilon=1e-6, use_scale=False), {"bias": bias6}, x, ct))
+    cases.append(case("layer-norm-no-bias", nn.LayerNorm(epsilon=1e-6, use_bias=False), {"scale": scale6}, x, ct))
+    cases.append(case("layer-norm-no-scale-no-bias", nn.LayerNorm(epsilon=1e-6, use_scale=False, use_bias=False),
+                      {}, x, ct))
+    # 群ごとに正規化する軸を変える。reduction_axes=(1, 2)、feature_axes は既定の最後の軸（scale と bias は (5)）
+    cases.append(case("layer-norm-reduction-axes", nn.LayerNorm(epsilon=1e-6, reduction_axes=(1, 2)),
+                      {"scale": rnd(rng, 5, scale=0.5, shift=1.0), "bias": rnd(rng, 5)},
+                      rnd(rng, 2, 3, 4, 5, scale=2.0, shift=3.0), rnd(rng, 2, 3, 4, 5)))
+    # 真ん中の軸（-2）で正規化する。scale と bias は最後の軸の大きさ
+    cases.append(case("layer-norm-reduction-middle-axis", nn.LayerNorm(epsilon=1e-6, reduction_axes=-2),
+                      {"scale": rnd(rng, 5, scale=0.5, shift=1.0), "bias": rnd(rng, 5)},
+                      rnd(rng, 4, 3, 5, scale=2.0, shift=3.0), rnd(rng, 4, 3, 5)))
+    # feature_axes=(1, 2): scale と bias は入力の軸 1, 2 の大きさ (3, 4)
+    cases.append(case("layer-norm-feature-axes",
+                      nn.LayerNorm(epsilon=1e-6, reduction_axes=(1, 2), feature_axes=(1, 2)),
+                      {"scale": rnd(rng, 3, 4, scale=0.5, shift=1.0), "bias": rnd(rng, 3, 4)},
+                      rnd(rng, 2, 3, 4, scale=2.0, shift=3.0), rnd(rng, 2, 3, 4)))
     return cases
 
 
