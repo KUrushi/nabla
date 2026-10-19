@@ -1,6 +1,6 @@
-# IREE 上流に報告するコンパイラのバグ（issue #73、#165）
+# IREE 上流に報告するコンパイラのバグ（issue #73、#165、#203）
 
-nabla が固定している IREE 3.11.0 のコンパイラで見つけたバグ3件の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165）にも同じリンクを記録する。
+nabla が固定している IREE 3.11.0 のコンパイラで見つけたバグ5件の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165）にも同じリンクを記録する。
 
 IREE を上げたときに、これらのバグが直ったかを確かめて回避策を外す手順は [`docs/iree-build.md`](iree-build.md) の「IREE を上げたときに回避策を外せるか確かめる手順」にある。
 
@@ -351,3 +351,23 @@ LLVM 23.0.0git, optimized build), Linux x86_64.
 
 - バグ1: [iree-org/iree#24947](https://github.com/iree-org/iree/pull/24947)（PR、Open）が同じ `saturatingMul` の assert を緩める。issue としての報告は見つからなかった
 - バグ2・3: 該当する issue は見つからなかった（近いが別物: [#22974](https://github.com/iree-org/iree/issues/22974) は ConvertToStream の list 型の変換での segfault）
+
+## 4. f32 に convert した畳み込みで片方の operand が元の dtype に戻る（#203）
+
+- **状態**: 未報告（ユーザーが報告する）。上流 issue: `<link>`
+- **再現ファイル**: [`docs/iree-repros/conv-convert-operand-type.mlir`](iree-repros/conv-convert-operand-type.mlir)（対照: `conv-convert-operand-type-barrier.mlir`）
+- **期待**: bf16 の2入力を `stablehlo.convert` で f32 にして f32 で畳み込み、結果を bf16 に戻す形がコンパイルできる
+- **実際**: `expects lhs and rhs to have compatible element type. Got: 'bf16' and 'f32'`（クラッシュではなく通常のコンパイルエラー）。カーネルが `stablehlo.transpose`（入出力チャネルの入れ替え）を経ているときに出る。`reverse` + convert + convolution は通る。convert を transpose の前に置いても、片方の入力だけの `optimization_barrier` でも直らない。f16 も同じ
+- **原因の見立て**: convert を畳み込みの operand に畳み込む（折り畳む）最適化が、片方の operand だけ元の dtype に戻すように見える（未調査）
+- **nabla 側の回避策**: `src/primitives/conv.lisp` の `%conv-emit-lines` が、f32 に convert した2入力をまとめて `stablehlo.optimization_barrier`（多値）に通してから畳み込む。再現ファイルの `-barrier` が通ることで確かめた。`tests/iree/conv-grad-test.lisp` の `convolution/iree-bf16-convert-conv-bugs-still-reproduce` が「今も落ちる」ことを守っている（直れば失敗するので、回避策ごと消す）
+
+## 5. O/G = 1 の depthwise 畳み込みを bf16 / f16 から f32 に convert すると tensor.collapse_shape で落ちる（#203）
+
+- **状態**: 未報告（ユーザーが報告する）。上流 issue: `<link>`
+- **再現ファイル**: [`docs/iree-repros/conv-depthwise-collapse-shape.mlir`](iree-repros/conv-depthwise-collapse-shape.mlir)（対照: `conv-depthwise-collapse-shape-barrier.mlir`）
+- **期待**: コンパイルが通る（f32 のままなら通る）
+- **実際**: `'tensor.collapse_shape' op expected collapsed type to be 'tensor<3x2x3xbf16>', but got 'tensor<3x2x3xf32>'`（rhs `[3, 2, 1, 3]`、`feature_group_count = 3`）。前方の畳み込みの時点で落ちる（nabla issue #197 で入った形）
+- **原因の見立て**: #4 と同じ（convert の折り畳み後に dtype が食い違う）
+- **nabla 側の回避策**: #4 と同じ `optimization_barrier`。同じテストが守っている
+
+なお、この2件は SIGSEGV ではなく通常のコンパイルエラーなので、`scripts/check-iree-repros.sh`（クラッシュの数を数える）の対象には入れていない。確かめるには上の `iree-compile` のコマンドを使う。

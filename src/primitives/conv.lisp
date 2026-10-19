@@ -82,22 +82,30 @@
                          lhs-dilation rhs-dilation groups batch-groups)
   "convolution の :emit 本体。bf16 / f16 は入力を f32 に convert してから畳み込み、
 結果を戻す（dot-general の issue #54 と同じく、バックエンドが入力の dtype のまま累積して
-eager（single-float 累積）とずれるのを避ける）。"
+eager（single-float 累積）とずれるのを避ける）。f32 に直した2つの入力は、まとめて
+stablehlo.optimization_barrier に通してから畳み込む。IREE 3.11 は convert を畳み込みに
+畳み込もうとして、片方の入力だけ元の dtype に戻して element type の不一致で落ちることがある
+（lhs の転置の rev / transpose を経たカーネル、O/G = 1 の depthwise。docs/stablehlo-ops.md）。"
   (let ((half (member (aval-dtype out-aval) '(:bf16 :f16))))
     (flet ((type-of-aval (aval) (tensor-type-string (if half (make-aval (aval-shape aval) :f32) aval))))
-      (let* ((lhs-name (if half (%dot-aux-name "lhs32" out-name) (first in-names)))
-             (rhs-name (if half (%dot-aux-name "rhs32" out-name) (second in-names)))
+      (let* ((lhs-name (if half (%dot-aux-name "lhs" out-name) (first in-names)))
+             (rhs-name (if half (%dot-aux-name "rhs" out-name) (second in-names)))
+             (lhs32-name (%dot-aux-name "lhs32" out-name))
+             (rhs32-name (%dot-aux-name "rhs32" out-name))
              (acc-name (if half (%dot-aux-name "acc" out-name) out-name))
              (conv (%conv-line acc-name lhs-name rhs-name
                                (type-of-aval (first in-avals)) (type-of-aval (second in-avals))
                                (type-of-aval out-aval)
                                strides padding lhs-dilation rhs-dilation groups batch-groups)))
         (if half
-            (format nil "~A~%~A~%~A~%~A"
-                    (%dot-convert-line lhs-name (first in-names) (tensor-type-string (first in-avals))
+            (format nil "~A~%~A~%~A~%~A~%~A"
+                    (%dot-convert-line lhs32-name (first in-names) (tensor-type-string (first in-avals))
                                        (type-of-aval (first in-avals)))
-                    (%dot-convert-line rhs-name (second in-names) (tensor-type-string (second in-avals))
+                    (%dot-convert-line rhs32-name (second in-names) (tensor-type-string (second in-avals))
                                        (type-of-aval (second in-avals)))
+                    (format nil "~A, ~A = stablehlo.optimization_barrier ~A, ~A : ~A, ~A"
+                            lhs-name rhs-name lhs32-name rhs32-name
+                            (type-of-aval (first in-avals)) (type-of-aval (second in-avals)))
                     conv
                     (%dot-convert-line out-name acc-name (type-of-aval out-aval)
                                        (tensor-type-string out-aval)))

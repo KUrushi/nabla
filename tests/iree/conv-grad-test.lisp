@@ -82,3 +82,94 @@ jit した vmap(convolution) は、jit しない vmap と f32 の許容誤差で
                        "設定 ~S in-axes ~S で jit した vmap が eager と一致しない" config in-axes)
                 (nb::%jit-cache-forget (nb::%jitted-function-fn jg))))))))
     (gc-and-run-finalizers)))
+
+;;; --- bf16 / f16（issue #203。IREE 3.11 の convert の畳み込みの回避策） ---
+
+(defparameter *conv-half-configs*
+  ;; (lhs-shape rhs-shape strides padding lhs-dilation rhs-dilation fgc bgc)
+  '(((2 5 6 4) (3 3 4 3) (1 1) ((1 1) (1 1)) (1 1) (1 1) 1 1)
+    ((2 7 6 2) (3 2 2 4) (2 3) ((1 0) (2 0)) (2 1) (1 2) 1 1)
+    ((2 5 5 4) (2 2 2 6) (1 1) ((0 0) (0 0)) (1 1) (1 1) 2 1)
+    ;; O/G = 1 の depthwise。順方向も rhs の転置も、回避策が無いと bf16 / f16 でコンパイルできない
+    ((1 5 6 3) (3 2 1 3) (1 1) ((0 0) (0 0)) (1 1) (1 1) 3 1))
+  "bf16 / f16 の jit(grad) を確かめる設定。")
+
+(defun %conv-half-params (config)
+  (destructuring-bind (lhs-shape rhs-shape strides padding ld rd fgc bgc) config
+    (declare (ignore lhs-shape rhs-shape))
+    (list :strides strides :padding padding :lhs-dilation ld :rhs-dilation rd
+          :feature-group-count fgc :batch-group-count bgc)))
+
+(define-iree-test convolution/jit-grad-bf16-f16-matches-f32-promoted-eager
+    "bf16 / f16 の convolution の jit(grad)（lhs の勾配 argnums 0、rhs の勾配 argnums 1、両方）を IREE (local)
+で実行した結果は、入力を f32 に上げた eager の grad と dtype ごとの許容誤差で一致する（O/G = 1 の depthwise を含む）。
+IREE 3.11 は f32 に convert した畳み込みの片方の入力を元の dtype に戻して element type の不一致で落ちることがあり、
+emit は f32 の2入力をまとめて optimization_barrier に通して避ける。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (nb:*compile-cache-directory* nil))
+    (dolist (dtype '(:bf16 :f16))
+      (dolist (config *conv-half-configs*)
+        (let* ((params (%conv-half-params config))
+               (out-shape (nb:aval-shape
+                           (apply (nb::primitive-abstract-eval (nb::find-primitive :convolution))
+                                  (list (nb:make-aval (first config) dtype) (nb:make-aval (second config) dtype))
+                                  params)))
+               (x (make-random-array (make-array-spec (first config) dtype) :seed 5))
+               (w (make-random-array (make-array-spec (second config) dtype) :seed 6))
+               (ct (make-random-array (make-array-spec out-shape dtype) :seed 7))
+               (f (%conv-grad-values-function params))
+               (expected (multiple-value-list
+                          (funcall f (nb::decode-float16-array x dtype) (nb::decode-float16-array w dtype)
+                                   (nb::decode-float16-array ct dtype)))))
+          (dolist (argnums '((0) (1) (0 1)))
+            (let* ((loss (nb::%make-traceable-function
+                          '(x w ct)
+                          (lambda (x w ct)
+                            (nb:reduce-sum
+                             (nb::%trace-eqn :mul (list (apply #'nb::%trace-eqn :convolution (list x w) params)
+                                                        ct))))))
+                   (g (nb:grad loss :argnums argnums))
+                   (gf (nb::%make-traceable-function
+                        '(x w ct)
+                        (lambda (&rest args)
+                          (let ((r (apply g args))) (if (listp r) (values-list r) r)))))
+                   (jf (nb:jit gf :backend backend)))
+              (with-device-arrays ((dx (to-device x backend :dtype dtype))
+                                   (dw (to-device w backend :dtype dtype))
+                                   (dct (to-device ct backend :dtype dtype)))
+                (unwind-protect
+                     (let ((actual (multiple-value-list (funcall jf dx dw dct))))
+                       (is (= (length argnums) (length actual)))
+                       (loop for a in actual for n in argnums
+                             do (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
+                                  (is (allclose (decode-array a dtype) (nth n expected) :rtol rtol :atol atol)
+                                      "~S ~S argnums ~S: 勾配 ~D が f32 に上げた eager と一致しない"
+                                      dtype config argnums n))))
+                  (nb::%jit-cache-forget gf))))))))
+    (gc-and-run-finalizers)))
+
+;;; --- IREE 3.11 の convert の畳み込みのバグが今も再現するか（回避策を外せるかの目印） ---
+
+(defun %compile-repro (backend file)
+  "docs/iree-repros/FILE をコンパイルして、通れば真、IREE のコンパイルエラーなら偽を返す。"
+  (handler-case
+      (progn (nabla:backend-compile
+              backend (uiop:read-file-string
+                       (asdf:system-relative-pathname "nabla" (format nil "docs/iree-repros/~A" file))))
+             t)
+    (error () nil)))
+
+(define-iree-test convolution/iree-bf16-convert-conv-bugs-still-reproduce
+    "docs/iree-repros/ の conv-convert-operand-type.mlir（transpose を経たカーネルの bf16 → f32 の畳み込み）と
+conv-depthwise-collapse-shape.mlir（O/G = 1 の depthwise）は IREE 3.11.0 で今もコンパイルに失敗し、
+2つの f32 を optimization_barrier に通した対照（-barrier.mlir）は通る。IREE を上げて直ったらこのテストが
+落ちるので、emit（src/primitives/conv.lisp の %conv-emit-lines）の optimization_barrier を外して、
+このテストと docs/iree-upstream-bugs.md の該当項目を消す。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (nb:*compile-cache-directory* nil))
+    (is (not (%compile-repro backend "conv-convert-operand-type.mlir")))
+    (is (not (%compile-repro backend "conv-depthwise-collapse-shape.mlir")))
+    (is (%compile-repro backend "conv-convert-operand-type-barrier.mlir"))
+    (is (%compile-repro backend "conv-depthwise-collapse-shape-barrier.mlir"))))

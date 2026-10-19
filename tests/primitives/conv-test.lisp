@@ -239,7 +239,7 @@ PRIMITIVE-ERROR を出すなら真。"
                          :feature-group-count 1 :batch-group-count 2))))
 
 (test convolution/emit-golden
-  "f32 は stablehlo.convolution 1行、bf16 は f32 に convert して畳み込み、結果を戻す4行になる。"
+  "f32 は stablehlo.convolution 1行、bf16 は f32 に convert して optimization_barrier を通し、畳み込み、結果を戻す5行になる。"
   (let ((params '(:strides (2 1) :padding ((1 2) (0 0)) :lhs-dilation (1 1) :rhs-dilation (1 2)
                   :feature-group-count 3)))
     (is (string= "%0 = stablehlo.convolution(%a, %b) dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f], window = {stride = [2, 1], pad = [[1, 2], [0, 0]], lhs_dilate = [1, 1], rhs_dilate = [1, 2]} {batch_group_count = 1 : i64, feature_group_count = 3 : i64} : (tensor<2x7x6x3xf32>, tensor<3x2x1x6xf32>) -> tensor<2x5x4x6xf32>"
@@ -248,7 +248,8 @@ PRIMITIVE-ERROR を出すなら真。"
                         "%0" (nb:make-aval '(2 5 4 6) :f32) params)))
     (is (string= "%lhs32_0 = stablehlo.convert %a : (tensor<2x7x6x3xbf16>) -> tensor<2x7x6x3xf32>
 %rhs32_0 = stablehlo.convert %b : (tensor<3x2x1x6xbf16>) -> tensor<3x2x1x6xf32>
-%acc_0 = stablehlo.convolution(%lhs32_0, %rhs32_0) dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f], window = {stride = [2, 1], pad = [[1, 2], [0, 0]], lhs_dilate = [1, 1], rhs_dilate = [1, 2]} {batch_group_count = 1 : i64, feature_group_count = 3 : i64} : (tensor<2x7x6x3xf32>, tensor<3x2x1x6xf32>) -> tensor<2x5x4x6xf32>
+%lhs_0, %rhs_0 = stablehlo.optimization_barrier %lhs32_0, %rhs32_0 : tensor<2x7x6x3xf32>, tensor<3x2x1x6xf32>
+%acc_0 = stablehlo.convolution(%lhs_0, %rhs_0) dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f], window = {stride = [2, 1], pad = [[1, 2], [0, 0]], lhs_dilate = [1, 1], rhs_dilate = [1, 2]} {batch_group_count = 1 : i64, feature_group_count = 3 : i64} : (tensor<2x7x6x3xf32>, tensor<3x2x1x6xf32>) -> tensor<2x5x4x6xf32>
 %0 = stablehlo.convert %acc_0 : (tensor<2x5x4x6xf32>) -> tensor<2x5x4x6xbf16>"
                  (apply #'%emit-of :convolution '("%a" "%b")
                         (list (nb:make-aval '(2 7 6 3) :bf16) (nb:make-aval '(3 2 1 6) :bf16))
