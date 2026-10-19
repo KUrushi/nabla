@@ -43,7 +43,7 @@ Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
     (let* ((backend (nabla:find-backend :iree))
            (nabla:*compile-cache-directory* nil)
            (base (init-multi-head-attention (nabla:prng-key 3) 2 8))
-           (model (make-multi-head-attention :query (multi-head-attention-query base)
+           (model (make-multi-head-attention :broadcast-dropout t :query (multi-head-attention-query base)
                                              :key (multi-head-attention-key base)
                                              :value (multi-head-attention-value base)
                                              :out (multi-head-attention-out base) :dropout-rate 0.3f0))
@@ -128,3 +128,22 @@ Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
              (is (every #'%close-f32 (nabla:tree-leaves jit-grad) (nabla:tree-leaves eager-grad))))
         (nabla::%jit-cache-forget f)
         (nabla::%jit-cache-forget g)))))
+
+(test attention/broadcast-dropout-jit-matches-eager-for-both-settings
+  "broadcast-dropout が真でも偽でも、attention の dropout を jit した出力は eager と同じ（同じキー → 同じマスク）で、
+バッチ軸とヘッドで共有されるマスクのときの出力は共有しないときと違う（issue #241）。"
+  (when (%layers-require-iree-or-skip)
+    (let* ((backend (nabla:find-backend :iree))
+           (nabla:*compile-cache-directory* nil)
+           (f (nabla:with-tracing (m x key) (call m x x nil key nil)))
+           (jf (nabla:jit f :backend backend))
+           (x (%rand '(2 6 8) 5))
+           (key (nabla:prng-key 77))
+           (outputs nil))
+      (unwind-protect
+           (dolist (broadcast '(t nil))
+             (let ((model (init-multi-head-attention (nabla:prng-key 3) 2 8 :dropout-rate 0.3 :broadcast-dropout broadcast)))
+               (is (%close-f32 (funcall jf model x key) (funcall f model x key)) "broadcast-dropout ~S" broadcast)
+               (push (funcall jf model x key) outputs)))
+        (nabla::%jit-cache-forget f))
+      (is (not (equalp (first outputs) (second outputs)))))))
