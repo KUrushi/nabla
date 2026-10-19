@@ -132,6 +132,8 @@
   (signals nb:pytree-error (nb:tree-flatten '(1 . 2)))
   (signals nb:pytree-error (nb:tree-flatten (list 1 (list* 2 3 4))))
   (signals nb:pytree-error (nb:tree-unflatten (nb:tree-structure '(1 2)) '(1 . 2)))
+  ;; 循環リストは終わらずに回り続けるのではなく PYTREE-ERROR
+  (signals nb:pytree-error (nb:tree-flatten (let ((l (list 1 2))) (setf (cddr l) l) l)))
   (signals nb:pytree-error (nb:defpytree cons :flatten #'identity :unflatten #'identity))
   (signals nb:pytree-error (nb:defpytree simple-vector :flatten #'identity :unflatten #'identity))
   (signals nb:pytree-error (nb:defpytree no-such-class-for-pytree-test
@@ -148,7 +150,14 @@
   (signals nb:pytree-error (nb:defpytree vector :flatten #'identity :unflatten #'identity))
   (signals nb:pytree-error (nb:defpytree simple-vector :flatten #'identity :unflatten #'identity))
   (signals nb:pytree-error (nb:defpytree array :flatten #'identity :unflatten #'identity))
-  (signals nb:pytree-error (nb:defpytree simple-array :flatten #'identity :unflatten #'identity)))
+  (signals nb:pytree-error (nb:defpytree simple-array :flatten #'identity :unflatten #'identity))
+  ;; 葉として扱うと決めた型（数値・型特化した配列・文字列・トレーサ・treedef）も登録できない。
+  ;; 登録できると、どの木の中の数値も節になってしまう
+  (signals nb:pytree-error (nb:defpytree fixnum :flatten #'identity :unflatten #'identity))
+  (signals nb:pytree-error (nb:defpytree single-float :flatten #'identity :unflatten #'identity))
+  (signals nb:pytree-error (nb:defpytree string :flatten #'identity :unflatten #'identity))
+  (signals nb:pytree-error (nb:defpytree nb::tracer :flatten #'identity :unflatten #'identity))
+  (signals nb:pytree-error (nb:defpytree nb:treedef :flatten #'identity :unflatten #'identity)))
 
 ;; DEFPYTREE をテストの実行中に呼ぶための型（ロード時に登録済みの PYTREE-TEST-PAIR と違い、
 ;; 登録そのものの振る舞いを確かめる）。
@@ -172,6 +181,11 @@
     (is (equal '(1) (nb:tree-leaves box)))
     (nb:defpytree pytree-test-box
       :flatten (lambda (b) (values (coerce (pytree-test-box-contents b) 'vector) nil))
+      :unflatten (lambda (aux children) (declare (ignore aux)) children))
+    (signals nb:pytree-error (nb:tree-flatten box))
+    ;; 真リストでない子のリストも PYTREE-ERROR（素の TYPE-ERROR にしない）
+    (nb:defpytree pytree-test-box
+      :flatten (lambda (b) (values (cons (pytree-test-box-contents b) 2) nil))
       :unflatten (lambda (aux children) (declare (ignore aux)) children))
     (signals nb:pytree-error (nb:tree-flatten box))
     (signals nb:pytree-error (nb:defpytree pytree-test-box :flatten nil :unflatten #'list))

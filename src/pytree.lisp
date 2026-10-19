@@ -106,8 +106,12 @@ PYTREE-ERROR の子。"))
 (defun %register-pytree-node (type flatten unflatten)
   (unless (and (symbolp type) type (find-class type nil))
     (%pytree-error "DEFPYTREE の型はクラス名でなければならない: ~S" type))
-  (when (member type '(t cons null list sequence vector simple-vector array simple-array))
-    (%pytree-error "組み込みの型 ~S は DEFPYTREE で登録できない（リストと SIMPLE-VECTOR は既定の節）" type))
+  ;; 葉と決めた型（数値・配列・文字列・トレーサ・treedef など）を節として登録できると、
+  ;; どの木の中のその値も節になってしまう（登録は大域的）ので拒む
+  (when (or (eq type t)
+            (subtypep type '(or sequence array number character symbol function condition
+                             tracer treedef)))
+    (%pytree-error "組み込みの型・葉と決めた型 ~S は DEFPYTREE で登録できない（リストと SIMPLE-VECTOR は既定の節）" type))
   (unless (and (functionp flatten) (functionp unflatten))
     (%pytree-error "DEFPYTREE の :FLATTEN と :UNFLATTEN は関数でなければならない: ~S ~S"
                    flatten unflatten))
@@ -126,7 +130,9 @@ FLATTEN は (lambda (object) ...) で、子のリストと補助データの2値
 UNFLATTEN は (lambda (aux children) ...) で、補助データと子のリストから TYPE の
 オブジェクトを作る。
 
-リスト・SIMPLE-VECTOR などの組み込みの型は登録できない（PYTREE-ERROR）。"
+リスト・SIMPLE-VECTOR などの組み込みの型と、葉と決めた型（数値・配列・文字列・
+シンボル・関数・コンディション・トレーサ・treedef）は登録できない（PYTREE-ERROR）。
+FLATTEN が真リストでない子を返したときも PYTREE-ERROR。"
   `(%register-pytree-node ',type ,flatten ,unflatten))
 
 (defun %pytree-node-entry (object)
@@ -134,15 +140,18 @@ UNFLATTEN は (lambda (aux children) ...) で、補助データと子のリス�
 
 ;;; --- flatten / unflatten ---
 
+(defun %proper-list-p (object)
+  "OBJECT が真リスト（NIL で終わり、循環しない）なら真。"
+  (and (listp object) (handler-case (list-length object) (type-error () nil)) t))
+
 (defun %flatten-into (tree collect)
   "TREE の spec を返す。葉は左から順に COLLECT（1引数の関数）に渡す。"
   (cond
     ((listp tree)
-     (cons :list
-           (loop for rest on tree
-                 collect (%flatten-into (car rest) collect)
-                 unless (listp (cdr rest))
-                   do (%pytree-error "真リストでないコンスは PyTree にできない: ~S" tree))))
+     (unless (%proper-list-p tree)
+       ;; 木そのものは印字しない（循環リストの印字は終わらない）
+       (%pytree-error "真リストでない（ドット対や循環を含む）コンスは PyTree にできない"))
+     (cons :list (mapcar (lambda (child) (%flatten-into child collect)) tree)))
     ((simple-vector-p tree)
      (cons :vector (loop for child across tree collect (%flatten-into child collect))))
     (t
@@ -150,7 +159,7 @@ UNFLATTEN は (lambda (aux children) ...) で、補助データと子のリス�
        (if (null entry)
            (progn (funcall collect tree) :leaf)
            (multiple-value-bind (children aux) (funcall (car entry) tree)
-             (unless (listp children)
+             (unless (%proper-list-p children)
                (%pytree-error "~S の FLATTEN が子のリストを返さなかった: ~S"
                               (class-name (class-of tree)) children))
              (unless (%equal-comparable-p aux)
