@@ -111,6 +111,52 @@ THUNK の値を CLEANUP に渡す（SETUP と CLEANUP は時間に入れない�
     (funcall release input)
     (nabla-call "BACKEND-UNLOAD" backend module)))
 
+(defparameter *profile-ops*
+  ;; (名前 入力の形のリスト StableHLO の本体)。large の MLP（N1024 D256 H512 C10）の
+  ;; 学習ステップに出てくる演算を1つずつ切り出したもの（issue #193）。
+  '(("op/dot-1024x256x512" ((1024 256) (256 512))
+     "%r = stablehlo.dot %a0, %a1 : (tensor<1024x256xf32>, tensor<256x512xf32>) -> tensor<1024x512xf32>
+  return %r : tensor<1024x512xf32>")
+    ("op/dot-grad-w1-256x1024x512" ((1024 256) (1024 512))
+     "%r = stablehlo.dot_general %a0, %a1, contracting_dims = [0] x [0] : (tensor<1024x256xf32>, tensor<1024x512xf32>) -> tensor<256x512xf32>
+  return %r : tensor<256x512xf32>")
+    ("op/dot-1024x512x10" ((1024 512) (512 10))
+     "%r = stablehlo.dot %a0, %a1 : (tensor<1024x512xf32>, tensor<512x10xf32>) -> tensor<1024x10xf32>
+  return %r : tensor<1024x10xf32>")
+    ("op/tanh-1024x512" ((1024 512))
+     "%r = stablehlo.tanh %a0 : tensor<1024x512xf32>
+  return %r : tensor<1024x512xf32>")
+    ("op/reduce-sum-1024x512" ((1024 512))
+     "%z = stablehlo.constant dense<0.0> : tensor<f32>
+  %r = stablehlo.reduce(%a0 init: %z) applies stablehlo.add across dimensions = [1] : (tensor<1024x512xf32>, tensor<f32>) -> tensor<1024xf32>
+  return %r : tensor<1024xf32>"))
+  "PROFILE-OPS が1つずつ invoke の時間を測る演算。")
+
+(defun op-module-text (shapes body)
+  (format nil "func.func @main(~{~A~^, ~}) -> ~A {~%  ~A~%}"
+          (loop for shape in shapes for i from 0
+                collect (format nil "%a~D: tensor<~{~D~^x~}xf32>" i shape))
+          (subseq body (+ (search "return %r : " body) (length "return %r : ")))
+          body))
+
+(defun profile-ops (label backend kind iterations)
+  "*PROFILE-OPS* の各演算を、入力を送った後の invoke だけで測る（出力の読み出しは含めない）。"
+  (let ((release (release-fn kind))
+        (state (sb-ext:seed-random-state 7)))
+    (dolist (op *profile-ops*)
+      (destructuring-bind (name shapes body) op
+        (let* ((module (compile-text backend (op-module-text shapes body)))
+               (inputs (mapcar (lambda (shape)
+                                 (nabla-call "TO-DEVICE" (random-f32-array state shape 1.0) backend))
+                               shapes)))
+          (flet ((invoke (_) (declare (ignore _))
+                   (apply (sym "NABLA" "BACKEND-INVOKE") backend module "main" inputs)))
+            (dotimes (i 10) (funcall release (invoke nil)))
+            (emit (result-record label "ops" name
+                                 (repeat-ms iterations #'invoke :cleanup release))))
+          (mapc release inputs)
+          (nabla-call "BACKEND-UNLOAD" backend module))))))
+
 (defun profile-mlp (label config backend kind iterations)
   "MLP の学習ステップ（jit した value-and-grad）の呼び出しを段に分ける。"
   (destructuring-bind (&key n h c &allow-other-keys) (rest (assoc config *configs* :test #'string=))
@@ -176,6 +222,8 @@ THUNK の値を CLEANUP に渡す（SETUP と CLEANUP は時間に入れない�
             (profile-transfers label backend kind iterations)
             (format *error-output* "~&[profile] ~A: trivial invoke~%" label)
             (profile-trivial label backend kind iterations)
+            (format *error-output* "~&[profile] ~A: ops~%" label)
+            (profile-ops label backend kind iterations)
             (dolist (config configs)
               (format *error-output* "~&[profile] ~A ~A: mlp~%" label config)
               (finish-output *error-output*)
