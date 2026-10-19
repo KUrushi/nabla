@@ -453,7 +453,8 @@ MAX/MIN が引数の順序で挙動を変える問題を再発させないため
 (test primitives/sqrt-rsqrt/eager-matches-jax-fixture
   "sqrt / rsqrt の eager 実装は、JAX（jax.lax.sqrt / rsqrt。tests/fixtures/sqrt/generate.py）
 のフィクスチャと全 dtype で一致する（NaN・±無限大・±0 は厳密、それ以外は dtype の許容誤差）。
-入力には ±0・±inf・NaN・負の値・非正規数を含む。"
+入力には ±0・±inf・NaN・負の値を含む。f32 / f64 / bf16 の非正規数は XLA CPU が 0 に
+丸めるので入れていない（generate.py）。"
   (dolist (dtype *dtypes*)
     (let* ((rows (load-sqrt-jax-fixture dtype))
            (x (sqrt-fixture-input-array dtype rows))

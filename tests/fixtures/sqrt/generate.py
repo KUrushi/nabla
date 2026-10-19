@@ -4,7 +4,9 @@
 issue #196。nabla のライブラリ本体は Python / JAX に依存しない（CLAUDE.md）ので、
 これはフィクスチャを作るときにだけ使う開発用スクリプト。生成した jax-sqrt.lisp を
 コミットし、venv 自体はコミットしない。各行は (dtype 入力のビット sqrt のビット
-rsqrt のビット)。±0・±inf・NaN・負の値・非正規数を含む。
+rsqrt のビット)。±0・±inf・NaN・負の値を含む。f32 / f64 / bf16 の非正規数は
+XLA CPU が 0 に丸める（flush-to-zero）ので入れていない（nabla の eager と IREE は
+丸めない）。f16 の非正規数（1e-5、1e-8）は入っている。
 
 使い方 (jax[cpu]==0.10.2 の入った venv で):
     python3 tests/fixtures/sqrt/generate.py > tests/fixtures/sqrt/jax-sqrt.lisp
