@@ -6,14 +6,14 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 
 ## 現状
 
-フェーズ0〜3は完了した。フェーズ4（Flax 相当）の主要部分ができ、モデルを書いて学習し、保存するところまでを下の「チュートリアル」の節で通して試せる。
+フェーズ0〜4は完了した。現在はフェーズ5（Grain 相当。データ供給）に着手する。モデルを書いて学習し、保存するところまでを、下の「チュートリアル」の節で通して試せる。
 
 - フェーズ0（IREE 疎通）: GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は、2026-10-10 に Colab の Tesla T4 で確かめた（`scripts/colab-gpu-check.sh`、結果は [docs/iree-build.md](docs/iree-build.md)）。知見は [docs/phase0-report.md](docs/phase0-report.md)
 - フェーズ1（トレースと jit。親 issue #35）: 知見は [docs/phase1-report.md](docs/phase1-report.md)
 - フェーズ2（grad。2層 MLP の学習、PJRT バックエンドと IREE の比較。親 issue #90）: 知見は [docs/phase2-report.md](docs/phase2-report.md)
 - フェーズ3（vmap・制御構造 `cond*` / `while-loop` / `scan`・PRNG。親 issue #124）: 知見は [docs/phase3-report.md](docs/phase3-report.md)
-- フェーズ4（Flax 相当。親 issue #194）は進行中。できたもの: PyTree と、それを受け取る `jit` / `grad` / `vmap` / 制御構造、`defmodule`、基本レイヤー（`dense` / `layer-norm` / `embedding` / `dropout` / `sequential`）、`dense-general` と multi-head attention、オプティマイザ（Optax 相当）、safetensors とチェックポイント、小さな Transformer を Flax と数値を合わせて学習する例、このチュートリアル。畳み込みの層（#207）など、残りは親 issue #194 で管理している
-- フェーズ5（Grain 相当。データ供給）は未着手
+- フェーズ4（Flax 相当。PyTree と `defmodule`・レイヤー・オプティマイザ・チェックポイント・小さな Transformer の学習。親 issue #194）: 知見は [docs/phase4-report.md](docs/phase4-report.md)
+- フェーズ5（Grain 相当。データ供給）: 着手する（`nabla/data` はまだ無い）
 
 ロードマップ（計画タブより）:
 
@@ -23,8 +23,8 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 | 1. トレースと jit | Lisp 関数から StableHLO を出す | 完了 |
 | 2. grad | 逆伝播 | 完了 |
 | 3. vmap と制御構造 | JAX 相当の変換を揃える | 完了 |
-| 4. Flax 相当 | モデル記述 | 進行中 |
-| 5. Grain 相当 | データ供給 | 未着手 |
+| 4. Flax 相当 | モデル記述 | 完了 |
+| 5. Grain 相当 | データ供給 | 着手 |
 
 ## 要件
 
@@ -708,7 +708,7 @@ tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
-docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase3-report.md
+docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase4-report.md
 examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp, transformer.lisp, tutorial.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
