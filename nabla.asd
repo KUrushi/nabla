@@ -303,6 +303,8 @@
                (:file "tests/pytree-test")
                ;; jit / grad / value-and-grad の PyTree（issue #199）
                (:file "tests/pytree-function-test")
+               ;; cond* / while-loop / scan の PyTree（issue #201）
+               (:file "tests/pytree-control-test")
 
 
 
@@ -438,6 +440,8 @@
                (:file "tests/iree/pytree-function-test")
                ;; vmap の PyTree の IREE 実行（issue #200）
                (:file "tests/iree/vmap-pytree-test")
+               ;; cond* / while-loop / scan の PyTree の IREE 実行（issue #201）
+               (:file "tests/iree/pytree-control-test")
                ;; local-task device の入力 162 個以上のバグの回避（issue #199）
                (:file "tests/iree/input-limit-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
@@ -580,4 +584,6 @@
                (:file "tests/nn/module-vmap-test")
                ;; オプティマイザ（Optax 相当、issue #205）
                (:file "tests/nn/optimizer-test")
-               (:file "tests/nn/optimizer-train-test")))
+               (:file "tests/nn/optimizer-train-test")
+               ;; defmodule のモジュールを scan の carry・ys にする（issue #201）
+               (:file "tests/nn/module-control-test")))

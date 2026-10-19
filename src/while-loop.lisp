@@ -1,9 +1,11 @@
 ;;;; while-loop: 反復回数がトレース時に決まらないループ（issue #131）。
 ;;;; JAX の lax.while_loop に相当する、サブグラフを持つ高階プリミティブ。
 ;;;;
-;;;; 公開 API は (WHILE-LOOP COND-FN BODY-FN INIT)。carry は配列（かトレーサ）の
-;;;; リストで、COND-FN / BODY-FN はどちらも carry のリストを1つ受け取る（契約 C4。
-;;;; フェーズ4でリストを PyTree に一般化しても API は変わらない）。
+;;;; 公開 API は (WHILE-LOOP COND-FN BODY-FN INIT)。carry は配列（かトレーサ）を葉とする
+;;;; PyTree（issue #201。リストは既定の節なのでこれまでの呼び出しはそのまま動く）で、
+;;;; COND-FN / BODY-FN はどちらも carry の木を1つ受け取る（契約 C4）。内部ではこれまでどおり
+;;;; フラットな葉のリストで扱い、BODY-FN の戻り値の treedef が INIT と違えば
+;;;; WHILE-LOOP-CARRY-MISMATCH にする。
 ;;;;
 ;;;; 内部表現: プリミティブ :WHILE-LOOP（複数出力）。params は :COND / :BODY（閉じた
 ;;;; GRAPH）と :N-CARRIES。cond / body が閉包で外側のトレーサを捕まえると（closure
@@ -59,9 +61,8 @@ WHILE-LOOP-CONDITION-ERROR を見る。"))
 
 (define-condition while-loop-argument-error (while-loop-error) ()
   (:documentation
-   "WHILE-LOOP の引数の型が不正なときに signal する: INIT が空でない（真の）リスト
-でない・要素が配列かトレーサでない、COND-FN / BODY-FN が関数でない、BODY-FN が
-リストを返さない。"))
+   "WHILE-LOOP の引数の型が不正なときに signal する: INIT が PyTree として不正か葉を持たない・
+葉が配列かトレーサでない、COND-FN / BODY-FN が関数でない、BODY-FN の戻り値が PyTree として不正。"))
 
 (define-condition while-loop-carry-mismatch (while-loop-error)
   ((expected :initarg :expected :reader while-loop-carry-mismatch-expected)
@@ -69,7 +70,8 @@ WHILE-LOOP-CONDITION-ERROR を見る。"))
   (:documentation
    "BODY-FN が返した carry の AVAL（個数・shape・dtype）が INIT の AVAL と一致
 しないときに signal する（トレース時。ループが0回で終わる場合でも検出する）。
-EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL のリスト。"))
+EXPECTED は INIT の葉の AVAL のリスト、ACTUAL は BODY-FN の戻り値の葉の AVAL のリスト。
+木の形（treedef）が違うときも、これらは葉の AVAL のリストで、木の形はメッセージにだけ出る。"))
 
 (define-condition while-loop-condition-error (while-loop-error) ()
   (:documentation
@@ -176,18 +178,28 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
 
 ;;; ---- 公開 API ----
 
-(defun %while-loop-carry-list-p (init)
-  (and (consp init) (null (cdr (last init)))))
+(defun %while-loop-flatten (tree what)
+  "TREE（carry の木）を (VALUES 葉のリスト treedef) にする。PyTree として不正（真リストでない
+コンスなど）なら WHILE-LOOP-ARGUMENT-ERROR。"
+  (handler-case (tree-flatten tree)
+    (pytree-error (condition)
+      (%while-loop-fail 'while-loop-argument-error "~A が PyTree として不正: ~A" what condition))))
 
 (defun %while-loop-check-arguments (cond-fn body-fn init)
+  "引数を検査して、INIT の (VALUES 葉のリスト treedef) を返す。"
   (unless (functionp cond-fn)
     (%while-loop-fail 'while-loop-argument-error "COND-FN は関数でなければならない: ~S" cond-fn))
   (unless (functionp body-fn)
     (%while-loop-fail 'while-loop-argument-error "BODY-FN は関数でなければならない: ~S" body-fn))
-  (unless (%while-loop-carry-list-p init)
-    (%while-loop-fail 'while-loop-argument-error
-                      "INIT は空でない配列（かトレーサ）のリストでなければならない: ~S" init))
-  (dolist (carry init)
+  (multiple-value-bind (leaves treedef) (%while-loop-flatten init "INIT")
+    (when (null leaves)
+      (%while-loop-fail 'while-loop-argument-error
+                        "INIT は葉（配列かトレーサ）を1つ以上持つ PyTree でなければならない: ~S" init))
+    (%while-loop-check-leaves leaves)
+    (values leaves treedef)))
+
+(defun %while-loop-check-leaves (leaves)
+  (dolist (carry leaves)
     (unless (or (typep carry 'tracer) (typep carry '(and array (not string))))
       (%while-loop-fail 'while-loop-argument-error
                         "carry は配列かトレーサでなければならない: ~S" carry))
@@ -199,15 +211,16 @@ EXPECTED は INIT の AVAL のリスト、ACTUAL は BODY-FN の出力の AVAL �
           (%while-loop-fail 'while-loop-argument-error
                             "carry の配列の dtype を決められない（bf16 / f16 はトレーサで渡す）: ~S" carry))))))
 
-(defun %while-loop-trace-regions (cond-fn body-fn avals)
-  "COND-FN / BODY-FN を AVALS（carry の aval）でサブグラフにトレースして、検査したうえで、
+(defun %while-loop-trace-regions (cond-fn body-fn avals treedef)
+  "COND-FN / BODY-FN を AVALS（carry の葉の aval、木の形は TREEDEF）でサブグラフにトレースして、検査したうえで、
 全オペランド形式（ファイル冒頭）に揃えた (VALUES COND-GRAPH BODY-GRAPH CAPTURED) を返す。
 CAPTURED は cond と body が捕まえた外側のトレーサの和集合（EQ で重複なし）で、cond が
 捕まえた順、続いて body だけが捕まえた順に並ぶ。"
-  (let ((n (length avals)))
+  (let ((n (length avals))
+        (body-treedef nil))
     (multiple-value-bind (cond-graph cond-captured)
         (%call-with-trace avals
-                          (lambda (&rest carries) (funcall cond-fn carries))
+                          (lambda (&rest carries) (funcall cond-fn (tree-unflatten treedef carries)))
                           *current-trace*)
       (unless (equalp (mapcar #'var-aval (graph-outvars cond-graph)) (list *%while-cond-aval*))
         (%while-loop-fail 'while-loop-condition-error
@@ -216,13 +229,18 @@ CAPTURED は cond と body が捕まえた外側のトレーサの和集合（EQ
       (multiple-value-bind (body-graph body-captured)
           (%call-with-trace avals
                             (lambda (&rest carries)
-                              (let ((outs (funcall body-fn carries)))
-                                (unless (%while-loop-carry-list-p outs)
-                                  (%while-loop-fail 'while-loop-argument-error
-                                                    "BODY-FN は carry のリストを返さなければならない: ~S" outs))
+                              (multiple-value-bind (outs out-treedef)
+                                  (%while-loop-flatten
+                                   (funcall body-fn (tree-unflatten treedef carries)) "BODY-FN の戻り値")
+                                (setf body-treedef out-treedef)
                                 (values-list outs)))
                             *current-trace*)
         (let ((actual (mapcar #'var-aval (graph-outvars body-graph))))
+          (unless (treedef= treedef body-treedef)
+            (error 'while-loop-carry-mismatch
+                   :expected avals :actual actual
+                   :format-control "BODY-FN の戻り値の木の形が INIT と一致しない: 期待 ~S / 実際 ~S"
+                   :format-arguments (list treedef body-treedef)))
           (unless (equalp actual avals)
             (error 'while-loop-carry-mismatch
                    :expected avals :actual actual
@@ -244,21 +262,21 @@ CAPTURED は cond と body が捕まえた外側のトレーサの和集合（EQ
           (values cond-full body-full captured))))))
 
 (defun while-loop (cond-fn body-fn init)
-  "COND-FN が真の間 BODY-FN を繰り返し、最後の carry のリストを返す（JAX の
-lax.while_loop）。INIT は配列（トレース中はトレーサでもよい）の空でないリスト。
-COND-FN / BODY-FN は carry のリストを1つ受け取る関数（WITH-TRACING で作る）:
-COND-FN は rank 0 の :i1（比較の結果など）を返し、BODY-FN は INIT と同じ AVAL
-（個数・shape・dtype）の carry のリストを返す。carry は INIT の個数と順序のまま
-返る。eager の結果は INIT・閉包で捕まえた配列と EQ でありうる（README「配列の不変性」）。
+  "COND-FN が真の間 BODY-FN を繰り返し、最後の carry を返す（JAX の lax.while_loop）。
+INIT は PyTree（リスト・ベクタ・DEFPYTREE / DEFMODULE の型を入れ子にした木。配列そのもの
+でもよい）で、葉は配列（トレース中はトレーサでもよい）、葉は1つ以上。
+COND-FN / BODY-FN は carry の木を1つ受け取る関数（WITH-TRACING で作る）:
+COND-FN は rank 0 の :i1（比較の結果など）を返し、BODY-FN は INIT と同じ木の形（TREEDEF=）で、
+葉の AVAL（shape・dtype）も同じ carry の木を返す。結果は INIT と同じ木の形で返る。eager の結果は INIT・閉包で捕まえた配列と EQ でありうる（README「配列の不変性」）。
 
 配列だけを渡して WITH-TRACING の外から呼べば eager に、WITH-TRACING / JIT の中では
 :WHILE-LOOP の eqn（StableHLO では stablehlo.while）としてトレースされる。COND-FN /
 BODY-FN は外側のトレーサを閉包で捕まえてよい（loop 不変の値として扱われる）。
 
-エラー（どれも WHILE-LOOP-ERROR の子）: INIT がリストでない・空・要素が配列でない、
-関数でない、BODY-FN がリストを返さない → WHILE-LOOP-ARGUMENT-ERROR。BODY-FN の
-出力の AVAL が INIT と違う → WHILE-LOOP-CARRY-MISMATCH（トレース時に検出する。0回で
-終わる場合でも）。COND-FN の結果が rank 0 の :i1 でない → WHILE-LOOP-CONDITION-ERROR。
+エラー（どれも WHILE-LOOP-ERROR の子）: INIT が PyTree として不正・葉が無い・葉が配列でない、
+関数でない、BODY-FN の戻り値が PyTree として不正 → WHILE-LOOP-ARGUMENT-ERROR。BODY-FN の
+戻り値の木の形か葉の AVAL が INIT と違う → WHILE-LOOP-CARRY-MISMATCH（トレース時に検出する。
+0回で終わる場合でも）。COND-FN の結果が rank 0 の :i1 でない → WHILE-LOOP-CONDITION-ERROR。
 
 一部の実行系の制限: 本体の中で比較から作ったフラグ（:i1）を carry にした while の結果を jit の
 戻り値にすると、その実行系のコンパイラが落ちる（docs/stablehlo-ops.md の制御構造の節）。
@@ -270,26 +288,29 @@ carry は不動点まで広げる）。条件がバッチされると、どれ�
 微分: 前進モード（jvp）だけ対応する。逆モード（GRAD）は対応しない（反復回数が
 分からず、残差を保存できない）。GRAD を通すと、プリミティブ名 :WHILE-LOOP を含む
 AUTODIFF-ERROR になる。"
-  (%while-loop-check-arguments cond-fn body-fn init)
-  (let ((traced (or *current-trace* (some (lambda (x) (typep x 'tracer)) init))))
-    (when (and traced (null *current-trace*))
-      (error 'tracing-error
-             :format-control "while-loop の init に、終わったトレースのトレーサが混ざっている: ~S"
-             :format-arguments (list init)))
-    (let* ((operands (if traced
-                         (mapcar (lambda (x)
-                                   (if (typep x 'tracer)
-                                       x
-                                       (%lift-constant x (array-aval x) *current-trace*)))
-                                 init)
-                         init))
-           (avals (mapcar (lambda (x) (if (typep x 'tracer) (tracer-aval x) (array-aval x))) init))
-           (n (length init)))
-      (multiple-value-bind (cond-graph body-graph captured)
-          (%while-loop-trace-regions cond-fn body-fn avals)
-        (if traced
-            (subseq (apply #'%trace-eqn* :while-loop (append operands captured)
-                           (list :cond cond-graph :body body-graph :n-carries n))
-                    0 n)
-            ;; トレースの外（captured は常に空）: Lisp のループで評価する。
-            (subseq (%while-loop-eval init cond-graph body-graph) 0 n))))))
+  (multiple-value-bind (init treedef) (%while-loop-check-arguments cond-fn body-fn init)
+    ;; 以下の INIT は葉のリスト。内部は今までどおりフラットなリストで扱い、最後に木へ戻す。
+    (let ((traced (or *current-trace* (some (lambda (x) (typep x 'tracer)) init))))
+      (when (and traced (null *current-trace*))
+        (error 'tracing-error
+               :format-control "while-loop の init に、終わったトレースのトレーサが混ざっている: ~S"
+               :format-arguments (list init)))
+      (let* ((operands (if traced
+                           (mapcar (lambda (x)
+                                     (if (typep x 'tracer)
+                                         x
+                                         (%lift-constant x (array-aval x) *current-trace*)))
+                                   init)
+                           init))
+             (avals (mapcar (lambda (x) (if (typep x 'tracer) (tracer-aval x) (array-aval x))) init))
+             (n (length init)))
+        (multiple-value-bind (cond-graph body-graph captured)
+            (%while-loop-trace-regions cond-fn body-fn avals treedef)
+          (tree-unflatten
+           treedef
+           (if traced
+               (subseq (apply #'%trace-eqn* :while-loop (append operands captured)
+                              (list :cond cond-graph :body body-graph :n-carries n))
+                       0 n)
+               ;; トレースの外（captured は常に空）: Lisp のループで評価する。
+               (subseq (%while-loop-eval init cond-graph body-graph) 0 n))))))))

@@ -1,0 +1,3 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME PYTREE-CONTROL/SCAN-TREE-CARRY-XS-YS-MATCH-REFERENCE
+                 :DATUM "(#(((0))) #() 1 0)" :TIMESTAMP 4001379646)
