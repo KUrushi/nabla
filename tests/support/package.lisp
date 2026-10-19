@@ -57,6 +57,11 @@
    #:reference-exp
    #:reference-log
    #:reference-tanh
+   #:reference-sqrt
+   #:reference-rsqrt
+   #:load-sqrt-jax-fixture
+   #:sqrt-fixture-input-array
+   #:sqrt-fixture-match-p
    #:reference-max
    #:reference-min
    ;; issue #31 p3

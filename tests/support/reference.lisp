@@ -90,6 +90,20 @@
     (dotimes (i (array-total-size a) result)
       (setf (row-major-aref result i) (tanh (coerce (row-major-aref a i) 'double-float))))))
 
+;; issue #196
+(defun reference-sqrt (a)
+  "SQRT(A)（要素ごとの平方根）を返す。A は非負。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (sqrt (coerce (row-major-aref a i) 'double-float))))))
+
+;; issue #196
+(defun reference-rsqrt (a)
+  "RSQRT(A) = 1/SQRT(A)（要素ごと）を返す。A は正。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (/ 1d0 (sqrt (coerce (row-major-aref a i) 'double-float)))))))
+
 ;; issue #31 p2
 (defun reference-max (a b)
   "MAX(A, B)（要素ごとの大きい方）を返す。A と B は同じ shape を持つこと。
@@ -316,3 +330,56 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
                          (sum-contract (rest remaining-shape) (cons k contract-subs))))))
           (sum-contract contract-shape nil))
         (setf (row-major-aref result i) sum)))))
+
+;;; --- JAX の sqrt / rsqrt フィクスチャ（issue #196、tests/fixtures/sqrt/） ---
+
+(defun load-sqrt-jax-fixture (dtype)
+  "tests/fixtures/sqrt/jax-sqrt.lisp のうち DTYPE の行を (入力 sqrt rsqrt)
+（すべてビットパターンの整数）のリストで返す。READ は *read-eval* nil で行う。"
+  (let ((rows (with-standard-io-syntax
+                (let ((*read-eval* nil))
+                  (with-open-file (stream (asdf:system-relative-pathname
+                                           "nabla" "tests/fixtures/sqrt/jax-sqrt.lisp"))
+                    (read stream))))))
+    (loop for row in rows
+          when (eq (first row) dtype) collect (rest row))))
+
+(defun sqrt-fixture-bits->number (dtype bits)
+  "BITS（DTYPE のビットパターン）を CL の浮動小数点数にデコードする
+（bf16 / f16 は double-float、f32 は single-float、f64 は double-float）。"
+  (flet ((signed (n width) (if (logbitp (1- width) n) (- n (ash 1 width)) n)))
+    (ecase dtype
+      (:f32 (sb-kernel:make-single-float (signed bits 32)))
+      (:f64 (sb-kernel:make-double-float (signed (ash bits -32) 32) (logand bits #xffffffff)))
+      ((:bf16 :f16) (coerce (nabla::decode-float16 bits dtype) 'double-float)))))
+
+(defun sqrt-fixture-input-array (dtype rows)
+  "ROWS の入力（ビット）から DTYPE の1次元の配列を作る（bf16 / f16 は
+(unsigned-byte 16) のビットのまま）。"
+  (let ((array (make-array (length rows)
+                           :element-type (ecase dtype
+                                           (:f32 'single-float)
+                                           (:f64 'double-float)
+                                           ((:bf16 :f16) '(unsigned-byte 16))))))
+    (loop for row in rows for i from 0
+          do (setf (aref array i)
+                   (if (member dtype '(:bf16 :f16))
+                       (first row)
+                       (sqrt-fixture-bits->number dtype (first row)))))
+    array))
+
+(defun sqrt-fixture-match-p (dtype actual expected)
+  "ACTUAL（配列の1要素。bf16 / f16 はビット）が EXPECTED（フィクスチャのビット）
+と一致するか。NaN は NaN と、±無限大・±0 は符号まで厳密に、それ以外は dtype の
+許容誤差（dtype-tolerance）で比べる。"
+  (let ((a (if (member dtype '(:bf16 :f16))
+               (coerce (nabla::decode-float16 actual dtype) 'double-float)
+               actual))
+        (e (sqrt-fixture-bits->number dtype expected)))
+    (cond ((sb-ext:float-nan-p e) (sb-ext:float-nan-p a))
+          ((sb-ext:float-nan-p a) nil)
+          ((sb-ext:float-infinity-p e) (and (sb-ext:float-infinity-p a) (= a e)))
+          ((sb-ext:float-infinity-p a) nil)
+          ((zerop e) (and (zerop a) (= (float-sign a) (float-sign e))))
+          (t (multiple-value-bind (rtol atol) (dtype-tolerance dtype)
+               (<= (abs (- a e)) (+ atol (* rtol (abs e)))))))))

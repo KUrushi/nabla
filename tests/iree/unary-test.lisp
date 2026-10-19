@@ -45,6 +45,32 @@ DEFINE-IREE-TEST を作る。DOMAIN は入力の生成域（log は 0除算・�
 (def-iree-unary-test iree/log/bf16/matches-eager :log :bf16 "log" :positive)
 (def-iree-unary-test iree/tanh/f32/matches-eager :tanh :f32 "tanh" :any)
 (def-iree-unary-test iree/tanh/bf16/matches-eager :tanh :bf16 "tanh" :any)
+(def-iree-unary-test iree/sqrt/f32/matches-eager :sqrt :f32 "sqrt" :positive)
+(def-iree-unary-test iree/sqrt/bf16/matches-eager :sqrt :bf16 "sqrt" :positive)
+(def-iree-unary-test iree/sqrt/f64/matches-eager :sqrt :f64 "sqrt" :positive)
+(def-iree-unary-test iree/rsqrt/f32/matches-eager :rsqrt :f32 "rsqrt" :positive)
+(def-iree-unary-test iree/rsqrt/bf16/matches-eager :rsqrt :bf16 "rsqrt" :positive)
+(def-iree-unary-test iree/rsqrt/f64/matches-eager :rsqrt :f64 "rsqrt" :positive)
+
+(define-iree-test iree/sqrt-rsqrt/matches-jax-fixture
+    "sqrt / rsqrt（f32 / f64 / bf16 / f16）を IREE の local backend で実行した結果は、JAX の
+フィクスチャ（tests/fixtures/sqrt/）と一致する（NaN・±無限大・±0 は厳密、それ以外は dtype の許容誤差）。"
+  (skip-unless-iree :library :both)
+  (dolist (dtype '(:f32 :f64 :bf16 :f16))
+    (let* ((rows (load-sqrt-jax-fixture dtype))
+           (x (sqrt-fixture-input-array dtype rows))
+           (aval (nb:make-aval (list (length rows)) dtype)))
+      (loop for (mlir-op index) in '(("sqrt" 1) ("rsqrt" 2))
+            do (with-one-op-module
+                   ((backend module) (list aval) aval
+                    (list (format nil "%0 = stablehlo.~A %a0 : ~A" mlir-op (nb::tensor-type-string aval))))
+                 (with-device-arrays ((da (to-device x backend :dtype dtype)))
+                   (with-device-arrays ((result (nabla:backend-invoke backend module "main" da)))
+                     (let ((host (to-host result)))
+                       (loop for row in rows for i from 0
+                             do (is (sqrt-fixture-match-p dtype (aref host i) (nth index row))
+                                    "~A/~A: 入力ビット ~D, 期待 ~D, 実際 ~S"
+                                    mlir-op dtype (first row) (nth index row) (aref host i)))))))))))
 
 (defmacro def-iree-minmax-test (test-name prim-name dtype mlir-op)
   "PRIM-NAME（:MAX/:MIN）・DTYPE（:F32/:BF16）・MLIR-OP から、shape (4 8) の

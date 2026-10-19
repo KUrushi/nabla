@@ -31,6 +31,10 @@
          :fn (nb:with-tracing (x) (log x)))
    (list :name :tanh :n 1 :domains '(:any) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x) (tanh x)))
+   (list :name :sqrt :n 1 :domains '(:positive) :dtypes '(:f32 :f64 :bf16 :f16)
+         :fn (nb:with-tracing (x) (sqrt x)))
+   (list :name :rsqrt :n 1 :domains '(:positive) :dtypes '(:f32 :f64 :bf16 :f16)
+         :fn (nb:with-tracing (x) (nb:rsqrt x)))
    (list :name :max :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (max x y)))
    (list :name :min :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64 :bf16 :f16)
@@ -248,7 +252,7 @@ check-graph を満たす（compare は :i1 の主値に :i1 の接線が付く�
 
 (test jvp-elementwise/every-elementwise-primitive-has-a-jvp-rule
   "sub mul div exp log tanh max min convert compare select neg add に jvp ルールがある。"
-  (dolist (name '(:add :neg :sub :mul :div :exp :log :tanh :max :min :convert :compare :select))
+  (dolist (name '(:add :neg :sub :mul :div :exp :log :tanh :sqrt :rsqrt :max :min :convert :compare :select))
     (is (nb::primitive-jvp (nb::find-primitive name)) "~S" name)))
 
 (test jvp-elementwise/max-min-ties-in-half-precision
