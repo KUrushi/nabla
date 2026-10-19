@@ -161,7 +161,7 @@ nabla を使わない最小の再現（`docs/iree-repros/while-constant-carry.ml
 
 IREE 3.11 のコンパイラバグの回避: cond を決める carry が `stablehlo.constant` で初期化された `stablehlo.while`（他に carry が2つ以上、うち1つは rank 1 以上）は、Stream の AffinityAnalysis（ScheduleAllocationPass）が非決定的に segfault する。scan の while はこの形なので、カウンタと ys の0初期値は `stablehlo.optimization_barrier` を通してから while に渡す。ただし長さ 1 の scan は IREE が while を `scf.for` に変換し、barrier があると `stream.resource` の型の不一致でコンパイルに失敗するので、barrier を付けない（長さ 1 ではクラッシュしない）。バグの詳細は制御構造の節（PR #157）を参照。
 
-性能（issue #159）: ys のバッファは、本体の先頭で `stablehlo.optimization_barrier` に通してから `dynamic_update_slice` に渡す（`%p_bk<j> = stablehlo.optimization_barrier %p_by<j>`）。
+性能（issue #159）: ys のバッファは、本体の先頭で `stablehlo.optimization_barrier` に通してから `dynamic_update_slice` に渡す（`%p_bk<j> = stablehlo.optimization_barrier %p_by<j>`）。**例外**: 本体の中に制御構造（別の `stablehlo.while`、`cond*` の `stablehlo.if`）がある scan には付けない。IREE 3.11 の local-task が、barrier の結果へ制御構造をはさんで書くと、負荷のもとで ys の行を 0 のまま返すため（`docs/iree-upstream-bugs.md` の 7、issue #220）。代償として、その scan の ys は更新のたびに丸ごとコピーされ、長さの2乗の時間になる（実測で長さ 64・ys 16 MB のとき 788 ms 対 68 ms の 11 倍）。
 
 - 原因: IREE 3.11 の `iree-stream-conversion`（ConvertToStreamPass）は、ループ（`scf.for` / `scf.while`）の carry であるブロック引数の配置先（affinity）を AffinityAnalysis から引けない。そのため本体の中で carry を使うたびに、転送元が不明の `stream.async.transfer ... -> to(@__device_0)` を挟み、この転送は同じデバイスへのものでも消されず（`ElideAsyncCopiesPass` が消すのは `clone` だけ）、毎ステップ carry 全体のコピー（`stream.cmd.copy`）と新しいバッファの確保になる。ys のバッファ（`length × |y_t|`）も carry なので、ys を持つ scan は長さに対して2乗の時間がかかっていた。`--compile-to=stream` の出力で、本体に ys 全体の `stream.cmd.copy` があることで確かめられる。`--iree-stream-affinity-solver-max-iterations` を増やしても変わらない
 - 回避: `util.optimization_barrier`（`stablehlo.optimization_barrier` から変換される）の結果は配置先が引けるので、転送が挟まらず、`dynamic_update_slice` が ys のバッファを in-place に書く（本体のコピーは y_t の1行ぶんだけになる）。carry 自体（`|carry|` ぶんのコピー）は本体の計算と同じ程度なので、そのままにしている。結果の値は変わらない
@@ -176,7 +176,7 @@ IREE 3.11 のコンパイラバグの回避: cond を決める carry が `stable
 | 1000 | 20〜40 ms | 956 ms | 20 ms |
 | 4000 | 48〜116 ms | 16488 ms | 64〜256 ms |
 
-  守るテストは、出力の形を検査する small テスト `tests/scan-test.lisp` の `scan/emits-ys-buffers-through-barriers`（本体で ys ごとに barrier を通して dynamic_update_slice に渡すこと、初期値が ys ごとに別の broadcast_in_dim + barrier の組であること、長さ 1 ではどちらも無いこと）、実行時間を測る large テスト `tests/iree/scan-test.lisp` の `scan/iree-ys-write-cost-is-linear-in-length`（長さ 1000 で ys ありが ys なしの 5 倍 + 100 ms 以内。回避前は 748 ms 対 20 ms で落ちる。時間は負荷で揺れるので既定のスイートには入れない）と `scan/iree-same-typed-ys-do-not-share-a-buffer`
+  守るテストは、出力の形を検査する small テスト `tests/scan-test.lisp` の `scan/emits-ys-buffers-through-barriers` と、上の例外を守る `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body` / `scan/scan-with-cond-in-body-has-no-ys-barrier`（本体で ys ごとに barrier を通して dynamic_update_slice に渡すこと、初期値が ys ごとに別の broadcast_in_dim + barrier の組であること、長さ 1 ではどちらも無いこと）、実行時間を測る large テスト `tests/iree/scan-test.lisp` の `scan/iree-ys-write-cost-is-linear-in-length`（長さ 1000 で ys ありが ys なしの 5 倍 + 100 ms 以内。回避前は 748 ms 対 20 ms で落ちる。時間は負荷で揺れるので既定のスイートには入れない）と `scan/iree-same-typed-ys-do-not-share-a-buffer`
 
 長さ 0 の scan は、`dynamic_slice` の切り出し幅 1 が長さ 0 の軸を超えて不正になるので `while` を出さない。carry は入力と同じ型の `stablehlo.reshape` で素通しにし、ys は `stablehlo.constant dense<> : tensor<0x...>` にする（この形を IREE が受け付けることを確認済み）。
 

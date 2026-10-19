@@ -1,5 +1,5 @@
 // IREE 3.11 local-task: 入れ子の scan の形。外側の本体が ys を optimization_barrier に通し、その結果へ
-// 内側の while をまたいで dynamic_update_slice すると、負荷のもとで（1〜2%）外側の ys の1行が 0 のまま返る
+// 内側の while をまたいで dynamic_update_slice すると、負荷のもとで（1〜2%）外側の ys の1行以上が 0 のまま返る
 // （docs/iree-upstream-bugs.md の 7）。local-sync と --task_worker_count=1 では起きない。
 // 対照は nested-scan-ys-no-barrier.mlir（%bk の barrier を外した形。nabla の回避策）。
 // INPUT: --input=3xf32=0.5,-0.25,0.9

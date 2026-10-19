@@ -420,31 +420,31 @@ Runtime
 `iree-base-compiler==3.11.0` from PyPI (`IREE compiler version 3.11.0rc20260316 @ e4a3b0405d7d23554da26403658d0e8c3c5ecf25`), runtime built from the same commit, Linux x86_64.
 ````
 
-## 7. local-task device で、入れ子の scan の外側の ys が負荷のもとでまれに 0 の行を返す（#220）
+## 7. local-task device で、ys を barrier に通して制御構造（while / if）をはさんで書くと、負荷のもとでまれに 0 の行が返る（#220）
 
 コンパイルは通り、**実行時**にまれに結果が壊れる（クラッシュはしない）。CPU に負荷があるときだけ、1〜2% の実行で起きる。
 
 | 項目 | 内容 |
 | --- | --- |
-| 再現ファイル | `docs/iree-repros/nested-scan-ys-barrier-race.mlir`（外側の `stablehlo.while` の本体が ys `tensor<4x3xf32>` を `optimization_barrier` に通し、内側の `stablehlo.while` を回してから、その結果へ `dynamic_update_slice` する）。対照は `nested-scan-ys-no-barrier.mlir`（外側の ys の barrier を外しただけ） |
+| 再現ファイル | `docs/iree-repros/nested-scan-ys-barrier-race.mlir`（外側の `stablehlo.while` の本体が ys `tensor<4x3xf32>` を `optimization_barrier` に通し、内側の `stablehlo.while` を回してから、その結果へ `dynamic_update_slice` する）と、内側を `stablehlo.if`（`cond*`）に替えた `nested-scan-ys-if-race.mlir`。対照はどちらも barrier を外しただけの `nested-scan-ys-no-barrier.mlir` / `nested-scan-ys-if-no-barrier.mlir` |
 | 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=3xf32=0.5,-0.25,0.9` で何度も実行し、`--device=local-sync` の出力と比べる。CPU に負荷が要る（`yes > /dev/null` を CPU の数だけ動かす）。`scripts/check-iree-repros.sh` が負荷の起動から比較までやる |
-| 症状 | 外側の ys の1行（実測では外側の2回目までの書き込みのどれか）が、全要素 0（ys の初期値）のまま返る。carry は正しい。負荷のもとで実測 0.4〜2%（2000 回あたり 8〜31 回）。コンパイルは決定的（同じ vmfb の SHA-256） |
-| 起きない条件 | `--device=local-sync`（0/300）、`--device=local-task --task_worker_count=1`（0/300）、外側の ys の barrier を外した形（2000 回、3000 回とも 0 回）。barrier を内側の while の後ろ（`dynamic_update_slice` の直前）に移しても直らない（1500 回で 11 回） |
-| 原因の見立て | local-task の非同期な実行で、外側の ys の barrier の結果への書き込みが、内側の while の実行と順序づけられていない（ys の 0 埋めと in-place の書き込みの競合に見える）。未調査 |
-| nabla の対応 | `src/scan.lisp` の `%scan-emit` は、本体の中に別の `stablehlo.while` がある scan（入れ子の外側）には ys の barrier を付けない。代償は、外側の ys が更新のたびに丸ごとコピーされること（#159 と同じ性能の問題が入れ子の外側にだけ戻る。外側の長さの2乗）。いちばん内側の scan は今までどおり barrier を付ける。形は `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body`（`tests/scan-test.lisp`）が守る。nabla のテスト（`scan/iree-nested-*-matches-eager`）でも、回避策なしだと 100 回の PBT の中で 2% 前後の確率で落ちる |
-| 「今も起きる」の確認 | `scripts/check-iree-repros.sh`（race-bug / race-control）。まれに起きる確率的な現象で、1 回の確認に数十秒かかり負荷も要るので、既定のテストスイートには入れていない |
+| 症状 | ys の1行以上（1回の実行で 1 行目と 3 行目が 0 になったこともある）が、全要素 0（ys の初期値）のまま返る。carry は正しい。負荷のもとで実測 0.4〜2%（while 版は 2000 回あたり 8〜31 回、if 版は 600 回あたり 3〜7 回、負荷が弱いと 2000 回あたり 1 回）。コンパイルは決定的（同じ vmfb の SHA-256） |
+| 起きない条件 | `--device=local-sync`（0/300）、`--device=local-task --task_worker_count=1`（0/300）、ys の barrier を外した形（while 版 2000 回・3000 回、if 版 2000 回、nabla の cond* を含む scan 3000 回とも 0 回）。barrier を内側の while の後ろ（`dynamic_update_slice` の直前）に移しても直らない（1500 回で 11 回） |
+| 原因の見立て | local-task の非同期な実行で、ys の barrier の結果への書き込みが、間にはさんだ制御構造（while / if）の実行と順序づけられていない（ys の 0 埋めと in-place の書き込みの競合に見える）。未調査 |
+| nabla の対応 | `src/scan.lisp` の `%scan-emit` は、本体の中に制御構造（別の `stablehlo.while` か `stablehlo.if`）がある scan には ys の barrier を付けない。代償は、ys が更新のたびに丸ごとコピーされること（#159 と同じ性能の問題が、そういう scan にだけ戻る。長さの2乗。実測で長さ 64・ys 16 MB のとき 788 ms 対 68 ms の 11 倍）。本体に制御構造の無い scan（いちばん内側の scan を含む）は今までどおり barrier を付ける。形は `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body` と `scan/scan-with-cond-in-body-has-no-ys-barrier`（`tests/scan-test.lisp`）が守る。nabla のテスト（`scan/iree-nested-*-matches-eager`）でも、回避策なしだと 100 回の PBT の中で 2% 前後の確率で落ちる |
+| 「今も起きる」の確認 | `scripts/check-iree-repros.sh`（race-bug / race-control。while 版と if 版の2組）。まれに起きる確率的な現象で、1 回の確認に数十秒かかり負荷も要るので、既定のテストスイートには入れていない |
 
 ### 下書き（英語）
 
 ````markdown
 ### What happened?
 
-With the local-task HAL driver, a nested `stablehlo.while` whose outer body updates a
+With the local-task HAL driver, a `stablehlo.while` whose body updates a
 loop-carried buffer (through `optimization_barrier` + `dynamic_update_slice`) after running an
-inner `stablehlo.while` occasionally returns one row of that buffer as zeros (its initial value).
+inner `stablehlo.while` (or a `stablehlo.if`) occasionally returns one or more rows of that buffer as zeros (its initial value).
 It happens in about 1% of runs and only when the CPU is loaded. `--device=local-sync` and
 `--device=local-task --task_worker_count=1` never show it (0/300), nor does the same module
-without the `optimization_barrier` on the outer buffer (0/3000). The compiled vmfb is
+without the `optimization_barrier` on the outer buffer (0/3000). A `stablehlo.if` in place of the inner while behaves the same (nested-scan-ys-if-race.mlir). The compiled vmfb is
 bit-identical between runs.
 
 ### Steps to reproduce your issue

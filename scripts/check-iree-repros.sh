@@ -6,7 +6,7 @@
 # 使い方:
 #   scripts/check-iree-repros.sh             # 各ファイルを 10 回ずつコンパイルする
 #   scripts/check-iree-repros.sh --runs 30   # 回数を変える
-#   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 2000）
+#   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 4000。1 回あたり 0.05〜1% でしか起きない）
 #
 # 各行の判定:
 #   bug     ファイル: 1 回でもシグナル（終了コード 128 超）で落ちれば REPRODUCED
@@ -34,7 +34,7 @@ STRESS_PIDS=()
 trap 'for pid in "${STRESS_PIDS[@]}"; do kill "${pid}" 2>/dev/null || true; done; rm -rf "${WORK_DIR}"' EXIT
 REPRO_DIR="${REPO_ROOT}/docs/iree-repros"
 RUNS=10
-RACE_RUNS=2000
+RACE_RUNS=4000
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,6 +64,8 @@ CASES=(
   "run-control local-task-161-inputs.mlir"
   "race-bug     nested-scan-ys-barrier-race.mlir"
   "race-control nested-scan-ys-no-barrier.mlir"
+  "race-bug     nested-scan-ys-if-race.mlir"
+  "race-control nested-scan-ys-if-no-barrier.mlir"
 )
 
 # race-* は負荷のもとでしか起きないので、CPU の数だけ busy loop を起動する（trap で止める）
@@ -94,6 +96,8 @@ start_stress
 for entry in "${CASES[@]}"; do
   read -r kind file <<<"${entry}"
   if [[ "${kind}" == race-* ]]; then
+    # race_run の中の `exit 2`（コンパイル失敗）は $(...) のサブシェルを抜けるだけだが、
+    # 代入の終了コードが 2 になり、set -e がこのスクリプトを止める（意図した挙動）
     bad=$(race_run "${file}")
     if [[ "${kind}" == race-bug ]]; then
       if ((bad > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
