@@ -174,6 +174,9 @@ pretty form を出力する。
 **オプティマイザ（optimizer）/ 勾配変換（gradient transformation）**
 : 勾配から更新量を作る `init`（パラメータ → 状態）と `update`（勾配・状態・パラメータ → 更新量・新しい状態）の組。Optax の `GradientTransformation` と同じで、`sgd` や `adam` だけでなく、勾配のクリップや学習率の掛け算のような小さな変換も同じ型なので、`chain` で順に合成できる（nabla では `nabla.nn:chain`、`defoptimizer`）。状態はパラメータと同じ構造の木（`mu`・`nu` など）とステップ数 `count` を持つ PyTree で、`update` は純粋関数なので、学習ステップ全体を `jit` できる。
 
+**pre-LN / decoder-only**
+: Transformer のブロックの書き方。pre-LN は layer-norm を attention や MLP の「前」に置き、`x = x + attn(ln(x))` のように残差の足し算の外側に出さない形（学習が安定しやすい）。decoder-only は因果マスクをかけた自己 attention だけを積んだ形で、位置 i が i より後を見ないので、次のトークンを当てる言語モデルに使う（`examples/transformer.lisp`）。
+
 **Adam / AdamW / バイアス補正**
 : 勾配の指数移動平均 `mu`（1次モーメント）と、勾配の二乗の指数移動平均 `nu`（2次モーメント）で更新量 `mu / (√nu + ε)` を作る最適化手法。`mu`・`nu` は0から始めるので最初の数ステップは小さく偏る。その分を `1 - b^t`（`b` は減衰率、`t` はステップ数）で割って直すのがバイアス補正。AdamW は重み減衰（weight decay）を勾配に混ぜず、Adam の更新量に `wd × パラメータ` として足す（decoupled weight decay）。
 

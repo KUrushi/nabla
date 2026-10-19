@@ -443,6 +443,20 @@ Flax の `nn.MultiHeadDotProductAttention` に合わせたもの。スロット�
 - **バッチ次元は「先頭の任意個」**（`vmap` で足す前提にしない）。学習のコードはバッチ付きの入力を直接渡すのが普通で、Flax のフィクスチャとそのまま比べられる。中身は `dot-general` のバッチ軸（先頭のバッチ軸とヘッド）で書いてあるので、先頭の軸が 0 個でも 2 個でも同じコードで、`vmap` で外側に軸を足すこともできる
 - `key` と `value` は同じ入力 `inputs-kv` から作る（Flax の `inputs_k` と `inputs_v` を別々に渡す形は持たない。交差 attention には足りる）。`use_bias` / `normalize_qk` などのオプションは、必要になった時点で足す
 
+#### 小さな Transformer を学習する例（`examples/transformer.lisp`、issue #209）
+
+フェーズ4の完了条件。decoder-only の Transformer を `defmodule` で書き（埋め込み + 学習する位置埋め込み、pre-LN のブロック 2 つ（因果マスクの multi-head attention と gelu の MLP、どちらも残差）、最後の layer-norm と出力の dense。出力は埋め込みと共有しない）、系列のコピー（`x1..x4 SEP x1..x4` の `SEP` 以降の 4 位置を当てる）を `jit` した学習ステップ（`value-and-grad` + `chain (clip-by-global-norm 1) (adam 0.01)`）の手書きのループで学習する。語彙 12・長さ 8・幅 16・2 ヘッド・MLP の幅 32、パラメータの葉 38 個。
+
+```sh
+sbcl --non-interactive --load examples/transformer.lisp   # 100 ステップ。損失 2.8 → 0.05 くらい
+```
+
+- パラメータ名（チェックポイントのパス名）は Flax の `flatten_dict` と同じ（`embed.embedding`, `pos`, `blocks.0.attn.query.kernel` ...。Flax の `blocks_0` は `blocks.0`）。`tests/fixtures/transformer/generate.py` が同じモデルを Flax + Optax で書き、同じ初期値を `init.safetensors` で nabla に渡し（nabla の PRNG は JAX とビット単位で一致しないため、初期値は乱数で合わせない）、同じ系列で学習した 20 ステップの損失と 1・5 ステップ後のパラメータを記録する。IREE の local で、損失とパラメータ（`attn.key.bias` 以外）の差は 4e-6 以下。`attn.key.bias` の勾配は数学的に 0 で、Adam が浮動小数点の雑音を学習率の大きさの更新に増幅するため値は一致せず、テストは差の上限だけを見る（理由はテストの docstring）
+- jit する学習ステップの入力は モデル 38 + `mu` 38 + `nu` 38 + `count` 1 + バッチ 2 = 117 個で、IREE の local-task の上限（161。`docs/iree-upstream-bugs.md` の 6）に収まる。大きなモデルでは `local-sync` を使うか、葉をまとめる
+- 学習の途中のモデルとオプティマイザの状態は 1 つの木 `(list model opt-state)` として 1 つの safetensors に保存でき、復元して続けた学習は止めずに続けた学習とビットまで同じになる（同じコンパイル済みの関数を同じ入力で決定的に走らせるため）
+- 測った時間の目安（IREE local、このマシン相当の CPU。`tests/nn/transformer-test.lisp` は実行のたびに出力に書くだけで、値は検査しない）: 1 回目の呼び出し（トレース + コンパイル + 実行）約 7〜9 秒、2 回目以降は約 3〜4 ms/ステップ（バッチ 8、ホスト側のバッチ作りを含む）
+- テスト: `tests/nn/transformer-test.lisp`（small: モデル全体の因果性の PBT、パス名、データの部品、入力の葉の数。medium: Flax + Optax との一致、損失の減少と決定性、チェックポイントからの再開、スクリプトが動くこと）
+
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
 `nabla/nn`（パッケージ `nabla.nn`）の部品の1つ。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree をパス名で平坦化して保存・復元するのは次の「チェックポイント」）。`(asdf:load-system "nabla/nn")` で使う。
@@ -547,7 +561,7 @@ tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
 docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase3-report.md
-examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp（この README の使用例）
+examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp, transformer.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
