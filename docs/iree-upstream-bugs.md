@@ -431,8 +431,44 @@ Runtime
 | 症状 | ys の1行以上（1回の実行で 1 行目と 3 行目が 0 になったこともある）が、全要素 0（ys の初期値）のまま返る。carry は正しい。負荷のもとで実測 0.4〜2%（while 版は 2000 回あたり 8〜31 回、if 版は 600 回あたり 3〜7 回、負荷が弱いと 2000 回あたり 1 回）。コンパイルは決定的（同じ vmfb の SHA-256） |
 | 起きない条件 | `--device=local-sync`（0/300）、`--device=local-task --task_worker_count=1`（0/300）、ys の barrier を外した形（while 版 2000 回・3000 回、if 版 2000 回、nabla の cond* を含む scan 3000 回とも 0 回）。barrier を内側の while の後ろ（`dynamic_update_slice` の直前）に移しても直らない（1500 回で 11 回） |
 | 原因の見立て | local-task の非同期な実行で、ys の barrier の結果への書き込みが、間にはさんだ制御構造（while / if）の実行と順序づけられていない（ys の 0 埋めと in-place の書き込みの競合に見える）。未調査 |
-| nabla の対応 | `src/scan.lisp` の `%scan-emit` は、本体の中に制御構造（別の `stablehlo.while` か `stablehlo.if`）がある scan には ys の barrier を付けない。代償は、ys が更新のたびに丸ごとコピーされること（#159 と同じ性能の問題が、そういう scan にだけ戻る。長さの2乗。実測で長さ 64・ys 16 MB のとき 788 ms 対 68 ms の 11 倍）。本体に制御構造の無い scan（いちばん内側の scan を含む）は今までどおり barrier を付ける。形は `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body` と `scan/scan-with-cond-in-body-has-no-ys-barrier`（`tests/scan-test.lisp`）が守る。nabla のテスト（`scan/iree-nested-*-matches-eager`）でも、回避策なしだと 100 回の PBT の中で 2% 前後の確率で落ちる |
+| nabla の対応 | `src/scan.lisp` の `%scan-emit` は、本体の中に制御構造（別の `stablehlo.while` か `stablehlo.if`）がある scan には ys の barrier を付けない。代償は、ys が更新のたびに丸ごとコピーされること（#159 と同じ性能の問題が、そういう scan にだけ戻る。長さの2乗。実測で長さ 64・ys 16 MB のとき 788 ms 対 68 ms の 11 倍。測り直しと改善の検討は次の「nabla 側の回避策の代償と改善の検討（#233）」）。本体に制御構造の無い scan（いちばん内側の scan を含む）は今までどおり barrier を付ける。形は `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body` と `scan/scan-with-cond-in-body-has-no-ys-barrier`（`tests/scan-test.lisp`）が守る。nabla のテスト（`scan/iree-nested-*-matches-eager`）でも、回避策なしだと 100 回の PBT の中で 2% 前後の確率で落ちる |
 | 「今も起きる」の確認 | `scripts/check-iree-repros.sh`（race-bug / race-control。while 版と if 版の2組）。まれに起きる確率的な現象で、1 回の確認に数十秒かかり負荷も要るので、既定のテストスイートには入れていない |
+
+### nabla 側の回避策の代償と改善の検討（#233）
+
+**結論（2026-10-20 時点）: 既定の emit は変えない。上流の修正を待つ。** 下の候補 (b) はコピーを消せるが、競合を起こさないことをまだ確かめられていない（Rosetta の VM では競合そのものが再現しない）。x86 ネイティブで確かめる手順を下に残す。
+
+**代償の実測**（`scripts/bench-scan-ys.sh`。Linux x86_64 の VM（OrbStack、Rosetta、7 コア。性能の数値は参考値で、実行ごとに ±20% 揺れる）。IREE 3.11、local-task。本体は `h` を `tanh` で更新して各ステップの `h`（f32 [65536]）を ys に積む scan で、cond 列は本体を `cond*`（`reduce-sum` が 0.5 未満かで `tanh` か `tanh(tanh)`）にしたもの。ys は更新のたびにコピーされるため、1 ステップの時間が長さ L に比例して伸びる）:
+
+| L | ys の大きさ | plain（制御構造なし。ys の barrier あり）の 1 ステップ | cond（ys の barrier なし。今の既定）の 1 ステップ |
+| --- | --- | --- | --- |
+| 16 | 4 MB | 1.3 ms | 1.9〜2.9 ms |
+| 32 | 8 MB | 1.0 ms | 2.5 ms |
+| 64 | 16 MB | 1.0〜1.5 ms | 4.3〜5.6 ms |
+| 128 | 32 MB | 1.3〜1.6 ms | 4.8〜5.7 ms |
+
+plain は L によらずほぼ一定（長さに線形）、cond は L とともに伸びる（長さの 2 乗）。呼び出し全体では L=64・ys 16 MB で plain 67〜100 ms、cond 278〜358 ms（約 3〜4 倍）、L=128・ys 32 MB で 163〜206 ms 対 613〜728 ms。Issue の表（負荷のあるマシンで 788 ms 対 68 ms）より差が小さいのは、Rosetta のメモリ帯域と、この本体の計算（`tanh`）が重いため。W=4096（L=64 で ys 1 MB）では 17 ms 対 40 ms。使い方は `scripts/bench-scan-ys.sh` の冒頭、測るものの定義は `scripts/bench-scan-ys.lisp` の冒頭。
+
+**候補の評価**（`scripts/bench-scan-ys.sh --variants plain,cond,scripts/scan-ys-candidates/{default,index-barrier,joint-barrier}.mlir.in --lengths 16,64,128 --widths 65536`。`default` は今の emit を同じテンプレートの形に書いたもので、cond 列と一致する（検算）。コピーは `iree-compile --compile-to=stream` の `stream.cmd.copy` で数えた）:
+
+| 候補 | 内容 | ys 全体のコピー（L=64, ys 16 MB） | 1 ステップ（L=16 / 64 / 128） | 競合の安全性 |
+| --- | --- | --- | --- | --- |
+| 今の既定（default） | ys に barrier なし | 毎ステップ `stream.cmd.copy` 16 MiB | 2.4 / 4.9 / 5.9 ms（L に伸びる） | 競合は起きない（記録: 3000 回で 0） |
+| (a) index-barrier | ys ではなく `dynamic_update_slice` の添字 `%bi` だけを `optimization_barrier` に通す | 消えない（16 MiB のコピーが残る。dispatch が 1 つ増えるだけ） | 3.2 / 4.7 / 5.4 ms（default と同じ） | 意味がない（コピーが消えない） |
+| (b) joint-barrier | 制御構造の結果 `%ic` と ys のバッファ `%by` を 1 つの `optimization_barrier` に一緒に通し、結果の組へ `dynamic_update_slice` | **消える**（1 行ぶん 256 KiB のコピーだけ。16 MiB のコピーなし） | 2.7 / 2.6 / 2.7 ms（L によらず一定。plain との差は本体の `cond*` の費用） | **未検証** |
+
+(b) は、barrier を制御構造の「後」に置き、その結果に data dependence を持たせて順序を決める形。以前の試し（barrier を内側の while の後ろ、`dynamic_update_slice` の直前に移す）は ys だけを barrier に通していたので直らなかったが（1500 回で 11 回）、(b) は制御構造の結果と一緒に通すところが違う。ただし競合の原因は未調査（上の「原因の見立て」）なので、これで直る理由も、直らない理由も分からない。**この環境（Rosetta の VM）では競合がほとんど再現しない。`check-iree-repros.sh --candidates --race-runs 200`（7 コアに `yes` の負荷）で、race-bug は while 版 0/200、if 版 1/200（本来 0.4〜2%）、候補 (a)(b) の while 版・if 版 4 組はすべて 0/200 だった。0/200 は、1% の競合でも 13% の確率で起こる結果で、(b) が競合を起こさないことの根拠にならない。** race 用の形は `docs/iree-repros/nested-scan-ys-{,if-}joint-barrier-race.mlir`、(a) は `nested-scan-ys-{,if-}index-barrier-race.mlir`。
+
+**(b') 「ys を carry でなく別の形で書き出す」は、StableHLO では表せないと判断した。** `stablehlo.while` が各回の値を外へ出す手段は carry だけで、ys を while の外で組み立てるには、各ステップの `y_t` をどこかに溜める必要がある。溜める先は結局 carry のバッファで、`dynamic_update_slice`（今と同じ）か、毎回 `concatenate` / `pad` で作り直すこと（さらに悪い、毎ステップ丸ごとのコピー）になる。ys を `K` 行ずつの小さなバッファに分けて外側の while で書き出す形（#178 の rng の emit と同じ考え）は、外側の本体に barrier と制御構造が同居するので、報告している競合と同じ構造になる。試していない。
+
+**x86 ネイティブで確かめる手順**（別の環境、たとえば CI や手元の x86 Linux。Rosetta ではなく実機で）:
+
+1. 先に race-bug が再現することを確かめる（再現しない環境では何も言えない）: `scripts/check-iree-repros.sh --runs 2 --race-runs 4000` が race-bug を `REPRODUCED`（負荷のもとで 0.4〜2%）にすること。
+2. 候補を同じ負荷で走らせる: `scripts/check-iree-repros.sh --candidates --race-runs 20000`。`race-candidate` の行（a: index-barrier、b: joint-barrier、それぞれ while 版と if 版）の `mismatches` が 0 であること。1 回の失敗確率が 0.4% なら 20000 回で 0 回になる確率は e^-80 より小さい。20000 回で 0 回なら、失敗確率は（95% の信頼で）約 0.015% 未満と言える。それより低い確率は言えない。
+3. 0 だったら nabla の emit に反映する前に、`scripts/bench-scan-ys.sh --variants plain,cond,scripts/scan-ys-candidates/joint-barrier.mlir.in` で性能（コピーが消えること）を確かめ、`scan/iree-nested-*-matches-eager`（PBT。回避策なしだと 100 回の中で 2% 前後で落ちる）を繰り返し走らせる。
+4. 新しい候補を足すには、`docs/iree-repros/` に race 用の形（`// INPUT: ...` の行つき）を置き、`scripts/check-iree-repros.sh` の `CANDIDATE_CASES` に `race-candidate <ファイル名>` を 1 行足す。性能の比較は `scripts/scan-ys-candidates/` に `@L@` / `@W@` のテンプレート（main の形は `bench-scan-ys.lisp` の冒頭）を置く。
+
+**opt-in で切り替える案（実装していない）**: (b) を、特殊変数（たとえば `*scan-ys-joint-barrier*`、既定は nil）で選べるようにする。x86 ネイティブでの確認が済むまでは既定を nil に保つ。確認が済んだら既定を t にし、`scan/scan-with-cond-in-body-has-no-ys-barrier` と `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body`（今は barrier が無いことを守っている）を新しい形に書き換える。上流が直ったら（`check-iree-repros.sh` の race-bug が再現しなくなったら）、回避策ごと消して plain の emit に戻す。
 
 ### 下書き（英語）
 
