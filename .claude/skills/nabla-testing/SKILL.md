@@ -78,6 +78,15 @@ Google の *Software Engineering at Google* のテストの章の考え方にな
 
 どの対象にどの性質を書くか、書き方のひな形は [references/properties.md](references/properties.md) を読む。
 
+### check-it の固定コミットを上げる条件
+
+check-it は `scripts/setup-lisp-deps.sh` の `GIT_DEPS` で固定したコミット（b79c9103…、2015 年。2026-10-20 時点で上流の HEAD と同じ）を使う。次のときだけ上げる。
+
+- 上げる理由がある: 上流が修正した、または nabla が必要とする変更が入った。理由なしには上げない（生成器の挙動が変わると、保存した回帰例や性質の統計が変わる）
+- 上げたら、既定スイートと `tools/mutate` の baseline を通し、`docs/upstream-bugs-check-it.md` の再現（`sbcl --non-interactive --load docs/check-it-repros/string-datum.lisp`、防御なし）を新しいコミットで走らせる
+- 再現が通る（経路 (a)(b) とも `NO-APPLICABLE-METHOD` にならない）ことを確かめてから、`tests/support/regression.lisp` の `check-it::datum` の文字列メソッドと、それを確かめる `support/check-it-replays-a-failure-saved-in-the-same-process` を外す。再現が今も落ちるなら防御は残し、`docs/upstream-bugs-check-it.md` の状態と上流 issue のリンクを更新する
+- 上流への報告はユーザーが行う。報告したらリンクを docs と `datum` メソッドのコメントに書く
+
 ## Mutation testing の決まりごと
 
 - Common Lisp には実用的な既存ツールがないので、リポジトリ内の自前 runner（`tools/mutate/`）を使う
