@@ -6,7 +6,7 @@
 # 使い方:
 #   scripts/check-iree-repros.sh             # 各ファイルを 10 回ずつコンパイルする
 #   scripts/check-iree-repros.sh --runs 30   # 回数を変える
-#   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 4000。1 回あたり 0.05〜1% でしか起きない）
+#   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 4000。1 回あたり 0.4〜2% でしか起きない（負荷のもとでの実測。docs/iree-upstream-bugs.md の 7））
 #   scripts/check-iree-repros.sh --candidates --race-runs 20000   # 追加で race-candidate（下）も実行する
 #
 # 各行の判定:
@@ -24,7 +24,7 @@
 #   race-candidate: nabla の emit の改善の候補（issue #233）の形。race-bug と同じ測り方で、
 #           違った回数を数えるだけ。記録（上流の不具合の再現）ではないので判定も終了コードも
 #           変えない。--candidates を付けたときだけ実行する。0 回でも安全の証明にはならない
-#           （Rosetta の VM では race-bug 自体が再現しない。x86 ネイティブの負荷のもとで、
+#           （Rosetta の VM では race-bug 自体がほとんど再現しない（while 版 0/200、if 版 1/200）。x86 ネイティブの負荷のもとで、
 #           race-bug が REPRODUCED になる環境で、十分な回数 0 になるかを見る）。
 #           候補を足すには docs/iree-repros/ に race 用の形（`// INPUT:` の行つき）を置き、
 #           CANDIDATE_CASES に1行足す

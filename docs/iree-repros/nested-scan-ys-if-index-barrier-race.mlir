@@ -1,7 +1,7 @@
 // #233 の候補 (a) の race 用の形（if 版）。ys ではなくインデックスだけを optimization_barrier に通す。
 // ys のバッファは barrier に通さない（コピーは消えない: scripts/scan-ys-candidates/index-barrier.mlir.in）。
 // nested-scan-ys-if-race.mlir と同じ負荷のもとで、local-sync と比べて 0 の行が返らないかを確かめるためのもの。
-// 未検証: Rosetta の VM では race が再現しない。x86 ネイティブで確かめる（docs/iree-upstream-bugs.md の 7）。
+// 未検証: Rosetta の VM では race がほとんど再現しない（while 版 0/200、if 版 1/200）。x86 ネイティブで確かめる（docs/iree-upstream-bugs.md の 7）。
 // INPUT: --input=3xf32=0.5,-0.25,0.9
 module {
   func.func @main(%h: tensor<3xf32>) -> (tensor<3xf32>, tensor<4x3xf32>) {

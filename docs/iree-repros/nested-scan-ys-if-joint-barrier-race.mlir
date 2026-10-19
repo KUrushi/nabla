@@ -2,7 +2,7 @@
 // optimization_barrier に一緒に通し、その結果の組へ dynamic_update_slice する（%icb, %byb）。
 // コピーは消える（scripts/scan-ys-candidates/joint-barrier.mlir.in。長さに線形）。
 // nested-scan-ys-if-race.mlir と同じ負荷のもとで、local-sync と比べて 0 の行が返らないかを確かめるためのもの。
-// 未検証: Rosetta の VM では race が再現しない。x86 ネイティブで確かめる（docs/iree-upstream-bugs.md の 7）。
+// 未検証: Rosetta の VM では race がほとんど再現しない（while 版 0/200、if 版 1/200）。x86 ネイティブで確かめる（docs/iree-upstream-bugs.md の 7）。
 // INPUT: --input=3xf32=0.5,-0.25,0.9
 module {
   func.func @main(%h: tensor<3xf32>) -> (tensor<3xf32>, tensor<4x3xf32>) {

@@ -28,6 +28,20 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# --variants の相対パスはリポジトリ直下を基準に解決する
+if [ -n "${NABLA_BENCH_SCAN_VARIANTS:-}" ]; then
+  resolved=""
+  IFS=',' read -ra vs <<< "$NABLA_BENCH_SCAN_VARIANTS"
+  for v in "${vs[@]}"; do
+    case "$v" in
+      plain|cond|/*) ;;
+      *) [ -e "${REPO_ROOT}/$v" ] && v="${REPO_ROOT}/$v" ;;
+    esac
+    resolved="${resolved:+$resolved,}$v"
+  done
+  export NABLA_BENCH_SCAN_VARIANTS="$resolved"
+fi
+
 if [ "$render_only" -eq 1 ] && [ -z "$out" ]; then
   echo "--render-only には --out でレコードのファイルを渡す" >&2; exit 2
 fi
