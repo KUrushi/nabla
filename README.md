@@ -418,6 +418,17 @@ Optax 相当。オプティマイザは `init`（パラメータの木 → 状�
 - 対象は f32 / f64 のパラメータ。スカラー（学習率・バイアス補正）は葉の dtype に合わせて `convert` する。bf16 / f16 は未対応
 - IREE 3.11 の local-task は jit の入力が 162 個以上だと落ちる（`iree-too-many-inputs`）。adam の学習ステップの入力は パラメータ + `mu` + `nu` + `count` + バッチ なので、パラメータの葉が 50 個を超えるモデルでは足りなくなる
 
+#### dense-general と attention のマスク（`nabla/nn`、issue #208）
+
+Flax の `nn.DenseGeneral` と `make_causal_mask` / `make_attention_mask` / `combine_masks` に合わせたもの。スロット名は Flax のパラメータ名と同じ（`kernel` / `bias`）。
+
+| モジュール | スロット | init | 呼び出し |
+| --- | --- | --- | --- |
+| `dense-general` | `kernel (in... features...)`, `bias (features...)`, `contract-axes`（`:static`。縮約する入力の軸の数） | `(init-dense-general key in-shape features &key dtype)`（形は整数かそのリスト。`contract-axes` は `in-shape` の長さ）。kernel は平らな形の `lecun_normal` を reshape したもの、bias は 0 | `(call m x)`。x の最後の `contract-axes` 個の軸を縮約して特徴の軸に置き換える。q / k / v は `(in) → (heads head-dim)`、out は `(heads head-dim) → (out)` |
+
+- `contract-axes` は kernel と bias の rank の差から推論せず、`:static` のスロットに持つ（`init-dense-general` が設定する。`make-dense-general` では明示する）。`:static` は葉でないので、チェックポイントのパス名は Flax と同じ `kernel` / `bias` のまま。bias の形が kernel の後ろの軸と合わなければ層名入りの error
+- マスクの部品（bit の配列を返す。1 が「見える」）: `(make-causal-mask length)` は形 `(1 length length)` の因果マスク（クエリ位置 q がキー位置 k 以上で 1。先頭の 1 がヘッドとバッチ軸に広がる）、`(make-attention-mask query-valid key-valid)` は `[... q]` と `[... k]` の有効フラグから padding のマスク `[... 1 q k]`、`(combine-masks &rest masks)` は論理積（ランクが違えば右に揃えてブロードキャスト、`nil` は無視）。multi-head attention の `mask` に渡す
+
 #### safetensors の読み書き（`nabla/nn`、issue #198）
 
 `nabla/nn`（パッケージ `nabla.nn`）の部品の1つ。チェックポイントの形式 safetensors を、平坦な「名前 → 配列」の対応として読み書きする（PyTree をパス名で平坦化して保存・復元するのは次の「チェックポイント」）。`(asdf:load-system "nabla/nn")` で使う。

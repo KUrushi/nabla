@@ -56,6 +56,10 @@
    #:constant-schedule
    #:linear-schedule
    #:cosine-decay-schedule
-   #:warmup-cosine-decay-schedule)
+   #:warmup-cosine-decay-schedule
+   ;; dense-general と attention のマスクの部品（issue #208）
+   #:dense-general #:make-dense-general #:init-dense-general #:dense-general-kernel #:dense-general-bias
+   #:dense-general-contract-axes
+   #:make-causal-mask #:make-attention-mask #:combine-masks)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general。"))
