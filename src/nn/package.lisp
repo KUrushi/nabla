@@ -36,6 +36,26 @@
    #:dropout #:make-dropout #:init-dropout #:dropout-rate
    #:sequential #:make-sequential #:init-sequential #:sequential-layers
    #:activation #:make-activation #:init-activation #:activation-fn
-   #:relu #:gelu #:softmax #:log-softmax)
+   #:relu #:gelu #:softmax #:log-softmax
+   ;; オプティマイザ（issue #205）
+   #:defoptimizer
+   #:optimizer
+   #:optimizer-init
+   #:optimizer-update
+   #:apply-updates
+   #:chain
+   #:sgd
+   #:adam
+   #:adamw
+   #:clip-by-global-norm
+   #:scale
+   #:scale-by-adam
+   #:scale-by-schedule
+   #:momentum-trace
+   #:add-decayed-weights
+   #:constant-schedule
+   #:linear-schedule
+   #:cosine-decay-schedule
+   #:warmup-cosine-decay-schedule)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ。"))
