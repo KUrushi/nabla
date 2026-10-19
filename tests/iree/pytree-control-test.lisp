@@ -54,15 +54,15 @@
 
 (define-iree-test pytree-control/jit-cond-with-tree-operands-matches-eager
     "木の operands と木の戻り値の cond* を jit した結果は、pred が真でも偽でも eager と一致する。
-（枝は入力を素通しで返さない。IREE 3.11 は、cond の枝が入力をそのまま返す出力を6個ほど
-持つと実行時に落ちる。PyTree とは無関係の既存の問題で、フラットな引数でも再現する。）"
+枝は片方の木を素通しで返す（木の葉は3つずつなので、片方の枝が入力を3つ以上素通しする。IREE 3.11 は
+そのままだと実行時に落ちる。docs/iree-upstream-bugs.md の 8。%cond-emit の回避策が直す。issue #226）。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:find-backend :iree))
         (nb:*compile-cache-directory* nil)
         (then (nb::%make-traceable-function
-               (list 'a 'b) (lambda (a b) (list (%pc-scale-tree a) (%pc-scale-tree b)))))
+               (list 'a 'b) (lambda (a b) (list (%pc-scale-tree a) b))))
         (else (nb::%make-traceable-function
-               (list 'a 'b) (lambda (a b) (list (%pc-scale-tree (%pc-scale-tree a)) (%pc-scale-tree b))))))
+               (list 'a 'b) (lambda (a b) (list a (%pc-scale-tree (%pc-scale-tree b)))))))
     (let ((f (nb::%make-traceable-function
               (list 'p 'a 'b)
               (lambda (p a b) (nb:cond* (funcall *pc-lt* p 0.5) then else a b)))))

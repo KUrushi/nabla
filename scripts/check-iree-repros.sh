@@ -14,6 +14,11 @@
 #   run-bug / run-control: コンパイルした vmfb を iree-run-module で local-task device で
 #           実行する版（コンパイルは通り、実行時に落ちるバグ。入力の個数ぶんの --input を
 #           自動で作る）。判定は bug / control と同じ
+#   fail-bug / fail-control: 実行時にエラー（ref is null など。クラッシュではなく終了コード 1）で
+#           落ちるバグ。vmfb を iree-run-module で local-task と local-sync の両方で実行する。
+#           入力はファイルの `// INPUT: --input=...` の行（最初の入力は pred 用で、bug は 1.0 の
+#           else の枝で落ちる。control は 0.0 と 1.0 の両方で通る）。fail-bug は 1 回でも
+#           終了コードが 0 でなければ REPRODUCED、fail-control は全部 0 なら OK
 #   race-bug / race-control: 実行時に、まれに結果が壊れるバグ（クラッシュではない）。vmfb を
 #           local-sync で 1 回実行した結果を正とし、local-task で RACE_RUNS 回実行して
 #           出力が違った回数を数える。入力はファイルの `// INPUT: --input=...` の行。
@@ -62,6 +67,8 @@ CASES=(
   "control while-i1-carry-not-returned.mlir"
   "run-bug     local-task-162-inputs.mlir"
   "run-control local-task-161-inputs.mlir"
+  "fail-bug     if-passthrough-operands.mlir"
+  "fail-control if-passthrough-operands-select.mlir"
   "race-bug     nested-scan-ys-barrier-race.mlir"
   "race-control nested-scan-ys-no-barrier.mlir"
   "race-bug     nested-scan-ys-if-race.mlir"
@@ -90,6 +97,22 @@ race_run() {
   echo "${bad}"
 }
 
+# fail_run ファイル pred: 入力の最初を pred に差し替え、local-task と local-sync の両方で実行して、
+# 終了コードが 0 でなかった実行の回数を返す
+fail_run() {
+  local file="$1" pred="$2" args=() line first=1 bad=0 dev
+  while IFS= read -r line; do
+    if ((first)); then args+=("--input=f32=${pred}"); first=0; else args+=("${line#// INPUT: }"); fi
+  done < <(grep '^// INPUT: ' "${REPRO_DIR}/${file}")
+  { "${IREE_COMPILE}" --iree-hal-target-device=local \
+      --iree-hal-local-target-device-backends=llvm-cpu \
+      "${REPRO_DIR}/${file}" -o "${WORK_DIR}/f.vmfb" >/dev/null; } 2>/dev/null || { echo "error: ${file} did not compile" >&2; exit 2; }
+  for dev in local-task local-sync; do
+    "${IREE_RUN}" --device="${dev}" --module="${WORK_DIR}/f.vmfb" --function=main "${args[@]}" >/dev/null 2>&1 || bad=$((bad + 1))
+  done
+  echo "${bad}"
+}
+
 "${IREE_COMPILE}" --version | sed -n '2p'
 status=0
 start_stress
@@ -105,6 +128,18 @@ for entry in "${CASES[@]}"; do
       if ((bad == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
     fi
     printf '%-12s %-40s %-15s mismatches=%d/%d\n' "${kind}" "${file}" "${verdict}" "${bad}" "${RACE_RUNS}"
+    continue
+  fi
+  if [[ "${kind}" == fail-* ]]; then
+    # else の枝（pred = 1.0）で落ちるか。control は then の枝（0.0）も確かめる
+    bad=$(fail_run "${file}" 1.0)
+    if [[ "${kind}" == fail-control ]]; then bad=$((bad + $(fail_run "${file}" 0.0))); fi
+    if [[ "${kind}" == fail-bug ]]; then
+      if ((bad > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
+    else
+      if ((bad == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
+    fi
+    printf '%-12s %-40s %-15s failing-runs=%d\n' "${kind}" "${file}" "${verdict}" "${bad}"
     continue
   fi
   crashes=0; failures=0; codes=""

@@ -51,14 +51,97 @@
                              collect (subseq line start pos)
                              while pos))))
 
+(defun %cond-passthrough-name (graph var operand-names)
+  "GRAPH（枝のサブグラフ）の出力 VAR が枝の入力そのもの（素通し）なら、その入力に結びつけた
+外側の SSA 名（OPERAND-NAMES の対応する要素）。そうでなければ NIL。"
+  (let ((position (position var (graph-invars graph))))
+    (and position (nth position operand-names))))
+
+(defun %cond-derived-name (kind out-name)
+  "出力 OUT-NAME（\"%7\" など）から作る補助の SSA 名 \"%cond_<KIND>_7\"。MLIR の SSA 名は数字だけ
+（%7）か英字・_ で始まる名前で、\"%7_if\" のように数字で始めて文字を続けることはできない。"
+  (format nil "%cond_~A_~A" kind (subseq out-name 1)))
+
+(defun %cond-branch-region (graph operand-names keep dummies)
+  "枝 GRAPH のリージョンの行のリスト。stablehlo.return は、GRAPH の出力のうち KEEP
+（出力の位置のリスト）のものだけを返す。DUMMIES は (位置 . 名前) のリストで、その位置の値の
+代わりに、同じ名前の 0 の定数を返す（リージョンの中で定義する）。KEEP の各位置は
+DUMMIES に現れるか、GRAPH の出力そのものを返すか（キーが無ければ）のどちらか。"
+  (let* ((lines (%stablehlo-region-lines graph :arg-names operand-names))
+         (body (butlast lines))
+         (names (%scan-return-names (car (last lines))))
+         (avals (mapcar #'var-aval (graph-outvars graph))))
+    (append body
+            (loop for (position . name) in dummies
+                  collect (%scan-zero-constant-line name (nth position avals)))
+            (list (format nil "stablehlo.return ~{~A~^, ~} : ~{~A~^, ~}"
+                          (loop for position in keep
+                                collect (let ((dummy (assoc position dummies)))
+                                          (if dummy (cdr dummy) (nth position names))))
+                          (loop for position in keep
+                                collect (tensor-type-string (nth position avals))))))))
+
 (defun %cond-emit (in-names in-avals out-names out-avals &key then else)
+  "stablehlo.if を出す。枝が入力をそのまま返す出力（素通し）は、stablehlo.if の結果にせず、
+if の外の stablehlo.select(pred, then 側, else 側) にする（issue #226）。
+
+特定の版のバックエンド（記録は docs/ の上流バグの表の 8 と、docs/ の repros/ にある
+if-passthrough-operands*.mlir）は、片方の枝が入力を stablehlo.return する出力を持つ if を、もう片方の
+枝を選んだ実行時に \"ref is null\" で落とすことがある（出力の並びによる）。素通しを
+optimization_barrier に通しても直らない。入力のコピーを枝の中で作る（0 を足すなど）と通るが、
+dtype ごとに違う演算が要り、浮動小数点の -0.0 を変えないよう気を付ける必要がある。select は dtype に
+依らず、pred が実際の値なので畳み込まれない。出力の種類（素通しは枝の入力に結びつけた外側の名前）:
+  - どちらの枝も計算: if の結果のまま
+  - 片方だけ素通し: if は計算する側の値を返し（素通しの側は 0 の定数 %cond_z_NAME を返す）、
+    その結果 %cond_if_NAME と素通しの入力を select する
+  - 両方素通し: if の結果から外し、2つの入力を select する
+結果が1つも残らなければ stablehlo.if 自体を出さない。"
   (declare (ignore in-avals))
-  (format nil "~{~A~^, ~} = \"stablehlo.if\"(~A) ({~%~A~%}, {~%~A~%}) : (tensor<i1>) -> (~{~A~^, ~})"
-          out-names
-          (first in-names)
-          (%cond-indent (%stablehlo-region-lines then :arg-names (rest in-names)))
-          (%cond-indent (%stablehlo-region-lines else :arg-names (rest in-names)))
-          (mapcar #'tensor-type-string out-avals)))
+  (let* ((pred (first in-names))
+         (operands (rest in-names))
+         (then-passes (mapcar (lambda (v) (%cond-passthrough-name then v operands)) (graph-outvars then)))
+         (else-passes (mapcar (lambda (v) (%cond-passthrough-name else v operands)) (graph-outvars else)))
+         (if-names '()) (if-avals '())
+         (then-keep '()) (else-keep '())
+         (then-dummies '()) (else-dummies '())
+         (selects '()))
+    (loop for position from 0
+          for out in out-names for aval in out-avals
+          for then-pass in then-passes for else-pass in else-passes
+          for type = (tensor-type-string aval)
+          do (flet ((select (on-true on-false)
+                      (push (format nil "~A = stablehlo.select ~A, ~A, ~A : (tensor<i1>, ~A, ~A) -> ~A"
+                                    out pred on-true on-false type type type)
+                            selects))
+                    (keep (temp)
+                      (push temp if-names)
+                      (push aval if-avals)
+                      (push position then-keep)
+                      (push position else-keep)))
+               (cond
+                 ((and (null then-pass) (null else-pass))
+                  (keep out))
+                 ((and then-pass else-pass)
+                  (select then-pass else-pass))
+                 (then-pass
+                  (let ((temp (%cond-derived-name "if" out)))
+                    (keep temp)
+                    (push (cons position (%cond-derived-name "z" out)) then-dummies)
+                    (select then-pass temp)))
+                 (t
+                  (let ((temp (%cond-derived-name "if" out)))
+                    (keep temp)
+                    (push (cons position (%cond-derived-name "z" out)) else-dummies)
+                    (select temp else-pass))))))
+    (let ((if-text
+            (when if-names
+              (format nil "~{~A~^, ~} = \"stablehlo.if\"(~A) ({~%~A~%}, {~%~A~%}) : (tensor<i1>) -> (~{~A~^, ~})"
+                      (reverse if-names)
+                      pred
+                      (%cond-indent (%cond-branch-region then operands (reverse then-keep) then-dummies))
+                      (%cond-indent (%cond-branch-region else operands (reverse else-keep) else-dummies))
+                      (mapcar #'tensor-type-string (reverse if-avals))))))
+      (format nil "~{~A~^~%~}" (append (and if-text (list if-text)) (reverse selects))))))
 
 (defun %cond-eager (arrays in-avals &key then else)
   (declare (ignore in-avals))
