@@ -160,6 +160,12 @@ pretty form を出力する。
 **LayerNorm の「速い分散」**
 : 分散を `E[x^2] - E[x]^2` で求める方式（Flax の `use_fast_variance` の既定）。データを1回なぞれば済むが、平均が標準偏差よりずっと大きいと桁落ちする（f32 で平均 3・標準偏差 2 の入力なら 1 桁ほど失う）。nabla の `layer-norm` は Flax と数値で一致させるため同じ式を使う。。平均が標準偏差よりずっと大きい行では分散が 0 に潰れ、出力が `(x - mean) / sqrt(epsilon)` に発散する（たとえば f32 の行 `[1e4, 1e4+1, 1e4+2, 1e4+3]` は E[x^2] と E[x]^2 が同じ値に丸まって分散が 0 になり、出力は ±1500 程度になる。Flax も同じ結果）
 
+**dense-general**
+: 「入力の最後の複数の軸をまとめて縮約し、複数の軸の特徴に置き換える」`dense`（Flax の `nn.DenseGeneral`）。縮約する軸の数は `contract-axes`。multi-head attention の q / k / v は `(in) → (heads head-dim)`、出力の射影は `(heads head-dim) → (out)`。
+
+**attention のマスク**
+: 見てはいけない位置のスコアを softmax の前に最小の有限値（`-inf` ではなく Flax の `jnp.finfo(dtype).min`）に置き換えること。因果マスクは「位置 i は i より後を見ない」下三角のマスク（言語モデルの学習で未来を見ないため）、padding マスクは長さをそろえるために足した詰め物の位置を隠す。全部が隠れた行は全部同じ値になるので、重みは一様になる（NaN にならない）。
+
 **反転 dropout（inverted dropout）**
 : 学習時に要素をランダムに落とし、残した要素を 1/(1-rate) 倍して、出力の期待値を入力と同じに保つ方式。推論時は何もしなくてよい（`deterministic` が真なら入力そのもの）。Flax の `nn.Dropout` も同じ。
 **オプティマイザ（optimizer）/ 勾配変換（gradient transformation）**

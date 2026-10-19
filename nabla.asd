@@ -565,7 +565,10 @@
                ;; 基本レイヤー（issue #204）
                (:file "src/nn/layers")
                ;; オプティマイザ（Optax 相当、issue #205）
-               (:file "src/nn/optimizer")))
+               (:file "src/nn/optimizer")
+               ;; dense-general と attention のマスクの部品（issue #208）
+               (:file "src/nn/dense-general")
+               (:file "src/nn/attention-mask")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -586,4 +589,7 @@
                (:file "tests/nn/optimizer-test")
                (:file "tests/nn/optimizer-train-test")
                ;; defmodule のモジュールを scan の carry・ys にする（issue #201）
-               (:file "tests/nn/module-control-test")))
+               (:file "tests/nn/module-control-test")
+               ;; dense-general と attention のマスクの部品（issue #208）
+               (:file "tests/nn/dense-general-test")
+               (:file "tests/nn/attention-mask-test")))
