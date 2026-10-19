@@ -562,7 +562,7 @@ Optax 相当。オプティマイザは `init`（パラメータの木 → 状�
 
 - **ステップ数は状態の中の rank 0 の `:i32` の配列**（`count`）で、Lisp の整数ではない。jit の入力として渡るので、ステップごとに再コンパイルされず、スケジュールの値も毎ステップ変わる。`update` ごとに 1 増える（`:i32` の最大値で止まる）
 - 状態は `defmodule` の構造体（`adam-state` の `count` `mu` `nu`、`momentum-state` の `trace`、`schedule-state` の `count`）で、スロット名がチェックポイントのパス名になる。状態を持たない変換の状態は `nil`。葉の並びは Optax の `tree_leaves` と同じ
-- 数値は Optax と f32 の許容誤差で一致する（`tests/fixtures/optimizer/`）。cosine は `0.5 (1 + cos(pi t))`、adam のバイアス補正 `1 - b^t` は `-expm1(t log b)` で計算する（Optax と同じ形）
+- 数値は Optax と f32 の許容誤差で一致する（`tests/fixtures/optimizer/`）。cosine は `0.5 (1 + cos(pi t))`、adam のバイアス補正 `1 - b^t` は `-expm1(t log b)` で計算する（Optax の `1 - b^t` を pow なしで書いた同値な式。Optax は `decay**count` を直接書く）
 - **チェックポイントとの関係**: `chain` の状態はリストなので、パス名は位置で決まる（`1.0.mu.l1.w` の `0` は chain の何番目か）。chain の途中に変換を足すと古いチェックポイントは読めなくなる（`checkpoint-error`）。状態のスロットはすべて `:state` で、`(save-checkpoint path (list model opt-state))` で1ファイルに入る。`optimizer-update` / `apply-updates` に渡す葉は、jit の外ではホストの配列（`device-array` は eager では扱えない。`to-host` で戻す）
 - **`chain` は `check-it:chain` と名前が衝突する**。check-it も使うパッケージ（テストなど）では `(:shadowing-import-from #:nabla.nn #:chain)` を書く
 - 対象は f32 / f64 のパラメータ。スカラー（学習率・バイアス補正）は葉の dtype に合わせて `convert` する。bf16 / f16 は未対応

@@ -57,7 +57,7 @@ def inputs(name, dt, specials, randoms, limit=None):
     return jnp.asarray(x[keep])
 
 
-def write(path, title, columns, fns, rng, specials, make_randoms, limit=None):
+def write(path, columns, fns, rng, specials, make_randoms, limit=None):
     with open(path, "w") as f:
         f.write(f";;;; JAX (jax.lax.{' / jax.lax.'.join(columns)}) との突き合わせ用フィクスチャ（issue #223）。\n")
         f.write(f";;;; 生成: tests/fixtures/unary/generate.py（jax {jax.__version__}）。"
@@ -77,14 +77,14 @@ def main() -> None:
     inf, nan = float("inf"), float("nan")
 
     expm1_log1p_specials = [0.0, -0.0, inf, -inf, nan, -1.0, -2.0, -0.5, 1e-10, -1e-10, 1e-5, -1e-5,
-                            1.0, 0.5, 10.0, -10.0, 100.0, -100.0, 88.5, 1e30, -1e30, 1e-30, 0.1,
+                            1.0, 0.5, 10.0, -10.0, 100.0, -100.0, 88.5, 705.0, 1e308, 1e30, -1e30, 1e-30, 0.1,
                             -0.9999, 3.0, 65504.0, -65504.0]
 
     def expm1_log1p_randoms(rng):
         return [rng.uniform(-5.0, 5.0, 60), rng.uniform(-1.0, 1.0, 40),
                 np.exp(rng.uniform(-20.0, 3.0, 20)), -1.0 + np.exp(rng.uniform(-8.0, 0.0, 20))]
 
-    write(os.path.join(here, "jax-expm1-log1p.lisp"), "expm1/log1p", ["expm1", "log1p"],
+    write(os.path.join(here, "jax-expm1-log1p.lisp"), ["expm1", "log1p"],
           [jax.lax.expm1, jax.lax.log1p], rng, expm1_log1p_specials, expm1_log1p_randoms)
 
     sin_cos_specials = [0.0, -0.0, inf, -inf, nan, 1.0, -1.0, 0.5, 3.14159265, 1.5707964, 100.0, -100.0,
@@ -93,7 +93,7 @@ def main() -> None:
     def sin_cos_randoms(rng):
         return [rng.uniform(-10.0, 10.0, 60), rng.uniform(-100.0, 100.0, 40), rng.uniform(-1.0, 1.0, 40)]
 
-    write(os.path.join(here, "jax-sin-cos.lisp"), "sin/cos", ["sin", "cos"],
+    write(os.path.join(here, "jax-sin-cos.lisp"), ["sin", "cos"],
           [jax.lax.sin, jax.lax.cos], rng, sin_cos_specials, sin_cos_randoms, limit=100.0)
 
 

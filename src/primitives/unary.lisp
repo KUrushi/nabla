@@ -75,7 +75,8 @@ VALUE が無限大・NaN のときはそのまま同じ型の無限大・NaN に
 
 (defun %expm1-double (x)
   "EXPM1(X) = exp(X) - 1（X は double）。Kahan の形: u = exp(x) として、u = 1 なら x
-（x が極小でも ±0 の符号を保って x を返す）、u - 1 = -1 なら -1、それ以外は (u - 1) x / log(u)。
+（x が極小でも ±0 の符号を保って x を返す）、u - 1 = -1 なら -1、それ以外は (u - 1) · (x / log(u))（積を先に作ると x が 703 以上で (u - 1) x が溢れて
++無限大になるので、比を先に取る）。
 特殊値は明示的に分岐する: NaN はそのまま、+無限大は +無限大、-無限大は -1、u が +無限大
 （exp がオーバーフロー）なら +無限大（(u - 1) x / log(u) は inf / inf で NaN になる）。"
   (cond
@@ -86,11 +87,11 @@ VALUE が無限大・NaN のときはそのまま同じ型の無限大・NaN に
            ((= u 1d0) x)
            ((= (- u 1d0) -1d0) -1d0)
            ((sb-ext:float-infinity-p u) u)
-           (t (/ (* (- u 1d0) x) (log u))))))))
+           (t (* (- u 1d0) (/ x (log u)))))))))
 
 (defun %log1p-double (x)
   "LOG1P(X) = log(1 + X)（X は double）。Kahan の形: u = 1 + x として、u = 1 なら x
-（x が極小でも ±0 の符号を保つ）、それ以外は log(u) x / (u - 1)。特殊値は明示的に分岐する
+（x が極小でも ±0 の符号を保つ）、それ以外は log(u) · (x / (u - 1))（比を先に取る。x が 2.5e305 を超えると log(u) x が溢れる）。特殊値は明示的に分岐する
 （%LOG-ELEMENT と同じく CL の log は負で複素数を返す）: NaN はそのまま、X < -1 は quiet NaN、
 X = -1 は -無限大、+無限大は +無限大。"
   (cond
@@ -101,7 +102,7 @@ X = -1 は -無限大、+無限大は +無限大。"
     (t (let ((u (+ 1d0 x)))
          (if (= u 1d0)
              x
-             (/ (* (log u) x) (- u 1d0)))))))
+             (* (log u) (/ x (- u 1d0))))))))
 
 (defun %expm1-element (x)
   "EXPM1(X)（1要素。X は single-float または double-float）。"

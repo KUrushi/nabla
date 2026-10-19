@@ -590,22 +590,25 @@ expm1(log 2) = 1（既知の値、f64）。"
   (- (+ x (/ (* x x x) 3)) (/ (* x x) 2) (/ (* x x x x) 4)))
 
 (test primitives/expm1-log1p/f64-small-x-matches-series-with-relative-accuracy
-  "f64 で |x| < 1e-3 のとき、expm1 / log1p の結果は Taylor 級数と相対誤差 1e-12 で一致する
+  "f64 で |x| ∈ [1e-15, 1e-3]（指数を一様に引く。符号も）のとき、expm1 / log1p の結果は Taylor 級数と相対誤差 1e-12 で一致する
 （exp(x) - 1 のような素朴な式では 1e-13 程度の絶対誤差で、小さい x の相対精度が出ない。
 eager の Kahan の形が精度を保っていることを確かめる）。"
-  (is (check-it (generator (uniform-real :lo -1d-3 :hi 1d-3))
-                (lambda (x)
-                  (or (zerop x)
+  (is (check-it (generator (tuple (uniform-real :lo 3d0 :hi 15d0) (uniform-integer :lo 0 :hi 1)))
+                (lambda (args)
+                  (destructuring-bind (exponent negative) args
+                   ;; 指数を一様に引く: |x| = 10^-exponent（1e-15 〜 1e-3）、符号も
+                   (let ((x (* (if (= negative 1) -1d0 1d0) (expt 10d0 (- exponent)))))
+                    (or (zerop x)
                       (and (approx= (%unary-eager-scalar :expm1 :f64 x) (%small-x-expm1-series x)
                                     :rtol 1d-12 :atol 0d0)
                            (approx= (%unary-eager-scalar :log1p :f64 x) (%small-x-log1p-series x)
-                                    :rtol 1d-12 :atol 0d0))))
+                                    :rtol 1d-12 :atol 0d0))))))
                 :regression-id primitives/expm1-log1p/f64-small-x-matches-series
                 :regression-file (regression-path "primitives-expm1-log1p-small-x"))
       "小さい x で expm1 / log1p が級数と相対誤差 1e-12 で一致しなかった"))
 
 (test primitives/expm1-log1p/are-inverses-in-f64
-  "f64 で log1p(expm1(x)) = x と expm1(log1p(y)) = y（x ∈ [-1, 1)、y ∈ (-1, 1)）。"
+  "f64 で log1p(expm1(x)) = x（x ∈ [-1, 1)）と expm1(log1p(y)) = y（y ∈ [0, 1)）。"
   (is (check-it (generator (tuple (array-spec :dtypes '(:f64))
                                   (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
                 (lambda (args)
@@ -651,6 +654,15 @@ eager の Kahan の形が精度を保っていることを確かめる）。"
                 :regression-id primitives/sin-cos/identities-in-f64
                 :regression-file (regression-path "primitives-sin-cos-identities"))
       "sin / cos の恒等式が成り立たなかった"))
+
+(test primitives/expm1-log1p/f64-large-arguments-do-not-overflow-in-the-intermediate-product
+  "f64 で expm1(705) は有限（exp(705) と rtol 1e-14 で一致。Kahan の分子 (u-1)·x が先に溢れて
++inf になる x ∈ (703.3, 709.78) の回帰）、log1p(1e308) は有限（log(1e308) と rtol 1e-14。
+分子 log(u)·x が溢れる x > 2.5e305 の回帰）。"
+  (is (approx= (%unary-eager-scalar :expm1 :f64 705d0) (exp 705d0) :rtol 1d-14 :atol 0d0))
+  (is (approx= (%unary-eager-scalar :expm1 :f64 709d0) (exp 709d0) :rtol 1d-14 :atol 0d0))
+  (is (approx= (%unary-eager-scalar :log1p :f64 1d308) (log 1d308) :rtol 1d-14 :atol 0d0))
+  (is (approx= (%unary-eager-scalar :log1p :f64 1d306) (log 1d306) :rtol 1d-14 :atol 0d0)))
 
 (test primitives/sin-cos/large-argument-is-correct-in-double
   "eager は double で計算して丸めるので、|x| が大きくても範囲縮約の誤差が出ない（f64 の sin(1e6)、

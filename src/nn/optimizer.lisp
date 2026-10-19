@@ -227,7 +227,7 @@ params を渡す）。adamw は adam の後にこれを置く（decoupled weight
 
 (defun %one-minus-pow (base count dtype)
   "1 - BASE^COUNT（COUNT は rank 0 の :i32、結果は DTYPE のスカラー）。pow のプリミティブは無いので
-BASE^COUNT = exp(COUNT log BASE) として -expm1(COUNT log BASE) を計算する（Optax と同じ形。
+BASE^COUNT = exp(COUNT log BASE) として -expm1(COUNT log BASE) を計算する（Optax の 1 - b^t を pow なしで書いた同値な式で、Optax は decay**count を直接書く。
 BASE が 1 に近くても 1 - exp(...) のような桁落ちが起きない）。BASE = 0 は常に 1。"
   (if (zerop base)
       1

@@ -75,7 +75,7 @@ tanh`）。そこで `backend-compile` は、StableHLO のテキストに f64 �
 この7つ（`*libm-f64-ops*`）があるとき（`nabla.iree::%needs-libm-p`）だけ
 `--iree-llvmcpu-link-embedded=false` を付け、ランタイムが dlopen で読み込む
 system library を作る。読み込み時にプロセスの libm に解決されるので、f64 の
-この3つも `jit` できる。代わりにそのモジュールのコンパイルには `ld.lld` が
+この7つも `jit` できる。代わりにそのモジュールのコンパイルには `ld.lld` が
 要る（IREE は system linker を `-nostdlib -static -shared` で呼び、これを
 共有ライブラリとして扱えるのは `ld.lld` だけ。`ld.bfd` / `ld.gold` では
 失敗する。固定コミットの `iree-lld` は `-flavor` を要求するので使えない）。
