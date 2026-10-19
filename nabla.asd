@@ -311,6 +311,8 @@
 
 
                (:file "tests/per-example-test")
+               ;; vmap の PyTree（issue #200）
+               (:file "tests/vmap-pytree-test")
 
 
 
@@ -434,6 +436,8 @@
                (:file "tests/iree/grad-test")
                ;; jit / grad の PyTree の IREE 実行（issue #199）
                (:file "tests/iree/pytree-function-test")
+               ;; vmap の PyTree の IREE 実行（issue #200）
+               (:file "tests/iree/vmap-pytree-test")
                ;; local-task device の入力 162 個以上のバグの回避（issue #199）
                (:file "tests/iree/input-limit-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
@@ -569,4 +573,6 @@
                (:file "tests/nn/checkpoint-test")
                ;; 基本レイヤー（issue #204）
                (:file "tests/nn/layers-test")
-               (:file "tests/nn/layers-iree-test")))
+               (:file "tests/nn/layers-iree-test")
+               ;; defmodule のモデルを vmap に渡す（issue #200）
+               (:file "tests/nn/module-vmap-test")))
