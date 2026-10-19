@@ -20,6 +20,8 @@
                ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
                (:file "src/float16")
                (:file "src/aval")
+               ;; PyTree の flatten / unflatten（issue #195）
+               (:file "src/pytree")
                ;; IR と defprimitive（issue #29、u1a）
                (:file "src/primitive")
                (:file "src/ir")
@@ -165,6 +167,8 @@
                (:file "tests/support/subgraph-primitive")
                ;; vmap の参照実装（issue #125）
                (:file "tests/support/vmap")
+               ;; PyTree の生成器と比較（issue #195）
+               (:file "tests/support/pytree")
                (:file "tests/support/run-tests")))
 
 (defsystem "nabla/tests"
@@ -283,6 +287,8 @@
 
                (:file "tests/primitives/bits-test")
                (:file "tests/prng-test")
+               ;; PyTree（issue #195）
+               (:file "tests/pytree-test")
 
 
 

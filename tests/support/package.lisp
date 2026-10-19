@@ -107,4 +107,9 @@
    #:slice-along-axis
    #:stack-along-axis
    #:primitive-function
-   #:axis-at))
+   #:axis-at
+   ;; PyTree の生成器と比較（issue #195）
+   #:pytree-spec
+   #:pytree-test-pair
+   #:make-pytree-test-pair
+   #:pytree-equal))
