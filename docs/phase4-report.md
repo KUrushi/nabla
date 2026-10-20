@@ -180,7 +180,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **#237: scan の emitter の mutation の生き残り**（`while` のブロック引数の型・戻り値の名前の個数・カウンタの型。medium では捕まるが small のテストが無い）。
 - **#239: nn が core の内部シンボル `nabla::%pytree-node-entry` を使っている**。子を返す公開関数（`tree-children`）を export して移す。
 - **#240: gather プリミティブが無く、embedding が one-hot + `dot`**（§3.6）。
-- **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。**解決済み**（`use_bias`・layer-norm の引数・`broadcast_dropout`・`attend` は実装、conv の入力 dilation / CIRCULAR / CAUSAL / 文字列 padding / `conv_transpose` と BatchNorm / GroupNorm は理由を README の「Flax との差」に書いて「やらない」とした。BatchNorm / GroupNorm は別 Issue）。
+- **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。**解決済み**（`use_bias`・layer-norm の引数・`broadcast_dropout`・`attend` は実装、conv の入力 dilation / CIRCULAR / CAUSAL / 文字列 padding / `conv_transpose` と BatchNorm / GroupNorm は理由を README の「Flax との差」に書いて「やらない」とした。BatchNorm / GroupNorm は #260、`:static` の既定値は #261）。
 - **#242: jit の入力が 161 個を超えるモデルは local-task で学習できない**（葉が約 50 個を超える Adam の学習ステップ）。dtype ごとに葉を連結する案。
 - **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
 - **#244: チェックポイントは全体をメモリに読む**。葉ごとの遅延読み込みと、データパイプラインの状態の保存（フェーズ5の前提）。
