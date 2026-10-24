@@ -351,6 +351,28 @@ kernel と bias の形は (in out) と (out)。"
                                          always (= (aref out b tt f)
                                                    (if (< -1 id vocab) (aref table id f) 0.0))))))))
 
+(test layers/embedding-lookup-does-not-scale-with-the-vocabulary
+  "embedding の引きは gather 1 つ（issue #240）: 語彙数 2^20 の表を aval だけでトレースした graph は :gather の eqn
+だけを持ち、勾配の graph にも dot-general（one-hot との積）が無く、定数は ids の大きさ以下（語彙数に比例する
+one-hot の iota を持たない）。"
+  (let* ((vocabulary (expt 2 20))
+         (avals (list (nabla:make-aval (list vocabulary 4) :f32) (nabla:make-aval '(2 3) :i32)))
+         (lookup (nabla:trace-to-graph
+                  (nabla:with-tracing (table ids) (call (make-embedding :embedding table) ids)) avals))
+         (gradient (nabla:trace-to-graph
+                    (nabla:grad (nabla:with-tracing (table ids)
+                                  (nabla:reduce-sum (call (make-embedding :embedding table) ids))))
+                    avals)))
+    (flet ((primitives (graph) (mapcar (lambda (eqn) (nabla::primitive-name (nabla::eqn-prim eqn))) (nabla:graph-eqns graph)))
+           (largest-constant (graph)
+             (reduce #'max (mapcar (lambda (entry) (array-total-size (cdr entry))) (nabla:graph-constants graph))
+                     :initial-value 0)))
+      (is (equal '(:gather) (primitives lookup)))
+      (is (member :scatter-add (primitives gradient)))
+      (is (not (member :dot-general (primitives gradient))))
+      (is (<= (largest-constant lookup) 6))
+      (is (<= (largest-constant gradient) 6)))))
+
 (def-layer-property layers/dense-is-an-affine-map-over-the-last-axis
   "dense の出力は x kernel + bias（行ごと）。入力は rank 1 から 3。"
   (seed rank in out) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3)
