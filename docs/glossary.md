@@ -7,6 +7,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **IR（中間表現, Intermediate Representation）**
 : ソースコードと機械語の間に置く、プログラムの別の書き方。変換や最適化をしやすい形にしてある。nabla では JAX の jaxpr にならった小さな IR（`aval` / `var` / `eqn` / `graph`）を持つ。
 
+**入力の連結（input packing、jit）**
+: jit した関数の入力（引数の木の葉）が実行系の入力の上限（`backend-max-inputs`）を超えるときだけ、同じ dtype の葉をホストで 1 本の 1 次元の配列につなげて渡し、コンパイルする関数の先頭で `slice` と `reshape` を使って元の葉に切り分けること（issue #242）。IREE 3.11 の local-task が入力 162 個以上の関数で落ちるのを避ける。入力の個数は dtype の種類の数になる。上限の内側では何もしないので、StableHLO もディスクキャッシュも変わらない。
+
 **aval（抽象値, abstract value）**
 : 配列の「中身」を持たず、「形状と dtype」だけを持つ値。トレース中は実際の数値が分からないので、aval だけを追って出力の形を決める。
 

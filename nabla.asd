@@ -33,6 +33,8 @@
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "src/primitives/shape-common")
                (:file "src/primitives/shape")
+               ;; 静的な範囲の切り出し（jit の入力の連結を戻す内部プリミティブ。issue #242）
+               (:file "src/primitives/slice")
                ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
                (:file "src/primitives/unary")
                ;; compare / select / convert（issue #31 p3）
@@ -248,6 +250,8 @@
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
                (:file "tests/jit-cache-test")
+               ;; jit の入力の連結（issue #242）
+               (:file "tests/jit-pack-test")
                (:file "tests/subgraph-test")
 
 

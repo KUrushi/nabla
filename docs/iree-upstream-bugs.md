@@ -506,7 +506,10 @@ leaves the operand types inconsistent): conv-convert-operand-type.mlir fails wit
 | 症状 | SIGSEGV（終了コード 139）。161 個までは通り、162 個で決定的に落ちる |
 | 落ちる場所 | `iree_task_call_initialize` ← `iree_hal_task_queue_issue_cmd_allocate`（local-task ドライバの runtime） |
 | 回避策 | `--device=local-sync` は 170 個・309 個の入力でも通る。nabla では `(make-backend :iree :driver :local-sync)` で選べる |
-| nabla の対応 | `nabla.iree:invoke` が local-task device で入力 162 個以上を呼ぶ前に `iree-too-many-inputs`（`iree-error` の子）を signal する（`+local-task-max-inputs+` = 161） |
+| nabla の対応 | `nabla.iree:invoke` が local-task device で入力 161 個以上を呼ぶ前に `iree-too-many-inputs`（`iree-error` の子）を signal する（`+local-task-max-inputs+` = 160。#242 で 161 から下げた。下の「中間の値を持つ形」）。jit は葉が 160 個を超えると dtype ごとに 1 本へ連結して渡す（#242、`docs/jit-input-packing.md`） |
+| 追加の観察（#242、2026-10-24、CI の ubuntu-24.04） | 出力の個数は効かない: 入力 1 個・出力 170 個、入力 2 個・出力 300 個は通る（`input-limit/local-task-runs-many-outputs`）。入力が 170 個・162 個でも、使うのが 1 個だけ（出力 1 個）なら通る。落ちるのは入力を 162 個以上 **使う** 関数で、宣言した引数の個数だけでは決まらないらしい（未確定） |
+| 中間の値を持つ形（#242 で測り直し、2026-10-24、CI の ubuntu-24.04、run 40089043353） | 入力を平衡二分木で足す関数（`stablehlo.add` の木 1 本、または add と multiply の木 2 本で出力 2 個）を `iree-run-module --device=local-task` で各 5 回: 入力 150・158・159・160 個は 5 回とも通り、161・162 個は 5 回とも SIGSEGV（終了コード 139）。中間の値（dispatch の間の一時バッファ）を持つ形は、独立の `tanh`（上の再現ファイル）より 1 つ早い 161 個で落ちる（PR #268 も要素ごとの連鎖で同じ境界を見た）。nabla の jit で葉 161 個の木を足すと、上限 161 の検査を通ってプロセスが落ちた（同じ run の子プロセス）。そのため上限を 160 にした。160 個は木 1 本・2 本とも通り、splat でない定数（`dense<[1.0, 2.0, k]>`）を 1〜10 個足した木も 150〜160 個で 3 回とも通った（run 40090885017）。すべての形で 160 個が安全という証明ではない |
+| 落ちる仕組みの見立て（#242、未確認） | 固定コミットの `runtime/src/iree/hal/drivers/local_task/task_queue.c` の `iree_hal_task_queue_issue_cmd_allocate` は、コマンドを `sizeof(cmd) + binding_table.count * sizeof(iree_hal_buffer_binding_t)`（binding 1 個 24 バイト）で 4096 バイトのブロックの arena から確保し、その直後の `iree_task_call_initialize` で落ちる。binding の数が約 163 で確保がブロックを超え（arena の oversize の経路）、そこで壊れていると読める。独立の `tanh` は入力 N + 結果 1、木の和は入力 N + 中間値 1 + 結果 1 の binding になり、それぞれ 162・161 個で 163 に達するので測定と合う。使わない入力・出力の個数・splat でない定数（実行ファイルに埋め込まれる）が効かないこととも合う。この見立てでは、160 個の入力に余分の binding が 3 つ以上つく形は落ちうる |
 
 jit した関数の入力の個数は、引数の PyTree の葉の個数に等しい（#199）。Adam の学習ステップ（パラメータ + m + v + バッチ）のような大きなモデルは、この上限に当たりうる。
 
@@ -798,7 +801,7 @@ CUDA ではカーネルの起動が増える分、学習ステップが約 1 ms�
 
 ### 161 個の入力（6 との関係）
 
-6 は「入力 162 個以上で local-task が落ちる」と書いたが、**入力 161 個でも落ちる形がある**。run 40087237694 で、入力 161 個の平衡二分木の加算（フラグなし）と、161 個の逐次の連鎖（フラグ付き。3 回とも）が local-task で SIGSEGV（終了コード 139）になった。160 個はどちらも通り、local-sync は 161・162 個とも通る。一方、161 個の `concatenate`（1 出力）と 161 個の独立の `tanh`（6 の `local-task-161-inputs.mlir`）は通る。中間の値（dispatch の間で受け渡す一時バッファ）を持つ形だけが 1 つ早く落ちるので、6 の落ちる場所（`iree_hal_task_queue_issue_cmd_allocate` の中の `iree_task_call_initialize`）から見て、入力に一時バッファの確保を足した数で決まっているように見える（未調査）。nabla の jit で葉 161 個の連鎖を local-task で呼ぶと、`+local-task-max-inputs+` = 161 の検査を通ってしまい、プロセスが `memory fault` で落ちた（PR #268 の CI）。`+local-task-max-inputs+` を 160 にするか、6 の条件を測り直すのは #242 の作業と合わせて決める（この PR では変えていない）。そのため `binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves` は 160 個までを確かめる。
+6 は「入力 162 個以上で local-task が落ちる」と書いたが、**入力 161 個でも落ちる形がある**。run 40087237694 で、入力 161 個の平衡二分木の加算（フラグなし）と、161 個の逐次の連鎖（フラグ付き。3 回とも）が local-task で SIGSEGV（終了コード 139）になった。160 個はどちらも通り、local-sync は 161・162 個とも通る。一方、161 個の `concatenate`（1 出力）と 161 個の独立の `tanh`（6 の `local-task-161-inputs.mlir`）は通る。中間の値（dispatch の間で受け渡す一時バッファ）を持つ形だけが 1 つ早く落ちるので、6 の落ちる場所（`iree_hal_task_queue_issue_cmd_allocate` の中の `iree_task_call_initialize`）から見て、入力に一時バッファの確保を足した数で決まっているように見える（未調査）。nabla の jit で葉 161 個の連鎖を local-task で呼ぶと、`+local-task-max-inputs+` = 161 の検査を通ってしまい、プロセスが `memory fault` で落ちた（PR #268 の CI）。#242（PR #267）で `+local-task-max-inputs+` を 160 に下げ（6 の条件も測り直した。6 の「対応」の行）、葉が 160 個を超える jit は入力を連結するので、nabla の jit からはこのクラッシュに当たらない。 `binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves` は 160 個までを確かめる。
 
 ### nabla の回避策の選び方
 
