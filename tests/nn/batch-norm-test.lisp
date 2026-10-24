@@ -345,7 +345,7 @@ call が返した移動平均そのもの（EQ。weight decay がかからない
 
 (test batch-norm/rejects-bad-arguments
   "init と call は不正な引数を error にする: features と axis の個数の不一致・正でない epsilon・[0, 1] の外の
-momentum、call の use-running-average が T / NIL でない、統計を取る軸が残らない、特徴の軸の大きさと scale / 状態の
+momentum・有限でない epsilon、call の use-running-average が T / NIL でない、入力の dtype がモデルと違う、統計を取る軸が残らない、特徴の軸の大きさと scale / 状態の
 形の不一致、軸が範囲外。"
   (signals error (init-batch-norm (nabla:prng-key 0) '(2 3)))
   (signals error (init-batch-norm (nabla:prng-key 0) 3 :epsilon 0))
@@ -355,9 +355,13 @@ momentum、call の use-running-average が T / NIL でない、統計を取る�
   (signals error (init-batch-norm (nabla:prng-key 0) 0))
   (signals error (init-batch-norm (nabla:prng-key 0) 2.5))
   (signals error (init-batch-norm (nabla:prng-key 0) 3 :momentum -0.1d0))
+  (signals error (init-batch-norm (nabla:prng-key 0) 3 :epsilon sb-ext:single-float-positive-infinity))
   (let ((m (init-batch-norm (nabla:prng-key 0) 3))
         (x (%rand '(4 3) 1)))
     (signals error (call m x :yes))
+    ;; 入力の dtype がモデルと違う（f64 の入力に f32 のモデル）
+    (handler-case (progn (call m (%rand '(4 3) 1 :f64) nil) (fail "dtype の違いが error にならなかった"))
+      (error (c) (is (search "batch-norm" (princ-to-string c)))))
     (signals error (call m (%rand '(3) 1) nil))
     (signals error (call m (%rand '(4 5) 1) nil))
     (signals error (call (init-batch-norm (nabla:prng-key 0) 3 :axis 2) x nil))
