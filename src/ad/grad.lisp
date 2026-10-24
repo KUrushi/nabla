@@ -81,7 +81,8 @@ GRAD-REQUIRES-SCALAR-OUTPUT。"
   "VALUES（:HAS-AUX の F の戻り値のリスト）を検査し、(VALUES 損失 aux) を返す。2値でない、
 1値目が木で包まない葉でなければ GRAD-REQUIRES-SCALAR-OUTPUT。"
   (unless (and (= (length values) 2)
-               (treedef= (tree-structure (first values)) (tree-structure 0)))
+               ;; 1値目は葉（節でない）
+               (not (nth-value 2 (tree-children (first values)))))
     (error 'grad-requires-scalar-output
            :format-control ":HAS-AUX の微分する関数は (VALUES 損失 aux) の2値（損失は木で包まないスカラー1つ）を返さなければならない（~D 値の ~S を返した）"
            :format-arguments (list (length values) (tree-structure values))))
