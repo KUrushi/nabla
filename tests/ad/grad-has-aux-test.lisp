@@ -110,3 +110,39 @@ eager と一致する（aux のトレーサは外側のトレースの値にな�
       (signals nb:grad-requires-scalar-output (funcall (nb:value-and-grad f :has-aux t) x)))
     (signals nb:autodiff-error (nb:grad (nb:with-tracing (x) x) :has-aux :yes))
     (signals nb:autodiff-error (nb:value-and-grad (nb:with-tracing (x) x) :has-aux 1))))
+
+(test grad-has-aux/while-loop-depending-on-a-differentiated-argument-is-rejected
+  "既知の制限: 微分する引数に依存する while-loop の結果は aux に入れられない（autodiff-error）。
+while-loop が微分しない引数だけに依存するなら通る。"
+  (let ((cond-fn (nb:with-tracing (c) (< (nb:reduce-sum c) 100d0)))
+        (body-fn (nb:with-tracing (c) (* 2d0 c)))
+        (x (%vec 1d0 -2d0 0.5d0)))
+    (signals nb:autodiff-error
+      (funcall (nb:grad (nb:with-tracing (x)
+                          (values (nb:reduce-sum (* x x)) (nb:while-loop cond-fn body-fn (* x x))))
+                        :has-aux t)
+               x))
+    (multiple-value-bind (dx aux)
+        (funcall (nb:grad (nb:with-tracing (x y)
+                            (values (nb:reduce-sum (* x x)) (nb:while-loop cond-fn body-fn y)))
+                          :has-aux t)
+                 x (%vec 1d0 2d0))
+      (is (equalp (%vec 2d0 -4d0 1d0) dx))
+      (is (equalp (%vec 64d0 128d0) aux)))))
+
+(test grad-has-aux/vjp-graph-n-cotangents
+  "vjp-graph の :n-cotangents（内部）: m（出力の個数）なら既定と同じ結果、0 なら余接線を取らず
+入力の余接線は 0、範囲外・整数でないと autodiff-error。2出力の graph (x*y, x+y) で確かめる。"
+  (let* ((graph (nb:trace-to-graph (nb:with-tracing (x y) (values (* x y) (+ x y)))
+                                   (list (nb:make-aval '() :f64) (nb:make-aval '() :f64))))
+         (x (%f64-scalar 3d0)) (y (%f64-scalar 5d0))
+         (u (%f64-scalar 2d0)) (v (%f64-scalar 7d0)))
+    (is (equalp (multiple-value-list (nb:eval-graph (nb::vjp-graph graph) x y u v))
+                (multiple-value-list (nb:eval-graph (nb::vjp-graph graph :n-cotangents 2) x y u v))))
+    ;; 先頭の出力だけ: d(x*y)·u = (y u, x u)
+    (is (equalp (list (%f64-scalar 15d0) (%f64-scalar 8d0) (%f64-scalar 10d0) (%f64-scalar 6d0))
+                (multiple-value-list (nb:eval-graph (nb::vjp-graph graph :n-cotangents 1) x y u))))
+    (is (equalp (list (%f64-scalar 15d0) (%f64-scalar 8d0) (%f64-scalar 0d0) (%f64-scalar 0d0))
+                (multiple-value-list (nb:eval-graph (nb::vjp-graph graph :n-cotangents 0) x y))))
+    (dolist (bad '(3 -1 1.0 :x))
+      (signals nb:autodiff-error (nb::vjp-graph graph :n-cotangents bad)))))
