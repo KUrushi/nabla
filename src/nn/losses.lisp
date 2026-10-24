@@ -12,7 +12,7 @@
 
 (defun %soft-target-cross-entropy (z-s z-t axis)
   "AXIS（0 以上）に沿った soft-target 交差エントロピー（AXIS を潰した形）。論文の式 (9):
-d = delta - sum(p delta)、s = log(q/p) = d - log1p(sum(p expm1(d)))、u = q - p = p expm1(s)
+d = delta - c（論文の c は sum(p delta)。ここでは教師の最大値の位置の delta）、s = log(q/p) = d - log1p(sum(p expm1(d)))、u = q - p = p expm1(s)
 （|s| >= 1 と p = 0 では q - p にする。p が 0 に丸まって expm1 が溢れると 0 * inf になるため）、
 勾配 g = u - q sum(u)（和が 0）。教師の確率が 0 の位置（-inf のロジット）があると sum(p exp(delta))
 から生徒のその位置の確率の和 Q_u が抜けるので、s に log1p(-Q_u) を足す（論文の式に無い補正）。
@@ -29,16 +29,17 @@ d = delta - sum(p delta)、s = log(q/p) = d - log1p(sum(p expm1(d)))、u = q - p
                      (q (exp log-q))
                      (p (%softmax z-t axis))
                      (taught (> p 0))
-                     ;; 教師の確率が 0 の位置（-inf のロジット）は差を 0 にする（-inf - -inf = NaN を避ける）
-                     (delta (nabla:where taught (- z-s z-t) 0))
-                     ;; 中心化のずらしは、教師の確率が正で生徒が有限の位置だけで取る（生徒が -inf の位置が
-                     ;; あると sum(p delta) = -inf で行全体が NaN になる）。その位置は d = -inf、s = -inf で
-                     ;; 下の q - p に落ちる。ずらしの量は s の値を変えない（log1p の引数を小さく保つだけ）
-                     (finite (= (nabla:where taught (- z-s z-s) 1) 0))
-                     (d (nabla:where taught
-                                     (- delta (%expand (nabla:reduce-sum (nabla:where finite (* p delta) 0) :axes axes)
-                                                       shape axis))
-                                     0))
+                     ;; 中心化: d = delta - c。c は教師の最大値の位置の delta（同点は平均）。論文の
+                     ;; sum(p delta) は sum(p) = 1 の丸めで eps * c の誤差を入れ、z_s = z_t + 定数（q = p）でも
+                     ;; 勾配が 0 にならない。最大値の位置なら定数のずれはちょうど消える。どんな c でも s の値は
+                     ;; 数学的に同じ（log1p の引数を小さく保つだけ）。教師の確率が 0 の位置は d = 0（-inf - -inf
+                     ;; = NaN を後の where で捨てる）。生徒が -inf の位置は d = -inf、s = -inf で下の q - p に落ちる
+                     (delta (- z-s z-t))
+                     (teacher-peak (%expand (nabla:reduce-max z-t :axes axes) shape axis))
+                     (at-peak (= z-t teacher-peak))
+                     (center (/ (nabla:reduce-sum (nabla:where at-peak delta 0) :axes axes)
+                                (nabla:reduce-sum (nabla:convert at-peak (nabla:aval-dtype (nabla:value-aval z-s))) :axes axes)))
+                     (d (nabla:where taught (- delta (%expand center shape axis)) 0))
                      ;; 教師の確率が 0 の位置にある生徒の確率 Q_u は sum(p exp(delta)) に入らないので、
                      ;; log(q/p) に log1p(-Q_u) を足して補う（論文の式は p > 0 の行だけを考えている）
                      (untaught (nabla:reduce-sum (nabla:where taught 0 q) :axes axes))

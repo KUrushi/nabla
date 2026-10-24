@@ -86,6 +86,19 @@ d = delta - sum(p delta) を外す変異はこの性質では区別できない�
            (scale (reduce #'max expected :key #'abs)))
       (every (lambda (a x) (<= (abs (- a x)) (+ (* 1d-3 (abs x)) (* 1d-3 scale)))) g expected))))
 
+(def-layer-property losses/gradient-is-exactly-zero-for-a-shifted-teacher
+  "z_s = z_t + C（C は整数、z_t は 1/64 の倍数なので和は厳密）なら softmax(z_s) = softmax(z_t) で、勾配は
+全要素がちょうど 0（中心化を sum(p delta) で取ると sum(p) = 1 の丸めで eps * C の勾配が残る）。"
+  (seed n c)
+  (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 8) (uniform-integer :lo -100 :hi 100))
+  (let* ((state (sb-ext:seed-random-state seed))
+         (zt (make-array n :element-type 'single-float))
+         (zs (make-array n :element-type 'single-float)))
+    (dotimes (i n)
+      (setf (aref zt i) (/ (- (random 384 state) 192) 64.0)
+            (aref zs i) (+ (aref zt i) c)))
+    (every #'zerop (funcall (nabla:grad (%soft-ce)) zs zt))))
+
 (def-layer-property losses/value-is-the-cross-entropy
   "値は -sum(softmax(z_t) log-softmax(z_s))（double の参照と相対誤差 1e-5）。2 次元の入力は行ごと。"
   (seed n)
@@ -131,6 +144,10 @@ d = delta - sum(p delta) を外す変異はこの性質では区別できない�
          (g (identity (funcall (nabla:grad (%soft-ce)) zs zt))))
     (is (notany #'sb-ext:float-nan-p g))
     (is (%close-relative-p g (%reference-soft-ce-grad zs (vector 0 -1000 1)) 1d-5) "~S" g)
+    ;; 値は教師の確率が正の位置だけの -sum(p log q)
+    (let ((expected (- (reduce #'+ (map 'vector (lambda (pj lq) (if (zerop pj) 0 (* pj lq)))
+                                         (%reference-softmax (vector 0 -1000 1)) (%reference-log-softmax zs))))))
+      (is (<= (abs (- (aref (funcall (%soft-ce) zs zt)) expected)) (* 1d-6 (abs expected)))))
     (let* ((zs (%f32-vector (list 1 -inf 3)))
            (value (aref (funcall (%soft-ce) zs zt)))
            (g (identity (funcall (nabla:grad (%soft-ce)) zs zt))))
