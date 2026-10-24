@@ -587,6 +587,7 @@
                ;; 基本レイヤー（issue #204）
                (:file "tests/nn/layers-test")
                (:file "tests/nn/layers-iree-test")
+               (:file "tests/nn/softmax-numerics-test")
                ;; defmodule のモデルを vmap に渡す（issue #200）
                (:file "tests/nn/module-vmap-test")
                ;; オプティマイザ（Optax 相当、issue #205）
