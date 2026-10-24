@@ -139,7 +139,7 @@ one-hot に、損失をかける位置（SEP 以降の N 位置）の印を掛�
 (defun make-train-step (optimizer &key backend)
   "jit した学習ステップ (model opt-state tokens targets) → (values 損失 新しい model 新しい opt-state)。
 入力の葉の数はパラメータ + mu + nu + count + バッチ（このモデルで 38 + 76 + 1 + 2）で、IREE の
-local-task の入力数の上限（161）に収まる。ループの外で1回だけ作る（2回目以降はキャッシュを使う）。"
+local-task の入力数の上限（160）に収まる。ループの外で1回だけ作る（2回目以降はキャッシュを使う）。"
   (let ((value-and-grad (nabla:value-and-grad
                          (nabla:with-tracing (model tokens targets) (transformer-loss model tokens targets)))))
     (nabla:jit (nabla:with-tracing (model opt-state tokens targets)
