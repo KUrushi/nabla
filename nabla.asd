@@ -14,7 +14,7 @@
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
   :license "Apache-2.0"
-  :depends-on ("ironclad" "trivial-garbage" (:require "sb-cltl2"))
+  :depends-on ("ironclad" "trivial-garbage" (:require "sb-cltl2") (:require "sb-posix"))
   :components ((:file "src/package")
                (:file "src/dtype")
                ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
@@ -33,6 +33,8 @@
                ;; issue #31 p4: reshape / broadcast-in-dim / transpose
                (:file "src/primitives/shape-common")
                (:file "src/primitives/shape")
+               ;; 静的な範囲の切り出し（jit の入力の連結を戻す内部プリミティブ。issue #242）
+               (:file "src/primitives/slice")
                ;; 単項プリミティブ neg / exp / log / tanh（issue #31 p2）
                (:file "src/primitives/unary")
                ;; compare / select / convert（issue #31 p3）
@@ -80,6 +82,8 @@
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
+               ;; 一時ファイル + fsync + rename の書き込み（issue #263）
+               (:file "src/atomic-file")
                (:file "src/compile-cache")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "src/jit")
@@ -195,6 +199,7 @@
                (:file "tests/aval-test")
                (:file "tests/backend-test")
                (:file "tests/compile-cache-test")
+               (:file "tests/atomic-file-test")
                (:file "tests/load-warnings-test")
                ;; IR と defprimitive（issue #29、u1a）
                (:file "tests/test-primitives")
@@ -254,6 +259,8 @@
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
                (:file "tests/jit-cache-test")
+               ;; jit の入力の連結（issue #242）
+               (:file "tests/jit-pack-test")
                (:file "tests/subgraph-test")
 
 
@@ -454,6 +461,8 @@
                (:file "tests/iree/input-limit-test")
                ;; stablehlo.if の枝が入力を素通しすると落ちる IREE のバグの回避（issue #226）
                (:file "tests/iree/cond-passthrough-test")
+               ;; 1 つの dispatch の binding の上限（32）に当たる IREE の制限の回避（issue #264）
+               (:file "tests/iree/binding-limit-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
                (:file "tests/iree/mlp-train-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）

@@ -516,6 +516,125 @@ reason :invalid-entries。"
           (is (eq :truncated (safetensors-error-reason c)))
           (is (equal (namestring path) (namestring (safetensors-error-path c)))))))))
 
+;;; --- ファイルを葉ごとに読み書きする（medium、issue #262） ---
+;;;
+;;; read-safetensors / write-safetensors はファイル全体を 1 本のバイト列にせず、葉ごとに
+;;; 小さな作業用バッファを通して読み書きする。バイト列版（encode / decode）と同じ結果になる
+;;; ことを、作業用バッファより大きな葉（境界をまたぐ）と壊したファイルで確かめる。
+
+(defparameter *all-safetensors-dtypes* '(:f32 :f64 :bf16 :f16 :i32 :u32 :u64 :i1))
+
+(defun random-entries-with-a-large-leaf (seed count)
+  "RANDOM-ENTRIES に、0〜約 300 KB のランダムな dtype の 1 次元の葉 \"large\" を 1 つ足す
+（読み書きの作業用バッファ 64 KiB より大きくなり、境界をまたぐ）。半分の場合は、バイト数が
+64 KiB・128 KiB ちょうどとその前後になる長さを選ぶ。"
+  (let* ((state (sb-ext:seed-random-state (+ seed 1)))
+         (dtype (nth (random (length *all-safetensors-dtypes*) state) *all-safetensors-dtypes*))
+         (width (nabla:dtype-byte-width dtype))
+         (length (if (zerop (random 2 state))
+                     (+ (floor (nth (random 2 state) '(65536 131072)) width) (1- (random 3 state)))
+                     (random (floor 300000 width) state))))
+    (cons (list "large" (random-array-of dtype (list length) state) dtype)
+          (remove "large" (random-entries seed count) :key #'first :test #'string=))))
+
+(defun write-octets-file (path octets)
+  (with-open-file (out path :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+    (write-sequence octets out))
+  path)
+
+(defun file-octets (path)
+  (with-open-file (in path :element-type '(unsigned-byte 8))
+    (let ((octets (make-array (file-length in) :element-type '(unsigned-byte 8))))
+      (read-sequence octets in)
+      octets)))
+
+(defun read-outcome (thunk)
+  "THUNK の (values entries metadata) を (:ok entries metadata) に、SAFETENSORS-ERROR を
+\(:error reason) にする。"
+  (handler-case (multiple-value-bind (entries metadata) (funcall thunk)
+                  (list :ok entries metadata))
+    (safetensors-error (c) (list :error (safetensors-error-reason c)))))
+
+(defun same-outcome-p (a b)
+  (if (eq (first a) :ok)
+      (and (eq (first b) :ok)
+           (same-entries-p (second a) (second b))
+           (equal (third a) (third b)))
+      (equal a b)))
+
+(test (safetensors/written-file-is-the-encoding :suite :nabla.medium)
+  "write-safetensors が書いたファイルは、encode-safetensors のバイト列とビット単位で同じ
+（全 dtype、作業用バッファより大きな葉、メタデータを含む）。"
+  (with-temporary-directory (dir)
+    (let ((path (merge-pathnames "model.safetensors" dir)))
+      (is (check-it (generator (tuple (uniform-integer :lo 0 :hi 1000000000)
+                                      (uniform-integer :lo 0 :hi 4)))
+                    (lambda (case)
+                      (destructuring-bind (seed count) case
+                        (let ((entries (random-entries-with-a-large-leaf seed count))
+                              (metadata (random-metadata seed)))
+                          (write-safetensors path entries :metadata metadata)
+                          (equalp (encode-safetensors entries :metadata metadata)
+                                  (file-octets path)))))
+                    :regression-id safetensors/written-file
+                    :regression-file (regression-path "safetensors-written-file"
+                                                      :package "NABLA.NN.TESTS"))
+          "ファイルのバイト列が encode-safetensors と違った"))))
+
+(test (safetensors/read-agrees-with-decode-on-corrupted-files :suite :nabla.medium)
+  "そのままの・切り詰めた・1バイト変えた・末尾にバイトを足したファイルを read-safetensors で
+読んだ結果は、同じバイト列を decode-safetensors した結果と同じ（同じ値か、同じ reason の
+SAFETENSORS-ERROR）。切り詰めたファイルを読み過ぎたり、他のエラーになったりしない。"
+  (with-temporary-directory (dir)
+    (let ((path (merge-pathnames "model.safetensors" dir)))
+      (is (check-it (generator (tuple (uniform-integer :lo 0 :hi 1000000000)
+                                      (uniform-integer :lo 0 :hi 4)
+                                      (uniform-integer :lo 0 :hi 3)
+                                      (uniform-integer :lo 0 :hi 1000000)
+                                      (uniform-integer :lo 0 :hi 255)))
+                    (lambda (case)
+                      (destructuring-bind (seed count kind position byte) case
+                        (let* ((bytes (encode-safetensors (random-entries-with-a-large-leaf seed count)
+                                                          :metadata (random-metadata seed)))
+                               (cut (mod position (length bytes)))
+                               (corrupted (ecase kind
+                                            (0 bytes)
+                                            (1 (subseq bytes 0 cut))
+                                            (2 (let ((copy (copy-seq bytes)))
+                                                 (setf (aref copy cut) byte)
+                                                 copy))
+                                            (3 (concatenate '(simple-array (unsigned-byte 8) (*)) bytes (octets byte))))))
+                          (write-octets-file path corrupted)
+                          (same-outcome-p (read-outcome (lambda () (decode-safetensors corrupted)))
+                                          (read-outcome (lambda () (read-safetensors path)))))))
+                    :regression-id safetensors/read-agrees
+                    :regression-file (regression-path "safetensors-read-agrees"
+                                                      :package "NABLA.NN.TESTS"))
+          "read-safetensors と decode-safetensors の結果が違った"))))
+
+(defun bytes-consed-by (thunk)
+  (let ((before (sb-ext:get-bytes-consed)))
+    (funcall thunk)
+    (- (sb-ext:get-bytes-consed) before)))
+
+(test (safetensors/file-io-allocates-about-one-file :suite :nabla.medium)
+  "8 MiB のファイルで、write-safetensors が確保するのはファイルの 1/4 未満（全体をまとめた
+バイト列を作らない）、read-safetensors はファイルの 1.25 倍未満（結果の配列の 1 倍 +
+作業用バッファ。ファイル全体のバイト列を作らない）。issue #262。"
+  (with-temporary-directory (dir)
+    (let* ((path (merge-pathnames "big.safetensors" dir))
+           (entries (loop for i below 4
+                          collect (list (format nil "w~D" i)
+                                        (make-array (floor (* 2 1048576) 4) :element-type 'single-float
+                                                                            :initial-element 1.5)
+                                        :f32)))
+           (written (bytes-consed-by (lambda () (write-safetensors path entries))))
+           (size (with-open-file (in path :element-type '(unsigned-byte 8)) (file-length in)))
+           (read (bytes-consed-by (lambda () (read-safetensors path)))))
+      (is (< written (/ size 4)) "write-safetensors が ~D バイト確保した（ファイルは ~D バイト）" written size)
+      (is (< read (* 5/4 size)) "read-safetensors が ~D バイト確保した（ファイルは ~D バイト）" read size)
+      (is (same-entries-p entries (read-safetensors path))))))
+
 ;;; --- Python の safetensors との相互運用（medium、例ベース） ---
 
 (defun fixture-path (name)
@@ -552,3 +671,15 @@ reason :invalid-entries。"
       (is (equalp committed
                   (encode-safetensors (fixture-entries)
                                       :metadata '(("format" . "pt") ("note" . "fixture"))))))))
+
+(test (safetensors/write-fsyncs-the-file-and-the-directory :suite :nabla.medium)
+  "write-safetensors は rename の前に一時ファイルを、後に親ディレクトリを fsync する（#263）。
+fsync の呼び出しは内部のフック nabla::*fsync-function* で数える。"
+  (with-temporary-directory (dir)
+    (let ((kinds '()))
+      (let ((nabla::*fsync-function*
+              (lambda (fd)
+                (push (if (sb-posix:s-isdir (sb-posix:stat-mode (sb-posix:fstat fd))) :directory :file)
+                      kinds))))
+        (write-safetensors (merge-pathnames "m.safetensors" dir) (random-entries 2 2)))
+      (is (equal '(:file :directory) (reverse kinds))))))

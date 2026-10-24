@@ -63,6 +63,19 @@ FIND-BACKEND でまた作り直しを試みる）。"
 フラグ、実行系のバージョンなど）。jit / コンパイル結果のディスクキャッシュ
 のキーの構成要素として使う。"))
 
+(defgeneric backend-max-inputs (backend)
+  (:documentation
+   "BACKEND で呼べる関数の入力の最大個数を返す。NIL なら上限なし（既定）。
+
+JIT は、動的引数の葉の個数がこれを超えるときだけ、同じ dtype の葉を 1 本の 1 次元の
+バッファに連結して渡し、コンパイルする関数の先頭で切り出して元の形に戻す（issue #242）。
+入力の個数は葉の dtype の種類の数になる。device array の葉はいったん TO-HOST してホストで
+連結する（デバイスとホストの往復が増える）。超えなければ連結せず、StableHLO も変わらない。
+入力の個数に制限のある実行系（特定のドライバの設定など）の実装がメソッドを足す。"))
+
+(defmethod backend-max-inputs ((backend backend))
+  nil)
+
 (defgeneric backend-compile (backend text)
   (:documentation
    "StableHLO の TEXT を BACKEND 向けにコンパイルし、

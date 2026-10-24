@@ -122,6 +122,17 @@ SYSTEM-LIBRARY が真なら、:local に --iree-llvmcpu-link-embedded=false を
 共有ライブラリ）を作らせる。libm を呼ぶモジュール（%needs-libm-p）にだけ
 使うこと。理由と代償は %needs-libm-p を参照。:cuda では無視する。
 
+どちらの TARGET にも --iree-dispatch-creation-fuse-multi-use=false を付ける（issue #264、
+docs/iree-upstream-bugs.md の 10）。IREE 3.11 では入力を逐次に足していく連鎖が 1 つの dispatch に
+融合され、ロード時に、:local は 32 個以上で HAL モジュールの上限の `binding count N > 32`、:cuda は
+16 個以上で CUDA の dispatch の上限の `binding_flags count N exceeds maximum of 16` になる。
+dispatch のオペランドの上限（kIreeMaxOperandCount = 16）を見ない FuseMultiUseElementwiseProducerPass
+が融合していると見ていて、このフラグはその pass（dispatch 形成の前の段）だけを止める。
+:local で 32〜160 個、:cuda で 16〜160 個の連鎖が通ることは測ったが、全ての形で binding が上限以下に
+なる保証ではない。代償は dispatch の数（examples/transformer.lisp の学習ステップで 319 → 409）で、
+CPU で測った学習ステップの時間・コンパイル時間は変わらなかった。:cuda（Colab の T4）では学習ステップが
+19 → 20 ms（2 層）・51 → 52 ms（6 層）、最初の呼び出し（コンパイルを含む）が 5〜8% 遅くなった。
+
 注意（将来 jit キャッシュを作るとき向け）: :local のフラグは
 NABLA_IREE_HOME/bin/iree-lld の有無というファイルシステムの状態に依存する。
 CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引数 +
@@ -133,13 +144,15 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
                            "--iree-input-demote-f64-to-f32=false"
                            "--iree-hal-target-device=local"
                            "--iree-hal-local-target-device-backends=llvm-cpu"
-                           "--iree-llvmcpu-target-cpu=host")
+                           "--iree-llvmcpu-target-cpu=host"
+                           "--iree-dispatch-creation-fuse-multi-use=false")
                      (if system-library
                          (list "--iree-llvmcpu-link-embedded=false")
                          (%embedded-linker-flags))))
     (:cuda (append (list "--iree-input-type=stablehlo"
                           "--iree-input-demote-f64-to-f32=false"
-                          "--iree-hal-target-device=cuda")
+                          "--iree-hal-target-device=cuda"
+                          "--iree-dispatch-creation-fuse-multi-use=false")
                     (when cuda-arch
                       (list (format nil "--iree-cuda-target=~A" cuda-arch)))))))
 
