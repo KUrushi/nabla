@@ -102,6 +102,12 @@
         ((member dtype '(:bf16 :f16)) "0x0000")
         (t "0")))
 
+(defun %gather-constant-line (name literal aval)
+  "AVAL の形で全要素が LITERAL の stablehlo.constant の行（要素が 0 個なら dense<>）。"
+  (format nil "~A = stablehlo.constant ~A : ~A" name
+          (if (zerop (aval-size aval)) "dense<>" (format nil "dense<~A>" literal))
+          (tensor-type-string aval)))
+
 (defun %gather-index-lines (index-name index-aval n out-name)
   "添字の範囲の判定と、範囲外を 0 にして :i32 の [idx..., 1] にした添字を作る行。
 \(values 行のリスト 判定（:i1）の名前 添字の名前）。"
@@ -117,10 +123,11 @@
          (safe (%convert-aux-name "safe" out-name))
          (safe32 (if (eq dtype :i32) safe (%convert-aux-name "safe32" out-name)))
          (vec (%convert-aux-name "vec" out-name)))
-    (flet ((constant (name value) (format nil "~A = stablehlo.constant dense<~D> : ~A" name value type))
+    (flet ((constant (name value) (%gather-constant-line name value index-aval))
            (compare (name direction bound)
-             (format nil "~A = stablehlo.compare ~A, ~A, ~A : (~A, ~A) -> ~A"
-                     name direction index-name bound type type bool-type)))
+             ;; unsigned の順序比較は compare_type を明示する（実行系の符号の推論に頼らない）。
+             (format nil "~A = stablehlo.compare ~A, ~A, ~A~:[~;, UNSIGNED~] : (~A, ~A) -> ~A"
+                     name direction index-name bound (not (eq dtype :i32)) type type bool-type)))
       (values
        (append
         (if (eq dtype :i32)
@@ -171,8 +178,7 @@
                           (tensor-type-string (make-aval (append (aval-shape index-aval) '(1)) :i32))
                           out-type)
                   (%gather-mask-line okb ok index-aval out-aval)
-                  (format nil "~A = stablehlo.constant dense<~A> : ~A" zero
-                          (%gather-zero-literal (aval-dtype out-aval)) out-type)
+                  (%gather-constant-line zero (%gather-zero-literal (aval-dtype out-aval)) out-aval)
                   (format nil "~A = stablehlo.select ~A, ~A, ~A : ~A, ~A" out-name okb rows zero
                           (tensor-type-string (make-aval (aval-shape out-aval) :i1)) out-type))))))))
 
@@ -203,13 +209,13 @@
                  lines
                  (list
                   (%gather-mask-line okb ok index-aval updates-aval)
-                  (format nil "~A = stablehlo.constant dense<~A> : ~A" uzero (%gather-zero-literal dtype) updates-type)
+                  (%gather-constant-line uzero (%gather-zero-literal dtype) updates-aval)
                   (format nil "~A = stablehlo.select ~A, ~A, ~A : ~A, ~A" masked okb (second in-names) uzero
                           (tensor-type-string (make-aval (aval-shape updates-aval) :i1)) updates-type))
                  (when accumulate-in-f32
                    (list (format nil "~A = stablehlo.convert ~A : (~A) -> ~A" acc masked updates-type acc-updates-type)))
                  (list
-                  (format nil "~A = stablehlo.constant dense<~A> : ~A" init (%gather-zero-literal acc-dtype) acc-out-type)
+                  (%gather-constant-line init (%gather-zero-literal acc-dtype) (make-aval (aval-shape out-aval) acc-dtype))
                   (format nil "~A = \"stablehlo.scatter\"(~A, ~A, ~A) ({" sum init vec acc)
                   (format nil "  ^bb0(~A: ~A, ~A: ~A):" a scalar-type b scalar-type)
                   (format nil "    ~A = stablehlo.add ~A, ~A : ~A" c a b scalar-type)

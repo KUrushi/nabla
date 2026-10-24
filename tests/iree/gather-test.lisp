@@ -62,6 +62,15 @@ f32 の eager にする（bf16 の scatter-add は f32 で累積するので、�
              (nb:with-tracing (x) (nb:convert (nb:gather (nb:convert x :bf16) ids) :f32))
              table (funcall gather (%round-to-bf16 table)) :bf16)
             "gather: bf16、添字 ~S で jit が eager と一致しない" index-dtype)
+        ;; rank 0 の添字（index_vector_dim = 0）と rank 1 の operand（offset_dims が空）。範囲内と範囲外。
+        (dolist (id '(3 7))
+          (let* ((scalar-id (make-array '() :element-type (nb:dtype-element-type index-dtype) :initial-element id))
+                 (pick (nb:with-tracing (x) (nb:gather x scalar-id)))
+                 (vector (make-random-array (make-array-spec '(5) :f32) :seed 7)))
+            (is (%gather-jit-matches-p pick table (funcall pick table) :f32)
+                "gather: rank 0 の添字 ~S（~S）で jit が eager と一致しない" id index-dtype)
+            (is (%gather-jit-matches-p pick vector (funcall pick vector) :f32)
+                "gather: rank 1 の operand、rank 0 の添字 ~S（~S）で jit が eager と一致しない" id index-dtype)))
         (is (%gather-jit-matches-p grad table (funcall grad table) :f32)
             "grad（scatter-add）: f32、添字 ~S で jit が eager と一致しない" index-dtype)
         (is (%gather-jit-matches-p
@@ -75,12 +84,12 @@ f32 の eager にする（bf16 の scatter-add は f32 で累積するので、�
 
 (define-iree-test gather/jit-vmap-matches-eager
     "operand（updates）と添字の両方をバッチした vmap（平らにした添字の gather / scatter-add と select の判定）を
-jit して IREE (local) で実行した結果は、jit しない vmap と一致する。添字のスカラー（rank 0）と rank 1 の operand も通す。"
+jit して IREE (local) で実行した結果は、jit しない vmap と一致する。添字だけをバッチした rank 1 の operand も通す。"
   (skip-unless-iree :library :both)
   (let ((nb:*compile-cache-directory* nil)
         (ids (%gather-test-indices *gather-test-ids* :i32)))
     (let ((gather (nb:vmap (primitive-function :gather '() 2) :in-axes '(0 0)))
-          (scatter (nb:vmap (primitive-function :scatter-add '(:size 5) 2) :in-axes '(0 1)))
+          (scatter (nb:vmap (primitive-function :scatter-add '(:size 5) 2) :in-axes '(0 0)))
           (scalar (nb:vmap (primitive-function :gather '() 2) :in-axes '(nil 0)))
           (table (make-random-array (make-array-spec '(2 5 3) :f32) :seed 4))
           (updates (make-random-array (make-array-spec '(2 4 3) :f32) :seed 5))

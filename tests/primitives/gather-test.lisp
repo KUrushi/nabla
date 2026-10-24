@@ -181,11 +181,11 @@ reshape した stablehlo.gather、範囲外の行を 0 にする select。"
                  "%0" (nb:make-aval '(2 3) :f32)))))
 
 (test scatter-add/emit-golden
-  "scatter-add の StableHLO（:u32 の添字は N 未満だけで判定し :i32 に直す。bf16 は f32 で足して戻す）。"
+  "scatter-add の StableHLO（:u32 の添字は UNSIGNED の比較で N 未満だけを判定し :i32 に直す。bf16 は f32 で足して戻す）。"
   (is (string=
        (format nil "~{~A~^~%~}"
                '("%hi_0 = stablehlo.constant dense<4> : tensor<2xui32>"
-                 "%ok_0 = stablehlo.compare LT, %i, %hi_0 : (tensor<2xui32>, tensor<2xui32>) -> tensor<2xi1>"
+                 "%ok_0 = stablehlo.compare LT, %i, %hi_0, UNSIGNED : (tensor<2xui32>, tensor<2xui32>) -> tensor<2xi1>"
                  "%lo_0 = stablehlo.constant dense<0> : tensor<2xui32>"
                  "%safe_0 = stablehlo.select %ok_0, %i, %lo_0 : tensor<2xi1>, tensor<2xui32>"
                  "%safe32_0 = stablehlo.convert %safe_0 : (tensor<2xui32>) -> tensor<2xi32>"
@@ -203,6 +203,27 @@ reshape した stablehlo.gather、範囲外の行を 0 にする select。"
                  "%0 = stablehlo.convert %sum_0 : (tensor<4x3xf32>) -> tensor<4x3xbf16>"))
        (%emit-of :scatter-add '("%i" "%u") (list (nb:make-aval '(2) :u32) (nb:make-aval '(2 3) :bf16))
                  "%0" (nb:make-aval '(4 3) :bf16) :size 4))))
+
+;; golden の dtype 以外の分岐: f64 の 0 は浮動小数点のリテラル、f16 も bf16 と同じく f32 で累積する、
+;; 要素が 0 個の定数は dense<>。
+(test gather/emit-follows-the-dtype
+  "f64 の gather の 0 は dense<0.0>、整数は dense<0>、f16 の scatter-add は f32 に直して足し f16 に戻す（f16 の 0 は
+ビット列）、:u64 の添字は UNSIGNED で比べる、要素が 0 個の添字の定数は dense<>。"
+  (let ((f64 (%emit-of :gather '("%x" "%i") (list (nb:make-aval '(4) :f64) (nb:make-aval '(2) :u64))
+                       "%0" (nb:make-aval '(2) :f64)))
+        (f16 (%emit-of :scatter-add '("%i" "%u") (list (nb:make-aval '(2) :i32) (nb:make-aval '(2) :f16))
+                       "%0" (nb:make-aval '(4) :f16) :size 4))
+        (empty (%emit-of :gather '("%x" "%i") (list (nb:make-aval '(4) :f32) (nb:make-aval '(0) :i32))
+                         "%0" (nb:make-aval '(0) :f32))))
+    (is (search "%zero_0 = stablehlo.constant dense<0.0> : tensor<2xf64>" f64))
+    (is (search "UNSIGNED : (tensor<2xui64>, tensor<2xui64>)" f64))
+    (is (search "%acc_0 = stablehlo.convert %masked_0 : (tensor<2xf16>) -> tensor<2xf32>" f16))
+    (is (search "%0 = stablehlo.convert %sum_0 : (tensor<4xf32>) -> tensor<4xf16>" f16))
+    (is (search "%lo_0 = stablehlo.constant dense<> : tensor<0xi32>" empty))
+    (is (search "%uzero_0 = stablehlo.constant dense<0x0000> : tensor<2xf16>" f16))
+    (is (search "%zero_0 = stablehlo.constant dense<0> : tensor<2xi32>"
+                (%emit-of :gather '("%x" "%i") (list (nb:make-aval '(4) :i32) (nb:make-aval '(2) :i32))
+                          "%0" (nb:make-aval '(2) :i32))))))
 
 ;;; --- 自動微分 ---
 
@@ -272,6 +293,18 @@ reshape した stablehlo.gather、範囲外の行を 0 にする select。"
                 :regression-id gather/vjp-is-scatter-add-and-back
                 :regression-file (regression-path "gather-vjp"))))
 
+(test gather/transpose-rejects-linear-indices
+  "gather / scatter-add の添字を線形な入力にした転置は AUTODIFF-ERROR（添字は既知の主値でなければならない）。"
+  (let* ((x (nb::make-var (nb:make-aval '(4 2) :f64)))
+         (i (nb::make-var (nb:make-aval '(3) :i32)))
+         (u (nb::make-var (nb:make-aval '(3 2) :f64)))
+         (gather (nb::make-eqn :gather (list x i)))
+         (scatter (nb::make-eqn :scatter-add (list i u) :size 4)))
+    (signals nb:autodiff-error
+      (nb::transpose-graph (nb::make-graph (list x i) (list gather) (nb:eqn-outvars gather) '()) 0))
+    (signals nb:autodiff-error
+      (nb::transpose-graph (nb::make-graph (list i u) (list scatter) (nb:eqn-outvars scatter) '()) 0))))
+
 ;;; --- バッチ化 ---
 
 (defun %gather-vmap-case-p (seed code-operand code-indices code-out primitive)
@@ -334,3 +367,30 @@ reshape した stablehlo.gather、範囲外の行を 0 にする select。"
     (is (equalp (%gather-oracle table ids) (nb:gather table ids)))
     (signals nb:primitive-error (nb:gather table (make-array 2 :element-type 'double-float)))
     (is (allclose (funcall (nb:grad loss) table) (%scatter-add-oracle ids weights 4) :dtype :f64))))
+
+(test gather/public-function-traces-two-tracers
+  "operand も添字もトレーサの nb:gather は eqn を1つ足す: 添字を引数にした関数の grad は、範囲内の添字の行に 1 を
+足した勾配になり、vmap（両方バッチ）も各要素の gather と一致する。"
+  (let* ((f (nb:with-tracing (x i) (nb:reduce-sum (nb:gather x i))))
+         (table (make-random-array (make-array-spec '(3 2) :f64) :seed 5))
+         (ids (make-array 4 :element-type '(signed-byte 32) :initial-contents '(1 1 -1 3)))
+         (expected (make-array '(3 2) :element-type 'double-float
+                                      :initial-contents '((0d0 0d0) (2d0 2d0) (0d0 0d0))))
+         (g (nb:with-tracing (x i) (nb:gather x i)))
+         (tables (make-random-array (make-array-spec '(2 3 2) :f64) :seed 6))
+         (batch-ids (make-array '(2 2) :element-type '(signed-byte 32) :initial-contents '((2 0) (1 5)))))
+    (is (allclose (funcall (nb:grad f) table ids) expected :dtype :f64))
+    (is (allclose (funcall (nb:vmap g) tables batch-ids)
+                  (first (reference-vmap g (list tables batch-ids)))
+                  :dtype :f64))))
+
+(test gather/vmap-of-both-rejects-flat-indices-beyond-i32
+  "operand と添字の両方をバッチした gather は、平らにした添字の上限 B*N <= 2^31 を超えると VMAP-ERROR（aval だけで
+トレースするので大きな配列は作らない）。B*N = 2^31 ちょうどは通る。"
+  (let ((f (nb:vmap (primitive-function :gather '() 2) :in-axes '(0 0))))
+    (flet ((trace-with (n)
+             (nb::%call-with-fresh-trace
+              (list (nb:make-aval (list 2 n) :f32) (nb:make-aval '(2 3) :i32))
+              (lambda (x i) (funcall f x i)))))
+      (finishes (trace-with (expt 2 30)))
+      (signals nb:vmap-error (trace-with (1+ (expt 2 30)))))))

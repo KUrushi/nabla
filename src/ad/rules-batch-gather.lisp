@@ -5,21 +5,17 @@
 ;;;; ときは、operand を [B*N, rest...] に平らにし、添字に b*N を足して1回の gather / scatter-add にする。
 ;;;; 平らにした添字は常に [0, B*N) に入る（範囲外の添字は 0 にしてから b*N を足す）ので、プリミティブ自身の
 ;;;; 範囲外の扱いは働かない。範囲の判定は b*N を足す前に元の dtype で行い、gather は結果を、scatter-add は
-;;;; 更新を select で 0 にする（負の添字が隣のバッチの行に落ちない）。B*N は :i32 に収まらなければならない。
+;;;; 更新を select で 0 にする（負の添字が隣のバッチの行に落ちない）。平らにした添字の最大 B*N - 1 は :i32 に
+;;;; 収まらなければならない（B*N <= 2^31）。
 
 (in-package #:nabla)
 
 (defun %gather-in-range (indices n)
-  "INDICES（整数のトレーサ）の各要素が 0 以上 N 未満かの :i1 のトレーサ（unsigned は N 未満だけ）。"
-  (let* ((aval (tracer-aval indices))
-         (dtype (aval-dtype aval))
-         (shape (aval-shape aval))
-         (below (%trace-eqn :compare (list indices (%lift-number-to n dtype shape)) :direction :lt)))
-    (if (eq dtype :i32)
-        (let ((non-negative (%trace-eqn :compare (list indices (%lift-number-to 0 dtype shape)) :direction :ge)))
-          ;; non-negative かつ below（偽なら non-negative 自身の偽を選ぶ）。
-          (%trace-eqn :select (list non-negative below non-negative)))
-        below)))
+  "INDICES（整数のトレーサ）の各要素が 0 以上 N 未満かの :i1 のトレーサ。長さ N の 1 の配列を gather で
+引いて 0 でないかを見る（範囲の判定を gather の emit の1か所にまとめる。unsigned の比較もそこに任せる）。"
+  (let* ((shape (aval-shape (tracer-aval indices)))
+         (hits (%trace-eqn :gather (list (%lift-number-to 1 :i32 (list n)) indices))))
+    (%trace-eqn :compare (list hits (%lift-number-to 0 :i32 shape)) :direction :ne)))
 
 (defun %gather-batch-offsets (size n)
   "0, N, 2N, ..., (SIZE-1)N の :i32 の1次元配列。"
@@ -34,7 +30,7 @@
          (dtype (aval-dtype aval))
          (shape (aval-shape aval))
          (size (first shape)))
-    (unless (< (* size n) (expt 2 31))
+    (unless (<= (* size n) (expt 2 31))
       (error 'vmap-error :format-control "gather / scatter-add のバッチ化: バッチの長さ × N（~D × ~D）が :i32 に収まらない"
                          :format-arguments (list size n)))
     (let* ((ok (%gather-in-range moved n))
