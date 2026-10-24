@@ -29,10 +29,6 @@
 
 ;;; --- 引数の検査と正規化 ---
 
-(defun %list-length (value)
-  "VALUE が（循環していない）真のリストならその長さ、そうでなければ NIL（ドット対も NIL）。"
-  (and (listp value) (ignore-errors (list-length value))))
-
 (defun %spatial-list (what value spatial)
   "VALUE（正の整数か、長さ SPATIAL の正の整数のリスト）を長さ SPATIAL のリストにする。"
   (cond ((and (integerp value) (plusp value)) (make-list spatial :initial-element value))

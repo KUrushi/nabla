@@ -732,3 +732,9 @@ Possibly related: #24753 reports the same two error messages (`ref is null` in
 different trigger of the same symptom. Verified on an x86_64 Linux VM running under Rosetta
 (not yet on native x86).
 ````
+
+## 9. 非最終軸で正規化する layer-norm の jit した grad が、まれにコンパイルに失敗する（#241）
+
+- 現象: `layer-norm` の `:reduction-axes` が最後の軸を含まない（例: 入力 `[2 3 4 5]` で `(1 2)`、`[4 3 5]` で `-2`）モデルの `grad` を IREE の local（llvm-cpu）で jit すると、約 3 割の確率で `One or more operations with large vector sizes (8192 bytes) were found`（`vector.contract`）でコンパイルが失敗する。同じプログラムを繰り返すと通ることもあり、入力の値には依存しない。最後の軸で正規化する場合は 30 回中 0 回、順伝播の jit は毎回通る。
+- 再現: `tests/fixtures/layers/flax-layers.lisp` の `layer-norm-reduction-axes` のケースを `(nabla:jit (nabla:grad loss :argnums '(0 1)))` で 10 回コンパイルする（x86_64 の VM で 4/10 失敗、`layer-norm-reduction-middle-axis` は 2/10）。
+- 状態: 最小 MLIR 未作成・未報告。Rosetta の VM で観測したもので、x86 ネイティブでの頻度は未確認。回避策として `tests/nn/layers-iree-test.lisp` の 2 ケースは grad の jit を飛ばして eager の grad で比べている（`*layers-iree-flaky-grad-cases*`）。

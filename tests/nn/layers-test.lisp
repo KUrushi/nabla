@@ -103,11 +103,11 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
    (list "dense" (lambda (case) (%fx-dense case "")) (nabla:with-tracing (m x) (call m x)) nil)
    (list "dense-rank1" (lambda (case) (%fx-dense case "")) (nabla:with-tracing (m x) (call m x)) nil)
    (list "layer-norm"
-         (lambda (case) (make-layer-norm :scale (%fx-array case "scale") :bias (%fx-array case "bias")
+         (lambda (case) (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale (%fx-array case "scale") :bias (%fx-array case "bias")
                                          :epsilon 1f-6))
          (nabla:with-tracing (m x) (call m x)) nil)
    (list "layer-norm-tiny-variance"
-         (lambda (case) (make-layer-norm :scale (%fx-array case "scale") :bias (%fx-array case "bias")
+         (lambda (case) (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale (%fx-array case "scale") :bias (%fx-array case "bias")
                                          :epsilon 1f-6))
          (nabla:with-tracing (m x) (call m x)) nil)
    (list "embedding" (lambda (case) (make-embedding :embedding (%fx-array case "embedding")))
@@ -126,17 +126,41 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
          (nabla:with-tracing (m x) (call m x)) nil))
   "(ケース名 モデルを作る関数 順伝播（traceable-function (m x)） x が整数か)。medium からも使う。")
 
+(defun %fx-layer-norm (case &key (use-scale t) (use-bias t) (reduction-axes '(-1)) (feature-axes '(-1)))
+  "ケースの scale / bias（use-scale / use-bias が偽なら NIL）から layer-norm を作る。"
+  (make-layer-norm :scale (and use-scale (%fx-array case "scale")) :bias (and use-bias (%fx-array case "bias"))
+                   :epsilon 1f-6 :use-scale use-scale :use-bias use-bias
+                   :reduction-axes reduction-axes :feature-axes feature-axes))
+
 (defparameter *layers-extra-case-table*
   (list
    (list "dense-no-bias"
          (lambda (case) (make-dense :kernel (%fx-array case "kernel") :bias nil :use-bias nil))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-no-scale"
+         (lambda (case) (%fx-layer-norm case :use-scale nil :use-bias t))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-no-bias"
+         (lambda (case) (%fx-layer-norm case :use-scale t :use-bias nil))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-no-scale-no-bias"
+         (lambda (case) (%fx-layer-norm case :use-scale nil :use-bias nil))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-reduction-axes"
+         (lambda (case) (%fx-layer-norm case :reduction-axes '(1 2)))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-reduction-middle-axis"
+         (lambda (case) (%fx-layer-norm case :reduction-axes '(-2)))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-feature-axes"
+         (lambda (case) (%fx-layer-norm case :reduction-axes '(1 2) :feature-axes '(1 2)))
          (nabla:with-tracing (m x) (call m x)) nil))
   "issue #241 で足した Flax との差のケース（*layers-case-table* と同じ形）。フィクスチャの再生成が要る。
 medium からも使う。")
 
 (test layers/extra-cases-match-flax
-  "Flax の nn.Dense(use_bias=False) のフィクスチャで、eager の出力と kernel・入力の勾配が一致する
-（bias の勾配は無い）。"
+  "Flax の nn.Dense(use_bias=False) と、nn.LayerNorm の use_scale=False / use_bias=False / reduction_axes /
+feature_axes 付きのフィクスチャで、eager の出力と、パラメータ（あるものだけ）・入力の勾配が一致する。"
   (dolist (entry *layers-extra-case-table*)
     (destructuring-bind (name make forward ints) entry
       (%check-flax-case name (funcall make (%fx-case name)) forward :ints ints))))
@@ -204,7 +228,9 @@ Flax のサンプルと 3% 以内で 1/sqrt(64) に一致する。形 (num-embed
     (is (eql 1f-5 (layer-norm-epsilon (init-layer-norm (nabla:prng-key 1) 5 :epsilon 1f-5))))
     (is (eq 'double-float (array-element-type
                            (layer-norm-scale (init-layer-norm (nabla:prng-key 1) 5 :dtype :f64)))))
-    (is (equal '(("scale" . :param) ("bias" . :param) ("epsilon" . :static)) (%slot-names 'layer-norm)))
+    (is (equal '(("scale" . :param) ("bias" . :param) ("epsilon" . :static) ("use-scale" . :static)
+                 ("use-bias" . :static) ("reduction-axes" . :static) ("feature-axes" . :static))
+               (%slot-names 'layer-norm)))
     (is (equal '(("embedding" . :param)) (%slot-names 'embedding)))))
 
 (defmacro def-layer-property (name docstring (&rest vars) generator &body body)
@@ -286,7 +312,7 @@ kernel と bias の形は (in out) と (out)。"
          (scale (%rand (list features) (+ seed 1)))
          (bias (%rand (list features) (+ seed 2)))
          (plain (call (init-layer-norm (nabla:prng-key 0) features) x))
-         (full (call (make-layer-norm :scale scale :bias bias :epsilon 1f-6) x)))
+         (full (call (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale scale :bias bias :epsilon 1f-6) x)))
     (loop for r below 2
           always (loop for f below features
                        always (< (abs (- (aref full r f)
@@ -493,7 +519,7 @@ tanh 近似の定義式（係数 0.044715d0）と一致する（相対誤差 1e-
 (test layers/layer-norm-clamps-a-negative-fast-variance
   "速い分散 E[x^2] - E[x]^2 は定数の行でも f32 の丸めで負になることがある（たとえば定数 6.29 の 8 要素は
 約 -7.6e-6）。Flax と同じく 0 で切るので、epsilon が極小でも NaN にならず、出力は有限（定数の行は bias のまま）。"
-  (let ((norm (make-layer-norm :scale (%ones '(8)) :bias (make-array 8 :element-type 'single-float
+  (let ((norm (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale (%ones '(8)) :bias (make-array 8 :element-type 'single-float
                                                                        :initial-element 0.5)
                                :epsilon 1f-30)))
     (dolist (c '(1.85 3.33 4.81 6.29 6.66))
@@ -622,3 +648,180 @@ tanh 近似の定義式（係数 0.044715d0）と一致する（相対誤差 1e-
     (is (names (lambda () (call (make-dense :kernel (%rand '(3 2) 1) :bias (%rand '(2) 1) :use-bias nil)
                                 (%rand '(3) 2))))
         "use-bias が偽なのに bias がある")))
+
+;;; --- layer-norm の use_scale / use_bias / reduction_axes / feature_axes（issue #241）---
+
+(defun %ref-layer-norm (x reduce-axes epsilon)
+  "rank 3 の f64 の X を、REDUCE-AXES（0 以上の軸のリスト）で定まる群ごとに平均 0・分散 1（+ EPSILON）に
+正規化した配列（二重ループの素朴な参照実装。2 パスで平均と分散を取る）。"
+  (destructuring-bind (d0 d1 d2) (array-dimensions x)
+    (let ((groups (make-hash-table :test 'equal))
+          (y (make-array (array-dimensions x) :element-type 'double-float)))
+      (flet ((group-of (i j k)
+               (loop for axis below 3 for index in (list i j k) unless (member axis reduce-axes) collect index)))
+        (dotimes (i d0) (dotimes (j d1) (dotimes (k d2) (push (aref x i j k) (gethash (group-of i j k) groups)))))
+        (dotimes (i d0)
+          (dotimes (j d1)
+            (dotimes (k d2)
+              (let* ((values (gethash (group-of i j k) groups))
+                     (n (length values))
+                     (mean (/ (reduce #'+ values) n))
+                     (variance (/ (reduce #'+ (mapcar (lambda (v) (expt (- v mean) 2)) values)) n)))
+                (setf (aref y i j k) (/ (- (aref x i j k) mean) (sqrt (+ variance epsilon))))))))
+        y))))
+
+(defun %axes-from-mask (mask negative)
+  "MASK（1 から 7）のビットが立つ軸（0 1 2）のリスト。NEGATIVE が真なら負の添字（-3 -2 -1）で表す。"
+  (loop for axis below 3 when (logbitp axis mask) collect (if negative (- axis 3) axis)))
+
+(def-layer-property layers/layer-norm-matches-the-loop-reference-over-any-reduction-axes
+  "rank 3 の入力で、1 つ以上の任意の軸の部分集合（負の添字でも）を reduction-axes にした layer-norm（scale 1・bias 0）は、
+その軸で作った群ごとに平均 0・分散 1 に正規化する参照実装（f64）と一致する。feature-axes の既定（最後の軸）の
+scale / bias は軸の部分集合と独立。"
+  (seed d0 d1 d2 mask negative) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 4)
+                                       (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 4)
+                                       (uniform-integer :lo 1 :hi 7) (uniform-integer :lo 0 :hi 1))
+  (let* ((axes (%axes-from-mask mask (plusp negative)))
+         (norm (init-layer-norm (nabla:prng-key 0) d2 :dtype :f64 :reduction-axes axes))
+         (x (%rand (list d0 d1 d2) seed :f64)))
+    (allclose (call norm x) (%ref-layer-norm x (%axes-from-mask mask nil) 1d-6) :dtype :f64 :rtol 1d-9 :atol 1d-9)))
+
+(def-layer-property layers/layer-norm-scale-and-bias-follow-the-feature-axes
+  "feature-axes が最後の軸・中の軸・先頭と最後・後ろの 2 軸のとき、scale と bias の形は入力のその軸の大きさ
+（軸の昇順）で、出力は「scale・bias なしの出力 × scale[特徴の添字] + bias[特徴の添字]」と等しい。"
+  (seed d0 d1 d2 which) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 4)
+                               (uniform-integer :lo 2 :hi 4) (uniform-integer :lo 2 :hi 4)
+                               (uniform-integer :lo 0 :hi 3))
+  (let* ((feature-axes (nth which '((-1) (1) (0 2) (1 2))))
+         (positive (sort (mapcar (lambda (a) (if (minusp a) (+ a 3) a)) feature-axes) #'<))
+         (dims (list d0 d1 d2))
+         (sizes (mapcar (lambda (a) (nth a dims)) positive))
+         (plain (init-layer-norm (nabla:prng-key 0) sizes :dtype :f64 :reduction-axes '(0 1 2)
+                                                          :feature-axes feature-axes :use-scale nil :use-bias nil))
+         (full (make-layer-norm :scale (%rand sizes (+ seed 1) :f64) :bias (%rand sizes (+ seed 2) :f64)
+                                :epsilon 1d-6 :use-scale t :use-bias t :reduction-axes '(0 1 2)
+                                :feature-axes feature-axes))
+         (x (%rand dims seed :f64))
+         (base (call plain x))
+         (out (call full x)))
+    (and (equal sizes (array-dimensions (layer-norm-scale full)))
+         (loop for i below d0
+               always (loop for j below d1
+                            always (loop for k below d2
+                                         for feature = (mapcar (lambda (a) (nth a (list i j k))) positive)
+                                         always (< (abs (- (aref out i j k)
+                                                           (+ (* (aref base i j k)
+                                                                 (apply #'aref (layer-norm-scale full) feature))
+                                                              (apply #'aref (layer-norm-bias full) feature))))
+                                                   1d-9)))))))
+
+(def-layer-property layers/layer-norm-without-scale-or-bias-is-the-identity-scale-and-bias
+  "use-scale / use-bias が偽の layer-norm は、対応するパラメータが NIL（空の部分木）で、scale = 1・bias = 0 の
+layer-norm と同じ出力・同じ入力の勾配を返す。葉と checkpoint のパス名は残ったパラメータだけ（scale と bias の
+4 通りの組み合わせ）。"
+  (seed use-scale use-bias) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 0 :hi 1)
+                                   (uniform-integer :lo 0 :hi 1))
+  (let* ((features 5)
+         (norm (init-layer-norm (nabla:prng-key 0) features :use-scale (plusp use-scale) :use-bias (plusp use-bias)))
+         (twin (make-layer-norm :scale (nabla.nn::%filled (list features) :f32 1)
+                                :bias (nabla.nn::%filled (list features) :f32 0)
+                                :epsilon (layer-norm-epsilon norm) :use-scale t :use-bias t
+                                :reduction-axes '(-1) :feature-axes '(-1)))
+         (x (%rand (list 3 features) seed))
+         (ct (%rand (list 3 features) (+ seed 1)))
+         (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (call m x) ct))))
+         (grads (funcall (nabla:grad loss :argnums '(0 1)) norm x ct))
+         (twin-grads (funcall (nabla:grad loss :argnums '(0 1)) twin x ct)))
+    (and (eq (null (layer-norm-scale norm)) (zerop use-scale))
+         (eq (null (layer-norm-bias norm)) (zerop use-bias))
+         (eq (layer-norm-use-scale norm) (plusp use-scale))
+         (eq (layer-norm-use-bias norm) (plusp use-bias))
+         (equal (append (when (plusp use-scale) '("scale")) (when (plusp use-bias) '("bias")))
+                (nabla.nn:tree-paths norm))
+         (= (+ use-scale use-bias) (length (nabla:tree-leaves (first grads))))
+         (equalp (call twin x) (call norm x))
+         (equalp (second twin-grads) (second grads)))))
+
+(test layers/layer-norm-init-options-and-slots
+  "init-layer-norm の既定は Flax と同じ（use-scale / use-bias は真、reduction-axes と feature-axes は最後の軸）。
+reduction-axes と feature-axes は整数かそのリストで、重複は取り除いて :static に持つ。feature-axes が複数のとき features は
+各軸の大きさのリスト。scale と bias の形は features。"
+  (let ((norm (init-layer-norm (nabla:prng-key 1) 5)))
+    (is (eq t (layer-norm-use-scale norm)))
+    (is (eq t (layer-norm-use-bias norm)))
+    (is (equal '(-1) (layer-norm-reduction-axes norm)))
+    (is (equal '(-1) (layer-norm-feature-axes norm)))
+    (is (equal '("scale" "bias") (nabla.nn:tree-paths norm))))
+  (let ((norm (init-layer-norm (nabla:prng-key 1) '(3 4) :reduction-axes '(1 2 1) :feature-axes '(1 2))))
+    (is (equal '(1 2) (layer-norm-reduction-axes norm)))
+    (is (equal '(1 2) (layer-norm-feature-axes norm)))
+    (is (equal '(3 4) (array-dimensions (layer-norm-scale norm))))
+    (is (equal '(3 4) (array-dimensions (layer-norm-bias norm)))))
+  (is (equal '(2) (layer-norm-reduction-axes (init-layer-norm (nabla:prng-key 1) 5 :reduction-axes 2))))
+  (is (not (nabla:treedef= (nabla:tree-structure (init-layer-norm (nabla:prng-key 1) 5))
+                           (nabla:tree-structure (init-layer-norm (nabla:prng-key 1) 5 :reduction-axes '(0 -1))))))
+  (is (null (layer-norm-scale (init-layer-norm (nabla:prng-key 1) 5 :use-scale nil)))))
+
+(test layers/layer-norm-option-misuse-names-the-layer
+  "reduction-axes が空・整数でない・範囲外（rank 以上、-rank 未満）、feature-axes が範囲外か features の個数と合わない、
+use-scale / use-bias が真偽値でない、use-scale と scale が食い違う、scale や bias の形が入力の特徴の軸と合わないときは、
+layer-norm の名前と問題の引数の名前（reduction-axes / feature-axes / use-scale / scale / bias）を含む error。"
+  (flet ((says (thunk &rest words)
+           (let ((message (or (%error-message thunk) "")))
+             (every (lambda (word) (search word message)) (cons "layer-norm" words))))
+         (bare (&rest options) (apply #'init-layer-norm (nabla:prng-key 0) 4 :use-scale nil :use-bias nil options)))
+    (is (says (lambda () (bare :reduction-axes '())) "reduction-axes") "reduction-axes が空")
+    (is (says (lambda () (bare :reduction-axes 1.5)) "reduction-axes") "整数でない")
+    (is (says (lambda () (bare :feature-axes '(0 1))) "feature-axes") "features の個数と合わない")
+    (is (says (lambda () (init-layer-norm (nabla:prng-key 0) '(4 4) :feature-axes '(-1))) "feature-axes")
+        "features が多い")
+    (is (says (lambda () (init-layer-norm (nabla:prng-key 0) 4 :use-scale 1) ) "use-scale") "use-scale が真偽値でない")
+    (is (says (lambda () (init-layer-norm (nabla:prng-key 0) 4 :use-bias :no)) "use-bias") "use-bias が真偽値でない")
+    (is (says (lambda () (call (bare :reduction-axes 2) (%rand '(2 4) 1))) "reduction-axes")
+        "軸 2 は rank 2 の範囲外（rank 以上）")
+    (is (says (lambda () (call (bare :reduction-axes -3) (%rand '(2 4) 1))) "reduction-axes")
+        "軸 -3 は rank 2 の範囲外（-rank 未満）")
+    (is (says (lambda () (call (bare :feature-axes 3) (%rand '(2 3 4) 1))) "feature-axes") "feature-axes が範囲外")
+    (is (says (lambda () (call (bare :reduction-axes -2) (%rand '(4) 1))) "reduction-axes") "rank 1 に軸 -2")
+    (is (= 2 (length (array-dimensions (call (bare :reduction-axes -2) (%rand '(3 4) 1))))) "-rank ちょうどは通る")
+    (is (= 2 (length (array-dimensions (call (bare :reduction-axes 1) (%rand '(3 4) 1))))) "rank - 1 は通る")
+    ;; make-layer-norm で直接作ったモジュール: 整数の axes と重複は init と同じに扱い、空・整数でないものは error
+    (flet ((hand-made (reduction-axes feature-axes)
+             (make-layer-norm :scale (%rand '(4) 1) :bias (%rand '(4) 2) :epsilon 1f-6 :use-scale t :use-bias t
+                              :reduction-axes reduction-axes :feature-axes feature-axes)))
+      (is (equalp (call (hand-made -1 -1) (%rand '(2 4) 3)) (call (hand-made '(-1) '(-1)) (%rand '(2 4) 3)))
+          "整数の axes はリストと同じ")
+      (is (equalp (call (hand-made '(-1 1 1) '(-1 -1)) (%rand '(2 4) 3)) (call (hand-made '(-1 1) '(-1)) (%rand '(2 4) 3)))
+          "重複は取り除かれる")
+      (is (says (lambda () (call (hand-made '() '(-1)) (%rand '(2 4) 3))) "reduction-axes") "空の reduction-axes")
+      (is (says (lambda () (call (hand-made '(-1) '(1.5)) (%rand '(2 4) 3))) "feature-axes") "整数でない feature-axes")
+      (is (says (lambda () (call (hand-made '(-1 . 0) '(-1)) (%rand '(2 4) 3))) "reduction-axes") "ドット対"))
+    (let ((norm (init-layer-norm (nabla:prng-key 0) 4 :reduction-axes '(1 2) :feature-axes 2)))
+      (is (says (lambda () (call norm (%rand '(2 3 5) 1))) "scale") "scale の形が特徴の軸と合わない")
+      (is (= 3 (length (array-dimensions (call norm (%rand '(2 3 4) 1))))) "正しい入力は通る"))
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias (%rand '(5) 1) :epsilon 1f-6
+                                                :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "bias")
+        "bias の形が特徴の軸と合わない")
+    (is (says (lambda () (call (make-layer-norm :scale nil :bias (%rand '(4) 1) :epsilon 1f-6 :use-scale t
+                                                :use-bias t :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-scale" "scale が NIL")
+        "use-scale が真なのに scale が NIL")
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias nil :epsilon 1f-6
+                                                :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-bias" "bias が NIL")
+        "use-bias が真なのに bias が NIL")
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias (%rand '(4) 2) :epsilon 1f-6
+                                                :use-scale t :use-bias nil :reduction-axes '(-1)
+                                                :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-bias" "bias がある")
+        "use-bias が偽なのに bias がある")
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias nil :epsilon 1f-6 :use-scale nil
+                                                :use-bias nil :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-scale" "scale がある")
+        "use-scale が偽なのに scale がある")))

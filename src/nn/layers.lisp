@@ -13,9 +13,15 @@
 ;;;;   （空の部分木）にする。NIL は葉でないので、チェックポイントのパス名は変わらず（kernel だけになる）、Flax の
 ;;;;   「bias のパラメータが無い」と一致する。call は bias が NIL なら足さない。use-bias と bias が食い違う
 ;;;;   （真なのに NIL、偽なのにある）モジュールは make-* で作れても call が error にする（%check-bias-slot）。
-;;;; - layer-norm: 最後の軸で正規化。Flax と同じ「速い分散」 var = max(mean(x^2) - mean(x)^2, 0)、
+;;;; - layer-norm: 既定は最後の軸で正規化。Flax と同じ「速い分散」 var = max(mean(x^2) - mean(x)^2, 0)、
 ;;;;   epsilon の既定 1e-6（f64 は 1d-6）、y = (x - mean) * rsqrt(var + epsilon) * scale + bias。
-;;;;   scale は 1、bias は 0。
+;;;;   scale は 1、bias は 0。issue #241 で Flax の LayerNorm の use_scale / use_bias / reduction_axes /
+;;;;   feature_axes を足した（既定は Flax と同じ: 真・真・-1・-1）。reduction_axes は統計（平均と分散）を取る軸、
+;;;;   feature_axes は scale / bias を持つ軸（それぞれ整数かそのリスト。負の値は後ろから数える。Flax の
+;;;;   _canonicalize_axes と同じく call のときに rank で正の値・重複なし・昇順にする）。scale / bias の形は
+;;;;   入力のその軸の大きさ（軸の昇順）で、init-layer-norm の features は feature_axes が 1 つなら整数、
+;;;;   複数ならその大きさのリスト。use-scale / use-bias は use_bias と同じ規則（偽なら対応するスロットは NIL）。
+;;;;   reduction-axes が空（統計を取らない。Flax では x.mean(()) で退化する）は受け付けない。
 ;;;; - embedding: one-hot と dot で書く。gather プリミティブは足さない。理由: gather の逆（勾配）は
 ;;;;   scatter-add で、プリミティブ・StableHLO 出力・jvp / transpose / バッチ化ルールの5つが要り、この
 ;;;;   issue の範囲を超える。one-hot + dot なら既存の演算だけで、勾配は dot の転置（one-hot^T ct）
@@ -55,6 +61,10 @@
 (defun %scale-by (x factor)
   "X の各要素に FACTOR（実数）をかける。init で乱数の配列を拡大縮小する。"
   (funcall (load-time-value (nabla:with-tracing (x factor) (* x factor))) x factor))
+
+(defun %list-length (value)
+  "VALUE が（循環していない）真のリストならその長さ、そうでなければ NIL（ドット対も NIL）。"
+  (and (listp value) (ignore-errors (list-length value))))
 
 (defun %range (n)
   "(0 1 ... N-1)。トレースされる本体は loop を使えないので、部品にしてある。"
@@ -165,17 +175,26 @@ X は配列かトレーサ。AXIS が範囲外なら error。"
 (defun %lecun-normal (key in-features out-features dtype)
   (%lecun-normal-of-shape key (list in-features out-features) in-features dtype))
 
+(defun %check-use-flag (name flag-name flag)
+  "FLAG（init の引数 use-bias / use-scale）が T か NIL であることを確かめる。"
+  (unless (member flag '(t nil))
+    (error "~A: ~A は T か NIL でなければならない: ~S" name flag-name flag)))
+
 (defun %check-use-bias (name use-bias)
-  "USE-BIAS が T か NIL であることを確かめる（init の引数）。"
-  (unless (member use-bias '(t nil))
-    (error "~A: use-bias は T か NIL でなければならない: ~S" name use-bias)))
+  (%check-use-flag name "use-bias" use-bias))
+
+(defun %check-optional-slot (name flag-name flag slot-name value)
+  "FLAG（:static のスロット use-bias / use-scale）と VALUE（NIL か配列のスロット bias / scale）が食い違っていない
+ことを確かめる。"
+  (cond ((and flag (null value))
+         (error "~A: ~A が真なのに ~A が NIL（~A の配列を渡すか、~A を NIL にする）"
+                name flag-name slot-name slot-name flag-name))
+        ((and (not flag) value)
+         (error "~A: ~A が偽なのに ~A がある（~A は NIL にする）" name flag-name slot-name slot-name))))
 
 (defun %check-bias-slot (name use-bias bias)
   "USE-BIAS（:static のスロット）と BIAS（NIL か配列）が食い違っていないことを確かめる。"
-  (cond ((and use-bias (null bias))
-         (error "~A: use-bias が真なのに bias が NIL（bias の配列を渡すか、use-bias を NIL にする）" name))
-        ((and (not use-bias) bias)
-         (error "~A: use-bias が偽なのに bias がある（bias は NIL にする）" name))))
+  (%check-optional-slot name "use-bias" use-bias "bias" bias))
 
 (defun %add-bias (y bias)
   "Y の最後の軸に BIAS（最後の軸の長さのベクトル）を足す。BIAS が NIL なら Y そのもの。"
@@ -199,30 +218,102 @@ X は配列かトレーサ。AXIS が範囲外なら error。"
 
 ;;; --- layer-norm ---
 
-(defun %layer-norm-apply (x scale bias epsilon)
-  (let ((shape (%check-last-axis "layer-norm" x scale)))
-    (funcall (load-time-value
-              (nabla:with-tracing (x scale bias epsilon shape)
-                (let* ((axis (1- (length shape)))
-                       (n (nth axis shape))
-                       (mean (/ (nabla:reduce-sum x :axes (list axis)) n))
-                       (mean-of-squares (/ (nabla:reduce-sum (* x x) :axes (list axis)) n))
-                       (variance (max (- mean-of-squares (* mean mean)) 0))
-                       (multiplier (* (%expand (nabla:rsqrt (+ variance epsilon)) shape axis)
-                                      (%broadcast-last scale shape))))
-                  (+ (* (- x (%expand mean shape axis)) multiplier)
-                     (%broadcast-last bias shape)))))
-             x scale bias epsilon shape)))
+(defun %normalize-axes (name what axes)
+  "AXES（整数か、1 つ以上の整数のリスト）を、重複を除いた整数のリスト（順序は初出順）にする。"
+  (let ((list (if (integerp axes) (list axes) axes)))
+    (unless (and (consp list) (%list-length list) (every #'integerp list))
+      (error "~A: ~A は整数か、1 つ以上の整数のリストでなければならない: ~S" name what axes))
+    (remove-duplicates list :from-end t)))
 
-(defmodule layer-norm (scale bias (epsilon :static))
-  (:init (key features &key (dtype :f32) (epsilon (if (eq dtype :f64) 1d-6 1f-6)))
+(defun %canonical-axes (name what axes rank)
+  "AXES（-RANK 以上 RANK 未満の整数のリスト）を 0 以上の整数にして、重複を除き昇順にする（Flax の
+_canonicalize_axes）。範囲外は error。"
+  (sort (remove-duplicates
+         (mapcar (lambda (axis)
+                   (unless (and (<= (- rank) axis) (< axis rank))
+                     (error "~A: ~A の軸 ~D は入力の rank ~D の範囲（-~D 以上 ~D 未満）の外" name what axis rank rank rank))
+                   (if (minusp axis) (+ axis rank) axis))
+                 axes))
+        #'<))
+
+(defun %broadcast-features (vector shape feature-axes)
+  "VECTOR（形が SHAPE の FEATURE-AXES の大きさ）を SHAPE にブロードキャストする。"
+  (nabla:broadcast-in-dim vector shape feature-axes))
+
+(defun %layer-norm-statistics (x epsilon reduce-axes kept-axes count)
+  "X を REDUCE-AXES で縮約した平均と 1/sqrt(速い分散 + EPSILON) を、X の形に戻した 2 つのリスト。"
+  (funcall (load-time-value
+            (nabla:with-tracing (x epsilon reduce-axes kept-axes count)
+              (let* ((shape (%shape x))
+                     (mean (/ (nabla:reduce-sum x :axes reduce-axes) count))
+                     (mean-of-squares (/ (nabla:reduce-sum (* x x) :axes reduce-axes) count))
+                     (variance (max (- mean-of-squares (* mean mean)) 0)))
+                (list (nabla:broadcast-in-dim mean shape kept-axes)
+                      (nabla:broadcast-in-dim (nabla:rsqrt (+ variance epsilon)) shape kept-axes)))))
+           x epsilon reduce-axes kept-axes count))
+
+(defun %layer-norm-multiplier (inverse-std scale feature-axes)
+  "INVERSE-STD に SCALE（NIL なら何もかけない）をかけた、正規化後にかける倍率。"
+  (if scale
+      (funcall (load-time-value
+                (nabla:with-tracing (inverse-std scale feature-axes)
+                  (* inverse-std (%broadcast-features scale (%shape inverse-std) feature-axes))))
+               inverse-std scale feature-axes)
+      inverse-std))
+
+(defun %layer-norm-apply (x scale bias epsilon use-scale use-bias reduction-axes feature-axes)
+  (%check-optional-slot "layer-norm" "use-scale" use-scale "scale" scale)
+  (%check-optional-slot "layer-norm" "use-bias" use-bias "bias" bias)
+  (let* ((shape (%shape x))
+         (rank (length shape))
+         ;; make-layer-norm で直接作ったモジュールの axes（整数や重複つき）も init と同じに正規化する
+         (reduce-axes (%canonical-axes "layer-norm" "reduction-axes"
+                                       (%normalize-axes "layer-norm" "reduction-axes" reduction-axes) rank))
+         (feature-axes (%canonical-axes "layer-norm" "feature-axes"
+                                        (%normalize-axes "layer-norm" "feature-axes" feature-axes) rank))
+         (kept-axes (loop for axis below rank unless (member axis reduce-axes) collect axis))
+         (feature-sizes (mapcar (lambda (axis) (nth axis shape)) feature-axes)))
+    (dolist (parameter (list (cons "scale" scale) (cons "bias" bias)))
+      (when (and (cdr parameter) (not (equal feature-sizes (%shape (cdr parameter)))))
+        (error "layer-norm: ~A の形は入力の特徴の軸 ~S の大きさ ~S でなければならない（~A の形 ~S、入力の形 ~S）"
+               (car parameter) feature-axes feature-sizes (car parameter) (%shape (cdr parameter)) shape)))
+    (destructuring-bind (mean inverse-std)
+        (%layer-norm-statistics x epsilon reduce-axes kept-axes (reduce #'* (mapcar (lambda (axis) (nth axis shape))
+                                                                                    reduce-axes)))
+      (let ((centered (funcall (load-time-value
+                                (nabla:with-tracing (x mean multiplier) (* (- x mean) multiplier)))
+                               x mean (%layer-norm-multiplier inverse-std scale feature-axes))))
+        (if bias
+            (funcall (load-time-value
+                      (nabla:with-tracing (centered bias feature-axes)
+                        (+ centered (%broadcast-features bias (%shape centered) feature-axes))))
+                     centered bias feature-axes)
+            centered)))))
+
+(defmodule layer-norm (scale bias (epsilon :static) (use-scale :static) (use-bias :static)
+                             (reduction-axes :static) (feature-axes :static))
+  (:init (key features &key (dtype :f32) (epsilon (if (eq dtype :f64) 1d-6 1f-6)) (use-scale t) (use-bias t)
+                         (reduction-axes -1) (feature-axes -1))
    (declare (ignore key))
    (unless (and (realp epsilon) (plusp epsilon))
      (error "layer-norm の epsilon は正の実数でなければならない: ~S" epsilon))
-   (make-layer-norm :scale (%filled (list features) dtype 1) :bias (%filled (list features) dtype 0)
-                    :epsilon epsilon))
+   (%check-use-flag "layer-norm" "use-scale" use-scale)
+   (%check-use-flag "layer-norm" "use-bias" use-bias)
+   (let* ((reduction-axes (%normalize-axes "layer-norm" "reduction-axes" reduction-axes))
+          (feature-axes (%normalize-axes "layer-norm" "feature-axes" feature-axes))
+          (sizes (if (listp features) features (list features))))
+     (unless (and (eql (%list-length sizes) (length feature-axes))
+                  (every (lambda (size) (and (integerp size) (plusp size))) sizes))
+       (error "layer-norm: features は feature-axes (~S) の個数 (~D) だけの正の整数（1 つなら整数でもよい）でなければならない: ~S"
+              feature-axes (length feature-axes) features))
+     (make-layer-norm :scale (and use-scale (%filled sizes dtype 1))
+                      :bias (and use-bias (%filled sizes dtype 0))
+                      :epsilon epsilon :use-scale use-scale :use-bias use-bias
+                      :reduction-axes reduction-axes :feature-axes feature-axes)))
   (:call (self x)
-   (%layer-norm-apply x (layer-norm-scale self) (layer-norm-bias self) (layer-norm-epsilon self))))
+   (%layer-norm-apply x (layer-norm-scale self) (layer-norm-bias self) (layer-norm-epsilon self)
+                      (layer-norm-use-scale self) (layer-norm-use-bias self)
+                      (layer-norm-reduction-axes self) (layer-norm-feature-axes self))))
 
 ;;; --- embedding ---
 
