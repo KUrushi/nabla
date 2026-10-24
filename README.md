@@ -362,7 +362,9 @@ loss[29] = 0.4449
 
 
 
-**整数 dtype**（`src/dtype.lisp`、`src/primitives/*.lisp`、issue #126）: `:i32`（Lisp では `(signed-byte 32)`、StableHLO では `i32`）、`:u32`（`(unsigned-byte 32)`、`ui32`）、`:u64`（`(unsigned-byte 64)`、`ui64`。THREE_FRY の状態 `ui64[2]` のために足した）。`add` `sub` `mul` `max` `min` `neg` `compare` `select` `convert` `broadcast-in-dim` `reshape` `transpose` `reduce-sum` `reduce-max` は整数を受け付け、`div` `exp` `log` `tanh` `sqrt` `rsqrt` `dot-general` は整数を `primitive-error`（トレース時）で拒否する。整数どうしの演算は dtype が一致していなければならず（暗黙の型昇格はしない）、eager の算術は StableHLO と同じく 2 の補数（符号なしは法 2^n）で折り返す。`convert` は整数 ⇔ 浮動小数点 ⇔ `:i1` を変換できる（浮動小数点 → 整数は 0 方向へ丸め、NaN は 0、範囲外（±無限大を含む）は整数の端に飽和。これはどのバックエンドでも同じになるよう、出力する StableHLO が clamp と select で飽和と NaN → 0 を明示する。整数 → `:bf16` は f32 を経由する2段の convert。→ `:i1` は 0 以外が真）。`with-tracing` の中の整数リテラルは相手の整数 dtype にリフトされる（浮動小数点のリテラルや範囲外の整数は `tracing-error`。浮動小数点のトレーサと組むリテラルは従来どおり `:f32`）。整数の接線は変換の中では常に symbolic zero で、整数の入力に対する `grad` は `autodiff-error`、整数を経由する計算の勾配はゼロ。IREE と PJRT（CPU）の `to-device` / `to-host` は整数に対応する。新しい export はない。
+**expm1 / log1p / sin / cos**（issue #223）: `expm1`（exp(x) - 1）と `log1p`（log(1 + x)）は nabla の関数として export する（`rsqrt` と同じ契約: 配列・トレーサ・数値を取り、`with-tracing` の中でも同じ関数として書ける）。`sin` / `cos` は CL の関数を `with-tracing` が書き換えたもの。いずれも StableHLO の `exponential_minus_one` / `log_plus_one` / `sine` / `cosine` に対応し、bf16 / f16 / f32 / f64 で動く。eager は全 dtype とも double で計算して出力 dtype に丸める（expm1 / log1p は Kahan の形で、x が極小でも桁落ちせず ±0 の符号を保つ）。特殊値は IEEE 754 どおり: `expm1(+inf)=+inf`、`expm1(-inf)=-1`、`log1p(-1)=-inf`、`log1p(x<-1)=NaN`、`sin`/`cos` の ±inf は NaN。数値（リテラル）の `expm1` / `log1p` も同じ計算で、`(sin 0)` のような CL の `sin` / `cos` は CL の演算にそのまま委ねる。`pow` は足さない（`exp(t log b)` で足りる）。jvp は `expm1' = expm1 + 1`、`log1p' = 1/(1+x)`、`sin' = cos`、`cos' = -sin`。JAX との一致は `tests/fixtures/unary/`（生成は `generate.py`。OrbStack の x86_64 VM（Rosetta）では jaxlib が AVX を要求して動かないため、フィクスチャは macOS arm64 の JAX 0.10.2 で生成した。`sin` / `cos` の入力は |x| ≤ 100: XLA の f32 の範囲縮約が x に比例して粗くなり、double で計算する nabla の eager と atol の範囲を超えて食い違うため）。
+
+**整数 dtype**（`src/dtype.lisp`、`src/primitives/*.lisp`、issue #126）: `:i32`（Lisp では `(signed-byte 32)`、StableHLO では `i32`）、`:u32`（`(unsigned-byte 32)`、`ui32`）、`:u64`（`(unsigned-byte 64)`、`ui64`。THREE_FRY の状態 `ui64[2]` のために足した）。`add` `sub` `mul` `max` `min` `neg` `compare` `select` `convert` `broadcast-in-dim` `reshape` `transpose` `reduce-sum` `reduce-max` は整数を受け付け、`div` `exp` `log` `tanh` `sqrt` `rsqrt` `expm1` `log1p` `sin` `cos` `dot-general` は整数を `primitive-error`（トレース時）で拒否する。整数どうしの演算は dtype が一致していなければならず（暗黙の型昇格はしない）、eager の算術は StableHLO と同じく 2 の補数（符号なしは法 2^n）で折り返す。`convert` は整数 ⇔ 浮動小数点 ⇔ `:i1` を変換できる（浮動小数点 → 整数は 0 方向へ丸め、NaN は 0、範囲外（±無限大を含む）は整数の端に飽和。これはどのバックエンドでも同じになるよう、出力する StableHLO が clamp と select で飽和と NaN → 0 を明示する。整数 → `:bf16` は f32 を経由する2段の convert。→ `:i1` は 0 以外が真）。`with-tracing` の中の整数リテラルは相手の整数 dtype にリフトされる（浮動小数点のリテラルや範囲外の整数は `tracing-error`。浮動小数点のトレーサと組むリテラルは従来どおり `:f32`）。整数の接線は変換の中では常に symbolic zero で、整数の入力に対する `grad` は `autodiff-error`、整数を経由する計算の勾配はゼロ。IREE と PJRT（CPU）の `to-device` / `to-host` は整数に対応する。新しい export はない。
 
 
 
@@ -387,7 +389,7 @@ loss[29] = 0.4449
 
 #### 要素演算のバッチ化ルール（issue #128）
 
-`add sub mul div neg exp log tanh sqrt rsqrt max min compare select convert stop-gradient` は共通のバッチ化ルール1つ（`src/ad/rules-batch-elementwise.lisp`）を持つ。バッチされた引数のバッチ軸がすべて同じ位置ならそのまま元の演算を適用し（`transpose` も `broadcast-in-dim` も足さない）、位置が違うときは先頭へ `transpose` で揃える。バッチされていない引数には `broadcast-in-dim` でその位置に軸を足す（要素演算は形が全引数で一致する前提で、暗黙のスカラー拡張は無い）。`select` は条件だけがバッチされる場合も扱う。
+`add sub mul div neg exp log tanh sqrt rsqrt expm1 log1p sin cos max min compare select convert stop-gradient` は共通のバッチ化ルール1つ（`src/ad/rules-batch-elementwise.lisp`）を持つ。バッチされた引数のバッチ軸がすべて同じ位置ならそのまま元の演算を適用し（`transpose` も `broadcast-in-dim` も足さない）、位置が違うときは先頭へ `transpose` で揃える。バッチされていない引数には `broadcast-in-dim` でその位置に軸を足す（要素演算は形が全引数で一致する前提で、暗黙のスカラー拡張は無い）。`select` は条件だけがバッチされる場合も扱う。
 
 
 
@@ -401,7 +403,7 @@ loss[29] = 0.4449
 
 
 
-**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry を返す（JAX の `lax.while_loop`）。`init` は PyTree（リスト・ベクタ・`defpytree` / `defmodule` の型の入れ子、配列そのものでもよい。issue #201）で、葉は配列（トレース中はトレーサでもよい）を1つ以上持つ。`cond-fn` / `body-fn` は carry の木を1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ木の形（`treedef=`）・同じ葉の aval（shape・dtype）の木を返す。結果は `init` と同じ木の形。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` / `body-fn` の戻り値が PyTree として不正、`init` に葉が無い・葉が配列でない、関数でない）、`while-loop-carry-mismatch`（`body-fn` の戻り値の木の形か葉の aval が `init` と違う。木の形が違うときもメッセージに両方の treedef が出る。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。前進モードの jvp には対応する（`src/ad/rules-control.lisp`、issue #134。接線を持つ carry の接線を carry に足した `while-loop` にする。最初は接線がゼロの carry も本体を通ると非ゼロになりうるので、JAX と同じく不動点まで広げる）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、プリミティブ名 `:while-loop` を含む `autodiff-error` になる。
+**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry を返す（JAX の `lax.while_loop`）。`init` は PyTree（リスト・ベクタ・`defpytree` / `defmodule` の型の入れ子、配列そのものでもよい。issue #201）で、葉は配列（トレース中はトレーサでもよい）か Lisp の実数を1つ以上持つ。実数の葉は `cond-fn` / `body-fn` に渡す前に rank 0 の配列に持ち上げる（`scan` と同じ規則: double-float は `:f64`、それ以外の整数・有理数・single-float は `:f32`。**整数も `:f32` になる**ので、整数のカウンタが要るなら `:i32` の配列で渡す。`body-fn` が返す実数リテラルも同じ規則で持ち上がるので、`init` の同じ種類の実数と aval が一致する）。`cond-fn` / `body-fn` は carry の木を1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ木の形（`treedef=`）・同じ葉の aval（shape・dtype）の木を返す。結果は `init` と同じ木の形。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` / `body-fn` の戻り値が PyTree として不正、`init` に葉が無い・葉が配列・トレーサ・実数でない（文字列など）、関数でない）、`while-loop-carry-mismatch`（`body-fn` の戻り値の木の形か葉の aval が `init` と違う。木の形が違うときもメッセージに両方の treedef が出る。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。前進モードの jvp には対応する（`src/ad/rules-control.lisp`、issue #134。接線を持つ carry の接線を carry に足した `while-loop` にする。最初は接線がゼロの carry も本体を通ると非ゼロになりうるので、JAX と同じく不動点まで広げる）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、プリミティブ名 `:while-loop` を含む `autodiff-error` になる。
 
 
 
@@ -452,7 +454,7 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 - **キー → 状態**: キー `[k0 k1]` を `rng-bit-generator` の状態 `ui64[2] = [k0 | k1 << 32, カウンタ]` にする（`bitcast-convert` で2語を1語にまとめる）。`uniform` / `normal` / `split` はカウンタ 0 から引き、`fold-in` はカウンタ `2^32 + data` の2語を新しいキーにする（引く量が 2^32 要素未満なら、`fold-in` の出力が `uniform` / `split` の列と重なることはない）。
 - **JAX とビット単位では一致しない**: JAX の既定は `threefry_2x32` を直接呼ぶ実装で `rng_bit_generator` を使わないため、同じシードでも値が違う。nabla は `stablehlo.rng_bit_generator`（THREE_FRY）を使い、IREE・PJRT・eager が互いにビット単位で一致する（`docs/stablehlo-ops.md`）。分布としては同じ（統計検定で確かめている）。
 - **uniform**: 乱数ビットの仮数部だけを取り出して `[1, 2)` の浮動小数点数にし、1 を引いて範囲に伸ばす（JAX と同じ。`:f32` は 23 ビット、`:f64` は 52 ビットの粒度）。丸めのため `maxval` にちょうど等しい値が出うる。
-- **normal**: JAX と同じく、`(-1, 1)` の一様乱数に erf の逆関数をかけて √2 倍する。Box–Muller は `sin` / `cos` のプリミティブが無いため採らなかった。erf の逆関数は Giles の多項式近似で、`:f32` は単精度用（JAX の f32 と同じ係数）、`:f64` は倍精度用（XLA の f64 と同じ係数）。相対誤差の実測は f32 で最大 2.0e-7、f64 で最大 4.9e-16（多倍長の参照値と比較）。値の絶対値の上限は f32 で約 5.42、f64 で約 8.29。
+- **normal**: JAX と同じく、`(-1, 1)` の一様乱数に erf の逆関数をかけて √2 倍する。Box–Muller は採らなかった（`sin` / `cos` のプリミティブは issue #223 で足したが、JAX と揃えるため erf の逆関数のまま）。erf の逆関数は Giles の多項式近似で、`:f32` は単精度用（JAX の f32 と同じ係数）、`:f64` は倍精度用（XLA の f64 と同じ係数）。相対誤差の実測は f32 で最大 2.0e-7、f64 で最大 4.9e-16（多倍長の参照値と比較）。値の絶対値の上限は f32 で約 5.42、f64 で約 8.29。
 - **バッチ化**: バッチ次元を持つ状態 `ui64[..., 2]` を `rng-bit-generator` が受け付け、各行は単独に呼んだ結果とビット単位で一致する。StableHLO の `rng_bit_generator` は `ui64[2]` しか受けないので、`stablehlo.while` の1回で 16 行ずつ `dynamic_slice` → 16 回の `rng_bit_generator` → `dynamic_update_slice` を回して出力する（issue #164 / #178。16 行以下なら while を出さずに展開する。行数が 16 を超えれば出力する StableHLO の大きさは行数に依らない）。**コンパイルコスト**（IREE local、バッチされた rng の eqn 1つ）: 32 行・256 行とも約 1.0 秒（1行ずつ回していたときは約 0.5 秒、全行を展開していた以前は 32 行 4.0 秒、256 行 42.8 秒）。**実行時間**: ビットのバッファは `scan` の ys と同じく `optimization_barrier` を通して in-place に書く（#159）ので、バッファ全体のコピーは無い。残る費用はループ1回（16 行）ごとの起動で、IREE では行数 / 16 に比例する（4コアの機械で `vmap` した `uniform` の jit 1回が、256 キー × 4 要素で約 4 ms、1024 要素で約 7 ms、64 キー × 16384 要素で約 12 ms。1行ずつ回していたときは約 46 / 52 / 21 ms、全行を展開していたときは約 1 / 3 / 8 ms）。PJRT（XLA CPU）では遅くならない。
 - 新しいビット演算プリミティブ（内部）: `:shift-right-logical`、`:bitwise-or`（整数専用の2入力の要素演算）と、ビット列を再解釈する `:bitcast-convert`（`:f32 :f64 :i32 :u32 :u64`。幅が違うときは StableHLO と同じく末尾の次元が増減し、並びはリトルエンディアン）。どれも整数・ビット列の演算なので微分しない。
 
@@ -469,6 +471,7 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 | `(tree-flatten tree)` | 葉を左から順に並べたリストと treedef の2値 |
 | `(tree-unflatten treedef leaves)` | treedef の形の木を葉のリストから作る（葉の個数が違えば `pytree-error`） |
 | `(tree-leaves tree)` / `(tree-structure tree)` | `tree-flatten` の1つ目 / 2つ目の値 |
+| `(tree-children object)` | 節なら `(values 子のリスト 補助データ t)`、葉なら `(values nil nil nil)`。節の判定は `tree-flatten` と同じ（`nil` は子の無いリストの節）。子0個の節と葉は3つ目の値で区別でき、子を再帰でたどった葉の列は `tree-leaves` と一致する。リスト・ベクタの補助データは `nil` |
 | `(tree-map function tree &rest more-trees)` | 葉ごとに `function` を呼んだ同じ形の木。複数の木は同じ位置の葉を引数にし、形が違えば `pytree-structure-mismatch` |
 | `(defpytree type :flatten f :unflatten g)` | クラス名 `type` を節として登録する。`f` は `(object) → (values 子のリスト 補助データ)`、`g` は `(aux children) → object` |
 | `treedef` / `treedef-num-leaves` / `treedef=` | 木の形（不透明な構造体）、その葉の個数、形の比較 |
@@ -561,7 +564,7 @@ Optax 相当。オプティマイザは `init`（パラメータの木 → 状�
 
 - **ステップ数は状態の中の rank 0 の `:i32` の配列**（`count`）で、Lisp の整数ではない。jit の入力として渡るので、ステップごとに再コンパイルされず、スケジュールの値も毎ステップ変わる。`update` ごとに 1 増える（`:i32` の最大値で止まる）
 - 状態は `defmodule` の構造体（`adam-state` の `count` `mu` `nu`、`momentum-state` の `trace`、`schedule-state` の `count`）で、スロット名がチェックポイントのパス名になる。状態を持たない変換の状態は `nil`。葉の並びは Optax の `tree_leaves` と同じ
-- 数値は Optax と f32 の許容誤差で一致する（`tests/fixtures/optimizer/`）。cos と pow のプリミティブが無いので、cosine は sin の Taylor 展開（打ち切り誤差は 1e-11 未満で、f32 の丸め程度の差が残る）、adam のバイアス補正 `1 - b^t` は `-expm1` の Taylor 展開と `1 - exp(-t log b)` で計算する
+- 数値は Optax と f32 の許容誤差で一致する（`tests/fixtures/optimizer/`）。cosine は `0.5 (1 + cos(pi t))`、adam のバイアス補正 `1 - b^t` は `-expm1(t log b)` で計算する（Optax の `1 - b^t` を pow なしで書いた同値な式。Optax は `decay**count` を直接書く）
 - **チェックポイントとの関係**: `chain` の状態はリストなので、パス名は位置で決まる（`1.0.mu.l1.w` の `0` は chain の何番目か）。chain の途中に変換を足すと古いチェックポイントは読めなくなる（`checkpoint-error`）。状態のスロットはすべて `:state` で、`(save-checkpoint path (list model opt-state))` で1ファイルに入る。`optimizer-update` / `apply-updates` に渡す葉は、jit の外ではホストの配列（`device-array` は eager では扱えない。`to-host` で戻す）
 - **`chain` は `check-it:chain` と名前が衝突する**。check-it も使うパッケージ（テストなど）では `(:shadowing-import-from #:nabla.nn #:chain)` を書く
 - 対象は f32 / f64 のパラメータ。スカラー（学習率・バイアス補正）は葉の dtype に合わせて `convert` する。bf16 / f16 は未対応
@@ -612,7 +615,7 @@ sbcl --non-interactive --load examples/transformer.lisp   # 100 ステップ。�
 
 | 関数 | 役割 |
 | --- | --- |
-| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、失敗しても既存のファイルは壊れない |
+| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、プロセスの失敗に対しては既存のファイルが壊れない。`fsync` はしない（OS クラッシュ・電源断は対象外） |
 | `(read-safetensors path)` | `(values entries metadata)` |
 | `(encode-safetensors entries &key metadata)` / `(decode-safetensors octets &key path)` | ファイルを介さないバイト列版 |
 | `safetensors-error` / `-path` / `-reason` / `-detail` | 壊れた入力・不正な引数のコンディション。`reason` は `:truncated` `:header-length` `:invalid-header` `:unknown-dtype` `:size-mismatch` `:bad-offsets` `:invalid-bool` `:invalid-entries`（意味は docstring） |
@@ -637,6 +640,8 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - モデルとオプティマイザ状態は1つの木にまとめれば同じファイルに入る: `(defmodule train-state ((params) (opt)))` → `"params.w"`、`"opt.0"`。別々に保存してもよい（API に接頭辞は持たない）
 - `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元でも、ひな形の葉が `(unsigned-byte 16)` の配列なら `:dtypes` で言う必要がある（言わなければ `:dtype-mismatch`。bf16 のモデルを f16 のファイルから生のビットで復元する事故を防ぐ。`device-array` と `aval` のひな形は自分の dtype を持つ）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
 - 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
+- データローダの再開状態（エポック数・バッチ内の位置・シャッフルの PRNG キー・小さな配列）は、**配列だけの `defmodule` にして**モデルとオプティマイザ状態と同じ木に入れる。整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
+- メモリ: `load-checkpoint` はファイルの約 2 倍、`save-checkpoint` は約 3 倍（木の分を含む）のピークになり、ヒープが 1 GiB のとき（測定環境の SBCL 2.6.7 / macOS arm64 の既定。`(sb-ext:dynamic-space-size)` で確かめる）、save は 256 MiB が通り 320 MiB で枯渇し、load は 448 MiB が通り 512 MiB で枯渇した。大きなモデルでは起動時に `--dynamic-space-size` を上げる。測定は [docs/checkpoint-memory.md](docs/checkpoint-memory.md)。世代管理（最新 n 個を残す）は持たないので、必要なら保存先の名前にステップ数を含めて呼び出し側で古いものを消す
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
 
