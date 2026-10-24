@@ -87,27 +87,41 @@ TO の TO-START 番目のバイトへコピーする（両方とも要素のバ�
           (setf (row-major-aref copy i) (row-major-aref array i)))
         (sb-ext:array-storage-vector copy))))
 
-(defun %array-octets (array dtype)
-  "ARRAY の要素のバイト列（DTYPE のリトルエンディアン表現）を返す。"
-  (let* ((count (array-total-size array))
-         (octets (make-array (* count (nabla:dtype-byte-width dtype)) :element-type '(unsigned-byte 8))))
-    (if (eq dtype :i1)
-        (dotimes (i count) (setf (aref octets i) (row-major-aref array i)))
-        (let ((storage (%storage-vector array)))
-          (%copy-octets storage 0 octets 0 (length octets))))
-    octets))
+(defparameter +chunk-octets+ 65536
+  "葉のバイト列を読み書きするときの作業用バッファの大きさ（バイト）。ファイル全体や葉全体の
+バイト列を作らず、この大きさずつ配列の記憶域とやり取りする（issue #262）。")
 
-(defun %octets-array (octets start dtype shape path)
-  "OCTETS の START から始まる、DTYPE・SHAPE の配列を作る。"
-  (let ((array (make-array shape :element-type (nabla:dtype-element-type dtype))))
-    (if (eq dtype :i1)
-        (dotimes (i (array-total-size array))
-          (let ((byte (aref octets (+ start i))))
-            (when (> byte 1)
-              (%fail path :invalid-bool "BOOL のテンソルに 0 / 1 以外のバイト ~D がある" byte))
-            (setf (row-major-aref array i) byte)))
-        (%copy-octets octets start (sb-ext:array-storage-vector array) 0
-                      (* (array-total-size array) (nabla:dtype-byte-width dtype))))
+(defun %chunk-buffer ()
+  (make-array +chunk-octets+ :element-type '(unsigned-byte 8)))
+
+(defun %emit-array-octets (array dtype buffer emit)
+  "ARRAY の要素のバイト列（DTYPE のリトルエンディアン表現）を BUFFER に区切って詰め、
+\(funcall EMIT BUFFER 詰めたバイト数) で先頭から順に渡す。"
+  (let ((total (* (array-total-size array) (nabla:dtype-byte-width dtype)))
+        (storage (unless (eq dtype :i1) (%storage-vector array))))
+    (loop for done from 0 below total by (length buffer)
+          for count = (min (length buffer) (- total done))
+          do (if storage
+                 (%copy-octets storage done buffer 0 count)
+                 (dotimes (i count) (setf (aref buffer i) (row-major-aref array (+ done i)))))
+             (funcall emit buffer count))))
+
+(defun %array-from-chunks (dtype shape buffer fill path)
+  "DTYPE・SHAPE の配列を作り、その要素のバイト列を BUFFER に区切って
+\(funcall FILL BUFFER バイト数) に先頭から順に埋めさせる。"
+  (let* ((array (make-array shape :element-type (nabla:dtype-element-type dtype)))
+         (total (* (array-total-size array) (nabla:dtype-byte-width dtype)))
+         (storage (unless (eq dtype :i1) (sb-ext:array-storage-vector array))))
+    (loop for done from 0 below total by (length buffer)
+          for count = (min (length buffer) (- total done))
+          do (funcall fill buffer count)
+             (if storage
+                 (%copy-octets buffer 0 storage done count)
+                 (dotimes (i count)
+                   (let ((byte (aref buffer i)))
+                     (when (> byte 1)
+                       (%fail path :invalid-bool "BOOL のテンソルに 0 / 1 以外のバイト ~D がある" byte))
+                     (setf (row-major-aref array (+ done i)) byte)))))
     array))
 
 ;;; --- 書き込み ---
@@ -153,6 +167,18 @@ f16 のどちらか決められないので dtype が必須（省略すると NA
 safetensors の書く順序とは限らず、保証するのは読み書きの意味が同じことだけでバイト列の一致ではない）。ヘッダは空白で
 8 バイト境界まで埋める。名前の重複・予約名 __metadata__・サロゲートを含む文字列・
 文字列でないメタデータは SAFETENSORS-ERROR（reason :invalid-entries）。"
+  (let* ((plan (%encoding-plan entries metadata))
+         (result (make-array (+ 8 (third plan) (fourth plan)) :element-type '(unsigned-byte 8)))
+         (position 0))
+    (%emit-safetensors plan (lambda (octets count)
+                              (replace result octets :start1 position :end2 count)
+                              (incf position count)))
+    result))
+
+(defun %encoding-plan (entries metadata)
+  "ENTRIES と METADATA（ENCODE-SAFETENSORS と同じ）を検査し、書く内容
+\(正規化したエントリ ヘッダのバイト列 空白で埋めた後のヘッダ長 データ領域の長さ) を返す。
+葉のバイト列はまだ作らない。"
   (unless (%proper-list-p entries)
     (%fail nil :invalid-entries "ENTRIES はリストでなければならない: ~S" entries))
   (let ((normalized (mapcar #'%normalize-entry entries)))
@@ -163,10 +189,10 @@ safetensors の書く順序とは限らず、保証するのは読み書きの�
                   (let ((wa (nabla:dtype-byte-width (third a)))
                         (wb (nabla:dtype-byte-width (third b))))
                     (or (> wa wb) (and (= wa wb) (string< (first a) (first b))))))))
-    (let* ((blobs (mapcar (lambda (e) (%array-octets (second e) (third e))) normalized))
+    (let* ((offset 0)
            (header (with-output-to-string (out)
                      (write-char #\{ out)
-                     (let ((first-member t) (offset 0))
+                     (let ((first-member t))
                        (flet ((comma () (if first-member (setf first-member nil) (write-char #\, out))))
                          (when metadata
                            (comma)
@@ -178,32 +204,38 @@ safetensors の書く順序とは限らず、保証するのは読み書きの�
                                     (when more (write-char #\, out)))
                            (write-char #\} out))
                          (loop for (name array dtype) in normalized
-                               for blob in blobs
+                               for size = (* (array-total-size array) (nabla:dtype-byte-width dtype))
                                do (comma)
                                   (%json-write-string name out)
                                   (format out ":{\"dtype\":\"~A\",\"shape\":[~{~D~^,~}],\"data_offsets\":[~D,~D]}"
                                           (cdr (assoc dtype +dtype-names+))
-                                          (array-dimensions array) offset (+ offset (length blob)))
-                                  (incf offset (length blob)))))
+                                          (array-dimensions array) offset (+ offset size))
+                                  (incf offset size))))
                      (write-char #\} out)))
-           (header-octets (sb-ext:string-to-octets header :external-format :utf-8))
-           (padded-length (* 8 (ceiling (length header-octets) 8)))
-           (data-length (reduce #'+ blobs :key #'length))
-           (result (make-array (+ 8 padded-length data-length) :element-type '(unsigned-byte 8)
-                                                                  :initial-element 32)))
-      (dotimes (i 8) (setf (aref result i) (ldb (byte 8 (* 8 i)) padded-length)))
-      (replace result header-octets :start1 8)
-      (let ((position (+ 8 padded-length)))
-        (dolist (blob blobs)
-          (replace result blob :start1 position)
-          (incf position (length blob))))
-      result)))
+           (header-octets (sb-ext:string-to-octets header :external-format :utf-8)))
+      (list normalized header-octets (* 8 (ceiling (length header-octets) 8)) offset))))
+
+(defun %emit-safetensors (plan emit)
+  "%ENCODING-PLAN の PLAN のファイルのバイト列を、先頭から順に (funcall EMIT バイト列 バイト数) で
+渡す。ヘッダは空白で 8 バイト境界まで埋め、葉は作業用バッファ 1 本を通して 1 つずつ渡す
+\(全体や葉全体のバイト列を作らない。issue #262)。"
+  (destructuring-bind (normalized header-octets padded-length data-length) plan
+    (declare (ignore data-length))
+    (let ((prefix (make-array 8 :element-type '(unsigned-byte 8))))
+      (dotimes (i 8) (setf (aref prefix i) (ldb (byte 8 (* 8 i)) padded-length)))
+      (funcall emit prefix 8))
+    (funcall emit header-octets (length header-octets))
+    (let ((padding (- padded-length (length header-octets))))
+      (funcall emit (make-array padding :element-type '(unsigned-byte 8) :initial-element 32) padding))
+    (let ((buffer (%chunk-buffer)))
+      (loop for (nil array dtype) in normalized
+            do (%emit-array-octets array dtype buffer emit)))))
 
 (defun write-safetensors (path entries &key metadata)
   "ENTRIES（ENCODE-SAFETENSORS と同じ）を PATH に safetensors として書く。
 一時ファイルに書いてから rename するので、読む側は書きかけのファイルを見ず、
 書き込みに失敗しても（プロセスの失敗に対して。fsync はしないので OS クラッシュ・電源断は対象外）PATH の既存のファイルは壊れない。書き込んだファイルのパス名（PATH を現在のディレクトリを基準に絶対化したもの）を返す。"
-  (let* ((octets (encode-safetensors entries :metadata metadata))
+  (let* ((plan (%encoding-plan entries metadata))
          (path (merge-pathnames path (uiop:getcwd)))
          (tmp (merge-pathnames (format nil "~A.~D.tmp" (file-namestring path)
                                        (random most-positive-fixnum (make-random-state t)))
@@ -214,7 +246,7 @@ safetensors の書く順序とは限らず、保証するのは読み書きの�
          (progn
            (with-open-file (stream tmp :direction :output :element-type '(unsigned-byte 8)
                                        :if-exists :supersede :if-does-not-exist :create)
-             (write-sequence octets stream)
+             (%emit-safetensors plan (lambda (octets count) (write-sequence octets stream :end count)))
              (finish-output stream))
            (uiop:rename-file-overwriting-target tmp (make-pathname :type (or (pathname-type path) :unspecific) :defaults path))
            (setf tmp nil))
@@ -272,57 +304,82 @@ NABLA:DTYPE-ELEMENT-TYPE のとおり（bf16 / f16 は (unsigned-byte 16) のビ
 BOOL は :i1 の bit 配列）。METADATA は (キー . 値) のリスト（無ければ NIL）。
 入力が壊れていれば SAFETENSORS-ERROR（reason は同条件のドキュメントを参照）。
 PATH はエラーに入れるファイル名（読み込みには使わない）。"
-  (let* ((octets (coerce octets 'octet-vector))
-         (length (length octets)))
-    (when (< length 8)
-      (%fail path :truncated "~D バイトしかなく、ヘッダ長の 8 バイトにも満たない" length))
-    (let ((header-length (loop for i below 8 sum (ash (aref octets i) (* 8 i)))))
-      (when (or (> header-length (- length 8)) (> header-length +max-header-length+))
-        (%fail path :header-length "ヘッダ長 ~D が範囲外（ファイルは ~D バイト）" header-length length))
-      (let* ((data-start (+ 8 header-length))
-             (header (handler-case
-                         (%json-parse (sb-ext:octets-to-string
-                                       octets :start 8 :end data-start
-                                              :external-format '(:utf-8 :replacement nil)))
-                       (%json-syntax-error (c)
-                         (%fail path :invalid-header "ヘッダが JSON として不正: ~A" c))
-                       (error (c)
-                         (%fail path :invalid-header "ヘッダが UTF-8 の JSON として読めない: ~A" c))))
-             (metadata '())
-             (tensors '()))
-        (unless (%json-object-p header)
-          (%fail path :invalid-header "ヘッダが JSON のオブジェクトでない"))
-        (dolist (member (rest header))
-          (if (string= (car member) "__metadata__")
-              (setf metadata (%parse-metadata (cdr member) path))
-              (push (cons (car member) (%parse-tensor-info (car member) (cdr member) path))
-                    tensors)))
-        ;; データ領域を先頭から隙間なく、重なりなく覆っていること。
-        ;; 大きさ 0 のテンソルが同じ位置に並ぶので、開始 → 終了の順に並べる（参照実装と同じ）。
-        (setf tensors (stable-sort (nreverse tensors)
-                                   (lambda (a b) (or (< (fourth a) (fourth b))
-                                                     (and (= (fourth a) (fourth b))
-                                                          (< (fifth a) (fifth b)))))))
-        (let ((expected 0))
-          (loop for (name nil nil begin end) in tensors
-                do (unless (= begin expected)
-                     (%fail path :bad-offsets "テンソル ~S のデータが ~D から始まるが、直前の終わりは ~D"
-                            name begin expected))
-                   (setf expected end))
-          (unless (= expected (- length data-start))
-            (%fail path :bad-offsets "テンソルのデータの終わり ~D がデータ領域の長さ ~D と合わない"
-                   expected (- length data-start))))
+  (let ((octets (coerce octets 'octet-vector)))
+    (%read-safetensors-from (length octets)
+                            (lambda (position buffer count)
+                              (replace buffer octets :start2 position :end1 count))
+                            path)))
+
+(defun %read-safetensors-from (length read-at path)
+  "長さ LENGTH バイトの safetensors を読み、(values entries metadata) を返す。
+\(funcall READ-AT 位置 バッファ バイト数) は、入力の「位置」からの「バイト数」バイトを
+バッファの先頭に読む。ヘッダを読んで LENGTH と照らして検査してから、葉ごとに作業用バッファ
+1 本を通して配列へ読むので、入力全体のバイト列を作らず、LENGTH の外を読まない（issue #262）。"
+  (when (< length 8)
+    (%fail path :truncated "~D バイトしかなく、ヘッダ長の 8 バイトにも満たない" length))
+  (let ((header-length (let ((prefix (make-array 8 :element-type '(unsigned-byte 8))))
+                         (funcall read-at 0 prefix 8)
+                         (loop for i below 8 sum (ash (aref prefix i) (* 8 i))))))
+    (when (or (> header-length (- length 8)) (> header-length +max-header-length+))
+      (%fail path :header-length "ヘッダ長 ~D が範囲外（ファイルは ~D バイト）" header-length length))
+    (let* ((data-start (+ 8 header-length))
+           (header-octets (let ((octets (make-array header-length :element-type '(unsigned-byte 8))))
+                            (funcall read-at 8 octets header-length)
+                            octets))
+           (header (handler-case
+                       (%json-parse (sb-ext:octets-to-string
+                                     header-octets :external-format '(:utf-8 :replacement nil)))
+                     (%json-syntax-error (c)
+                       (%fail path :invalid-header "ヘッダが JSON として不正: ~A" c))
+                     (error (c)
+                       (%fail path :invalid-header "ヘッダが UTF-8 の JSON として読めない: ~A" c))))
+           (metadata '())
+           (tensors '()))
+      (unless (%json-object-p header)
+        (%fail path :invalid-header "ヘッダが JSON のオブジェクトでない"))
+      (dolist (member (rest header))
+        (if (string= (car member) "__metadata__")
+            (setf metadata (%parse-metadata (cdr member) path))
+            (push (cons (car member) (%parse-tensor-info (car member) (cdr member) path))
+                  tensors)))
+      ;; データ領域を先頭から隙間なく、重なりなく覆っていること。
+      ;; 大きさ 0 のテンソルが同じ位置に並ぶので、開始 → 終了の順に並べる（参照実装と同じ）。
+      ;; この検査で、各テンソルの範囲が LENGTH の内側にあることも決まる（葉を読む前に確かめる）。
+      (setf tensors (stable-sort (nreverse tensors)
+                                 (lambda (a b) (or (< (fourth a) (fourth b))
+                                                   (and (= (fourth a) (fourth b))
+                                                        (< (fifth a) (fifth b)))))))
+      (let ((expected 0))
+        (loop for (name nil nil begin end) in tensors
+              do (unless (= begin expected)
+                   (%fail path :bad-offsets "テンソル ~S のデータが ~D から始まるが、直前の終わりは ~D"
+                          name begin expected))
+                 (setf expected end))
+        (unless (= expected (- length data-start))
+          (%fail path :bad-offsets "テンソルのデータの終わり ~D がデータ領域の長さ ~D と合わない"
+                 expected (- length data-start))))
+      (let ((buffer (%chunk-buffer)))
         (values
          (loop for (name dtype shape begin) in tensors
-               collect (list name (%octets-array octets (+ data-start begin) dtype shape path) dtype))
+               collect (let ((position (+ data-start begin)))
+                         (list name
+                               (%array-from-chunks dtype shape buffer
+                                                   (lambda (buffer count)
+                                                     (funcall read-at position buffer count)
+                                                     (incf position count))
+                                                   path)
+                               dtype)))
          metadata)))))
 
 (defun read-safetensors (path)
   "PATH の safetensors ファイルを読み、(values entries metadata) を返す
-（DECODE-SAFETENSORS と同じ。エラーの PATH にこのファイルが入る）。"
-  (let ((octets (with-open-file (stream path :element-type '(unsigned-byte 8))
-                  (let ((octets (make-array (file-length stream) :element-type '(unsigned-byte 8))))
-                    (unless (= (read-sequence octets stream) (length octets))
-                      (%fail path :truncated "ファイルを最後まで読めなかった"))
-                    octets))))
-    (decode-safetensors octets :path path)))
+（DECODE-SAFETENSORS と同じ。エラーの PATH にこのファイルが入る）。
+ファイル全体を読み込まず、ヘッダを読んでからテンソルごとに配列へ読む（ピークは結果の配列 +
+作業用バッファ。issue #262）。"
+  (with-open-file (stream path :element-type '(unsigned-byte 8))
+    (%read-safetensors-from (file-length stream)
+                            (lambda (position buffer count)
+                              (file-position stream position)
+                              (unless (= (read-sequence buffer stream :end count) count)
+                                (%fail path :truncated "ファイルが途中で終わった（読んでいる間に短くなった）")))
+                            path)))
