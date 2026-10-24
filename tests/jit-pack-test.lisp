@@ -7,6 +7,7 @@
 ;;;;   葉の木を、そのまま返す関数を jit すると、上限を超えたときも同じ値・同じ要素型の木が返る。
 ;;;;   そのときコンパイルされる main の入力は dtype の種類の数。
 ;;;; - 上限を超えなければ連結しない: StableHLO は上限なしの backend と同じテキスト。
+;;;; - 戻した葉は後続の演算（x + x）で eager と一致する。要素数 0・rank 0・実数の葉も戻る。
 ;;;; - dtype の種類の数も上限を超えれば jit-error。
 ;;;; IREE の local-task で、上限を超える Transformer を学習するのは tests/nn/transformer-test.lisp（medium）。
 
@@ -96,6 +97,38 @@ dtype の種類の数になる。"
                                         leaves)))))))
                 :regression-id jit-pack/concatenate-then-split-is-identity
                 :regression-file (regression-path "jit-pack-identity"))))
+
+(test jit-pack/split-leaves-feed-later-operations
+  "上限を超える浮動小数点の葉の木に葉ごとの x + x を jit すると、連結して戻した葉が後続の演算に正しい形で
+渡り、eager と一致する。"
+  (is (check-it (generator (tuple (list (array-spec :dtypes '(:f32 :f64) :max-rank 3 :max-dim 4)
+                                        :min-length 3 :max-length 10)
+                                  (uniform-integer :lo 0 :hi 1000)))
+                (lambda (value)
+                  (destructuring-bind (specs seed) value
+                    (let* ((leaves (loop for spec in specs for i from 0
+                                         collect (make-random-array spec :seed (+ seed i))))
+                           (backend (make-instance '%pack-recording-backend :max-inputs 2))
+                           (f (nb:with-tracing (xs) (nb:tree-map (lambda (x) (+ x x)) xs)))
+                           (result (%pack-call-eagerly backend f leaves)))
+                      (every (lambda (r leaf spec)
+                               (allclose r (funcall f leaf) :dtype (array-spec-dtype spec)))
+                             result leaves specs))))
+                :regression-id jit-pack/split-leaves-feed-later-operations
+                :regression-file (regression-path "jit-pack-later-operations"))))
+
+(test jit-pack/zero-size-and-rank-0-leaves-round-trip
+  "要素数 0 の葉（形 (0 3)）と rank 0 の葉・Lisp の実数が混ざった木も、連結して戻すと同じ木になる
+（PBT の生成器は次元が 1 以上なので、要素数 0 はここで見る）。"
+  (let* ((backend (make-instance '%pack-recording-backend :max-inputs 1))
+         (empty (make-array '(0 3) :element-type 'single-float))
+         (scalar (make-array '() :element-type 'single-float :initial-element 2.5))
+         (vector (make-array '(2) :element-type 'single-float :initial-contents '(1.0 -1.0)))
+         (result (%pack-call-eagerly backend (nb:with-tracing (xs) xs) (list empty scalar 3.0 vector))))
+    (is (= 1 (%main-input-count (first (%pack-texts backend)))))
+    (is (equal '(0 3) (array-dimensions (first result))))
+    (is (equalp (list scalar (make-array '() :element-type 'single-float :initial-element 3.0) vector)
+                (rest result)))))
 
 (test jit-pack/within-the-limit-the-stablehlo-is-unchanged
   "葉の個数が上限以下なら連結せず、StableHLO は上限なしの backend と同じテキストになる。"

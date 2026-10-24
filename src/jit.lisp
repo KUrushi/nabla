@@ -335,8 +335,9 @@ BACKEND インスタンス自体は EQUAL の中で EQ 比較される。
 BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでもコンパイル
 フラグ等が呼び出しごとに変わりうるため（design tab の「ターゲット（GPU
 世代を含む）」の文言）。
-PLAN は入力の連結の計画（%JIT-PACK-PLAN。連結しなければ NIL）で、graph の入力の形を決めるので
-キーに入れる（issue #242）。"
+PLAN は入力の連結の計画（%JIT-PACK-PLAN。連結しなければ NIL）。AVALS と BACKEND の
+BACKEND-MAX-INPUTS から決まるが、BACKEND-MAX-INPUTS が BACKEND の状態で変わる実装でも
+連結の有無の違う graph を取り違えないよう、キーに入れる（issue #242）。"
   (list backend
         (backend-fingerprint backend)
         (mapcar (lambda (aval) (list (aval-shape aval) (aval-dtype aval))) avals)

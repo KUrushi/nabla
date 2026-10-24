@@ -29,4 +29,28 @@ device array の葉をデバイス上で連結する方法（連結用の小さ�
 
 ## 費用
 
-<!-- COST -->
+測定: CI（GitHub Actions の ubuntu-24.04、2026-10-24、PR #267 の run 40084201841）で、
+`tests/nn/transformer-test.lisp` の `transformer/deep-model-past-the-input-limit-trains-on-iree-local-task` が
+出力に書いた値（テストは値を検査しない。目安）。モデルは `examples/transformer.lisp` のブロック 4 つ
+（幅 16、2 ヘッド、MLP 32、パラメータの葉 70 個）、バッチ 8、clip + Adam。学習ステップの入力は 213 個
+（パラメータ・mu・nu の 210 個と正解の f32 211 個、count とトークンの i32 2 個。連結すると f32 と i32 の 2 本）、出力は 212 個。
+
+| 項目 | 値 |
+| --- | --- |
+| ホストでの連結だけ（`%jit-pack-leaves`、入力 213 個 → 2 個、100 回の平均） | 0.070 ms/ステップ |
+| local-task（連結あり）の学習ステップ（30 ステップの平均。ホストでのバッチ作りと連結を含む） | 3.4 ms/ステップ |
+| local-sync（連結なし。上限を避ける従来の回避策）の同じステップ | 4.2 ms/ステップ |
+| eager との差（2 ステップ後のパラメータ、attn.key.bias 以外の最大） | 3.5e-6 |
+
+読み方:
+
+- ホストでの連結はステップ時間の約 2% で、無視できる大きさ。コピーする量はパラメータと Adam の状態の
+  合計に比例するので、大きなモデルでは比例して増える
+- IREE 側の slice の費用は単独では測れない（連結しない local-task は入力 213 個で落ちるので、同じ
+  ドライバで比べる相手が無い）。ステップ全体では local-sync（連結なし）より速いので、slice と reshape を足した費用は
+  local-task の並列実行の利得の内側に収まっている。
+  比べるなら、上限の内側のモデル（入力 117 個のブロック 2 つ）で `backend-max-inputs` を小さく返す
+  backend を作り、同じ local-task で連結あり・なしを測る（未測定）
+- 測った値は CI の共有ランナーの 1 回分で、ばらつきの幅は測っていない
+
+再測定のしかた: `NABLA_REQUIRE_IREE=1 scripts/run-tests.sh` の出力の `deep transformer:` の行を見る。

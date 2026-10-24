@@ -58,13 +58,23 @@ invoke を直接呼んだときだけ。"
 
 (define-iree-test input-limit/jit-on-local-task-concatenates-170-leaves
     "local-task で葉 170 個の木を jit すると、葉を dtype ごとに連結して渡すので落ちずに動き、eager と一致する
-（issue #242。連結しなければ入力 170 個で iree-too-many-inputs になる形）。"
+（issue #242。連結しなければ入力 170 個で iree-too-many-inputs になる形）。2 回目の呼び出しは
+キャッシュに当たり（連結した入力の to-device → invoke の経路）、同じ結果を返す。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:make-backend :iree :target :local))
         (nb:*compile-cache-directory* nil))
-    (multiple-value-bind (result expected) (%input-limit-jit-call backend 170)
-      (is (= 170 (length result)))
-      (is (every (lambda (r e) (allclose r e :dtype :f32)) result expected)))
+    (let* ((f (pytree-map-function))
+           (jf (nb:jit f :backend backend))
+           (arrays (%input-limit-arrays 170)))
+      (unwind-protect
+           (let* ((result (funcall jf arrays))
+                  (misses nb::*jit-miss-count*)
+                  (again (funcall jf arrays)))
+             (is (= 170 (length result)))
+             (is (every (lambda (r e) (allclose r e :dtype :f32)) result (funcall f arrays)))
+             (is (every #'equalp result again) "2 回目の呼び出し（キャッシュに当たる）の結果が違う")
+             (is (= misses nb::*jit-miss-count*) "2 回目の呼び出しで再コンパイルした"))
+        (nb::%jit-cache-forget f)))
     (gc-and-run-finalizers)))
 
 (define-iree-test input-limit/jit-on-local-task-concatenates-mixed-dtypes-and-device-arrays
@@ -88,8 +98,8 @@ dtype ごとに連結されて動き、各葉が eager と一致する（葉ご�
     (loop for r in result for host in hosts for i from 0
           for dtype = (nth (mod i 4) dtypes)
           for expected = (if (eq dtype :bf16)
-                             (nabla:to-host (funcall (nb:jit (nb:with-tracing (x) (+ x x)) :backend backend)
-                                                     (nabla:to-device host backend :dtype :bf16)))
+                             (funcall (nb:jit (nb:with-tracing (x) (+ x x)) :backend backend)
+                                      (nabla:to-device host backend :dtype :bf16))
                              (funcall f host))
           do (is (if (eq dtype :i32) (equalp r expected) (allclose r expected :dtype dtype))
                  "葉 ~D（~S）が一致しない" i dtype))
