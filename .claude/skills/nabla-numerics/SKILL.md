@@ -66,4 +66,6 @@ stop-gradient で勾配を差し替える（値は `sg(f)`、勾配は `sg(g) ·
 - 「最大値は stop-gradient で定数扱い。引いても微分は変わらない」は数学的には正しく、数値的には Collapse の原因（`examples/mlp.lisp` のコメント）
 - argmax の one-hot を host の iota 配列で作ると、`broadcast-in-dim` が eager に評価されて行列の大きさの定数が StableHLO に埋め込まれる。nabla の log-softmax は同点に対称な平均（`peak + Σ_M (x − peak)/c`。値は peak と厳密に等しい）で避けている
 - 論文の式は前提（p > 0 の行など）を持つことがある。端の値のテストが前提の外を突く（`soft-target-cross-entropy` の Q_u の補正はテストが見つけた）
+- `|x|` を `max(x, (- x))` で作ると、`max` の jvp が同点を 0.5 / 0.5 に分けるので x = 0 での微分が 0 になる（sigmoid の勾配 1/4 が 0 になる）。符号で分けるなら `where(x >= 0, x, -x)` を使う
+- 参照の計算も崖を越える。σ(x) − y や 1 − p を double で引けば、参照自身が桁を失う。参照は小さな量を直接作る式か有理数で書く
 - `and` / `or` は with-tracing の中で `:i1` の論理積にならない（`tracing-error`）。条件の組み合わせは where の入れ子か、数値の比較で書く
