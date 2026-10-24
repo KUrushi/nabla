@@ -15,6 +15,10 @@
 ;;;;   キャッシュのキーに入れるため（#199）。登録した型の補助データも spec に入るので、
 ;;;;   EQUAL で比べられる値（数値・文字・シンボル・文字列・パス名と、それらのコンス）に限る。
 ;;;;
+;;;; 節の判定は %NODE-PARTS の1か所に集め、TREE-FLATTEN と公開の TREE-CHILDREN（#239。
+;;;; PyTree の構造を内部表現を知らずに歩きたい nabla/nn のチェックポイント用）が共有する
+;;;; （vmap の軸の木は NIL を葉とする別の規則で、これは使わない）。
+;;;;
 ;;;; spec の形（内部。export しない）:
 ;;;;   :leaf                       葉
 ;;;;   (:list child...)            リスト（NIL は (:list)）
@@ -144,20 +148,22 @@ FLATTEN が真リストでない子を返したときも PYTREE-ERROR。"
   "OBJECT が真リスト（NIL で終わり、循環しない）なら真。"
   (and (listp object) (handler-case (list-length object) (type-error () nil)) t))
 
-(defun %flatten-into (tree collect)
-  "TREE の spec を返す。葉は左から順に COLLECT（1引数の関数）に渡す。"
+(defun %node-parts (tree)
+  "TREE が節なら (VALUES 子のリスト 補助データ 真 種類)、葉なら (VALUES NIL NIL NIL NIL)。
+種類は :LIST・:VECTOR・登録した型名。TREE-FLATTEN と TREE-CHILDREN が共有する節の判定
+（vmap の軸の木は NIL を葉とする別の規則）。真リストでないコンスと、不正な FLATTEN の結果は PYTREE-ERROR。"
   (cond
     ((listp tree)
      (unless (%proper-list-p tree)
        ;; 木そのものは印字しない（循環リストの印字は終わらない）
        (%pytree-error "真リストでない（ドット対や循環を含む）コンスは PyTree にできない"))
-     (cons :list (mapcar (lambda (child) (%flatten-into child collect)) tree)))
+     (values tree nil t :list))
     ((simple-vector-p tree)
-     (cons :vector (loop for child across tree collect (%flatten-into child collect))))
+     (values (coerce tree 'list) nil t :vector))
     (t
      (let ((entry (%pytree-node-entry tree)))
        (if (null entry)
-           (progn (funcall collect tree) :leaf)
+           (values nil nil nil nil)
            (multiple-value-bind (children aux) (funcall (car entry) tree)
              (unless (%proper-list-p children)
                (%pytree-error "~S の FLATTEN が子のリストを返さなかった: ~S"
@@ -165,8 +171,29 @@ FLATTEN が真リストでない子を返したときも PYTREE-ERROR。"
              (unless (%equal-comparable-p aux)
                (%pytree-error "~S の補助データは EQUAL で比べられる値でなければならない: ~S"
                               (class-name (class-of tree)) aux))
-             (list* :node (class-name (class-of tree)) aux
-                    (mapcar (lambda (child) (%flatten-into child collect)) children))))))))
+             (values children aux t (class-name (class-of tree)))))))))
+
+(defun tree-children (object)
+  "OBJECT が PyTree の節なら (VALUES 子のリスト 補助データ T)、葉なら (VALUES NIL NIL NIL)。
+節の判定は TREE-FLATTEN と完全に同じ（リスト・SIMPLE-VECTOR・DEFPYTREE で登録した型が節、
+それ以外は葉）。子は TREE-FLATTEN が葉を集める順の直下の要素で、これを再帰でたどった葉の
+列は TREE-LEAVES と一致する。補助データは treedef に入る静的な値（DEFPYTREE の FLATTEN の2つ目の
+値。リストと SIMPLE-VECTOR は NIL）。子が0個の節（空のベクタ・子を返さない登録型）と葉は、
+3つ目の値で区別する。NIL は TREE-FLATTEN と同じく子の無いリストの節（空の部分木）なので
+(VALUES NIL NIL T)。真リストでないコンスや不正な FLATTEN は TREE-FLATTEN と同じく
+PYTREE-ERROR。木の中身（型ごとの内部表現）を知らずに木の構造を歩くための公開 API。"
+  (multiple-value-bind (children aux node-p) (%node-parts object)
+    (values children aux node-p)))
+
+(defun %flatten-into (tree collect)
+  "TREE の spec を返す。葉は左から順に COLLECT（1引数の関数）に渡す。"
+  (multiple-value-bind (children aux node-p kind) (%node-parts tree)
+    (if (not node-p)
+        (progn (funcall collect tree) :leaf)
+        (let ((specs (mapcar (lambda (child) (%flatten-into child collect)) children)))
+          (case kind
+            ((:list :vector) (cons kind specs))
+            (t (list* :node kind aux specs)))))))
 
 (defun tree-flatten (tree)
   "TREE の葉を左から順に並べたリストと、TREE の形（treedef）の2値を返す。
