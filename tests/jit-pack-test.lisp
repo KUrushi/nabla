@@ -117,17 +117,20 @@ dtype の種類の数になる。"
                 :regression-id jit-pack/split-leaves-feed-later-operations
                 :regression-file (regression-path "jit-pack-later-operations"))))
 
-(test jit-pack/zero-size-and-rank-0-leaves-round-trip
-  "要素数 0 の葉（形 (0 3)）と rank 0 の葉・Lisp の実数が混ざった木も、連結して戻すと同じ木になる
-（PBT の生成器は次元が 1 以上なので、要素数 0 はここで見る）。"
+(test jit-pack/zero-size-rank-0-and-non-simple-leaves-round-trip
+  "要素数 0 の葉（形 (0 3)）、rank 0 の葉・Lisp の実数、simple でない配列（adjustable）の葉が混ざった木も、
+連結して戻すと同じ木になる（PBT の生成器は次元が 1 以上で simple な配列だけなので、ここで見る）。"
   (let* ((backend (make-instance '%pack-recording-backend :max-inputs 1))
          (empty (make-array '(0 3) :element-type 'single-float))
          (scalar (make-array '() :element-type 'single-float :initial-element 2.5))
          (vector (make-array '(2) :element-type 'single-float :initial-contents '(1.0 -1.0)))
-         (result (%pack-call-eagerly backend (nb:with-tracing (xs) xs) (list empty scalar 3.0 vector))))
+         (adjustable (make-array '(2 2) :element-type 'single-float :adjustable t
+                                        :initial-contents '((4.0 5.0) (6.0 7.0))))
+         (result (%pack-call-eagerly backend (nb:with-tracing (xs) xs)
+                                     (list empty scalar 3.0 vector adjustable))))
     (is (= 1 (%main-input-count (first (%pack-texts backend)))))
     (is (equal '(0 3) (array-dimensions (first result))))
-    (is (equalp (list scalar (make-array '() :element-type 'single-float :initial-element 3.0) vector)
+    (is (equalp (list scalar (make-array '() :element-type 'single-float :initial-element 3.0) vector adjustable)
                 (rest result)))))
 
 (test jit-pack/within-the-limit-the-stablehlo-is-unchanged
@@ -152,12 +155,13 @@ dtype の種類の数になる。"
 
 (test jit-pack/more-dtypes-than-the-limit-signals-jit-error
   "dtype の種類の数が上限を超えると、連結しても呼べないので jit-error になる。"
-  (let ((backend (make-instance '%pack-recording-backend :max-inputs 1))
-        (nb:*compile-cache-directory* nil))
+  (let ((backend (make-instance '%pack-recording-backend :max-inputs 1)))
+    ;; コンパイルの失敗（jit-compile-error）は USE-EAGER で流すので、ここで出る jit-error は連結の前の検査のもの
     (signals nb:jit-error
-      (funcall (nb:jit (nb:with-tracing (xs) xs) :backend backend)
-               (list (make-random-array (make-array-spec '(2) :f32))
-                     (make-random-array (make-array-spec '(2) :f64)))))))
+      (%pack-call-eagerly backend (nb:with-tracing (xs) xs)
+                          (list (make-random-array (make-array-spec '(2 3) :f32))
+                                (make-random-array (make-array-spec '(2) :f64)))))
+    (is (null (%pack-texts backend)) "連結できないのにコンパイルしようとした")))
 
 (test jit-pack/backend-max-inputs-defaults-to-no-limit
   "backend-max-inputs の既定は NIL（上限なし）。"
@@ -206,6 +210,8 @@ dtype の種類の数になる。"
                 :regression-id jit-pack/slice-cuts-the-subarray
                 :regression-file (regression-path "jit-pack-slice")))
   (let ((aval (nb:make-aval '(4 3) :f32)))
-    (dolist (params '((:start (0 0) :limit (5 3)) (:start (2 0) :limit (1 3)) (:start (0) :limit (4))))
+    (dolist (params '((:start (0 0) :limit (5 3)) (:start (2 0) :limit (1 3)) (:start (0) :limit (4))
+                      (:start (a 0) :limit (1 3)) (:start (0 0) :limit (1 b))))
       (signals nb:primitive-error
-        (apply #'%slice-abstract-eval (list aval) params)))))
+        (apply #'%slice-abstract-eval (list aval) params)))
+    (signals nb:primitive-error (%slice-abstract-eval (list aval aval) :start '(0 0) :limit '(1 1)))))
