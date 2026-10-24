@@ -123,11 +123,11 @@ SYSTEM-LIBRARY が真なら、:local に --iree-llvmcpu-link-embedded=false を
 使うこと。理由と代償は %needs-libm-p を参照。:cuda では無視する。
 
 :local には --iree-dispatch-creation-fuse-multi-use=false を付ける（issue #264、
-docs/iree-upstream-bugs.md の 10）。IREE 3.11 の FuseMultiUseElementwiseProducerPass は
-dispatch のオペランドの上限（kIreeMaxOperandCount = 16）を見ずに要素ごとの演算を融合し、
-32 個以上の入力を逐次に足していく連鎖が 1 つの dispatch になって、ロード時に HAL モジュールの
-上限で `binding count N > 32` になる。このフラグはその pass（dispatch 形成の前の段）だけを
-止める。代償は dispatch の数（examples/transformer.lisp の学習ステップで 319 → 409）で、
+docs/iree-upstream-bugs.md の 10）。IREE 3.11 では 32 個以上の入力を逐次に足していく連鎖が
+1 つの dispatch に融合され、ロード時に HAL モジュールの上限で `binding count N > 32` になる。
+dispatch のオペランドの上限（kIreeMaxOperandCount = 16）を見ない FuseMultiUseElementwiseProducerPass
+が融合していると見ていて、このフラグはその pass（dispatch 形成の前の段）だけを止める。
+32〜160 個の連鎖が通ることは測ったが、全ての形で binding が 32 以下になる保証ではない。代償は dispatch の数（examples/transformer.lisp の学習ステップで 319 → 409）で、
 CPU で測った学習ステップの時間・コンパイル時間は変わらなかった。:cuda は未測定なので付けない。
 
 注意（将来 jit キャッシュを作るとき向け）: :local のフラグは

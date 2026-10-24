@@ -510,7 +510,7 @@ leaves the operand types inconsistent): conv-convert-operand-type.mlir fails wit
 
 jit した関数の入力の個数は、引数の PyTree の葉の個数に等しい（#199）。Adam の学習ステップ（パラメータ + m + v + バッチ）のような大きなモデルは、この上限に当たりうる。
 
-2つ目の観察（別の制限）: 入力 170 個で全部を足していく要素ごとの加算の連鎖（`sum170.mlir` 相当）は、モジュールのロード時に `hal.command_buffer.dispatch ... OUT_OF_RANGE; binding count 51 > 32` で失敗する（1つの dispatch に融合されるオペランドが多すぎる。160 個でも `41 > 32`）。こちらはロードの失敗（`iree-status-error`）で、プロセスは落ちない。詳細・回避策は 10（#264）。
+2つ目の観察（別の制限）: 入力 170 個で全部を足していく要素ごとの加算の連鎖（`sum170.mlir` 相当）は、モジュールのロード時に `hal.command_buffer.dispatch ... OUT_OF_RANGE; binding count 51 > 32` で失敗する（1つの dispatch に融合されるオペランドが多すぎる。160 個でも `41 > 32`）。こちらはロードの失敗（`iree-status-error`）で、プロセスは落ちない。これはフラグなしでコンパイルしたときの話で、詳細・回避策は 10（#264。nabla は既定で回避策のフラグを付ける）。
 
 ### 下書き（英語）
 
@@ -753,9 +753,9 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 | 上限の出どころ | ランタイムの HAL の VM モジュール（`runtime/src/iree/modules/hal/module.c`）の `#define IREE_HAL_MODULE_MAX_DESCRIPTOR_BINDING_COUNT ((iree_host_size_t)32)`（「呼び出し中に stack があふれないように」というコメント付き）。コンパイル時の定数で、ランタイムにもコンパイラにもフラグは無い。ドライバの層より上なので、どのドライバでも同じ（ローカル実行の実行ファイル側の上限 `IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT` は 64、CUDA の `IREE_HAL_CUDA_MAX_DISPATCH_BINDING_COUNT` は 16） |
 | 原因 | コンパイラは `compiler/src/iree/compiler/DispatchCreation/FusionUtils.h` の `kIreeMaxOperandCount = 16`（「CUDA / HIP / Metal の 16 binding に合わせる」）で、`ElementwiseOpFusionPass`（`ElementwiseOpFusion.cpp`）と `FormDispatchRegionsPass`（`FusionGroup::wouldExceedOperandLimit`）の融合を止める。ところが dispatch 形成の前に走る `FuseMultiUseElementwiseProducerPass`（`FuseMultiUseElementwiseProducer.cpp`。名前に反して use が 1 つの producer も融合する）にはこの検査が無く、16 個未満ずつにまとまった `linalg.generic` をさらに 1 つに融合する。`--compile-to=flow` で見ると、入力 40 個の連鎖は 40 オペランドの `flow.dispatch` 1 つになる。この pass を止めるフラグ（下の回避策）だけで通ることと、ソースにこの検査が無いことから、この pass が原因と見ている（どの pass の後でオペランドが 16 を超えるかの IR の確認はしていない） |
 | binding の数え方 | その dispatch に入る別々のテンソル + 結果。入力 N 個の連鎖が 1 つの dispatch になると N + 1。何個ずつにまとまるかは融合のされ方で決まり、単調ではない（下の表） |
-| 回避策 | `--iree-dispatch-creation-fuse-multi-use=false`（`compiler/src/iree/compiler/Pipelines/Options.h` の `enableFuseMultiUse`、既定 true）。dispatch 形成の前の `FuseMultiUseElementwiseProducerPass` だけを止める（形成の後に dispatch の中で走る同じ pass は止めない。region のオペランドは形成のときに決まるので、上限は守られる）。入力 32・33・40・100・160 個の連鎖が local-task / local-sync で通る（200 個以上は local-task の入力の上限、6 で落ちる。local-sync は 1000 個まで通る） |
-| nabla の対応 | `src/iree/compiler.lisp` の `compile-flags` が `:local` にこのフラグを付ける（理由と代償は下）。回避策は `binding-limit/local-task-runs-elementwise-chains-of-32-to-161-leaves`（葉 32〜161 個の連鎖を jit して eager と一致）が、「今も落ちること」は `binding-limit/iree-known-limit-32-input-chain-fails-at-load`（`tests/iree/binding-limit-test.lisp`。子プロセスでフラグなしの 32 個が失敗し、31 個とフラグ付きの 32 個が通る）が守り、直れば失敗する |
-| 確認した環境 | GitHub Actions の ubuntu-24.04（x86_64、ネイティブ）。PR #268 の CI で測った |
+| 回避策 | `--iree-dispatch-creation-fuse-multi-use=false`（`compiler/src/iree/compiler/Pipelines/Options.h` の `enableFuseMultiUse`、既定 true）。dispatch 形成の前の `FuseMultiUseElementwiseProducerPass` だけを止める（形成の後に dispatch の中で走る同じ pass は止めない）。入力 32〜160 個の連鎖が local-task / local-sync で通る（測った N は 33・40・100・120・128・129・140・150・155・158・159・160。161 個以上は local-task で 6 のクラッシュに当たる（下の「161 個の入力」）。local-sync は 1000 個まで通る）。全ての形で binding が 32 以下になる保証ではない（下の「nabla の回避策の選び方」の最後の段落） |
+| nabla の対応 | `src/iree/compiler.lisp` の `compile-flags` が `:local` にこのフラグを付ける（理由と代償は下）。回避策は `binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves`（葉 32〜160 個の連鎖を jit して eager と一致）が、「今も落ちること」は `binding-limit/iree-known-limit-32-input-chain-fails-at-load`（`tests/iree/binding-limit-test.lisp`。子プロセスでフラグなしの 32 個が失敗し、31 個とフラグ付きの 32 個が通る）が守り、直れば失敗する |
+| 確認した環境 | GitHub Actions の ubuntu-24.04（x86_64、ネイティブ）。PR #268 の CI の一時的な実験の run で測った（Actions の run 40083566337: 形と N の表・効かなかったフラグ、40084490175: N = 41〜170・slice・代償の測定・race、40087237694: 161 個の境界）。実験のスクリプトは消した |
 
 6 の「2つ目の観察」（入力 170 個の連鎖で `51 > 32`、160 個で `41 > 32`）はこの制限で、下の表と一致する。
 
@@ -765,7 +765,7 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 
 | 形 | 結果 |
 | --- | --- |
-| 逐次の連鎖 `r = r + a_i`（`multiply` でも同じ） | N ≤ 31 は通る。N = 32 から失敗し、binding 数は N = 32〜48 で N + 1、N = 64・100・160 で 41、N = 170 で 51（`--compile-to=flow` で dispatch のオペランドは 50・49・49・25 の 4 つ） |
+| 逐次の連鎖 `r = r + a_i`（`multiply` でも同じ） | N ≤ 31 は通る。N = 32 から失敗し、binding 数は N = 32・33・34・40・41・48 で N + 1、N = 64・100・160 で 41、N = 170 で 51（`--compile-to=flow` で dispatch のオペランドは 50・49・49・25 の 4 つ） |
 | 平衡二分木の加算 | N = 160 まで通る |
 | 入力ごとに `tanh` → `reduce` してスカラーを逐次に足す（nabla の葉ごとの損失の形） | N = 160 まで通る |
 | 入力ごとに `reduce` してスカラーを逐次に足す | N = 160 まで通る |
@@ -774,6 +774,10 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 | 1 本の入力 `tensor<N x 3>` を N 本に `slice` して逐次に足す（#242 の連結の後の形） | N = 170 まで通る（フラグの有無に依らない） |
 
 効かなかったフラグ: `--iree-opt-level=O0`、`--iree-dispatch-creation-opt-level=O0`、`--iree-dispatch-creation-enable-aggressive-fusion=false`、`--iree-dispatch-creation-enable-fuse-horizontal-contractions=false`。
+
+### 161 個の入力（6 との関係）
+
+6 は「入力 162 個以上で local-task が落ちる」と書いたが、**入力 161 個でも落ちる形がある**。run 40087237694 で、入力 161 個の平衡二分木の加算（フラグなし）と、161 個の逐次の連鎖（フラグ付き。3 回とも）が local-task で SIGSEGV（終了コード 139）になった。160 個はどちらも通り、local-sync は 161・162 個とも通る。一方、161 個の `concatenate`（1 出力）と 161 個の独立の `tanh`（6 の `local-task-161-inputs.mlir`）は通る。中間の値（dispatch の間で受け渡す一時バッファ）を持つ形だけが 1 つ早く落ちるので、6 の落ちる場所（`iree_hal_task_queue_issue_cmd_allocate` の中の `iree_task_call_initialize`）から見て、入力に一時バッファの確保を足した数で決まっているように見える（未調査）。nabla の jit で葉 161 個の連鎖を local-task で呼ぶと、`+local-task-max-inputs+` = 161 の検査を通ってしまい、プロセスが `memory fault` で落ちた（PR #268 の CI）。`+local-task-max-inputs+` を 160 にするか、6 の条件を測り直すのは #242 の作業と合わせて決める（この PR では変えていない）。そのため `binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves` は 160 個までを確かめる。
 
 ### nabla の回避策の選び方
 
@@ -794,7 +798,7 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 | 同じ MLP のコンパイル（`backend-compile`、medium / large） | 686 / 692 ms | 696 / 714 ms |
 | 7 の race の再現（負荷のもとで 1500 回。nabla が出す形 `nested-scan-ys-no-barrier.mlir` / `nested-scan-ys-if-no-barrier.mlir`） | 0 / 0 回 | 0 / 0 回 |
 | 7 の race の再現（バグの形 `nested-scan-ys-barrier-race.mlir` / `nested-scan-ys-if-race.mlir`） | 0 / 3 回 | 1 / 3 回 |
-| 既定のテストスイート（small + medium、IREE と PJRT を含む） | 通る | 通る |
+| 既定のテストスイート（small + medium、IREE と PJRT を含む） | 通る | medium は通る（small は、実験のためにフラグをリストの先頭に足したので `compile-flags` の先頭を確かめるテストが 1 件落ちた。フラグを末尾に足した最終の形は PR #268 の CI で通す） |
 
 dispatch は 3 割近く増えるが、CPU の時間には現れなかった（小さなテンソルでは dispatch あたりの費用が小さい）。7 の race はフラグの有無で傾向が変わらない（0 回は安全の証明ではない。7 の注意と同じ）。`:cuda` は測っていないので付けない。CUDA ではカーネルの起動が増える分だけ影響が大きくなりうるうえ、CUDA の dispatch の上限は 16 なので、フラグなしでは入力 17〜31 個の連鎖が CUDA で別の検査に当たる可能性がある（未確認。`scripts/colab-gpu-check.sh` で確かめるのが後続）。
 

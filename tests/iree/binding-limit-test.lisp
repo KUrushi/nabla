@@ -8,8 +8,9 @@
 ;;;;   iree-compile して iree-run-module に流すと、local-task でも local-sync でも
 ;;;;   "binding count 33 > 32" で失敗し、31 個の連鎖は通る。同じ 32 個の連鎖をフラグ付きで
 ;;;;   コンパイルすると通る（フラグが効いていること）。呼び出しは子プロセスで行う。
-;;;; - 回避策: 葉が 32〜161 個（161 は local-task の入力の上限、docs の 6）の要素ごとの加算の連鎖を
-;;;;   local-task の backend で jit した結果は eager と一致する。
+;;;; - 回避策: 葉が 32〜160 個の要素ごとの加算の連鎖を local-task の backend で jit した結果は eager と
+;;;;   一致する。161 個は入れない: 161 個の連鎖は local-task で 6 のクラッシュ（NULL の参照）に当たり、
+;;;;   プロセスごと落ちる（docs/iree-upstream-bugs.md の 10 の「161 個の入力」の段落）。
 
 (in-package #:nabla.iree.tests)
 
@@ -87,16 +88,16 @@ local-task でも local-sync でも \"binding count 33 > 32\" で失敗し、31 
          (allclose (funcall jf xs) (funcall f xs) :dtype :f32)
       (nb::%jit-cache-forget f))))
 
-(define-iree-test binding-limit/local-task-runs-elementwise-chains-of-32-to-161-leaves
-    "葉が 32〜161 個（境界の 32・161 と、その間のランダムな個数）の要素ごとの加算の連鎖を、local-task の
+(define-iree-test binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves
+    "葉が 32〜160 個（境界の 32・160 と、その間のランダムな個数）の要素ごとの加算の連鎖を、local-task の
 backend で jit した結果は eager と一致する（回避策の --iree-dispatch-creation-fuse-multi-use=false が
 無いと、32 個以上はロード時に binding count の上限で失敗する）。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:make-backend :iree :target :local))
         (*num-trials* 6)
         (nb:*compile-cache-directory* nil))
-    (dolist (n '(32 161))
+    (dolist (n '(32 160))
       (is (%bl-chain-matches-eager-p backend n) "葉 ~D 個の連鎖" n))
-    (is (check-it (generator (uniform-integer :lo 33 :hi 160))
+    (is (check-it (generator (uniform-integer :lo 33 :hi 159))
                   (lambda (n) (%bl-chain-matches-eager-p backend n))))
     (gc-and-run-finalizers)))
