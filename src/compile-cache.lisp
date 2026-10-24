@@ -133,25 +133,14 @@ CONCATENATE の結果型に (SIMPLE-ARRAY (UNSIGNED-BYTE 8) (*)) のような
     header))
 
 (defun %compile-cache-write (directory key payload)
-  "DIRECTORY の中に KEY に対応するキャッシュファイルを、一時ファイルへの
-書き込み + rename でアトミックに作る。同じキーで複数スレッドが同時に
-書いても、それぞれ完全なファイルを書いた上で最後の rename が勝つだけ
-なので、ロックは取らない。"
-  (ensure-directories-exist directory)
-  (let* ((final-path (%compile-cache-path directory key))
-         (tmp-path (merge-pathnames
-                    (format nil "~A.~D.tmp" key (random most-positive-fixnum (make-random-state t)))
-                    directory))
-         (header (%compile-cache-header payload)))
-    (with-open-file (stream tmp-path :direction :output
-                                      :element-type '(unsigned-byte 8)
-                                      :if-exists :supersede
-                                      :if-does-not-exist :create)
+  "DIRECTORY の中に KEY に対応するキャッシュファイルを WITH-ATOMIC-OUTPUT-FILE
+（一時ファイル + fsync + rename + ディレクトリの fsync、issue #263）で作る。
+同じキーで複数スレッドが同時に書いても、それぞれ完全なファイルを書いた上で
+最後の rename が勝つだけなので、ロックは取らない。"
+  (let ((header (%compile-cache-header payload)))
+    (with-atomic-output-file (stream (%compile-cache-path directory key))
       (write-sequence header stream)
-      (write-sequence payload stream)
-      (finish-output stream))
-    (uiop:rename-file-overwriting-target tmp-path final-path)
-    final-path))
+      (write-sequence payload stream))))
 
 (defmethod backend-compile :around ((backend backend) text)
   "キャッシュが有効（*COMPILE-CACHE-DIRECTORY* が NIL でない）なら、

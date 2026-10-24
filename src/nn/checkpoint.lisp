@@ -147,7 +147,8 @@ defmodule 以外で defpytree した型の子は、FLATTEN が返す子の添字
 入れるには、両方を1つの木（リストや defmodule）にまとめる。
 METADATA は (キー . 値)（文字列）のリストで、そのまま保存して LOAD-CHECKPOINT の2値目に
 返る。\"nabla.\" で始まるキーは予約（:reserved-metadata）。書き込みは
-WRITE-SAFETENSORS のとおり一時ファイル経由で、失敗したら既存のファイルを壊さない。
+WRITE-SAFETENSORS のとおり一時ファイル + fsync + rename で、失敗したら既存のファイルを壊さず、
+戻った後は OS のクラッシュ・電源断にも耐える（macOS のドライブのキャッシュは NABLA:*FULL-FSYNC*）。
 不正な葉・名前の重複・DTYPES の未知のパス名は CHECKPOINT-ERROR。"
   (multiple-value-bind (paths leaves) (%paths-and-leaves tree)
     (%check-paths paths dtypes)
