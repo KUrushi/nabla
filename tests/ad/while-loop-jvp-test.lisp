@@ -161,3 +161,22 @@ autodiff-error になる。"
               :axes '(0)))))
     (signals nb::autodiff-error
       (funcall (nb:grad f) (make-random-array (make-array-spec '(3) :f32) :seed 4)))))
+
+(test while-loop-jvp/real-carry-leaf-matches-central-difference
+  "carry の葉に Lisp の実数（カウンタ 0 は :f32 になる）を含む while-loop も jvp で通り、
+f64 の中心差分と一致する（issue #227）。"
+  (let ((graph (nb::trace-to-graph
+                (nb:with-tracing (x)
+                  (second (nb:while-loop (nb:with-tracing (c) (< (first c) 3.0))
+                                         (nb:with-tracing (c)
+                                           (list (+ (first c) 1.0) (+ (* (second c) 0.5) 1d0)))
+                                         (list 0 x))))
+                (list (nb:make-aval '(3) :f64)))))
+    (is (check-it (generator (uniform-integer :lo 0 :hi 100000))
+                  (lambda (seed)
+                    (let ((primals (list (make-random-array (make-array-spec '(3) :f64) :seed seed)))
+                          (tangents (list (random-tangent (nb:make-aval '(3) :f64) :seed (+ seed 1)))))
+                      (%wlj-close-p (%wlj-jvp-tangent-outputs graph primals tangents)
+                                    (central-difference-jvp graph primals tangents))))
+                  :regression-id while-loop-jvp/real-carry
+                  :regression-file (regression-path "while-loop-jvp-real-carry")))))
