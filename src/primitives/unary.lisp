@@ -132,10 +132,10 @@ X = -1 は負の無限大、X < -1 は NaN（libm の log1p と同じ。複素�
   "f64 の log1p を、log と四則で正確に計算する StableHLO の行（Goldberg の方法）:
 u = 1 + x、u = 1 なら x、u = +inf なら u、それ以外は log(u) x / (u - 1)。u - 1 は丸め
 誤差を含まないので、log(u) / (u - 1) の比が 1 + x の丸めを打ち消す。u は
-optimization_barrier に通す（XLA の代数的な簡約が (x + 1) - 1 を x に畳むのを止める）。
+optimization_barrier に通す（バックエンドの代数的な簡約が (x + 1) - 1 を x に畳むのを止める）。
 
-IREE（llvm-cpu）は f64 の log_plus_one を多項式近似せず、MLIR の lowering が
-log(1 + x) をそのまま出すので、小さな x の桁が消える（f32 は正確に近似される）。"
+バックエンドによっては f64 の log_plus_one を多項式近似せず、MLIR の lowering が
+log(1 + x) をそのまま出すので、小さな x の桁が消える（f32 は正確に近似される。docs/numerics.md）。"
   (let ((type (tensor-type-string out-aval))
         (bool-type (tensor-type-string (make-aval (aval-shape out-aval) :i1))))
     (flet ((n (tag) (%unary-aux-name (concatenate 'string "l1p_" tag) out-name)))
@@ -143,7 +143,7 @@ log(1 + x) をそのまま出すので、小さな x の桁が消える（f32 �
               (format nil "~A = stablehlo.constant dense<1.0> : ~A" (n "one") type)
               (format nil "~A = stablehlo.constant dense<0x7FF0000000000000> : ~A" (n "inf") type)
               (format nil "~A = stablehlo.add ~A, ~A : ~A" (n "sum") x (n "one") type)
-              ;; barrier が無いと XLA が (x + 1) - 1 を x に畳み、素朴な log(1 + x) に戻る
+              ;; barrier が無いとバックエンドが (x + 1) - 1 を x に畳み、素朴な log(1 + x) に戻る
               (format nil "~A = stablehlo.optimization_barrier ~A : ~A" (n "u") (n "sum") type)
               (format nil "~A = stablehlo.subtract ~A, ~A : ~A" (n "d") (n "u") (n "one") type)
               (format nil "~A = stablehlo.log ~A : ~A" (n "log") (n "u") type)
@@ -157,7 +157,7 @@ log(1 + x) をそのまま出すので、小さな x の桁が消える（f32 �
 (defun %f64-expm1-lines (x out-name out-aval)
   "f64 の expm1 を、exp・log と四則で正確に計算する StableHLO の行（Kahan の方法）:
 u = exp(x)、u = 1 なら x、u - 1 = -1 なら -1、u = +inf なら u、それ以外は (u - 1) x / log(u)。
-理由は %F64-LOG1P-LINES と同じ（IREE の f64 の exponential_minus_one は exp(x) - 1 になる）。"
+理由は %F64-LOG1P-LINES と同じ（f64 の exponential_minus_one が exp(x) - 1 に下ろされうる）。"
   (let ((type (tensor-type-string out-aval))
         (bool-type (tensor-type-string (make-aval (aval-shape out-aval) :i1))))
     (flet ((n (tag) (%unary-aux-name (concatenate 'string "em1_" tag) out-name)))
