@@ -194,12 +194,13 @@ STATIC-POSITIONS の引数はトレース対象の本体には普通の Lisp の
                          (car group)))
             plan)))
 
-(defun %jit-pack-leaves (plan leaves avals)
+(defun %jit-pack-leaves (plan leaves buffer-avals)
   "LEAVES（配列または device array）を PLAN どおりに連結した、dtype ごとのホストの 1 次元配列の
-リストを返す。device array は TO-HOST してから連結する（連結はホストで行う）。"
+リストを返す。BUFFER-AVALS は %JIT-PACKED-AVALS。device array は TO-HOST してから連結する
+（連結はホストで行う）。"
   (let ((leaves (coerce leaves 'vector)))
     (loop for group in plan
-          for buffer-aval in (%jit-packed-avals plan avals)
+          for buffer-aval in buffer-avals
           collect (let ((buffer (make-array (aval-shape buffer-aval)
                                             :element-type (dtype-element-type (car group))))
                         (offset 0))
@@ -326,7 +327,7 @@ FN への参照は持たない（FN の finalizer がこの構造体を捕まえ
   (entries (make-hash-table :test 'equal))
   (pending (make-hash-table :test 'equal)))
 
-(defun %jit-cache-key (backend avals static-values treedef &optional plan)
+(defun %jit-cache-key (backend avals static-values treedef &optional max-inputs)
   "%JIT-FUNCTION-CACHE の ENTRIES（EQUAL）に使うキーを返す。AVALS は動的引数の
 葉の AVAL のリスト（構造体は EQUAL が EQ 相当になってしまうため、(shape dtype) の
 リストに正規化する）、TREEDEF は動的引数の木のリストの treedef（#199。同じ aval の
@@ -335,15 +336,15 @@ BACKEND インスタンス自体は EQUAL の中で EQ 比較される。
 BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでもコンパイル
 フラグ等が呼び出しごとに変わりうるため（design tab の「ターゲット（GPU
 世代を含む）」の文言）。
-PLAN は入力の連結の計画（%JIT-PACK-PLAN。連結しなければ NIL）。AVALS と BACKEND の
-BACKEND-MAX-INPUTS から決まるが、BACKEND-MAX-INPUTS が BACKEND の状態で変わる実装でも
-連結の有無の違う graph を取り違えないよう、キーに入れる（issue #242）。"
+MAX-INPUTS は BACKEND-MAX-INPUTS の値。入力の連結の計画（%JIT-PACK-PLAN）は AVALS とこれだけで
+決まるので、これをキーに入れれば、BACKEND-MAX-INPUTS が BACKEND の状態で変わる実装でも
+連結の有無の違う graph を取り違えない（issue #242）。"
   (list backend
         (backend-fingerprint backend)
         (mapcar (lambda (aval) (list (aval-shape aval) (aval-dtype aval))) avals)
         (treedef-spec treedef)
         static-values
-        plan))
+        max-inputs))
 
 (defun %jit-unload-entries (cache)
   "CACHE（%JIT-FUNCTION-CACHE）の全エントリの MODULE を、キーに含まれる
@@ -494,7 +495,8 @@ JIT-COMPILE-ERROR などで非局所脱出しても、UNWIND-PROTECT が KEY の
           entry))))
 
 (defun %jit-eager-fallback (graph leaves out-treedef)
-  "GRAPH を LEAVES（動的引数の葉。配列または device array のリスト）に対して
+  "GRAPH を LEAVES（GRAPH の入力。動的引数の葉、連結したときは dtype ごとのバッファ（issue #242）。
+配列または device array のリスト）に対して
 EVAL-GRAPH で評価し、OUT-TREEDEF の形の戻り値（多値）にして返す（USE-EAGER リスタートの
 本体。device array は先に TO-HOST してから渡す）。"
   (%unflatten-results
@@ -549,11 +551,12 @@ EVAL-GRAPH で読み替えたり、実行をやり直したりする意味が無
         (let* ((backend (%jit-resolve-backend jitted))
                (leaves (mapcar #'%jit-leaf-array leaves))
                (avals (mapcar #'%jit-argument-aval leaves))
-               (plan (%jit-pack-plan avals (backend-max-inputs backend)))
-               (key (%jit-cache-key backend avals static-values in-treedef plan))
+               (max-inputs (backend-max-inputs backend))
+               (plan (%jit-pack-plan avals max-inputs))
+               (key (%jit-cache-key backend avals static-values in-treedef max-inputs))
                ;; 実行系に渡す入力。連結するなら dtype ごとのバッファ（issue #242）
-               (inputs (if plan (%jit-pack-leaves plan leaves avals) leaves))
                (input-avals (if plan (%jit-packed-avals plan avals) avals))
+               (inputs (if plan (%jit-pack-leaves plan leaves input-avals) leaves))
                ;; 最後にトレースした graph と戻り値の treedef。コンパイルに失敗したら、
                ;; それが USE-EAGER で評価する graph になる（トレースし直さない）。
                (traced-graph nil)

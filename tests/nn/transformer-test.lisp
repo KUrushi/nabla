@@ -379,7 +379,7 @@ Adam）は、Flax + Optax と 20 ステップの損失、1 ステップ後・5 �
                  (avals (mapcar #'nabla:value-aval leaves))
                  (plan (nabla::%jit-pack-plan avals 161))
                  (start (get-internal-real-time)))
-            (dotimes (i 100) (nabla::%jit-pack-leaves plan leaves avals))
+            (dotimes (i 100) (nabla::%jit-pack-leaves plan leaves (nabla::%jit-packed-avals plan avals)))
             (format t "~&deep transformer: ホストでの連結 ~,3F ms/ステップ（入力 ~D 個 → ~D 個）~%"
                     (* 1000 (/ (%seconds-since start) 100)) (length leaves) (length plan))))
         (%tf-run-steps sync-step model state #'%tf-training-sequences 0 1) ; コンパイル
