@@ -526,7 +526,9 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 | `activation` | `fn`（`:static`。`:relu` `:gelu` `:tanh` `:softmax`） | `(init-activation key fn)` | `(call m x)`。`sequential` の層として活性化関数を並べる |
 | `conv` | `kernel (空間... in/G out)`（HWIO）, `bias (out)`, `strides` / `padding` / `kernel-dilation` / `feature-group-count`（`:static`） | `(init-conv key in out kernel-size &key strides padding kernel-dilation feature-group-count dtype)`。`kernel-size` は空間の次元ごとのリスト（`(3)` で1次元、`(3 3)` で2次元、`(3 3 3)` で3次元。Flax の `nn.Conv` と同じ N 次元）、`strides` と `kernel-dilation` は整数か次元ごとのリスト（既定 1）、`padding` はキーワードの `:same`（既定）/ `:valid` か次元ごとの `((low high) ...)`（Flax の文字列 `"SAME"` は受け付けない）、`feature-group-count` 既定 1。kernel は `lecun_normal`（fan_in = kernel の面積 × in/G）、bias は 0 | `(call m x)`。x は `[N 空間... C]`（2次元なら NHWC）かバッチ軸の無い `[空間... C]`。出力は `conv-general-dilated` + bias |
 
-活性化関数は `nabla.nn` の普通の関数（配列にもトレーサにも使え、`with-tracing` の中でも書ける）: `relu`, `gelu`（Flax の既定の tanh 近似）, `(softmax x &key axis)`, `(log-softmax x &key axis)`（`axis` 既定 -1、負の値は後ろから数える）。コアのプリミティブにはせず、`max` / `exp` / `tanh` / `reduce-*` の合成で書いてある。
+活性化関数は `nabla.nn` の普通の関数（配列にもトレーサにも使え、`with-tracing` の中でも書ける）: `relu`, `gelu`（Flax の既定の tanh 近似）, `(softmax x &key axis)`, `(log-softmax x &key axis)`（`axis` 既定 -1、負の値は後ろから数える）。コアのプリミティブにはせず、`max` / `exp` / `tanh` / `log1p` / `reduce-*` の合成で書いてある。`softmax` / `log-softmax` は、1 つのロジットが他よりずっと大きい（f32 で約 16.6 以上）ときも値と勾配が 0 に丸まらず、勾配の和が 0 のまま（Softmax Collapse を起こさない。JAX・PyTorch の標準の実装は起こす。`docs/numerics.md`）。NaN を含む行と全部が -inf の行は NaN（JAX と同じ）。
+
+損失関数: `(soft-target-cross-entropy logits teacher-logits &key axis)` は教師のロジットの softmax を目標にした交差エントロピー `-sum(softmax(teacher) * log-softmax(logits))`（`axis` を潰した形）。蒸留と KL 正則化に使う。勾配 `softmax(logits) - softmax(teacher)` を、2 つの確率を引かずにロジットの差から計算するので、`logits` が教師に近くても桁を失わず、等しいときはちょうど 0（Softmax Cancellation を起こさない）。教師には勾配を流さない（定数として扱う）。`logits` についての 2 階微分までは正しく、3 階以上は正しくない。教師が -inf の位置は目標の確率 0。正解がクラスの交差エントロピーは `(- (reduce-sum (* y (log-softmax logits))))` と書けば Softmax Collapse を起こさない。
 
 決めたこと:
 
