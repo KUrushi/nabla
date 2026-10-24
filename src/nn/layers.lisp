@@ -348,6 +348,21 @@ _canonicalize_axes）。範囲外は error。"
                                          (/ 1d0 (sqrt features)))))
   (:call (self ids)
    (%embedding-apply ids (embedding-embedding self))))
+;;; embedding-attend（issue #241）。Flax の Embed.attend: query [... features] と embedding の転置 [features vocab]
+;;; の内積で logits [... vocab] を作る。入力の埋め込みと出力の logits で重みを共有する（weight tying）のに使う。
+;;; Flax の attend はモジュールのメソッドだが、nabla の `call` は引きの 1 つなので普通の関数にした。
+;;; 埋め込みへの勾配は、引き（call）と attend の両方から同じ葉に足し合わさる。
+
+(defun embedding-attend (model query)
+  "embedding MODEL の各行と QUERY（[... features]。最後の軸が features）との内積 [... vocab] を返す
+\(Flax の Embed.attend）。引きと同じ重みを使うので、出力の dense と埋め込みを共有できる。"
+  (let ((table (embedding-embedding model))
+        (shape (%shape query)))
+    (unless (and shape (= (car (last shape)) (second (%shape table))))
+      (error "embedding: attend の query は最後の軸の長さが features (~D) でなければならない（query の形 ~S）"
+             (second (%shape table)) shape))
+    (funcall (load-time-value (nabla:with-tracing (query table) (nabla:dot query (nabla:transpose table '(1 0)))))
+             query table)))
 
 ;;; --- dropout ---
 

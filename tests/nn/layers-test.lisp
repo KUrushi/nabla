@@ -132,6 +132,10 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
                    :epsilon 1f-6 :use-scale use-scale :use-bias use-bias
                    :reduction-axes reduction-axes :feature-axes feature-axes))
 
+(defmodule tied-embedding-head (embed)
+  (:call (self ids)
+   (embedding-attend (tied-embedding-head-embed self) (call (tied-embedding-head-embed self) ids))))
+
 (defparameter *layers-extra-case-table*
   (list
    (list "dense-no-bias"
@@ -154,13 +158,21 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
          (nabla:with-tracing (m x) (call m x)) nil)
    (list "layer-norm-feature-axes"
          (lambda (case) (%fx-layer-norm case :reduction-axes '(1 2) :feature-axes '(1 2)))
-         (nabla:with-tracing (m x) (call m x)) nil))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   ;; Embed.attend: 埋め込みの転置との内積（query は [2 5 4]、語彙 7）
+   (list "embedding-attend" (lambda (case) (make-embedding :embedding (%fx-array case "embedding")))
+         (nabla:with-tracing (m x) (embedding-attend m x)) nil)
+   ;; 入力の埋め込みと出力の logits で重みを共有する形（ids → embed → attend）。埋め込みへの勾配は引きと attend の和
+   (list "embedding-tied"
+         (lambda (case) (make-tied-embedding-head :embed (make-embedding :embedding (%fx-array case "embed.embedding"))))
+         (nabla:with-tracing (m x) (call m x)) t))
   "issue #241 で足した Flax との差のケース（*layers-case-table* と同じ形）。フィクスチャの再生成が要る。
 medium からも使う。")
 
 (test layers/extra-cases-match-flax
   "Flax の nn.Dense(use_bias=False) と、nn.LayerNorm の use_scale=False / use_bias=False / reduction_axes /
-feature_axes 付きのフィクスチャで、eager の出力と、パラメータ（あるものだけ）・入力の勾配が一致する。"
+feature_axes 付きのフィクスチャと、nn.Embed の attend（単独と、引きと attend で重みを共有する形）のフィクスチャで、
+eager の出力と、パラメータ（あるものだけ）・入力の勾配が一致する。"
   (dolist (entry *layers-extra-case-table*)
     (destructuring-bind (name make forward ints) entry
       (%check-flax-case name (funcall make (%fx-case name)) forward :ints ints))))
@@ -825,3 +837,67 @@ layer-norm の名前と問題の引数の名前（reduction-axes / feature-axes 
                                (%rand '(2 4) 1)))
               "use-scale" "scale がある")
         "use-scale が偽なのに scale がある")))
+
+;;; --- embedding の attend（issue #241）---
+
+(def-layer-property layers/embedding-attend-is-the-inner-product-with-every-row
+  "embedding-attend の出力 [... 語彙数] は、query [... features] と embedding の各行との内積（先頭の軸は rank 1 から 3、
+f64）。出力の形は query の最後の軸だけが語彙数に変わる。"
+  (seed rank vocab features) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3)
+                                    (uniform-integer :lo 1 :hi 6) (uniform-integer :lo 1 :hi 5))
+  (let* ((module (make-embedding :embedding (%rand (list vocab features) seed :f64)))
+         (table (embedding-embedding module))
+         (shape (append (make-list (1- rank) :initial-element 2) (list features)))
+         (query (%rand shape (+ seed 1) :f64))
+         (logits (embedding-attend module query)))
+    (and (equal (append (butlast shape) (list vocab)) (array-dimensions logits))
+         (loop for row below (floor (array-total-size query) features)
+               always (loop for v below vocab
+                            always (< (abs (- (row-major-aref logits (+ (* row vocab) v))
+                                              (loop for f below features
+                                                    sum (* (row-major-aref query (+ (* row features) f))
+                                                           (aref table v f)))))
+                                      1d-12))))))
+
+(def-layer-property layers/embedding-attend-of-a-looked-up-row-is-a-gram-row
+  "ids を引いた埋め込みを attend すると、各行は Gram 行列 E E^T の ids[i] 行（対称なので、i 番目の ids の行の
+j 番目 = j 番目の語彙の行の ids[i] 番目）。引きと attend が同じ重みを使っていること（重みの共有）を確かめる。"
+  (seed vocab features) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 6)
+                               (uniform-integer :lo 1 :hi 4))
+  (let* ((module (make-embedding :embedding (%rand (list vocab features) seed :f64)))
+         (ids (make-array 3 :element-type '(signed-byte 32)
+                            :initial-contents (list 0 (1- vocab) (mod seed vocab))))
+         (rows (embedding-attend module (call module ids)))
+         (everything (embedding-attend module (embedding-embedding module))))
+    (loop for i below 3
+          always (loop for v below vocab
+                       always (and (< (abs (- (aref rows i v) (aref everything (aref ids i) v))) 1d-12)
+                                   (< (abs (- (aref everything v (aref ids i)) (aref everything (aref ids i) v))) 1d-12))))))
+
+(test layers/embedding-attend-errors-and-gradients
+  "query の最後の軸が features と違う・rank 0 は embedding の名前入りの error。embedding への勾配は ct^T query
+（attend は embedding について線形）、query への勾配は ct embedding。"
+  (let* ((module (make-embedding :embedding (%rand '(5 3) 1)))
+         (query (%rand '(2 4 3) 2))
+         (ct (%rand '(2 4 5) 3))
+         (loss (nabla:with-tracing (m q ct) (nabla:reduce-sum (* (embedding-attend m q) ct))))
+         (grads (funcall (nabla:grad loss :argnums '(0 1)) module query ct)))
+    (flet ((names (thunk) (search "embedding" (or (%error-message thunk) ""))))
+      (is (names (lambda () (embedding-attend module (%rand '(2 4) 1)))) "最後の軸が合わない")
+      (is (names (lambda () (embedding-attend module (make-array '() :element-type 'single-float :initial-element 1.0))))
+          "rank 0"))
+    (let ((table-grad (embedding-embedding (first grads)))
+          (query-grad (second grads)))
+      (is (equal '(5 3) (array-dimensions table-grad)))
+      (is (equal '(2 4 3) (array-dimensions query-grad)))
+      (dotimes (v 5)
+        (dotimes (f 3)
+          (is (< (abs (- (aref table-grad v f)
+                         (loop for b below 2 sum (loop for tt below 4 sum (* (aref ct b tt v) (aref query b tt f))))))
+                 1d-5))))
+      (dotimes (b 2)
+        (dotimes (tt 4)
+          (dotimes (f 3)
+            (is (< (abs (- (aref query-grad b tt f)
+                           (loop for v below 5 sum (* (aref ct b tt v) (aref (embedding-embedding module) v f)))))
+                   1d-5))))))))

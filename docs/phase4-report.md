@@ -106,7 +106,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **PR を 3 本に分けた**（#228 core の `dot-general`、#229 `dense-general` とマスク、#230 attention）。差分が大きすぎるという Advisor の指摘による。
 - スロットは Flax と同じ `query` / `key` / `value` / `out`（`dense-general`）で、チェックポイントのパス名は Flax の `flatten_dict` と一致する。`dense-general` が縮約する入力の軸の数は `:static` の `contract-axes` に持つ（bias の rank の差から推論するのをやめた。Advisor の指摘）。
 - 先頭に任意個のバッチ軸を置ける。スコアは先頭のバッチ軸とヘッドをバッチ軸にした `dot-general`。q は `sqrt(head_dim)` で割ってから dot を取る。隠す位置は select で dtype の有限の最小値にして、max を引く softmax を使う。全部隠した行は一様な重みになり NaN は出ない。bf16 / f16 でマスクを付けると落ちる件が検証で見つかり、直した。
-- **dropout は要素ごとに独立なマスク**（Flax の `broadcast_dropout=False` 相当）。Flax の既定（batch とヘッドでマスクを共有）とは違うが、nabla の PRNG は JAX とビット単位で一致しないので値は比べられない（#241）。
+- **dropout は要素ごとに独立なマスク**（Flax の `broadcast_dropout=False` 相当）。Flax の既定（batch とヘッドでマスクを共有）とは違うが、nabla の PRNG は JAX とビット単位で一致しないので値は比べられない（#241）。**→ #241 で `broadcast-dropout`（既定は Flax と同じ真）を足して解決済み**（統計的な性質で確かめる）。
 
 ### 3.9 conv レイヤー（#207）
 
@@ -180,7 +180,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **#237: scan の emitter の mutation の生き残り**（`while` のブロック引数の型・戻り値の名前の個数・カウンタの型。medium では捕まるが small のテストが無い）。解決済み（`scan/emitted-while-has-one-slot-per-counter-carry-and-ys` と exclusions の4件）。
 - **#239: nn が core の内部シンボル `nabla::%pytree-node-entry` を使っている**。子を返す公開関数（`tree-children`）を export して移した（解消済み）。
 - **#240: gather プリミティブが無く、embedding が one-hot + `dot`**（§3.6）。
-- **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。
+- **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。**解決済み**（`use_bias`・layer-norm の引数・`broadcast_dropout`・`attend` は実装、conv の入力 dilation / CIRCULAR / CAUSAL / 文字列 padding / `conv_transpose` と BatchNorm / GroupNorm は理由を README の「Flax との差」に書いて「やらない」とした。BatchNorm / GroupNorm は #260、`:static` の既定値は #261）。
 - **#242: jit の入力が 161 個を超えるモデルは local-task で学習できない**（葉が約 50 個を超える Adam の学習ステップ）。dtype ごとに葉を連結する案。
 - **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**（下書き済み・未報告。起票はリポジトリのオーナー）。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
 - **#244: チェックポイントは全体をメモリに読む**。測定と判断は [checkpoint-memory.md](checkpoint-memory.md)（load は約 2 倍、save は約 3 倍。フェーズ5には遅延読み込みも世代管理も要らない（測定・判断済み。遅延読み込みは 25M パラメータ超のモデルを扱う段階で #262、fsync は #263）。データパイプラインの状態は配列だけの `defmodule` で往復する）。

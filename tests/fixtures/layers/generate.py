@@ -104,6 +104,25 @@ class Act(nn.Module):
         return nn.log_softmax(x, axis=self.axis)
 
 
+class EmbedAttend:
+    """case() に渡すための薄い包み: nn.Embed.attend を apply で呼ぶ。"""
+
+    def __init__(self, embed):
+        self.embed = embed
+
+    def apply(self, variables, x):
+        return self.embed.apply(variables, x, method=nn.Embed.attend)
+
+
+class TiedEmbed(nn.Module):
+    """ids → 埋め込み → 同じ埋め込みの attend（入力の埋め込みと出力の logits で重みを共有する）。"""
+
+    @nn.compact
+    def __call__(self, ids):
+        embed = nn.Embed(7, 4, name="embed")
+        return embed.attend(embed(ids))
+
+
 def extra_cases(rng):
     """issue #241（Flax との差）で足したケース。"""
     cases = []
@@ -133,6 +152,15 @@ def extra_cases(rng):
                       nn.LayerNorm(epsilon=1e-6, reduction_axes=(1, 2), feature_axes=(1, 2)),
                       {"scale": rnd(rng, 3, 4, scale=0.5, shift=1.0), "bias": rnd(rng, 3, 4)},
                       rnd(rng, 2, 3, 4, scale=2.0, shift=3.0), rnd(rng, 2, 3, 4)))
+
+    # Embed.attend: query [2 5 4] と埋め込み (7 4) の転置の内積 → [2 5 7]
+    cases.append(case("embedding-attend", EmbedAttend(nn.Embed(7, 4)), {"embedding": rnd(rng, 7, 4)},
+                      rnd(rng, 2, 5, 4), rnd(rng, 2, 5, 7)))
+    # 重みの共有: ids → 引き → attend。同じ id の繰り返しを含む（勾配は引きと attend の和）
+    ids = rng.integers(0, 7, size=(2, 5)).astype(np.int32)
+    ids[1, 2] = ids[1, 0]
+    cases.append(case("embedding-tied", TiedEmbed(), {"embed.embedding": rnd(rng, 7, 4)}, ids,
+                      rnd(rng, 2, 5, 7), x_is_float=False))
     return cases
 
 
