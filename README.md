@@ -508,7 +508,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 | `defmodule` | 構造体 `name`・コンストラクタ `make-name`（スロットのキーワード引数。既定値の無いスロットは必須）・アクセサ `name-slot` を作り、PyTree に登録する。`(:init (key . ll) body)` があれば関数 `init-name`、`(:call (self . ll) body)` があれば `call` のメソッド |
 | `call` | モジュールを引数に適用する総称関数 |
 | `split-keys` `(key n)` | PRNG キーから独立な `n` 個のキーのリスト（eager 専用）。サブモジュールの init に分けて渡す |
-| `map-state` `(function tree)` | `:state` スロットの葉すべてに `function` をかけた同じ形の木。`(map-state #'nabla:stop-gradient model)` で状態を `grad` から外す |
+| `map-state` `(function tree)` | `:state` スロットの葉すべてに `function` をかけた同じ形の木。`(map-state #'nabla:stop-gradient model)` を損失の中で呼んで状態を `grad` から外す。リスト・`simple-vector`・`defmodule` に加えて、`defpytree` で登録した別の節（モデルを包む自前の構造体）の中もたどる（#260） |
 | `module-slots` `(name-or-instance)` | 宣言順の `(スロット . 種類)`。チェックポイントのパス名（#206）用 |
 
 - スロットの種類: `:param`（省略時。学習する葉・サブモジュール・そのリスト）、`:state`（学習しない状態。葉だが `map-state` で扱う）、`:static`（層の幅などのハイパーパラメータ。葉でなく treedef の補助データ。`equal` で比べられる値に限る）。葉は `:param` / `:state` の宣言順
@@ -597,7 +597,7 @@ Optax 相当。オプティマイザは `init`（パラメータの木 → 状�
 - **ステップ数は状態の中の rank 0 の `:i32` の配列**（`count`）で、Lisp の整数ではない。jit の入力として渡るので、ステップごとに再コンパイルされず、スケジュールの値も毎ステップ変わる。`update` ごとに 1 増える（`:i32` の最大値で止まる）
 - 状態は `defmodule` の構造体（`adam-state` の `count` `mu` `nu`、`momentum-state` の `trace`、`schedule-state` の `count`）で、スロット名がチェックポイントのパス名になる。状態を持たない変換の状態は `nil`。葉の並びは Optax の `tree_leaves` と同じ
 - 数値は Optax と f32 の許容誤差で一致する（`tests/fixtures/optimizer/`）。cosine は `0.5 (1 + cos(pi t))`、adam のバイアス補正 `1 - b^t` は `-expm1(t log b)` で計算する（Optax の `1 - b^t` を pow なしで書いた同値な式。Optax は `decay**count` を直接書く）
-- **`:state` の葉は更新しない**（issue #260）: `apply-updates` は `map-state` と同じ規則（リスト・`simple-vector`・`defmodule`）で木を歩き、`:state` のスロット（BatchNorm の移動平均など）は `params` の値をそのまま返す。オプティマイザ自体は `:state` を区別せず、その葉の更新量（weight decay を含む）も計算するが、`apply-updates` が捨てる（Optax の `masked` 相当は無い。mu / nu は `:state` の葉の分も持ち、勾配が 0 なら値も 0 のまま）。状態を更新するモジュールの学習ステップは、更新後のモジュール（`value-and-grad` の `:has-aux` の aux）に足す: `(apply-updates new-model updates)`。更新前のモデルに足すと状態は更新されない。勾配の側は `(map-state #'nabla:stop-gradient model)` で `:state` を外しておく（推論モードの BatchNorm は移動平均を順伝播に使うので、外さないと勾配が流れる）
+- **`:state` の葉は更新しない**（issue #260）: `apply-updates` は `map-state` と同じ規則（リスト・`simple-vector`・`defmodule`・`defpytree` で登録した別の節）で木を歩き、`:state` のスロット（BatchNorm の移動平均など）は `params` の値をそのまま返す。オプティマイザ自体は `:state` を区別せず、その葉の更新量（weight decay を含む）も計算するが、`apply-updates` が捨てる（Optax の `masked` 相当は無い。mu / nu は `:state` の葉の分も持ち、勾配が 0 なら値も 0 のまま）。状態を更新するモジュールの学習ステップは、更新後のモジュール（`value-and-grad` の `:has-aux` の aux）に足す: `(apply-updates new-model updates)`。更新前のモデルに足すと状態は更新されない。勾配の側は、損失の中で `(map-state #'nabla:stop-gradient model)` してから呼んで `:state` を外す（`grad` の外でかけても効かない。推論モードの BatchNorm は移動平均を順伝播に使うので、外さないと勾配が流れ、`clip-by-global-norm` の大域ノルムにも入って `:param` の更新量まで変わる）
 - **チェックポイントとの関係**: `chain` の状態はリストなので、パス名は位置で決まる（`1.0.mu.l1.w` の `0` は chain の何番目か）。chain の途中に変換を足すと古いチェックポイントは読めなくなる（`checkpoint-error`）。状態のスロットはすべて `:state` で、`(save-checkpoint path (list model opt-state))` で1ファイルに入る。`optimizer-update` / `apply-updates` に渡す葉は、jit の外ではホストの配列（`device-array` は eager では扱えない。`to-host` で戻す）
 - **`chain` は `check-it:chain` と名前が衝突する**。check-it も使うパッケージ（テストなど）では `(:shadowing-import-from #:nabla.nn #:chain)` を書く
 - 対象は f32 / f64 のパラメータ。スカラー（学習率・バイアス補正）は葉の dtype に合わせて `convert` する。bf16 / f16 は未対応

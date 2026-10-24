@@ -84,3 +84,24 @@ PARAMS の葉そのもの（EQ）で、:param の葉は p + u（f32 の許容誤
                      (make-os-net :inp (%rand-array '(3 2) 1)
                                   :blocks (vector)
                                   :stats (%rand-array '(3) 2))))))
+
+;; defmodule でない defpytree の節（Flax の TrainState のような包み）
+(defstruct (os-box (:constructor make-os-box (inner tag))) inner tag)
+(nabla:defpytree os-box
+  :flatten (lambda (box) (values (list (os-box-inner box)) (os-box-tag box)))
+  :unflatten (lambda (tag children) (make-os-box (first children) tag)))
+
+(test (optimizer-state/apply-updates-and-map-state-look-inside-registered-nodes :suite :nabla.small)
+  "defmodule でない defpytree の節（モデルを包む自前の構造体）の中の :state も、apply-updates は素通しし、
+map-state は関数をかける。補助データ（tag）はそのまま。"
+  (let* ((model (make-os-box (%os-model 1) :keep))
+         (updates (make-os-box (%os-model 50) :keep))
+         (new (apply-updates model updates))
+         (mapped (map-state (lambda (a) (%os-sum a a)) model)))
+    (is (eq :keep (os-box-tag new)))
+    (is (every #'eq (%os-state-leaves (os-box-inner new)) (%os-state-leaves (os-box-inner model))))
+    (is (every #'%f32-close (%os-param-leaves (os-box-inner new))
+               (mapcar #'%os-sum (%os-param-leaves (os-box-inner model)) (%os-param-leaves (os-box-inner updates)))))
+    (is (every #'%f32-close (%os-state-leaves (os-box-inner mapped))
+               (mapcar #'%os-sum (%os-state-leaves (os-box-inner model)) (%os-state-leaves (os-box-inner model)))))
+    (is (every #'eq (%os-param-leaves (os-box-inner mapped)) (%os-param-leaves (os-box-inner model))))))
