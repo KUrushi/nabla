@@ -109,38 +109,57 @@
               (* x (* 0.5d0 (+ 1 (tanh (* 0.7978845608028654d0 (+ x (* 0.044715d0 (* x (* x x)))))))))))
            x))
 
-(defun %softmax-shifted (x axis)
-  "X から AXIS ごとの最大値を引く（最大値には勾配を流さない）。"
+(defun %log-softmax (x axis)
+  "AXIS に沿った log-softmax（AXIS は 0 以上）。Barron ら「A Fix for Softmax and Cross-Entropy」
+の式 (5) を同点に対称にしたもの（docs/numerics.md）。
+
+素朴な式 `(x - max) - log(sum(exp(x - max)))` は、最大値が他より ln(1/eps)（f32 で約 16.6）以上
+大きいと 1 + s（s は他の exp の和）が 1 に丸まり、値も最大値の位置の勾配 p - 1 も 0 になる
+（Softmax Collapse）。そこで最大値がただ1つのときは、その位置を `x - x_max` でなく定数 0 にし、
+正規化項を log1p(s) で作る。最大値の位置の x は差 x_j - x_max だけを通して現れるので、自動微分は
+その勾配を他の勾配の和の符号を変えたものとして計算し、和は 0 のまま残る。
+
+x_max は最大値の集合 M（同点を含む）の平均 peak + sum_M(x - peak)/c で、値は peak と厳密に
+等しく、勾配は M の各要素に 1/c ずつ流れる（stop-gradient にすると上の経路が消えて崩れる）。
+どんな x_max でも log-softmax(x) = (x - x_max) - log(sum(exp(x - x_max))) は恒等式なので、M を
+定数とみなした微分は正しい。同点（c >= 2）では p <= 1/2 で桁落ちしないので、定数 0 の置き換えは
+しない（その代わり log1p の引数は和 - 1）。NaN を含む行・全部が -inf の行は NaN（JAX と同じ）。"
   (funcall (load-time-value
             (nabla:with-tracing (x axis)
-              (- x (%expand (nabla:stop-gradient (nabla:reduce-max x :axes (list axis))) (%shape x) axis))))
+              (let* ((shape (%shape x))
+                     (axes (list axis))
+                     ;; 比較だけに使う最大値（微分しない）
+                     (peak (%expand (nabla:stop-gradient (nabla:reduce-max x :axes axes)) shape axis))
+                     (is-max (= x peak))
+                     (count (nabla:reduce-sum (nabla:convert is-max (nabla:aval-dtype (nabla:value-aval x))) :axes axes))
+                     (x-max (+ peak (/ (%expand (nabla:reduce-sum (nabla:where is-max (- x peak) 0) :axes axes)
+                                                shape axis)
+                                       (%expand count shape axis))))
+                     ;; 最大値がただ1つの位置
+                     (single (= (nabla:where is-max (%expand count shape axis) 0) 1))
+                     (shifted (nabla:where single 0 (- x x-max)))
+                     (rest (nabla:reduce-sum (nabla:where single 0 (exp shifted)) :axes axes)))
+                ;; log(1 + rest)（最大値がただ1つ）か log(rest)（同点）。log1p の前で選ぶ
+                ;; （後で選ぶと、選ばれない log1p(-1) の勾配が inf * 0 = NaN になる）
+                (- shifted (%expand (nabla:log1p (nabla:where (= count 1) rest (- rest 1))) shape axis)))))
            x axis))
 
 (defun %softmax (x axis)
-  "AXIS に沿った softmax（AXIS は 0 以上）。"
-  (funcall (load-time-value
-            (nabla:with-tracing (x axis)
-              (let ((e (exp (%softmax-shifted x axis))))
-                (/ e (%expand (nabla:reduce-sum e :axes (list axis)) (%shape x) axis)))))
-           x axis))
-
-(defun %log-softmax (x axis)
-  "AXIS に沿った log-softmax（AXIS は 0 以上）。"
-  (funcall (load-time-value
-            (nabla:with-tracing (x axis)
-              (let ((shifted (%softmax-shifted x axis)))
-                (- shifted (%expand (log (nabla:reduce-sum (exp shifted) :axes (list axis))) (%shape x) axis)))))
-           x axis))
+  "AXIS に沿った softmax（AXIS は 0 以上）。exp(log-softmax(X))（論文と同じ。最大値の位置の
+勾配も崩れない）。"
+  (funcall (load-time-value (nabla:with-tracing (x axis) (exp (%log-softmax x axis)))) x axis))
 
 (defun softmax (x &key (axis -1))
   "X の AXIS（既定は最後の軸。負の値は後ろから数える）に沿った softmax。最大値を引いてから exp
-するので大きな値でも溢れない（引く最大値には勾配を流さない。softmax はずらしに不変なので結果は同じ）。
-X は配列かトレーサ。AXIS が範囲外なら error。"
+するので大きな値でも溢れず、1 つのロジットが他よりずっと大きくても最大値の位置の勾配が 0 に丸まら
+ない（Softmax Collapse を起こさない。LOG-SOFTMAX と docs/numerics.md）。X は配列かトレーサ。AXIS が
+範囲外なら error。"
   (%softmax x (%resolve-axis axis x)))
 
 (defun log-softmax (x &key (axis -1))
   "X の AXIS に沿った log(softmax(X))（既定は最後の軸）。softmax を取ってから log するより数値が
-安定する。X は配列かトレーサ。AXIS が範囲外なら error。"
+安定する。1 つのロジットが他より ln(1/eps) 以上大きくても値と勾配が 0 に丸まらず、勾配の和は 0 の
+まま（Softmax Collapse を起こさない。docs/numerics.md）。X は配列かトレーサ。AXIS が範囲外なら error。"
   (%log-softmax x (%resolve-axis axis x)))
 
 (defparameter *activations* '(:relu :gelu :tanh :softmax)

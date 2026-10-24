@@ -58,6 +58,7 @@ Google の *Software Engineering at Google* のテストの章の考え方にな
 - フレームワークは FiveAM、値の生成器は check-it。check-it の結果を FiveAM の `is` で受ける（`(is (check-it gen #'prop))`）
 - check-it が見つけた失敗例は、`regression-file` で `tests/regressions/` に保存してコミットする。次回からは毎回その例も実行される
 - 浮動小数点の比較はテキストの一致ではなく、許容誤差つきの数値の一致で行う。`|actual - expected| <= atol + rtol * |expected|` を満たせば一致とする（rtol / atol†）
+- ただし、勾配や確率が丸めで 0 に潰れる不具合（Softmax Collapse など）は、atol の床があると通ってしまう。値が小さくなる領域（精度の崖の向こう側）を見るテストは、成分ごとの相対誤差か、最大の成分に比例した床で比べる。数値の安定性のテストの手順は `nabla-numerics` スキル（`docs/numerics.md`）
 
 | dtype | rtol | atol |
 | --- | --- | --- |

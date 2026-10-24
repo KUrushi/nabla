@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: sigmoid-bce-design
+expected_outcome: |
+  design.md が、sigmoid と BCE-with-logits の値と勾配を、1 との足し引きで小さな量を作らない式（softplus を log1p(exp(-|x|)) で、y = 1 の勾配を -sigmoid(-x) などで）で設計し、精度の崖をまたぐ大きなロジットで勾配が 0 に丸まらないことを、別の式の参照と相対誤差で確かめるテスト計画を含む。

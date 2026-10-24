@@ -38,6 +38,8 @@
    #:sequential #:make-sequential #:init-sequential #:sequential-layers
    #:activation #:make-activation #:init-activation #:activation-fn
    #:relu #:gelu #:softmax #:log-softmax
+   ;; 損失関数（docs/numerics.md）
+   #:soft-target-cross-entropy
    ;; オプティマイザ（issue #205）
    #:defoptimizer
    #:optimizer

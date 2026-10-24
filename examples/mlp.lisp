@@ -4,8 +4,12 @@
 (in-package #:nabla-example-mlp)
 
 ;;; 2層 MLP（dense -> tanh -> dense）の softmax 交差エントロピー。
-;;; ラベル y は one-hot の f32 配列 (N C)。logsumexp は最大値を引いて安定にする
-;;; （最大値は stop-gradient で定数扱い。引いても微分が変わらない）。
+;;; ラベル y は one-hot の f32 配列 (N C)。logsumexp は最大値を引いて溢れないようにする
+;;; （最大値は stop-gradient で定数扱い。数学的には微分が変わらない）。
+;;; 注意: この素朴な式は、正解のロジットが他より約 16.6（f32）以上大きくなると損失と正解の
+;;; 勾配が 0 に丸まる（Softmax Collapse、docs/numerics.md）。フェーズ2のベンチマークと JAX の
+;;; フィクスチャ（JAX の標準の実装と同じ式）のために core だけで書いたまま残している。実際のモデルでは
+;;; nabla/nn の log-softmax（この問題を直したもの）を使うこと。
 (defun make-mlp-loss (n h c)
   (let ((scale (/ -1.0 n)))
     (nb:with-tracing (w1 b1 w2 b2 x y)

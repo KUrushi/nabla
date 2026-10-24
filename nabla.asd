@@ -547,6 +547,7 @@
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
                (:file "tests/pjrt/bench-test")
                (:file "tests/pjrt/integer-test")
+               (:file "tests/pjrt/log1p-expm1-test")
                (:file "tests/pjrt/rng-test")
                (:file "tests/pjrt/prng-test")
                ;; :i1（PRED）の往復と jit の入出力（issue #166）
@@ -566,6 +567,8 @@
                (:file "src/nn/checkpoint")
                ;; 基本レイヤー（issue #204）
                (:file "src/nn/layers")
+               ;; 損失関数（Softmax Cancellation の修正、docs/numerics.md）
+               (:file "src/nn/losses")
                ;; オプティマイザ（Optax 相当、issue #205）
                (:file "src/nn/optimizer")
                ;; dense-general と attention のマスクの部品（issue #208）
@@ -589,6 +592,9 @@
                ;; 基本レイヤー（issue #204）
                (:file "tests/nn/layers-test")
                (:file "tests/nn/layers-iree-test")
+               (:file "tests/nn/softmax-numerics-test")
+               (:file "tests/nn/losses-test")
+               (:file "tests/nn/softmax-numerics-iree-test")
                ;; defmodule のモデルを vmap に渡す（issue #200）
                (:file "tests/nn/module-vmap-test")
                ;; オプティマイザ（Optax 相当、issue #205）

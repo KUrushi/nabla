@@ -44,8 +44,8 @@
 | tanh | `%0 = stablehlo.tanh %a : tensor<4xf32>`（pretty、単項） | `tanh` | ○ | ○ | |
 | sqrt | `%0 = stablehlo.sqrt %a : tensor<4xf32>`（pretty、単項） | `sqrt` | ○ | ○ | 負は NaN（issue #196） |
 | rsqrt | `%0 = stablehlo.rsqrt %a : tensor<4xf32>`（pretty、単項） | `rsqrt` | ○ | ○ | 負は NaN、0 は +無限大 |
-| exponential_minus_one | `%0 = stablehlo.exponential_minus_one %a : tensor<4xf32>`（pretty、単項） | `expm1` | ○ | ○ | exp(x) - 1。x が小さくても桁落ちしない（issue #223）。IREE は f64 の expm1(-0) に +0 を返す（eager と XLA は -0） |
-| log_plus_one | `%0 = stablehlo.log_plus_one %a : tensor<4xf32>`（pretty、単項） | `log1p` | ○ | ○ | log(1 + x)。x < -1 は NaN、x = -1 は -無限大。IREE は f64 の log1p(-0) に +0 を返す（eager と XLA は -0） |
+| exponential_minus_one | `%0 = stablehlo.exponential_minus_one %a : tensor<4xf32>`（pretty、単項） | `expm1` | ○ | ○ | exp(x) - 1。x が小さくても桁落ちしない（issue #223）。IREE は f64 の expm1 を exp(x) - 1 に下ろし（小さな x で桁を失う）、expm1(-0) に +0 を返すので、nabla の f64 の emit はこの op を出さず、Kahan の式（`exponential` → `optimization_barrier` → `subtract` / `log` / `divide` / `select`、`docs/numerics.md`）を出す |
+| log_plus_one | `%0 = stablehlo.log_plus_one %a : tensor<4xf32>`（pretty、単項） | `log1p` | ○ | ○ | log(1 + x)。x < -1 は NaN、x = -1 は -無限大。IREE は f64 の log1p を log(1 + x) に下ろし、log1p(-0) に +0 を返すので、nabla の f64 の emit はこの op を出さず、Goldberg の式（`add` → `optimization_barrier` → `subtract` / `log` / `divide` / `select`）を出す |
 | sine | `%0 = stablehlo.sine %a : tensor<4xf32>`（pretty、単項） | `sin` | ○ | ○ | ±無限大は NaN。IREE 3.11 の f32 は x の絶対値が大きい（40 以上）と範囲縮約が粗く絶対誤差 ~5e-6（例: cos(-67.5) が XLA の 1.076e-4 に対して 1.023e-4）。IREE は f32 / bf16 / f16 で sin(-0) に +0 を返す（eager と XLA は -0）ので、eager と jit で符号付きゼロが違いうる |
 | cosine | `%0 = stablehlo.cosine %a : tensor<4xf32>`（pretty、単項） | `cos` | ○ | ○ | ±無限大は NaN。IREE 3.11 の f32 は sine と同じく x の絶対値が 40 以上で絶対誤差 ~5e-6 |
 | compare | `%0 = stablehlo.compare LT, %a, %b : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>`（pretty。方向は LT LE GT GE EQ NE、`, FLOAT` の compare_type 付きも可。generic form† `"stablehlo.compare"(%a, %b) {comparison_direction = #stablehlo<comparison_direction LT>}` も通る） | `compare` | ○ | ○ | 出力 dtype は nabla の `:i1`（issue #37）。`:i1` は IREE 側では1要素1バイトの `IREE_HAL_ELEMENT_TYPE_BOOL_8` になり、`to-device` / `to-host` が BIT 配列との間で詰め直す（issue #72）。関数の引数・返り値にも使える |
@@ -69,7 +69,7 @@ f16 / f64 は上記すべての op で advisor が確認済み（フィクスチ
 `--iree-input-demote-f64-to-f32=false` を付ける。llvm-cpu では
 exponential / log / tanh（と exponential_minus_one / log_plus_one / sine / cosine）の f64 版が多項式近似されず（`MathTransformPass.cpp`
 の近似・f32 展開は f32 以下の型だけが対象）libm の `exp` / `log` / `tanh`
-の呼び出し（expm1 / log1p / sin / cos も同様。issue #223）として残る。既定の embedded ELF（`-nostdlib -static`）ではこれが
+の呼び出し（sin / cos も同様。issue #223）として残る（f64 の exponential_minus_one / log_plus_one は libm を呼ばず、MLIR の lowering が精度の低い exp(x) - 1 / log(1 + x) にするので、nabla は f64 ではこの2つを出さない。`docs/numerics.md`）。既定の embedded ELF（`-nostdlib -static`）ではこれが
 リンクできずにコンパイルが失敗する（`iree-lld: error: undefined symbol:
 tanh`）。そこで `backend-compile` は、StableHLO のテキストに f64 の
 この7つ（`*libm-f64-ops*`）があるとき（`nabla.iree::%needs-libm-p`）だけ

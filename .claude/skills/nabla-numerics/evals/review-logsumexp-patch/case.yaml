@@ -1,0 +1,6 @@
+schema_version: "1.1"
+name: review-logsumexp-patch
+expected_outcome: |
+  review.md が、最大値の stop-gradient と log(1 + 小さな和) による Softmax Collapse（大きな余裕で値と正解の勾配が 0 に丸まり、勾配の和が 0 でなくなる）を指摘し、log1p と最大値の位置を定数 0 にする直し方か既存の nabla.nn:log-softmax の再利用を示し、テストが [-1, 1) の入力と atol の床のせいでこの不具合を見つけられないことを指摘する。
+context:
+  scaffold_script: place-files.sh

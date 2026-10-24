@@ -1,0 +1,72 @@
+---
+name: nabla-numerics
+description: nabla（Common Lisp × IREE の深層学習ライブラリ）で、浮動小数点の丸めによって値や勾配が壊れないように演算を設計・レビュー・テストする手順。softmax・log-softmax・logsumexp・交差エントロピー・蒸留 / KL の損失・sigmoid・softplus・正規化（layer-norm の分散）・log(1-p) のような特殊関数、新しいプリミティブとその jvp / transpose ルール、stop-gradient や where を使う合成関数を書く・直す・レビューするとき、勾配が 0 や NaN になる・和が 0 にならない・bf16 でだけ壊れる・Adam で学習が急に跳ねるといった症状を調べるときには、ユーザーが「数値の安定性」と言っていなくても必ずこのスキルを使うこと。nabla-testing スキルと一緒に使う。
+---
+
+# nabla の数値の安定性
+
+深層学習の数値のバグは、「値は合っているのに勾配が壊れる」「普通の入力では正しく、ロジットの差が 17 を超えたときだけ 0 になる」という形で現れる。普通のテストの入力と許容誤差では見えず、Adam のような正規化するオプティマイザがその小さな誤りを学習率の大きさに増幅するので、学習が原因不明に崩れる。代表例が softmax の 2 つのバグ（Softmax Collapse と Softmax Cancellation。Barron ら「A Fix for Softmax and Cross-Entropy」）で、nabla はこれを直してある。背景・修正の式・残っている危険の一覧は `docs/numerics.md` を正とする。まずそこを読む。
+
+テストの一般的な決まり（PBT、テストサイズ、mutation testing）は `nabla-testing` スキル。このスキルは、その上に数値の安定性に固有の考え方を足す。
+
+## 作業の流れ
+
+1. **小さな量を見つける**: 式の中で、真の値が 1 や他の項よりずっと小さくなりうる量を挙げる（1 − p、p − 1、log(1 + x) の x、近い 2 数の差、和の中の 1 項以外）。そこが壊れる場所の候補
+2. **値の式を読む**: その小さな量を 1 や大きな値との足し引き（absorption† / catastrophic cancellation†）で作っていないか。作っていれば、小さな量を直接作る式に書き換える（下の表）
+3. **逆伝播の式を読む**: nabla の `grad` は各プリミティブの jvp / transpose ルールを合成する。合成関数の各入力に集まる余接線の和を書き出し、大きな項どうしの打ち消し（`−1 + 1` など）がないか確かめる。値が正しくても勾配が壊れることがある（Collapse の本体はこちら）
+4. **端の値を決める**: −inf（マスク）、+inf、NaN、全部が −inf の行、同点、長さ 1 の軸、bf16 / f16 での振る舞いを決め、docstring に書く。where の選ばれない側の微分が NaN を作らないか見る（double where†）
+5. **テストを先に書く**: 下の「テストの性質」を、精度の崖の向こう側を生成する入力で書き、**素朴な実装で落ちることを確かめてから** 実装する
+6. **jit でも確かめる**: IREE と PJRT で jit した結果も参照と比べる（medium）。バックエンドの数学関数の近似や代数的な簡約で結果が変わりうる。**全 dtype の小さな入力** で見る（IREE の llvm-cpu は f64 の `log_plus_one` を `log(1 + x)` に下ろしていた。f32 だけのテストでは見えない）
+7. **docs/numerics.md を更新する**: 新しく直した箇所・見つけた危険を「残っている危険の一覧」に足すか消す
+
+## 書き換えの表
+
+| 危ない式 | 小さな量を直接作る式 | nabla での例 |
+| --- | --- | --- |
+| `log(1 + x)`、`log(sum)`（sum ≈ 1） | `log1p(x)`（`nabla:log1p`） | log-softmax の正規化項 `log1p(最大値以外の exp の和)` |
+| `exp(x) − 1` | `expm1(x)`（`nabla:expm1`） | 蒸留の `u = p expm1(s)` |
+| `log(1 − p)` | `log1p(−p)` | |
+| `1 − p_max`、`p_max − 1` | 最大値以外の和 `Σ_{j≠max} p_j` | log-softmax の最大値の位置を定数 0 にする |
+| `Σ − x_k`（x_k が和の大部分） | x_k を除いた和を直接 | |
+| `q − p`（近い確率） | ロジットの差から対数空間で | `soft-target-cross-entropy` |
+| `x − stop-gradient(max)` で平行移動 | 平行移動の量を値に現れない形に（最大値の位置は定数 0、勾配は差 x_j − x_max だけを通す） | `%log-softmax`（`src/nn/layers.lisp`） |
+| `where(c, log(x), y)`（x が 0 になりうる） | `log(where(c, x, 1))` を選んでから | `log1p(where(count = 1, rest, rest − 1))` |
+| `x − sg(x)` で値 0・勾配 1 の項（x が ±inf になりうる） | 有限でない位置は 0 にする | `soft-target-cross-entropy` の摂動 |
+| mean(x²) − mean(x)²（分散） | 2 パスの分散 mean((x − mean)²) | layer-norm は Flax と合わせるため速い分散のまま（`docs/numerics.md` 5 節） |
+
+stop-gradient で勾配を差し替える（値は `sg(f)`、勾配は `sg(g) · (x − sg(x))`）と 2 階微分が 0 になる。2 階まで正しくしたいときは、値が 0・1 階微分も 0 で 2 階微分がヘッセ行列になる項（`(q − sg(q))(x − sg(x)) / 2` など）を足し、何階まで正しいかを docstring に書く。
+
+## テストの性質
+
+例は `tests/nn/softmax-numerics-test.lisp`、`tests/nn/losses-test.lisp`、`tests/nn/softmax-numerics-iree-test.lisp`。
+
+- **崖の向こう側の入力**: 余裕（最大値と他の差など、小さな量の大きさを決める量）を、精度の崖 ln(1/eps)（bf16 5.5、f32 16.6、f64 36.7）をまたいでアンダーフローの近く（f32 で約 80）まで生成する。bf16 は 6〜30 を見る
+- **別の式の高精度の参照**: 参照は実装と別のコード（double のループ、有理数）で、参照自身も小さな量を直接作る式で書く（素朴な double は f64 の崖 36.7 を越えると同じバグを持つ）
+- **成分ごとの相対誤差**: `allclose` の atol の床は、0 に潰れた勾配（期待 1e-9、実際 0）を通してしまう。床を置かないか、最大の成分に比例させる
+- **構造の不変量**: 平行移動に不変な関数の勾配の和が 0（|Σ g| ≤ 4 n eps Σ |g|）、置換に対して対称、同点の位置の勾配が等しい、ヘッセ行列とベクトルの積が参照と一致
+- **ちょうど 0**: 数学的にちょうど 0 の勾配（生徒 = 教師の蒸留損失）は `zerop` で比べる。許容誤差で比べると雑音の床（Cancellation）を見逃す
+- **2 階微分**: grad の grad も崖の向こう側で参照と比べる
+- **端の値**: −inf・NaN・全部 −inf の行・長さ 1 の軸で、docstring どおりになり、勝手に NaN を出さない
+- **素朴な実装で落ちる**: 書いたテストを、修正前の実装（`git show HEAD:<file>` に一時的に戻す）か素朴な式に差し替えて走らせ、落ちることを確かめる。落ちないテストは崖の向こう側を見ていない。確かめた後は、check-it が書いた `tests/regressions/` の変更を戻す
+
+## レビューの観点
+
+浮動小数点の式を含む変更をレビューするときは、次を順に確かめる。
+
+1. 小さな量（作業の流れの 1）が、値の式でも逆伝播の式でも直接作られているか
+2. `stop-gradient` の使い方: 平行移動・正規化の量に sg をかけて、逆伝播で打ち消しを作っていないか
+3. `where` の両側: 選ばれない側の値と微分が inf / NaN にならないか
+4. 順伝播と逆伝播（あるいは比べる 2 つの量）が同じ式で作られているか
+5. 低精度: bf16 / f16 の和は `reduce-sum`（f32 で累積する）を通っているか。dtype ごとの崖をテストが見ているか
+6. テストが崖の向こう側を生成し、atol の床で 0 を見逃していないか
+7. `docs/numerics.md` の一覧が更新されているか
+
+## よくある失敗
+
+- 「最大値は stop-gradient で定数扱い。引いても微分は変わらない」は数学的には正しく、数値的には Collapse の原因（`examples/mlp.lisp` のコメント）
+- argmax の one-hot を host の iota 配列で作ると、`broadcast-in-dim` が eager に評価されて行列の大きさの定数が StableHLO に埋め込まれる。nabla の log-softmax は同点に対称な平均（`peak + Σ_M (x − peak)/c`。値は peak と厳密に等しい）で避けている
+- 論文の式は前提（p > 0 の行など）を持つことがある。端の値のテストが前提の外を突く（`soft-target-cross-entropy` の Q_u の補正はテストが見つけた）
+- 正確な式を StableHLO に出しても、バックエンドが代数的に簡約して素朴な式に戻すことがある（XLA は `(x + 1) - 1` を x に畳む）。丸めに意味のある中間値は `stablehlo.optimization_barrier` に通す（f64 の log1p / expm1 の emit、`src/primitives/unary.lisp`）
+- `|x|` を `max(x, (- x))` で作ると、`max` の jvp が同点を 0.5 / 0.5 に分けるので x = 0 での微分が 0 になる（sigmoid の勾配 1/4 が 0 になる）。符号で分けるなら `where(x >= 0, x, -x)` を使う
+- 参照の計算も崖を越える。σ(x) − y や 1 − p を double で引けば、参照自身が桁を失う。参照は小さな量を直接作る式か有理数で書く
+- `and` / `or` は with-tracing の中で `:i1` の論理積にならない（`tracing-error`）。条件の組み合わせは where の入れ子か、数値の比較で書く
