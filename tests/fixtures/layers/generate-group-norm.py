@@ -6,7 +6,7 @@ loss = sum(out * ct) の出力と、パラメータ・入力についての勾�
 case / rnd をそのまま使うので、同じディレクトリに置く。
 
 各ケースの :config は nabla 側が group-norm を作るための設定（:num-groups :group-size :use-scale
-:use-bias。Lisp の値で、指定しないものは nil）。入力は平均 3・標準偏差 2 にずらす（generate.py の
+:use-bias :epsilon。Lisp の値で、指定しないものは nil）。入力は平均 3・標準偏差 2 にずらす（generate.py の
 layer-norm と同じ。速い分散の桁落ちの分だけ許容誤差を緩める。group-norm-test.lisp）。
 
 注: JAX / Flax は Linux の Rosetta VM では import できないので、macOS arm64 の venv で生成する（issue #241）。
@@ -51,7 +51,7 @@ def group_norm_case(rng, name, x_shape, num_groups=32, group_size=None, use_scal
     ct = rnd(rng, *x_shape)
     text = case(name, module, params, x, ct)
     config = (f":config (:num-groups {lisp(num_groups)} :group-size {lisp(group_size)} "
-              f":use-scale {lisp(use_scale)} :use-bias {lisp(use_bias)})")
+              f":use-scale {lisp(use_scale)} :use-bias {lisp(use_bias)} :epsilon 1f-6)")
     return text[:-1] + " " + config + ")"
 
 
@@ -69,6 +69,11 @@ def main():
         # 群が 1 つ（バッチ軸以外の全部で正規化）と、群の大きさが 1（instance norm）
         group_norm_case(rng, "one-group", (2, 3, 4), num_groups=1),
         group_norm_case(rng, "instance", (2, 5, 4), num_groups=None, group_size=1),
+        # 大きさ 1 の軸（空間の軸が 1 × 1）、既定の num_groups=32（C = 64）、要素が 1 つの群（rank 2・group_size 1。
+        # 出力も勾配も 0）
+        group_norm_case(rng, "unit-axes", (1, 1, 1, 8), num_groups=4),
+        group_norm_case(rng, "default-32-groups", (2, 2, 64)),
+        group_norm_case(rng, "single-element-groups", (3, 4), num_groups=None, group_size=1),
         group_norm_case(rng, "no-scale", (2, 3, 6), num_groups=3, use_scale=False),
         group_norm_case(rng, "no-bias", (2, 3, 6), num_groups=3, use_bias=False),
         group_norm_case(rng, "no-scale-no-bias", (2, 3, 6), num_groups=3, use_scale=False, use_bias=False),

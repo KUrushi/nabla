@@ -29,9 +29,9 @@
 
 (defun %gn-fx-model (case)
   "ケースの :config とパラメータから group-norm を作る。"
-  (destructuring-bind (&key num-groups group-size use-scale use-bias) (getf case :config)
+  (destructuring-bind (&key num-groups group-size use-scale use-bias epsilon) (getf case :config)
     (make-group-norm :scale (and use-scale (%fx-array case "scale")) :bias (and use-bias (%fx-array case "bias"))
-                     :num-groups num-groups :group-size group-size :epsilon 1f-6
+                     :num-groups num-groups :group-size group-size :epsilon epsilon
                      :use-scale use-scale :use-bias use-bias)))
 
 (defparameter *gn-tolerance* '(:rtol 1d-4 :atol 1d-5)
@@ -130,9 +130,10 @@ epsilon 1e-6（f64 は 1d-6）。use-scale / use-bias が偽なら対応する�
 
 (def-group-norm-property group-norm/matches-the-loop-reference
   "rank 1〜4 の入力、任意の群の数・群の大きさで、scale 1・bias 0 の group-norm は参照実装と一致する（f64 は
-1e-9、f32 は layer-norm と同じ速い分散の桁落ちの分だけ緩めた 1e-4 / 1e-5）。f32 は、分散が 0.05 未満の群を含む
-入力では比べない（Flax と同じ速い分散 E[x^2] - E[x]^2 の桁落ちで、要素の少ない群の出力の相対誤差が 1e-4 を
-超える。仕様。layers/layer-norm-normalizes-each-row と同じ扱い）。"
+1e-9、f32 は layer-norm と同じ速い分散の桁落ちの分だけ緩めた 1e-4 / 1e-5）。f32 は、分散が 0 より大きく 1e-2
+未満の群を含む入力では比べない（Flax と同じ速い分散 E[x^2] - E[x]^2 の分散の誤差は数 ulp × E[x^2] ≈ 3e-8 で、
+出力の相対誤差は約 0.5 × 3e-8 / var。3000 試行の実測で、失敗は分散 1e-3 未満の群を含む入力だけ。分散 0 ちょうど
+（要素が 1 つの群など）は出力が 0 で比べられる）。"
   (seed rank dims groups size)
   (let* ((shape (%gn-shape dims rank (* groups size)))
          (x64 (%rand shape seed :f64))
@@ -142,7 +143,7 @@ epsilon 1e-6（f64 は 1d-6）。use-scale / use-bias が偽なら対応する�
     (and (allclose (call (init-group-norm (nabla:prng-key 0) (* groups size) :num-groups groups :dtype :f64) x64)
                    (%ref-group-norm x64 size 1d-6) :dtype :f64 :rtol 1d-9 :atol 1d-9)
          (multiple-value-bind (expected min-variance) (%ref-group-norm x32-as-64 size 1d-6)
-           (or (< min-variance 0.05d0)
+           (or (< 0 min-variance 1d-2)
                (allclose (call (init-group-norm (nabla:prng-key 0) (* groups size) :num-groups groups) x32)
                          expected :rtol 1d-4 :atol 1d-5))))))
 

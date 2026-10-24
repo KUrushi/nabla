@@ -36,9 +36,11 @@
   (or num-groups (floor channels group-size)))
 
 (defun %group-norm-reshape (x shape)
+  "X（配列かトレーサ）を形 SHAPE に reshape する。"
   (funcall (load-time-value (nabla:with-tracing (x shape) (nabla:reshape x shape))) x shape))
 
 (defun %group-norm-apply (x scale bias num-groups group-size epsilon use-scale use-bias)
+  "group-norm の call の本体。X を群ごとに正規化し、SCALE / BIAS（NIL ならかけない・足さない）を適用する。"
   (%check-optional-slot "group-norm" "use-scale" use-scale "scale" scale)
   (%check-optional-slot "group-norm" "use-bias" use-bias "bias" bias)
   (let* ((shape (%shape x))
@@ -51,6 +53,7 @@
            ;; [... 群の数 群の大きさ] の軸で、先頭（バッチ）と群の軸を残し、残りを縮約する（rank 1 は群の軸だけ残す）
            (group-shape (append (butlast shape) (list groups size)))
            (kept-axes (if (= rank 1) '(0) (list 0 (1- rank))))
+           ;; group-shape は rank + 1 軸なので、軸の添字は 0 から rank まで
            (reduce-axes (loop for axis to rank unless (member axis kept-axes) collect axis))
            (count (reduce #'* (mapcar (lambda (axis) (nth axis group-shape)) reduce-axes))))
       (dolist (parameter (list (cons "scale" scale) (cons "bias" bias)))
@@ -72,6 +75,7 @@
               centered))))))
 
 (defun %init-group-norm (features num-groups group-size dtype epsilon use-scale use-bias)
+  "init-group-norm の引数を確かめ、make-group-norm に渡すキーワード引数のリストを返す。"
   (unless (and (integerp features) (plusp features))
     (error "group-norm: features（チャンネル数）は正の整数でなければならない: ~S" features))
   (unless (and (realp epsilon) (plusp epsilon))
