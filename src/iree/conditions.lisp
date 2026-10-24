@@ -28,8 +28,8 @@ NABLA:BACKEND-ERROR の subtype（issue #9 の backend プロトコル）。"))
              (iree-too-many-inputs-limit condition))))
   (:documentation
    "local-task device で、入力が COUNT 個（LIMIT を超える）の関数を INVOKE しようとした
-ときに signal する。IREE 3.11 の local-task ドライバは入力が 162 個以上だと
-iree_task_call_initialize で NULL を参照してプロセスごと落ちるため、呼ぶ前に拒否する。"))
+ときに signal する。IREE 3.11 の local-task ドライバは入力が 162 個以上（中間の値を持つ形は
+161 個）だと iree_task_call_initialize で NULL を参照してプロセスごと落ちるため、呼ぶ前に拒否する。"))
 
 (define-condition iree-library-not-found (iree-error)
   ((path :initarg :path :reader iree-library-not-found-path)
