@@ -178,6 +178,7 @@
    #:tree-unflatten
    #:tree-leaves
    #:tree-structure
+   #:tree-children
    #:tree-map
    #:treedef
    #:treedef-num-leaves

@@ -357,3 +357,29 @@
                                (fiveam:get-test symbol))
                        collect symbol)))
     (fiveam:run! names)))
+
+(test (nn/sources/do-not-reference-core-internals :suite :nabla.medium)
+  "src/nn/ 以下の .lisp（再帰。checkpoint.lisp を含む1件以上）には、core の内部シンボルを
+参照する NABLA:: と NB:: が一度も現れない（nn は core の公開 API だけを使う。issue #239。
+コメントや docstring の言及も数える）。import-from #:nabla は禁止文字列に加えない
+（nn は :use で公開シンボルだけを取り込むため、内部の取り込みは :: の形でしか書けない）。"
+  (let ((offending nil)
+        (paths (directory (merge-pathnames "**/*.lisp"
+                                           (asdf:system-relative-pathname "nabla/nn" "src/nn/")))))
+    (is (find "checkpoint" paths :key #'pathname-name :test #'string=))
+    (dolist (path paths)
+      (with-open-file (stream path :direction :input :external-format :utf-8)
+        (let* ((text (make-string (file-length stream)))
+               (text (string-downcase (subseq text 0 (read-sequence text stream)))))
+          (when (or (search "nabla::" text) (search "nb::" text))
+            (push path offending)))))
+    (is (null offending) "core の内部シンボルを参照する nn のファイル: ~S" offending)))
+
+(test (nn/tree-children-of-a-module-lists-non-static-slots-in-declaration-order :suite :nabla.small)
+  "defmodule のインスタンスに tree-children を当てると、子は :param / :state のスロット値の
+宣言順で、:static のスロットは含まない。節（node-p は真）。"
+  (let* ((layer (make-ck-layer :w 1 :b 2 :act :relu)))
+    (multiple-value-bind (children aux node-p) (nabla:tree-children layer)
+      (declare (ignore aux))
+      (is (equal '(1 2) children))
+      (is (eq t node-p)))))
