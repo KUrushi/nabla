@@ -70,9 +70,26 @@ PATH は READ-SAFETENSORS で読んでいたファイル、DETAIL は説明の�
 
 ;;; --- バイト列と配列の変換 ---
 
+(defun %octet-length (vector)
+  "特殊化した 1 次元のベクタ VECTOR の記憶域のバイト数。"
+  (* (length vector)
+     (etypecase vector
+       ((simple-array (unsigned-byte 8) (*)) 1)
+       ((simple-array (unsigned-byte 16) (*)) 2)
+       ((or (simple-array single-float (*)) (simple-array (signed-byte 32) (*))
+            (simple-array (unsigned-byte 32) (*)))
+        4)
+       ((or (simple-array double-float (*)) (simple-array (unsigned-byte 64) (*))) 8))))
+
 (defun %copy-octets (from from-start to to-start count)
   "FROM（特殊化したベクタ）の FROM-START 番目のバイトから COUNT バイトを、
-TO の TO-START 番目のバイトへコピーする（両方とも要素のバイト位置ではなくバイト単位）。"
+TO の TO-START 番目のバイトへコピーする（両方とも要素のバイト位置ではなくバイト単位）。
+コピー自体は範囲を検査しないので、範囲外ならコピーする前に error にする（記憶域を壊さない）。"
+  (unless (and (<= 0 from-start) (<= 0 to-start) (<= 0 count)
+               (<= (+ from-start count) (%octet-length from))
+               (<= (+ to-start count) (%octet-length to)))
+    (error "%copy-octets: 範囲外のコピー（~D バイト目から ~D バイトを ~D バイトの配列へ ~D バイト目から）"
+           from-start count (%octet-length to) to-start))
   (when (plusp count)
     (sb-sys:with-pinned-objects (from to)
       (sb-kernel:system-area-ub8-copy (sb-sys:vector-sap from) from-start
