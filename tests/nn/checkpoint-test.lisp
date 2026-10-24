@@ -178,6 +178,66 @@
              (equal (sort (copy-list metadata) #'string< :key #'car)
                     (sort (copy-list loaded-metadata) #'string< :key #'car)))))))
 
+;;; --- データパイプラインの状態（issue #244） ---
+;;; エポック数・バッチ内の位置は rank 0 の :i32 配列、シャッフルの PRNG キーは prng-key が作る
+;;; :u32 (2) の配列、小さな配列（バッファの先頭など）。Lisp の整数は葉にできないので配列で持つ。
+
+(defmodule ck-pipeline ((epoch :state) (position :state) (shuffle-key :state) (buffer :state)))
+
+(defun ck-i32-scalar (value)
+  (make-array nil :element-type '(signed-byte 32) :initial-element value))
+
+(defun ck-random-pipeline (state)
+  "STATE から決まるパイプラインの状態。整数は符号付き32ビットの端（最小・最大）も取り、
+キーは符号付き・符号なし64ビットのシードから作る。"
+  (flet ((i32 ()
+           (ck-i32-scalar (ecase (random 4 state)
+                            (0 (- (expt 2 31))) (1 (1- (expt 2 31)))
+                            ((2 3) (- (random (expt 2 32) state) (expt 2 31)))))))
+    (make-ck-pipeline
+     :epoch (i32) :position (i32)
+     :shuffle-key (nabla:prng-key (- (random (expt 2 64) state) (random (expt 2 63) state)))
+     :buffer (random-array-of (nth (random 3 state) '(:f32 :i32 :u32)) (list (random 5 state)) state))))
+
+(def-ck-property checkpoint/pipeline-state-in-the-train-state-tree-round-trips :nabla.medium
+  "モデル + オプティマイザ状態 + データパイプラインの状態(整数・PRNG キー・小さな配列)を1つの木に入れて
+save → load すると、全部がビット列まで戻り、復元したキーは元のキーと同じ split の結果を作る。"
+  (seed depth)
+  (let* ((state (sb-ext:seed-random-state seed))
+         (model (ck-random-tree state depth))
+         (pipeline (ck-random-pipeline state))
+         (tree (make-ck-train-state :params model :opt (list (ck-random-tree state depth) pipeline)))
+         (dtypes (ck-dtype-map tree seed)))
+    (with-checkpoint-file (path)
+      (save-checkpoint path tree :dtypes dtypes)
+      (let* ((back (load-checkpoint path tree :dtypes dtypes))
+             (back-pipeline (second (ck-train-state-opt back))))
+        (and (nabla:treedef= (nabla:tree-structure tree) (nabla:tree-structure back))
+             (ck-same-leaves-p tree back)
+             (same-array-p (ck-pipeline-epoch pipeline) (ck-pipeline-epoch back-pipeline))
+             (same-array-p (ck-pipeline-shuffle-key pipeline) (ck-pipeline-shuffle-key back-pipeline))
+             (eq :u32 (nabla:array-dtype (ck-pipeline-shuffle-key back-pipeline)))
+             (equal '(2) (array-dimensions (ck-pipeline-shuffle-key back-pipeline)))
+             (equal nil (array-dimensions (ck-pipeline-position back-pipeline)))
+             (same-array-p (nabla:split (ck-pipeline-shuffle-key pipeline) 3)
+                           (nabla:split (ck-pipeline-shuffle-key back-pipeline) 3)))))))
+
+(test (checkpoint/pipeline-state-paths-are-slot-names :suite :nabla.small)
+  (is (equal '("epoch" "position" "shuffle-key" "buffer")
+             (tree-paths (ck-random-pipeline (sb-ext:seed-random-state 1))))))
+
+(test (checkpoint/lisp-integers-are-not-leaves :suite :nabla.medium)
+  "データパイプラインの状態は配列で持つ。Lisp の整数を葉にすると :bad-leaf（保存もひな形も）。"
+  (with-checkpoint-file (path)
+    (is (eq :bad-leaf (ck-error-reason
+                       (lambda () (save-checkpoint path (make-ck-pipeline :epoch 3 :position (ck-i32-scalar 0)
+                                                                          :shuffle-key (nabla:prng-key 0)
+                                                                          :buffer (ck-f32)))))))
+    (save-checkpoint path (ck-random-pipeline (sb-ext:seed-random-state 2)))
+    (is (eq :bad-leaf (ck-error-reason
+                       (lambda () (load-checkpoint path (make-ck-pipeline :epoch 3 :position 0
+                                                                          :shuffle-key 0 :buffer 0))))))))
+
 (defun ck-perturb-leaf (tree index kind)
   "TREE の INDEX 番目の葉を、KIND（:shape か :dtype）でひな形として食い違うものにする。"
   (let ((i -1))
@@ -357,3 +417,29 @@
                                (fiveam:get-test symbol))
                        collect symbol)))
     (fiveam:run! names)))
+
+(test (nn/sources/do-not-reference-core-internals :suite :nabla.medium)
+  "src/nn/ 以下の .lisp（再帰。checkpoint.lisp を含む1件以上）には、core の内部シンボルを
+参照する NABLA:: と NB:: が一度も現れない（nn は core の公開 API だけを使う。issue #239。
+コメントや docstring の言及も数える）。import-from #:nabla は禁止文字列に加えない
+（nn は :use で公開シンボルだけを取り込むため、内部の取り込みは :: の形でしか書けない）。"
+  (let ((offending nil)
+        (paths (directory (merge-pathnames "**/*.lisp"
+                                           (asdf:system-relative-pathname "nabla/nn" "src/nn/")))))
+    (is (find "checkpoint" paths :key #'pathname-name :test #'string=))
+    (dolist (path paths)
+      (with-open-file (stream path :direction :input :external-format :utf-8)
+        (let* ((text (make-string (file-length stream)))
+               (text (string-downcase (subseq text 0 (read-sequence text stream)))))
+          (when (or (search "nabla::" text) (search "nb::" text))
+            (push path offending)))))
+    (is (null offending) "core の内部シンボルを参照する nn のファイル: ~S" offending)))
+
+(test (nn/tree-children-of-a-module-lists-non-static-slots-in-declaration-order :suite :nabla.small)
+  "defmodule のインスタンスに tree-children を当てると、子は :param / :state のスロット値の
+宣言順で、:static のスロットは含まない。節（node-p は真）。"
+  (let* ((layer (make-ck-layer :w 1 :b 2 :act :relu)))
+    (multiple-value-bind (children aux node-p) (nabla:tree-children layer)
+      (declare (ignore aux))
+      (is (equal '(1 2) children))
+      (is (eq t node-p)))))

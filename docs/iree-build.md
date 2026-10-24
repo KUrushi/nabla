@@ -423,7 +423,7 @@ IREE 3.11.0 のバグ（issue #73、#165、#199、#203、#220、#226、#243。�
 NABLA_IREE_HOME=<新しい版のインストール先> scripts/check-iree-repros.sh --runs 20
 ```
 
-`docs/iree-repros/` の各ファイルを `--runs` 回コンパイルし、1行ずつ判定を出す。終了コードは、記録どおり（バグは全部再現し、回避策の形は全部通る）なら 0、どれか違えば 1。IREE 3.11.0 での出力（複数の環境で取った行の合成。4・5 の `error-bug` の行は Rosetta の VM で `--runs 2` で取った。`run-bug` と `race-bug` は Rosetta の VM では再現しない）:
+`docs/iree-repros/` の各ファイルを `--runs` 回コンパイルし、1行ずつ判定を出す（`--candidates` を付けると、nabla の emit の改善の候補の race 用の形も走らせて不一致の回数を出す。判定と終了コードは変わらない。issue #233、docs/iree-upstream-bugs.md の 7）。終了コードは、記録どおり（バグは全部再現し、回避策の形は全部通る）なら 0、どれか違えば 1。IREE 3.11.0 での出力（複数の環境で取った行の合成。4・5 の `error-bug` の行は Rosetta の VM で `--runs 2` で取った。`run-bug` と `race-bug` は Rosetta の VM では再現しない）:
 
 ```
 bug      dot-general-k0.mlir                      REPRODUCED      crashes=20/20 exit-codes=136
