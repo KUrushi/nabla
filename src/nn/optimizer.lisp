@@ -147,8 +147,8 @@ BODY は省略可の docstring と次の2つの節:
 
 (defun %apply-updates-walk (params updates)
   "MAP-STATE と同じ規則（リスト・simple-vector・defmodule をたどる）で PARAMS と UPDATES を並べて歩き、
-:state のスロットの部分木は PARAMS の値をそのまま返し、それ以外の葉は足す。defpytree で登録した別の節は
-中に :state を持たないものとして TREE-MAP で足す。構造が同じことは呼び出し側が確かめてある。"
+:state のスロットの部分木は PARAMS の値をそのまま返し、それ以外の葉は足す。defpytree で登録した別の節も
+子ごとにたどる（MAP-STATE と同じ）。構造が同じことは呼び出し側が確かめてある。"
   (cond ((listp params) (mapcar #'%apply-updates-walk params updates))
         ((simple-vector-p params) (map 'simple-vector #'%apply-updates-walk params updates))
         ((%module-entry params)
@@ -158,6 +158,8 @@ BODY は省略可の docstring と次の2つの節:
                               (case kind
                                 (:param (%apply-updates-walk value (slot-value updates name)))
                                 (t value))))))
+        ((nth-value 2 (nabla:tree-children params))
+         (%map-registered-children #'%apply-updates-walk params updates))
         (t (%add-leaves params updates))))
 
 (defun apply-updates (params updates)
@@ -166,7 +168,7 @@ BODY は省略可の docstring と次の2つの節:
 
 defmodule の :state のスロットの葉（BatchNorm の移動平均など。issue #260）には足さず、PARAMS の値を
 そのまま返す（学習しない状態をオプティマイザの更新量・weight decay で壊さない）。:state をたどる規則は
-MAP-STATE と同じ（リスト・simple-vector・defmodule）。状態を更新するモジュールの学習ステップでは、
+MAP-STATE と同じ（リスト・simple-vector・defmodule・defpytree で登録した別の節）。状態を更新するモジュールの学習ステップでは、
 更新後のモジュール（value-and-grad の :has-aux の aux）に足す: (apply-updates new-model updates)。
 更新前のモデルに足すと、状態は更新されないまま残る。UPDATES の構造が PARAMS と違えば
 pytree-structure-mismatch。"
