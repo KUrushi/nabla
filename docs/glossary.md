@@ -201,6 +201,12 @@ pretty form を出力する。
 **Adam / AdamW / バイアス補正**
 : 勾配の指数移動平均 `mu`（1次モーメント）と、勾配の二乗の指数移動平均 `nu`（2次モーメント）で更新量 `mu / (√nu + ε)` を作る最適化手法。`mu`・`nu` は0から始めるので最初の数ステップは小さく偏る。その分を `1 - b^t`（`b` は減衰率、`t` はステップ数）で割って直すのがバイアス補正。AdamW は重み減衰（weight decay）を勾配に混ぜず、Adam の更新量に `wd × パラメータ` として足す（decoupled weight decay）。
 
+**batch normalization（BatchNorm）/ 移動平均（running average）**
+: 各特徴を、ミニバッチ（とバッチ以外の空間の軸）の平均と分散で正規化してから、学習する scale と bias をかける正規化。推論ではミニバッチの統計の代わりに、学習中に `ra ← momentum × ra + (1 − momentum) × バッチの統計` で更新し続けた指数移動平均（running average。Flax の `batch_stats`）を使う。移動平均は学習しない状態なので、nabla では `defmodule` の `:state` に持ち、`call` が更新後のモジュールを返す（`nabla.nn:batch-norm`、issue #260）。
+
+**has_aux（補助出力）**
+: `grad` の対象の関数が、損失と一緒に返す「微分しない値」。JAX の `grad(f, has_aux=True)`。BatchNorm の更新後の状態や、ログに出す精度のような値を、順伝播を2回計算せずに取り出すのに使う（nabla の `grad` / `value-and-grad` の `:has-aux`）。
+
 **学習率スケジュール（learning rate schedule）**
 : ステップ数 `count` から学習率を返す関数。一定（constant）、直線で動かす（linear。warmup は 0 から目標値へ上げるこの形）、半周期の cosine で下げる（cosine decay）など。nabla ではステップ数を状態の中の rank 0 の配列に持つので、`jit` したままステップごとに値が変わる。
 

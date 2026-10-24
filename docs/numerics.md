@@ -140,7 +140,7 @@ bf16 / f16 の reduce と dot は f32 で累積する（`docs/stablehlo-ops.md`�
 
 | 場所 | 危険 | 現状と判断 |
 | --- | --- | --- |
-| `src/nn/layers.lisp` の `layer-norm` | 「速い分散」 mean(x²) − mean(x)² は、平均が標準偏差より大きい（μ/σ ≈ 1e3）と f32 で数 % の誤差（catastrophic cancellation） | Flax の既定と同じ式（Transformer を Flax と数値で比べるため）。負になる分は 0 に切っている。2 パスの分散に変えると Flax と食い違う |
+| `src/nn/layers.lisp` の `layer-norm`、`src/nn/batch-norm.lisp` の `batch-norm` | 「速い分散」 mean(x²) − mean(x)² は、平均が標準偏差より大きい（μ/σ ≈ 1e3）と f32 で数 % の誤差（catastrophic cancellation） | Flax の既定と同じ式（Transformer を Flax と数値で比べるため）。負になる分は 0 に切っている。2 パスの分散に変えると Flax と食い違う |
 | `src/nn/normalization.lisp` の `group-norm`（#260） | layer-norm と同じ速い分散（統計の関数を共有）。群の要素が少ない（instance norm に近い）と群の分散が小さくなりやすく、f32 の相対誤差が大きい | Flax の `nn.GroupNorm` の既定と同じ式。layer-norm と同じ理由で 2 パスにしない |
 | `src/nn/layers.lisp` の `gelu` | tanh 近似の微分の 1 − tanh² が \|x\| > 9 で 0 に丸まる（真は約 4 e^{-2\|x\|}） | 勾配が 1e-8 以下の領域で、影響は小さい |
 | `examples/mlp.lisp` | 素朴な logsumexp（Collapse を起こす） | フェーズ2のベンチマークと JAX のフィクスチャのため core だけで書いたまま。コメントで nabla/nn の log-softmax を勧めている |

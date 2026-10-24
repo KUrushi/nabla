@@ -600,7 +600,9 @@
                ;; conv レイヤー（issue #207）
                (:file "src/nn/conv")
                ;; group-norm（issue #260）
-               (:file "src/nn/normalization")))
+               (:file "src/nn/normalization")
+               ;; batch-norm と状態を更新して返す call の規約（issue #260）
+               (:file "src/nn/batch-norm")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -641,5 +643,8 @@
                ;; group-norm（issue #260）
                (:file "tests/nn/group-norm-test")
                (:file "tests/nn/group-norm-iree-test")
+               ;; batch-norm（issue #260）
+               (:file "tests/nn/batch-norm-test")
+               (:file "tests/nn/batch-norm-iree-test")
                ;; README のチュートリアル（issue #210。examples/tutorial.lisp を load し、README のコードブロックと突き合わせる）
                (:file "tests/nn/tutorial-test")))
