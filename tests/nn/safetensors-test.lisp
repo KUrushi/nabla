@@ -526,10 +526,14 @@ reason :invalid-entries。"
 
 (defun random-entries-with-a-large-leaf (seed count)
   "RANDOM-ENTRIES に、0〜約 300 KB のランダムな dtype の 1 次元の葉 \"large\" を 1 つ足す
-（読み書きの作業用バッファより大きくなり、境界をまたぐ）。"
+（読み書きの作業用バッファ 64 KiB より大きくなり、境界をまたぐ）。半分の場合は、バイト数が
+64 KiB・128 KiB ちょうどとその前後になる長さを選ぶ。"
   (let* ((state (sb-ext:seed-random-state (+ seed 1)))
          (dtype (nth (random (length *all-safetensors-dtypes*) state) *all-safetensors-dtypes*))
-         (length (random (floor 300000 (nabla:dtype-byte-width dtype)) state)))
+         (width (nabla:dtype-byte-width dtype))
+         (length (if (zerop (random 2 state))
+                     (+ (floor (nth (random 2 state) '(65536 131072)) width) (1- (random 3 state)))
+                     (random (floor 300000 width) state))))
     (cons (list "large" (random-array-of dtype (list length) state) dtype)
           (remove "large" (random-entries seed count) :key #'first :test #'string=))))
 

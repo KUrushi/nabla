@@ -396,6 +396,8 @@ PATH はエラーに入れるファイル名（読み込みには使わない）
   (with-open-file (stream path :element-type '(unsigned-byte 8))
     (%read-safetensors-from (file-length stream)
                             (lambda (position buffer count)
+                              ;; 今はテンソルを開始位置の順に続けて読むので位置は常に合っているが、
+                              ;; READ-AT は任意の位置から読む約束（必要な葉だけ読む形を足すときに使う）。
                               (file-position stream position)
                               (unless (= (read-sequence buffer stream :end count) count)
                                 (%fail path :truncated "ファイルが途中で終わった（読んでいる間に短くなった）")))
