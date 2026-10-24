@@ -363,7 +363,7 @@ one-hot の iota を持たない）。"
                     (nabla:grad (nabla:with-tracing (table ids)
                                   (nabla:reduce-sum (call (make-embedding :embedding table) ids))))
                     avals)))
-    (flet ((primitives (graph) (mapcar (lambda (eqn) (nabla::primitive-name (nabla::eqn-prim eqn))) (nabla:graph-eqns graph)))
+    (flet ((primitives (graph) (mapcar (lambda (eqn) (nabla:primitive-name (nabla:eqn-prim eqn))) (nabla:graph-eqns graph)))
            (largest-constant (graph)
              (reduce #'max (mapcar (lambda (entry) (array-total-size (cdr entry))) (nabla:graph-constants graph))
                      :initial-value 0)))

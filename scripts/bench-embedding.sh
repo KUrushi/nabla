@@ -15,7 +15,7 @@ LOG="$(mktemp "${TMPDIR:-/tmp}/bench-embedding.XXXXXX")"
 trap 'rm -f "$LOG"' EXIT
 if sbcl --dynamic-space-size 8GB --noinform --non-interactive \
      --load "${REPO_ROOT}/scripts/bench-embedding.lisp" > "$LOG" 2>&1; then
-  grep '^(:' "$LOG"
+  grep '^(:' "$LOG" || true
 else
   grep '^(:' "$LOG" || true
   tail -40 "$LOG" >&2

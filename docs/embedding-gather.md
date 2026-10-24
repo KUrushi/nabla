@@ -14,7 +14,7 @@
 `scripts/bench-embedding.sh`（本体は `scripts/bench-embedding.lisp`）で測った。設定は ids `[8 32]`（256 個）、features 32、f32。V は 1000 / 10000 / 50000。比べたのは、順伝播（引き）と、表についての勾配（損失 `sum(lookup(table, ids) * weights)` の `grad`）の 2 つ。one-hot 版は #204 の `%embedding-apply` を、:i32 の ids と f32 の表に特化してスクリプトの中に書き直したもの。
 
 - 時間: eager（SBCL の上の CPU 実装。jit しない）の呼び出しの中央値。one-hot 版は遅すぎるので 1 回だけ、gather 版は 20 回測った
-- メモリ: 1 回の呼び出しで確保したバイト数（`sb-ext:get-bytes-consed` の差）。eager の中間配列の大きさの目安になる。ただしこのカウンタは割り当て領域の単位でしか進まないので、小さな確保（gather 版の順伝播の 32 KiB の出力など）は 0 になることがある
+- メモリ: 1 回の呼び出しで確保したバイト数（`sb-ext:get-bytes-consed` の差）。eager の中間配列の大きさの目安になる。ただしこのカウンタは割り当て領域の単位でしか進まないので、小さな確保（gather 版の順伝播の 32 KiB の出力など）は 0 になることがある。Lisp のヒープの分しか数えないので、jit（IREE）の行には出さない
 - 測定環境: SBCL 2.6.9、macOS（Darwin）arm64
 
 | V | 方式 | 順伝播 (ms) | 順伝播で確保 (bytes) | 勾配 (ms) | 勾配で確保 (bytes) |
