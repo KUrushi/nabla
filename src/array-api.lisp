@@ -309,7 +309,9 @@ LHS・RHS の片方が配列でもう片方がトレーサなら、配列をト�
    "OPERAND [N, rest...] の先頭の軸を整数（:i32 / :u32 / :u64）の添字の配列 INDICES [idx...] で引き、
 [idx..., rest...] を返す（JAX の jnp.take(operand, indices, axis=0)）。範囲外の添字（負・N 以上）の行は
 0 になる（JAX は NaN）。勾配は、範囲内の添字の行に余接線を足し込んだもの（範囲外の添字は寄与しない）。
-OPERAND は :i1 以外の dtype。片方が配列、もう片方がトレーサなら、配列を自分の dtype の定数にリフトする
+OPERAND は :i1 以外の dtype で、先頭の軸の長さは 1 以上 2^31 未満。スカラーの添字は rank 0 の配列にする（Lisp の
+整数は TRACING-ERROR）。eager の bf16 / f16 の配列（(UNSIGNED-BYTE 16)）は dtype を区別できないので、トレース中に
+使う。片方が配列、もう片方がトレーサなら、配列を自分の dtype の定数にリフトする
 （OPERAND と INDICES は dtype が違うので、DOT と違いトレーサの dtype には合わせない）。"))
 
 (defmethod gather ((operand array) (indices array))
@@ -324,3 +326,8 @@ OPERAND は :i1 以外の dtype。片方が配列、もう片方がトレーサ�
 
 (defmethod gather ((operand tracer) (indices array))
   (gather operand (%lift-array-to indices (aval-dtype (array-aval indices)))))
+
+(defmethod gather (operand indices)
+  (error 'tracing-error
+         :format-control "GATHER の OPERAND と INDICES は配列かトレーサでなければならない（スカラーの添字は rank 0 の配列にする）: ~S, ~S"
+         :format-arguments (list operand indices)))

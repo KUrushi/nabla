@@ -130,7 +130,8 @@
                 :regression-file (regression-path "gather-adjoint"))))
 
 (test gather/rejects-invalid-inputs
-  "gather: 入力は 2 個、operand は rank 1 以上で先頭の軸が 1 以上、:i1 でない。添字は整数。違えば PRIMITIVE-ERROR。"
+  "gather: 入力は 2 個、operand は rank 1 以上で先頭の軸が 1 以上 2^31 未満（:i32 の定数・添字に収まる）、:i1 でない。
+添字は整数。違えば PRIMITIVE-ERROR。"
   (let ((x (nb:make-aval '(4 3) :f32))
         (i (nb:make-aval '(2) :i32)))
     (is (equalp (nb:make-aval '(2 3) :f32) (%abstract-eval-of :gather (list x i))))
@@ -141,10 +142,13 @@
     (signals nb:primitive-error (%abstract-eval-of :gather (list x (nb:make-aval '(2) :i1))))
     (signals nb:primitive-error (%abstract-eval-of :gather (list (nb:make-aval '() :f32) i)))
     (signals nb:primitive-error (%abstract-eval-of :gather (list (nb:make-aval '(0 3) :f32) i)))
-    (signals nb:primitive-error (%abstract-eval-of :gather (list (nb:make-aval '(4) :i1) i)))))
+    (signals nb:primitive-error (%abstract-eval-of :gather (list (nb:make-aval '(4) :i1) i)))
+    (is (equalp (nb:make-aval '(2) :f32)
+                (%abstract-eval-of :gather (list (nb:make-aval (list (1- (expt 2 31))) :f32) i))))
+    (signals nb:primitive-error (%abstract-eval-of :gather (list (nb:make-aval (list (expt 2 31)) :f32) i)))))
 
 (test scatter-add/rejects-invalid-inputs
-  "scatter-add: 入力は 2 個（添字・updates）、:size は 1 以上の整数、添字は整数、updates は浮動小数点で
+  "scatter-add: 入力は 2 個（添字・updates）、:size は 1 以上 2^31 未満の整数、添字は整数、updates は浮動小数点で
 形の先頭が添字の形。違えば PRIMITIVE-ERROR。"
   (let ((i (nb:make-aval '(2) :i32))
         (u (nb:make-aval '(2 3) :f32)))
@@ -154,6 +158,9 @@
     (signals nb:primitive-error (%abstract-eval-of :scatter-add (list i) :size 5))
     (signals nb:primitive-error (%abstract-eval-of :scatter-add (list i u) :size 0))
     (signals nb:primitive-error (%abstract-eval-of :scatter-add (list i u) :size 2.0))
+    (is (equalp (nb:make-aval (list (1- (expt 2 31)) 3) :f32)
+                (%abstract-eval-of :scatter-add (list i u) :size (1- (expt 2 31)))))
+    (signals nb:primitive-error (%abstract-eval-of :scatter-add (list i u) :size (expt 2 31)))
     (signals nb:primitive-error (%abstract-eval-of :scatter-add (list (nb:make-aval '(2) :f32) u) :size 5))
     (signals nb:primitive-error (%abstract-eval-of :scatter-add (list i (nb:make-aval '(2 3) :i32)) :size 5))
     (signals nb:primitive-error (%abstract-eval-of :scatter-add (list i (nb:make-aval '(3 2) :f32)) :size 5))
@@ -359,13 +366,14 @@ reshape した stablehlo.gather、範囲外の行を 0 にする select。"
 
 (test gather/public-function-works-eagerly-and-under-grad
   "nb:gather は配列どうしなら eager に引き（形状推論の検査つき）、grad の中では添字の配列を定数にして
-トレースする。operand の勾配は、範囲内の添字の行に余接線を足したもの（範囲外の添字は寄与しない）。"
+トレースする。Lisp の整数の添字は TRACING-ERROR。operand の勾配は、範囲内の添字の行に余接線を足したもの（範囲外の添字は寄与しない）。"
   (let* ((table (make-random-array (make-array-spec '(4 3) :f64) :seed 3))
          (ids (make-array '(2 3) :element-type '(signed-byte 32) :initial-contents '((0 2 2) (5 -1 3))))
          (weights (make-random-array (make-array-spec '(2 3 3) :f64) :seed 4))
          (loss (nb:with-tracing (x) (nb:reduce-sum (* (nb:gather x ids) weights)))))
     (is (equalp (%gather-oracle table ids) (nb:gather table ids)))
     (signals nb:primitive-error (nb:gather table (make-array 2 :element-type 'double-float)))
+    (signals nb:tracing-error (nb:gather table 2))
     (is (allclose (funcall (nb:grad loss) table) (%scatter-add-oracle ids weights 4) :dtype :f64))))
 
 (test gather/public-function-traces-two-tracers
@@ -385,12 +393,12 @@ reshape した stablehlo.gather、範囲外の行を 0 にする select。"
                   :dtype :f64))))
 
 (test gather/vmap-of-both-rejects-flat-indices-beyond-i32
-  "operand と添字の両方をバッチした gather は、平らにした添字の上限 B*N <= 2^31 を超えると VMAP-ERROR（aval だけで
-トレースするので大きな配列は作らない）。B*N = 2^31 ちょうどは通る。"
+  "operand と添字の両方をバッチした gather は、平らにした operand の行の数 B*N が 2^31 以上なら VMAP-ERROR（aval だけで
+トレースするので大きな配列は作らない）。B*N = 2^31 - 2 は通る。"
   (let ((f (nb:vmap (primitive-function :gather '() 2) :in-axes '(0 0))))
     (flet ((trace-with (n)
              (nb::%call-with-fresh-trace
               (list (nb:make-aval (list 2 n) :f32) (nb:make-aval '(2 3) :i32))
               (lambda (x i) (funcall f x i)))))
-      (finishes (trace-with (expt 2 30)))
-      (signals nb:vmap-error (trace-with (1+ (expt 2 30)))))))
+      (finishes (trace-with (1- (expt 2 30))))
+      (signals nb:vmap-error (trace-with (expt 2 30))))))

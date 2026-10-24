@@ -11,7 +11,7 @@
 ;;;; 範囲外をクランプし、scatter は実装定義なので、emit は範囲の判定を自分で書き、範囲外の添字を 0 に
 ;;;; してから引き（足し）、結果（更新）を select で 0 にする。実行系の範囲外の挙動には頼らない。
 ;;;; 判定は添字の元の dtype で行い（unsigned は N 未満だけ）、判定の後で :i32 に直すので、:u64 の
-;;;; 大きな添字が折り返して範囲内に入ることはない。
+;;;; 大きな添字が折り返して範囲内に入ることはない。N（行の数）は :i32 の定数と添字に収まるよう 2^31 未満に限る。
 ;;;;
 ;;;; operand は :i1 以外の任意の dtype（gather は値を解釈しない）。scatter-add の updates は浮動小数点
 ;;;; だけで、bf16 / f16 は reduce-sum と同じく f32 で累積して最後に丸める（emit も eager も）。
@@ -35,16 +35,17 @@
   (destructuring-bind (operand indices) in-avals
     (%gather-check-indices :gather in-avals indices)
     (let ((shape (aval-shape operand)))
-      (unless (and shape (plusp (first shape)))
-        (%gather-error :gather in-avals "operand は rank 1 以上で先頭の軸が 1 以上でなければならない: ~S" shape))
+      (unless (and shape (typep (first shape) '(integer 1 #.(1- (expt 2 31)))))
+        (%gather-error :gather in-avals "operand は rank 1 以上で、先頭の軸が 1 以上 2^31 未満でなければならない: ~S"
+                       shape))
       (when (eq (aval-dtype operand) :i1)
         (%gather-error :gather in-avals "operand の dtype に :I1 は使えない"))
       (make-aval (append (aval-shape indices) (rest shape)) (aval-dtype operand)))))
 
 (defun %scatter-add-abstract-eval (in-avals size)
   (%shape-check-arity :scatter-add in-avals 2)
-  (unless (typep size '(integer 1))
-    (%gather-error :scatter-add in-avals ":size は 1 以上の整数でなければならない: ~S" size))
+  (unless (typep size '(integer 1 #.(1- (expt 2 31))))
+    (%gather-error :scatter-add in-avals ":size は 1 以上 2^31 未満の整数でなければならない: ~S" size))
   (destructuring-bind (indices updates) in-avals
     (%gather-check-indices :scatter-add in-avals indices)
     (unless (%float-dtype-p (aval-dtype updates))
@@ -57,6 +58,15 @@
       (make-aval (cons size (nthcdr (length index-shape) shape)) (aval-dtype updates)))))
 
 ;;; --- eager ---
+
+(defun %gather-copy-row (to to-start from from-start count)
+  "FROM の row-major の位置 FROM-START からの COUNT 個を TO の TO-START へ写す。どちらも単純配列なら
+記憶域のベクタの REPLACE（ブロックのコピー）、そうでなければ要素ごと。"
+  (if (and (typep to 'simple-array) (typep from 'simple-array))
+      (replace (sb-ext:array-storage-vector to) (sb-ext:array-storage-vector from)
+               :start1 to-start :end1 (+ to-start count) :start2 from-start)
+      (dotimes (j count)
+        (setf (row-major-aref to (+ to-start j)) (row-major-aref from (+ from-start j))))))
 
 (defun %gather-row-size (shape)
   "先頭の軸を除いた要素数（1 行の大きさ）。"
@@ -74,8 +84,7 @@
       (dotimes (k (array-total-size indices) result)
         (let ((i (row-major-aref indices k)))
           (when (< -1 i n)
-            (dotimes (j row)
-              (setf (row-major-aref result (+ (* k row) j)) (row-major-aref operand (+ (* i row) j))))))))))
+            (%gather-copy-row result (* k row) operand (* i row) row)))))))
 
 (defun %scatter-add-eager (arrays in-avals size)
   "updates を計算用の値（bf16 / f16 は single-float）にして、範囲内の添字の行へ足す。"
