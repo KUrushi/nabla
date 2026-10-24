@@ -221,15 +221,19 @@ iree-run-module）。jit が連結するのは入力だけでよい根拠（issu
 
 ;;; --- 中間の値を持つ形は入力 161 個で落ちる（PR #268 の観察。#242 で上限を 160 に下げた）---
 
-(defun %tree-mlir (inputs ops)
-  "INPUTS 個の tensor<3xf32> を、OPS（\"add\" / \"multiply\" のリスト）ごとに平衡二分木で畳んだ値を返す main。"
+(defun %tree-mlir (inputs ops &key (constants 0))
+  "INPUTS 個の tensor<3xf32> を、OPS（\"add\" / \"multiply\" のリスト）ごとに平衡二分木で畳んだ値を返す main。
+CONSTANTS 個の splat でない定数（dense<[1.0, 2.0, k]>）も木の葉に足す。"
   (let ((counter 0))
     (with-output-to-string (s)
       (format s "module {~%func.func @main(~{%a~D: tensor<3xf32>~^, ~}) -> (~{~*tensor<3xf32>~^, ~}) {~%"
               (loop for i below inputs collect i) ops)
+      (dotimes (k constants)
+        (format s "  %c~D = stablehlo.constant dense<[1.0, 2.0, ~D.5]> : tensor<3xf32>~%" k (+ 3 k)))
       (let ((roots
               (loop for op in ops
-                    collect (let ((level (loop for i below inputs collect (format nil "%a~D" i))))
+                    collect (let ((level (append (loop for i below inputs collect (format nil "%a~D" i))
+                                                 (loop for k below constants collect (format nil "%c~D" k)))))
                               (loop while (cdr level)
                                     do (setf level
                                              (loop for (x y) on level by #'cddr
@@ -264,6 +268,18 @@ iree-run-module）。jit が連結するのは入力だけでよい根拠（issu
              :compile-failed)
       (ignore-errors (delete-file vmfb))
       (ignore-errors (delete-file file)))))
+
+(define-iree-test input-limit/probe-242-non-splat-constants
+    "調べ（#242、一時的）: 平衡二分木に splat でない定数を足すと、落ちる入力の個数が下がるか。"
+  (skip-unless-iree :library :both)
+  (unless (and (probe-file (%iree-bin "iree-run-module"))
+               (probe-file (%iree-bin "iree-compile")))
+    (skip "iree-compile / iree-run-module が無い")
+    (return-from iree-test))
+  (dolist (k '(0 1 2 3 5 10))
+    (dolist (n '(150 155 157 158 159 160))
+      (let ((codes (loop repeat 3 collect (%run-mlir-on-local-task (%tree-mlir n '("add") :constants k) n))))
+        (format t "~&PROBE-242C constants=~D inputs=~D exits=~S~%" k n codes)))))
 
 (defparameter *tree-sum-child-source*
   "(require :asdf)
