@@ -47,33 +47,39 @@
 
 (defun %group-norm-layout (shape groups)
   "入力の形 SHAPE（rank 1 以上）を GROUPS 個の群に分けるときの、(values 群に分けた形 並べ替え 統計の形)。
-群に分けた形は [バッチ 空間... 群の数 群の大きさ]（rank 1 は [群の数 群の大きさ]）、並べ替えはそれを
-[バッチ 群の数 空間... 群の大きさ] にする perm、統計の形は [バッチ 群の数 群ごとの要素数]（rank 1 は
-[群の数 群の大きさ]）。"
+群に分けた形は [バッチ 空間... 群の数 群の大きさ]（rank 1 は [群の数 群の大きさ]）から大きさ 1 の軸を除いたもの、
+並べ替えはそれを [バッチ 群の数 空間... 群の大きさ] の順にする perm、統計の形は [バッチ 群の数 群ごとの要素数]
+（rank 1 は [群の数 群の大きさ]。群ごとの要素数が 1 なら最後の軸を持たない）。"
   (let* ((rank (length shape))
-         (group-shape (append (butlast shape) (list groups (floor (car (last shape)) groups))))
-         (perm (if (= rank 1)
-                   '(0 1)
-                   (append (list 0 (1- rank)) (loop for axis from 1 below (1- rank) collect axis) (list rank))))
-         (lead (if (= rank 1) (list groups) (list (first shape) groups))))
-    (values group-shape perm (append lead (list (floor (reduce #'* shape) (reduce #'* lead)))))))
+         (sizes (append (butlast shape) (list groups (floor (car (last shape)) groups))))
+         (order (if (= rank 1)
+                    '(0 1)
+                    (append (list 0 (1- rank)) (loop for axis from 1 below (1- rank) collect axis) (list rank))))
+         ;; 大きさ 1 の軸は並べ替えに要らない（IREE 3.11 は大きさ 1 の軸を挟んだ grad の jit で落ちることがある）
+         (kept (or (loop for axis to rank when (> (nth axis sizes) 1) collect axis) (list rank)))
+         (perm (loop for axis in order when (member axis kept) collect (position axis kept)))
+         (lead (if (= rank 1) (list groups) (list (first shape) groups)))
+         (count (floor (reduce #'* shape) (reduce #'* lead))))
+    (values (mapcar (lambda (axis) (nth axis sizes)) kept) perm (if (= count 1) lead (append lead (list count))))))
 
 (defun %group-norm-statistics (x groups epsilon)
   "X の群ごとの平均と 1/sqrt(速い分散 + EPSILON) を、X の形に戻した 2 つのリスト。
-群の要素を最後の 1 軸に並べ替えてから最後の軸だけを縮約する（layer-norm の既定と同じ形）。先頭のバッチ軸と群の
-軸の間に空間の軸を挟んだまま縮約すると、IREE 3.11 で grad の jit が vector.contract の large vector sizes で
-コンパイルに失敗することがある（docs/iree-upstream-bugs.md の 9）。"
+群の要素を最後の 1 軸に並べ替えてから最後の軸だけを縮約する（layer-norm の既定と同じ形。群の要素が 1 つなら縮約
+しない）。先頭のバッチ軸と群の軸の間に空間の軸を挟んだまま縮約すると、IREE 3.11 で grad の jit が vector.contract
+の large vector sizes でコンパイルに失敗することがある（docs/iree-upstream-bugs.md の 9）。"
   (let ((shape (%shape x)))
     (multiple-value-bind (group-shape perm flat-shape) (%group-norm-layout shape groups)
       (let* ((transposed-shape (mapcar (lambda (axis) (nth axis group-shape)) perm))
              (inverse (loop for axis below (length perm) collect (position axis perm)))
-             (lead-rank (1- (length flat-shape))))
+             (lead-rank (if (= (length shape) 1) 1 2))
+             (reduce-axes (if (> (length flat-shape) lead-rank) (list lead-rank) '())))
         (flet ((back (y)
                  (%group-norm-reshape (%group-norm-transpose (%group-norm-reshape y transposed-shape) inverse) shape)))
           (mapcar #'back
                   (%layer-norm-statistics
                    (%group-norm-reshape (%group-norm-transpose (%group-norm-reshape x group-shape) perm) flat-shape)
-                   epsilon (list lead-rank) (loop for axis below lead-rank collect axis) (car (last flat-shape)))))))))
+                   epsilon reduce-axes (loop for axis below lead-rank collect axis)
+                   (if reduce-axes (car (last flat-shape)) 1))))))))
 
 (defun %group-norm-apply (x scale bias num-groups group-size epsilon use-scale use-bias)
   "group-norm の call の本体。X を群ごとに正規化し、SCALE / BIAS（NIL ならかけない・足さない）を適用する。"
