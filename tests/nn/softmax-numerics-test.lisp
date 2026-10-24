@@ -136,12 +136,16 @@ log1p するので、余裕が大きくても桁を失わない（素朴な log(
 
 (def-layer-property softmax-numerics/vjps-match-the-reference-for-any-cotangent
   "任意の余接線 CT について、log-softmax と softmax の VJP が double の参照と一致する（相対誤差 1e-3、
-余裕が大きい行を含む）。log-softmax の VJP の和は 0（丸め誤差の範囲）。"
-  (seed n k-raw margin)
+余裕が大きい行と、最大値が TIES 個同点の行を含む。同点の勾配の配分も確かめる）。log-softmax の VJP の
+和は 0（丸め誤差の範囲）。"
+  (seed n k-raw margin ties)
   (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 8)
-         (uniform-integer :lo 0 :hi 7) (uniform-integer :lo 0 :hi 40))
+         (uniform-integer :lo 0 :hi 7) (uniform-integer :lo 0 :hi 40) (uniform-integer :lo 1 :hi 3))
   (let* ((k (mod k-raw n))
-         (x (%dominated-row seed n k margin))
+         (x (let ((row (%dominated-row seed n k margin)))
+              ;; k の後ろ（巡回）の TIES - 1 個を最大値と同点にする
+              (loop for i from 1 below (min ties n) do (setf (aref row (mod (+ k i) n)) (aref row k)))
+              row))
          (ct (%random-row (1+ seed) n))
          (ls-vjp (%vjp #'log-softmax x ct))
          (sm-vjp (%vjp #'softmax x ct))

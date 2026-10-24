@@ -67,6 +67,25 @@
     (and (every (lambda (a x) (<= (abs (- a x)) (+ (* 1d-3 (abs x)) (* 1d-3 scale)))) g expected)
          (%gradient-sum-small-p g))))
 
+(def-layer-property losses/gradient-is-accurate-for-a-shifted-student
+  "z_s = z_t + C + 差（C は 1〜50 の定数、差は各要素 [-1e-9, 1e-9)、f64）でも、勾配が double の参照
+q - p と一致する（softmax は定数のずらしに不変なので q ≈ p。成分ごとに相対 1e-3、床は最大の成分の
+1e-3）。f32 では z_t + C の丸め（50 で ulp 3.8e-6）が差を消すので f64 で見る。中心化
+d = delta - sum(p delta) を外す変異はこの性質では区別できない（中心化は s の値を変えず、精度への
+効果も差 z_s - z_t の丸めと同じ大きさ。生き残る変異体として記録している）。"
+  (seed n c)
+  (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 8) (uniform-integer :lo 1 :hi 50))
+  (let* ((state (sb-ext:seed-random-state seed))
+         (zt (make-array n :element-type 'double-float))
+         (zs (make-array n :element-type 'double-float)))
+    (dotimes (i n)
+      (setf (aref zt i) (- (random 6d0 state) 3d0)
+            (aref zs i) (+ (aref zt i) c (- (random 2d-9 state) 1d-9))))
+    (let* ((g (funcall (nabla:grad (%soft-ce)) zs zt))
+           (expected (%reference-soft-ce-grad zs zt))
+           (scale (reduce #'max expected :key #'abs)))
+      (every (lambda (a x) (<= (abs (- a x)) (+ (* 1d-3 (abs x)) (* 1d-3 scale)))) g expected))))
+
 (def-layer-property losses/value-is-the-cross-entropy
   "値は -sum(softmax(z_t) log-softmax(z_s))（double の参照と相対誤差 1e-5）。2 次元の入力は行ごと。"
   (seed n)
