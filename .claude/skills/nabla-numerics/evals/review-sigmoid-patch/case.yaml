@@ -1,6 +1,6 @@
 schema_version: "1.1"
 name: review-sigmoid-patch
 expected_outcome: |
-  review.md が、sigmoid の勾配 σ(1 - σ) が大きな x で 0 に丸まること、stable-sigmoid の |x| を max(x, -x) で作ると x = 0 の微分が壊れること、テストが崖の向こうを見ず atol の床で 0 を見逃すこと、「jit しても eager と同じ」という主張を IREE と PJRT の jit（f64 を含む）で確かめていないことを指摘する。
+  review.md が、素朴な sigmoid が大きな |x| で壊れること（f32 の負の大きな x で勾配が NaN か 0）、stable-sigmoid の |x| を max(x, -x) で作ると x = 0 の微分が壊れること、テストが崖の向こうを見ず atol の床で 0 を見逃すこと、「jit しても eager と同じ」という主張を IREE と PJRT の jit（f64 を含む）で確かめていないことを指摘する。
 context:
   scaffold_script: place-files.sh
