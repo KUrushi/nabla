@@ -122,6 +122,9 @@ pretty form を出力する。
 **batch group（batch_group_count）**
 : 畳み込みの `batch_group_count`（B）。`feature_group_count`（入力チャネルを G 個に分ける）の対になるもので、lhs のバッチ軸を連続した B 個の塊に分け、出力チャネルの B 個の塊がそれぞれ1つのバッチの塊だけを読む（出力のバッチは N/B）。ユーザーが書く畳み込みには出てこず、グループ畳み込み・depthwise（G > 1）の rhs の転置（`grad` の rhs 側）が B = G の畳み込みになる（JAX の `_conv_general_dilated_transpose_rhs`）。nabla では `convolution` プリミティブの内部のパラメタ（issue #203）。
 
+**dispatch / binding（IREE）**
+: IREE がプログラムを分けた、デバイスで 1 回に起動する計算の単位が dispatch（GPU のカーネル 1 つに当たる）。IREE のコンパイラは要素ごとの演算などを融合（fusion）して 1 つの dispatch にまとめる。binding は 1 つの dispatch が読み書きするバッファの 1 つ 1 つで、ふつうは「その dispatch に入る別々のテンソル（関数の入力や、他の dispatch の結果）+ 結果」の数になる。IREE 3.11 のランタイムは 1 つの dispatch の binding を 32 個までしか受け付けない（`docs/iree-upstream-bugs.md` の 10、issue #264）。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**
