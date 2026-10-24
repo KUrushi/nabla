@@ -177,7 +177,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **#226: `stablehlo.if` の枝が入力を素通しすると IREE で失敗する**（§4.3 の 4）。#201 の IREE の `cond*` のテストから素通しのケースを外してある。
 - **#227: `while-loop` の carry に Lisp の実数を渡せない**（`scan` / `cond*` の operands は実数を葉にできる）。
 - **#233: 本体に制御構造がある scan の ys が、更新のたびに丸ごとコピーされる**（外側の長さの 2 乗。§4.3 の 3）。レイヤーを scan で回して本体に dropout や `cond*` があると効く。
-- **#237: scan の emitter の mutation の生き残り**（`while` のブロック引数の型・戻り値の名前の個数・カウンタの型。medium では捕まるが small のテストが無い）。
+- **#237: scan の emitter の mutation の生き残り**（`while` のブロック引数の型・戻り値の名前の個数・カウンタの型。medium では捕まるが small のテストが無い）。解決済み（`scan/emitted-while-has-one-slot-per-counter-carry-and-ys` と exclusions の4件）。
 - **#239: nn が core の内部シンボル `nabla::%pytree-node-entry` を使っている**。子を返す公開関数（`tree-children`）を export して移した（解消済み）。
 - **#240: gather プリミティブが無く、embedding が one-hot + `dot`**（§3.6）。
 - **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。

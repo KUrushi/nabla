@@ -327,6 +327,68 @@ docs/iree-upstream-bugs.md の 7）。本体に制御構造の無い scan（長�
       (is (null (search "_bk0" with-cond)) "cond* を含む本体に ys の barrier がある")
       (is (search "stablehlo.dynamic_update_slice %scan_" with-cond) "dynamic_update_slice が出ていない"))))
 
+(defun %scan-count (needle string)
+  "STRING の中に NEEDLE（文字列）が重ならずに現れる回数。"
+  (loop with start = 0
+        for pos = (search needle string :start2 start)
+        while pos count t do (setf start (+ pos (length needle)))))
+
+(defun %scan-shape-graph (num-carry num-ys length reverse)
+  "carry を NUM-CARRY 個（f32 [2]）、xs を1つ、ys を NUM-YS 個持つ長さ LENGTH の scan の graph
+（NUM-YS は 3 以下）。各 carry は x を足した値になり、各 ys は carry のどれかを定数倍した値になる。"
+  (nb::trace-to-graph
+   (nb:with-tracing (h xs)
+     (multiple-value-bind (carry ys)
+         (nb:scan (nb:with-tracing (carry x)
+                    (let ((next (mapcar (lambda (c) (+ c (first x))) carry)))
+                      (values next
+                              (mapcar (lambda (c) (* c 2.0))
+                                      (subseq (append next next next) 0 num-ys)))))
+                  (make-list num-carry :initial-element h) (list xs)
+                  :reverse reverse)
+       (values-list (append carry ys))))
+   (list (nb:make-aval '(2) :f32) (nb:make-aval (list length 2) :f32))))
+
+(defun %scan-starts-with (prefix line)
+  (and (>= (length line) (length prefix)) (string= prefix line :end2 (length prefix))))
+
+(test scan/emitted-while-has-one-slot-per-counter-carry-and-ys
+  "emit した while の cond と本体のブロック引数（^bb0）、`}) : (` の型の並びの両側、本体の
+stablehlo.return の値は、どれもカウンタ + carry + ys の 1 + num-carry + num-ys 個で、カウンタは
+tensor<i32>。どれかが欠けると MLIR として不正になるが、IREE に渡さないと分からないので、出力の
+形で守る（issue #237）。num-carry・num-ys・length・reverse は生成器で変える。"
+  (is (check-it
+       (generator (tuple (integer 1 3) (integer 0 3) (integer 1 4) (integer 0 1)))
+       (lambda (case)
+         (destructuring-bind (num-carry num-ys length reverse-code) case
+           (let* ((lines (%scan-text-lines
+                          (nb:emit-stablehlo (%scan-shape-graph num-carry num-ys length (= 1 reverse-code)))))
+                  (expected (+ 1 num-carry num-ys))
+                  (block-lines (remove-if-not (lambda (line) (search "^bb0(" line)) lines))
+                  (end-line (find-if (lambda (line) (%scan-starts-with "}) :" line)) lines))
+                  (return-line (find-if (lambda (line)
+                                          (and (%scan-starts-with "stablehlo.return" line)
+                                               (not (search "tensor<i1>" line))))
+                                        lines)))
+             (and (= 2 (length block-lines))
+                  end-line return-line
+                  (every (lambda (line) (= expected (%scan-count ": tensor<" line))) block-lines)
+                  (search "ci: tensor<i32>" (first block-lines))
+                  (search "bi: tensor<i32>" (second block-lines))
+                  (let* ((operands-start (+ (search "(" end-line) 1))
+                         (operands (subseq end-line operands-start (search ")" end-line :start2 operands-start)))
+                         (results-start (+ (search "-> (" end-line) 4))
+                         (results (subseq end-line results-start (search ")" end-line :start2 results-start)))
+                         (returned (subseq return-line (1+ (position #\Space return-line))
+                                           (search " : " return-line))))
+                    (and (= expected (%scan-count "tensor<" operands))
+                         (= expected (%scan-count "tensor<" results))
+                         (%scan-starts-with "tensor<i32>," operands)
+                         (%scan-starts-with "tensor<i32>," results)
+                         (= expected (%scan-count "%" returned))))))))
+       :regression-id scan/emitted-while-slot-counts
+       :regression-file (regression-path "scan-emitted-while-slot-counts"))))
+
 (test scan/emits-the-reverse-index-only-for-reverse-scans
   "reverse の scan は書き込み先の添字を length-1-i（%<p>_idx = subtract）にし、順方向の scan は
 カウンタ（%<p>_bi）をそのまま使う。"
