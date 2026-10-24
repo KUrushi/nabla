@@ -1,6 +1,6 @@
-# IREE 上流に報告するバグ（issue #73、#165、#199、#203、#220）
+# IREE 上流に報告するバグ（issue #73、#165、#199、#203、#220、#226）
 
-nabla が固定している IREE 3.11.0 で見つけたバグ7件（1〜3・5 はコンパイラ、4・6・7 はランタイム）の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165）にも同じリンクを記録する。
+nabla が固定している IREE 3.11.0 で見つけたバグ8件（1〜3・5 はコンパイラ、4・6・7・8 はランタイム）の、nabla を使わない最小の再現と、iree-org/iree にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では iree-org/iree に何も投稿しない）。報告したら、各節の「上流 issue」の行にリンクを書き、nabla の issue（#73 / #165）にも同じリンクを記録する。
 
 IREE を上げたときに、これらのバグが直ったかを確かめて回避策を外す手順は [`docs/iree-build.md`](iree-build.md) の「IREE を上げたときに回避策を外せるか確かめる手順」にある。
 
@@ -500,6 +500,99 @@ done | sort | uniq -c    # a second, zeroed variant of result[1] shows up
 ### What component(s) does this issue relate to?
 
 Runtime
+
+### Version information
+
+`iree-base-compiler==3.11.0` from PyPI (`IREE compiler version 3.11.0rc20260316 @ e4a3b0405d7d23554da26403658d0e8c3c5ecf25`), runtime built from the same commit, Linux x86_64.
+````
+
+## 8. stablehlo.if の枝が入力をそのまま返す出力を持つと、もう片方の枝を選んだ実行時に `ref is null` で失敗する（#226）
+
+コンパイルは通り、**実行時**に `iree-run-module` / `invoke` が失敗する（クラッシュではなく、終了コード 1 のエラー）。決定的。
+
+| 項目 | 内容 |
+| --- | --- |
+| 状態 | 未報告（ユーザーが報告する）。上流 issue: `<link>`。Rosetta の VM で確認。報告前に x86 ネイティブで確かめる |
+| 再現ファイル | `docs/iree-repros/if-passthrough-operands.mlir`（`stablehlo.if` の then が operand 3 つをそのまま `stablehlo.return` し、1 つだけ計算する。else は 4 つとも計算する）。対照は `if-passthrough-operands-select.mlir`（素通しの結果を if から外し、if の外の `stablehlo.select` にした形。nabla の回避策） |
+| 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=f32=1.0 --input=f32=1.0 --input=f32=2.0 --input=f32=3.0 --input=f32=4.0` で実行する（最初の入力が pred 用で、`< 0.5` なら then）。`--device=local-sync` でも同じ。`scripts/check-iree-repros.sh` の fail-bug / fail-control の行 |
+| 症状 | `iree-src/runtime/src/iree/vm/ref.h:223: INVALID_ARGUMENT; ref is null; while invoking native function hal.buffer_view.create`。素通しの結果を持つ枝**でない**側（else。p = 1.0）を選んだときだけ。素通しの枝を選ぶ側（p = 0.0）は正しい値が返る。結果が関数の戻り値でなく後続の演算で使われると、別のエラー `OUT_OF_RANGE; indirect buffer reference ...`（`command_buffer_validation.c:185`）になる |
+| 条件 | 出力の並び（C = 両方の枝が計算、P = then が素通し、else は全て計算）で、`CPPP`・`CPPPP`・`CPPPPP`・`PCPPP` は失敗し、`PPPC`・`PPP`・`PPPP`・`CPP`・`PPC`・`CCPP`・`CCPPP`・`CPPPC`・`CPCPP`・`CPPCP`・`PCPC`・`CPCP` は通る。失敗した並びは、計算する出力が 1 つだけで、素通しが 3 つ以上あり、最後の出力が素通しのときに限るが、規則は未調査（Issue #226 の最初の報告は else が `a` も素通しする 4 出力） |
+| 効かない回避策 | 素通しを枝の中で `optimization_barrier` に通す（then だけ・else だけ・両方）、operand を if の前で barrier に通す、if の結果を barrier に通す、`x + 0`（畳み込まれて素通しに戻る）。いずれも失敗が残る |
+| 効く回避策 | (a) 素通しの代わりに、barrier に通した 0 を足すような畳み込まれない演算を枝の中に置く（通る。ただし dtype ごとに違う演算が要り、`x + 0` は -0.0 を +0.0 に変える）。(b) 採用: 素通しの結果を `stablehlo.if` から外し、if の外の `stablehlo.select(pred, then 側, else 側)` にする |
+| 原因の見立て | `scf.if` の yield が関数の引数（のバッファ）をそのまま返すとき、結果の `hal.buffer_view` の参照が作られない（バッファのエイリアスの扱い）ように見える。未調査 |
+| nabla の対応 | `src/primitives/cond.lisp` の `%cond-emit`（採用理由は下）。形は `cond/emit-*`（`tests/cond-test.lisp`）が、IREE での実行は `cond-passthrough/*` と `pytree-control/jit-cond-with-tree-operands-matches-eager`（`tests/iree`）が守る。「今も落ちること」は `cond-passthrough/iree-known-bug-passthrough-operands-fail-at-run-time` が子プロセスで守り、直れば失敗する |
+| 確認した環境 | OrbStack の Rosetta 上の Linux x86_64 VM（`iree-run-module` はネイティブ x86 と同じ結果になるはずだが、CI での確認は未） |
+
+### nabla の回避策の選び方
+
+(A) 素通しを枝の中で barrier に通す案は効かなかった（上の表）。(B) select にする案を採った。素通しの出力は次のように書き換える。
+
+| 出力 | `stablehlo.if` の結果 | if の外 |
+| --- | --- | --- |
+| どちらの枝も計算 | そのまま | なし |
+| 片方の枝だけ素通し | 計算する側の値（素通しの枝は 0 の定数を返す） | `select(pred, 素通しの入力, 計算した値)`（素通しが else なら逆順） |
+| 両方の枝が素通し | 外す | `select(pred, then の入力, else の入力)` |
+
+結果が 1 つも残らないときは `stablehlo.if` 自体を出さない（その `cond*` だけを本体に持つ scan は、`src/scan.lisp` の本体のテキストの判定で「制御構造なし」となり ys の barrier が付くが、制御構造が無いので 7 の競合の条件を満たさず安全）。理由: (1) 動く。(2) dtype に依らず、値を変えない（`select` は NaN も -0.0 も整数もビットのまま選ぶ。`x + 0` の類は dtype ごとに演算が違い、-0.0 を壊す）。(3) pred は実行時の値なので、`select(c, x, x)` のように畳み込まれない。(4) emit だけで済み、eqn の形・eager・jvp・vmap は変わらない。コピーの量は、素通しの出力 1 つにつき、素通しの枝の側で 0 の定数の生成（選ばれたときだけ）と、if の後の `select` 1 回（入力 2 つを読み、1 つ書く）。素通しでない出力には何も増えない。
+
+### 下書き（英語）
+
+````markdown
+### What happened?
+
+With `llvm-cpu` and either the local-task or the local-sync driver, a `stablehlo.if` whose
+region returns three function arguments unchanged (pass-through results), next to one computed
+result, fails at run time when the *other* region is taken:
+
+    INVALID_ARGUMENT; ref is null; while invoking native function hal.buffer_view.create
+
+The module compiles without diagnostics. The region that returns the pass-through values runs
+fine. Wrapping the pass-through values in `stablehlo.optimization_barrier` (inside the region,
+or on the operands before the `if`) does not help; computing something that cannot be folded
+(e.g. adding a zero that went through a barrier) does, and so does moving the pass-through results out of the `if`
+into `stablehlo.select`. When the `if` results feed further ops instead of being returned
+directly, the failure is `OUT_OF_RANGE; indirect buffer reference ...` from
+`command_buffer_validation.c`.
+
+### Steps to reproduce your issue
+
+```sh
+iree-compile --iree-hal-target-device=local --iree-hal-local-target-device-backends=llvm-cpu \
+  if-passthrough-operands.mlir -o m.vmfb
+iree-run-module --device=local-task --module=m.vmfb --function=main \
+  --input=f32=0.0 --input=f32=1.0 --input=f32=2.0 --input=f32=3.0 --input=f32=4.0   # then region: OK
+iree-run-module --device=local-task --module=m.vmfb --function=main \
+  --input=f32=1.0 --input=f32=1.0 --input=f32=2.0 --input=f32=3.0 --input=f32=4.0   # else region: ref is null
+```
+
+```mlir
+func.func @main(%p: tensor<f32>, %a: tensor<f32>, %b: tensor<f32>, %c: tensor<f32>, %d: tensor<f32>)
+    -> (tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>) {
+  %half = stablehlo.constant dense<0.5> : tensor<f32>
+  %pred = stablehlo.compare LT, %p, %half : (tensor<f32>, tensor<f32>) -> tensor<i1>
+  %k = stablehlo.constant dense<0.9> : tensor<f32>
+  %r0, %r1, %r2, %r3 = "stablehlo.if"(%pred) ({
+    %t0 = stablehlo.multiply %a, %k : tensor<f32>
+    stablehlo.return %t0, %b, %c, %d : tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>
+  }, {
+    %e0 = stablehlo.multiply %a, %k : tensor<f32>
+    %e1 = stablehlo.multiply %b, %k : tensor<f32>
+    %e2 = stablehlo.multiply %c, %k : tensor<f32>
+    %e3 = stablehlo.multiply %d, %k : tensor<f32>
+    stablehlo.return %e0, %e1, %e2, %e3 : tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>
+  }) : (tensor<i1>) -> (tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>)
+  return %r0, %r1, %r2, %r3 : tensor<f32>, tensor<f32>, tensor<f32>, tensor<f32>
+}
+```
+
+Whether it fails depends on the layout of the results (C = computed in both regions, P = passed
+through by the first region, the second region computes everything): `CPPP`, `CPPPP`, `CPPPPP`
+and `PCPPP` fail; `PPPC`, `PPP`, `PPPP`, `CPP`, `PPC`, `CCPP`, `CCPPP`, `CPPPC`, `CPCPP`, `CPPCP`, `PCPC`
+and `CPCP` work.
+
+### What component(s) does this issue relate to?
+
+Runtime (possibly the compiler's handling of `scf.if` results that alias function arguments)
 
 ### Version information
 
