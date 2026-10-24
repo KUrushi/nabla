@@ -357,7 +357,20 @@ _canonicalize_axes）。範囲外は error。"
     (error "dropout: deterministic が偽のときは PRNG キーが要る（NIL が渡された）"))
   key)
 
-(defun %dropout-apply (x key rate deterministic)
+(defun %dropout-mask-shape (shape broadcast-dims)
+  "SHAPE の BROADCAST-DIMS の軸を 1 にした形（その軸で共有するマスクの形）。"
+  (loop for size in shape for axis from 0 collect (if (member axis broadcast-dims) 1 size)))
+
+(defun %dropout-uniform (key shape broadcast-dims)
+  "SHAPE の一様乱数（f32）。BROADCAST-DIMS の軸は 1 つ分だけ引いて SHAPE にブロードキャストする。"
+  (let ((u (nabla:uniform key (%dropout-mask-shape shape broadcast-dims) :dtype :f32)))
+    (if broadcast-dims
+        (nabla:broadcast-in-dim u shape (%range (length shape)))
+        u)))
+
+(defun %dropout-apply (x key rate deterministic &optional broadcast-dims)
+  "反転 dropout。BROADCAST-DIMS（0 以上の軸のリスト。Flax の Dropout の broadcast_dims）の軸ではマスクを共有する:
+マスクはその軸を大きさ 1 にした形で引き、X の形にブロードキャストする。"
   (cond ((or deterministic (zerop rate)) x)
         ;; keep = 0 の 1/keep は転置で 0/0 になるので別扱い。x < x は常に偽（inf / NaN でも）で、
         ;; 選ばれるのは 0 だけ（勾配も 0）
@@ -369,7 +382,7 @@ _canonicalize_axes）。範囲外は error。"
                          (if (< u keep) (/ x keep) 0))))
                     x
                     ;; 乱数は常に f32 で引く（Flax と同じ。x の dtype（bf16 / f16 / f64）によらず同じマスクになる）
-                    (nabla:uniform (%check-key key) (%shape x) :dtype :f32)
+                    (%dropout-uniform (%check-key key) (%shape x) broadcast-dims)
                     rate))))
 
 (defmodule dropout ((rate :static))
