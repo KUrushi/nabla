@@ -178,3 +178,32 @@ value-and-grad の値は f の eager の結果と一致する。"
            (is (every (lambda (r e) (allclose r e :dtype :f32)) got expected)))
       (nb::%jit-cache-forget (nb::%jitted-function-fn jitted)))
     (gc-and-run-finalizers)))
+
+;;; --- :has-aux（issue #260） ---
+
+(define-iree-test grad/jit-value-and-grad-has-aux-matches-eager
+    "(jit (value-and-grad f :has-aux t)) の (値 勾配 aux) が、eager の結果と f32 の許容誤差で一致し、aux の
+木の形（リスト）も同じ（ランダムな入力）。aux は f32 の配列と :i1 の配列を含む。"
+  (skip-unless-iree :library :both)
+  (let* ((backend (nabla:find-backend :iree))
+         (nb:*compile-cache-directory* nil)
+         (*num-trials* 4)
+         (vg (nb:value-and-grad (nb:with-tracing (x) (values (nb:reduce-sum (tanh (* x x)))
+                                                             (list (* 2 x) (< x 0))))
+                                :has-aux t))
+         (jitted (nb:jit vg :backend backend)))
+    (unwind-protect
+         (is (check-it (generator (integer 0 100000))
+                       (lambda (seed)
+                         (let ((x (%grad-random-array '(4) :f32 seed)))
+                           (multiple-value-bind (v g aux) (funcall jitted x)
+                             (multiple-value-bind (ev eg eaux) (funcall vg x)
+                               (and (allclose v ev :dtype :f32)
+                                    (allclose g eg :dtype :f32)
+                                    (= 2 (length aux))
+                                    (allclose (first aux) (first eaux) :dtype :f32)
+                                    (equalp (second aux) (second eaux)))))))
+                       :regression-id grad/jit-value-and-grad-has-aux-matches-eager
+                       :regression-file (regression-path "iree-grad-has-aux" :package "NABLA.IREE.TESTS")))
+      (nb::%jit-cache-forget (nb::%jitted-function-fn jitted)))
+    (gc-and-run-finalizers)))
