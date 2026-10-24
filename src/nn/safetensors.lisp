@@ -202,7 +202,7 @@ safetensors の書く順序とは限らず、保証するのは読み書きの�
 (defun write-safetensors (path entries &key metadata)
   "ENTRIES（ENCODE-SAFETENSORS と同じ）を PATH に safetensors として書く。
 一時ファイルに書いてから rename するので、読む側は書きかけのファイルを見ず、
-書き込みに失敗しても PATH の既存のファイルは壊れない。書き込んだファイルのパス名（PATH を現在のディレクトリを基準に絶対化したもの）を返す。"
+書き込みに失敗しても（プロセスの失敗に対して。fsync はしないので OS クラッシュ・電源断は対象外）PATH の既存のファイルは壊れない。書き込んだファイルのパス名（PATH を現在のディレクトリを基準に絶対化したもの）を返す。"
   (let* ((octets (encode-safetensors entries :metadata metadata))
          (path (merge-pathnames path (uiop:getcwd)))
          (tmp (merge-pathnames (format nil "~A.~D.tmp" (file-namestring path)

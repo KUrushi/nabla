@@ -324,3 +324,96 @@ eval-graph する経路の両方。結果が入力と EQ かどうかは問わ�
                 (%cond-avals '(2)))))
     (destructuring-bind (p x y) (%cond-arrays 4 '(2))
       (is (allclose (nb:eval-graph graph p x y) (reference-mul x y) :dtype :f32)))))
+
+;;; ---- emit: 枝が入力を素通しする出力の回避策（issue #226） ----
+;;;
+;;; IREE 3.11 は、stablehlo.if の枝が入力をそのまま stablehlo.return する出力を持つと、
+;;; もう片方の枝を選んだ実行時に "ref is null" で落ちることがある（docs/iree-upstream-bugs.md の 8、
+;;; docs/iree-repros/if-passthrough-operands.mlir）。nabla の emit は、そういう出力を
+;;; stablehlo.if の結果から外し、if の外の stablehlo.select(pred, then, else) にする。
+
+(defun %cond-emit-text (then else &key (shape '(2)) (outputs (length (nb:graph-outvars then))))
+  "THEN / ELSE（どれも operands u v w を受け取る枝）を %COND-EMIT で出したテキスト。
+pred は %p、operands は %u %v %w、出力は %o0 %o1 ...。"
+  (let ((aval (nb:make-aval shape :f32)))
+    (let ((nb::*stablehlo-region-counter* 0))
+      (nb::%cond-emit (list "%p" "%u" "%v" "%w")
+                      (list (nb:make-aval '() :i1) aval aval aval)
+                      (loop for j below outputs collect (format nil "%o~D" j))
+                      (loop repeat outputs collect aval)
+                      :then then :else else))))
+
+(defun %cond-branch-avals ()
+  (loop repeat 3 collect (nb:make-aval '(2) :f32)))
+
+(defmacro %cond-branch (&body body)
+  "u v w を受け取り BODY の値を返す枝のサブグラフ（[2] の f32 が3つ）。"
+  `(nb::trace-to-graph (nb:with-tracing (u v w) ,@body) (%cond-branch-avals)))
+
+(defun %cond-count-lines (needle text)
+  (count-if (lambda (line) (search needle line)) (%sg-lines text)))
+
+(test cond/emit-keeps-an-if-without-passthrough-outputs-as-is
+  "どちらの枝も入力を素通ししない cond は、今までどおり stablehlo.if だけを出す
+（select も、素通しの回避策の定数も入らない）。"
+  (let ((text (%cond-emit-text (%cond-branch (values (+ u v) (* u w)))
+                               (%cond-branch (values (- u v) (* v w))))))
+    (is (= 1 (%cond-count-lines "\"stablehlo.if\"" text)))
+    (is (= 0 (%cond-count-lines "stablehlo.select" text)))
+    (is (= 0 (%cond-count-lines "%cond_" text)))
+    (is (search "%o0, %o1 = \"stablehlo.if\"(%p)" text))))
+
+(test cond/emit-moves-passthrough-outputs-out-of-the-if
+  "枝が入力を素通しする出力は stablehlo.if の結果から外し、if の外の stablehlo.select(pred, then, else) にする。
+出力 o0 は両枝が計算（if に残る）、o1 は then だけが素通し、o2 は両枝が素通し（if から消える）、
+o3 は else だけが素通し。素通しの枝の側は 0 の定数（%cond_z_<出力>）を返す。"
+  (let ((text (%cond-emit-text (%cond-branch (values (+ u v) v w (* u w)))
+                               (%cond-branch (values (* u v) (+ v v) v w))
+                               :outputs 4)))
+    (is (= 1 (%cond-count-lines "\"stablehlo.if\"" text)))
+    ;; if の結果は o0 と、o1 / o3 の計算した側の一時値の3つ
+    (is (search "%o0, %cond_if_o1, %cond_if_o3 = \"stablehlo.if\"(%p)" text))
+    (is (search "-> (tensor<2xf32>, tensor<2xf32>, tensor<2xf32>)" text))
+    ;; 素通しの出力 o1 / o2 / o3 の select
+    (is (= 3 (%cond-count-lines "stablehlo.select" text)))
+    (is (search "%o1 = stablehlo.select %p, %v, %cond_if_o1 : (tensor<i1>, tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>" text))
+    (is (search "%o2 = stablehlo.select %p, %w, %v : (tensor<i1>, tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>" text))
+    (is (search "%o3 = stablehlo.select %p, %cond_if_o3, %w : (tensor<i1>, tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>" text))
+    ;; 0 の定数は、素通しの枝（o1 は then、o3 は else）に1つずつ
+    (is (= 1 (%cond-count-lines "%cond_z_o1 = stablehlo.constant dense<0.0> : tensor<2xf32>" text)))
+    (is (= 1 (%cond-count-lines "%cond_z_o3 = stablehlo.constant dense<0.0> : tensor<2xf32>" text)))
+    (is (= 2 (%cond-count-lines "= stablehlo.constant dense<0.0>" text)))
+    ;; どの stablehlo.return も、入力（%u %v %w）を直接返さない
+    (dolist (line (remove-if-not (lambda (l) (search "stablehlo.return" l)) (%sg-lines text)))
+      (is (null (or (search "%u" line) (search "%v" line) (search "%w" line)))
+          "stablehlo.return が入力を素通ししている: ~A" line))))
+
+(test cond/emit-drops-the-if-when-every-output-is-a-passthrough
+  "全ての出力がどちらかの枝の素通しなら、stablehlo.if 自体を出さず select だけにする
+（結果が無い stablehlo.if を出さない）。scan の ys の barrier を外す判定（本体のテキストに stablehlo.if が
+あるか）は、この if が消えると「制御構造なし」になり barrier が付く。制御構造が無くなるので、barrier と
+制御構造をはさむ書き込みの競合（上流バグの表の 7）の条件を満たさず、安全。"
+  (let ((text (%cond-emit-text (%cond-branch (values u v))
+                               (%cond-branch (values v w)))))
+    (is (= 0 (%cond-count-lines "stablehlo.if" text)))
+    (is (= 0 (%cond-count-lines "stablehlo.return" text)))
+    (is (search "%o0 = stablehlo.select %p, %u, %v :" text))
+    (is (search "%o1 = stablehlo.select %p, %v, %w :" text))))
+
+(test cond/emit-passthrough-constants-follow-the-output-dtype-and-shape
+  "素通しの回避策の 0 の定数は、出力の dtype と形を持つ（:i1 は false、整数は 0）。"
+  (flet ((text (dtype shape)
+           (let ((aval (nb:make-aval shape dtype)))
+             (let ((nb::*stablehlo-region-counter* 0)
+                   (graph (lambda (pass)
+                            (nb::trace-to-graph
+                             (if pass
+                                 (nb:with-tracing (u v) (values u v))
+                                 (nb:with-tracing (u v) (values (nb:convert (+ (nb:convert u :f32) 1.0) dtype) v)))
+                             (list aval aval)))))
+               (nb::%cond-emit (list "%p" "%u" "%v") (list (nb:make-aval '() :i1) aval aval)
+                               (list "%o0" "%o1") (list aval aval)
+                               :then (funcall graph nil) :else (funcall graph t))))))
+    (is (search "%cond_z_o0 = stablehlo.constant dense<false> : tensor<3xi1>" (text :i1 '(3))))
+    (is (search "%cond_z_o0 = stablehlo.constant dense<0> : tensor<2x2xi32>" (text :i32 '(2 2))))
+    (is (search "%cond_z_o0 = stablehlo.constant dense<0.0> : tensor<f64>" (text :f64 '())))))
