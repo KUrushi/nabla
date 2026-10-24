@@ -160,6 +160,9 @@ pretty form を出力する。
 **lecun_normal / 切断正規分布（truncated normal）**
 : Flax の `nn.Dense` の kernel の既定の初期化。分散 1/fan_in（fan_in は入力の幅）の正規分布のうち、平均から標準偏差の2倍より外を取り除いた（[-2, 2] で切った）もの。切ると標準偏差が 0.8796 倍に縮むので、1/0.8796 を前もってかけて、結果の標準偏差を sqrt(1/fan_in) に合わせる。nabla では `nabla:truncated-normal`（CDF の区間の一様乱数に erf の逆関数をかける、JAX と同じ方式）に `init-dense` が標準偏差をかけて作る。
 
+**GroupNorm（グループ正規化）**
+: チャンネル（最後の軸）を同じ大きさの群に分け、サンプルごと・群ごとに平均 0・分散 1 に正規化する層（Wu と He、2018）。BatchNorm と違いバッチの統計を使わないので、バッチが小さくても学習時と推論時で同じ計算になり、状態（移動平均）も持たない。群が 1 つなら（バッチ軸以外の全部での）LayerNorm、群の大きさが 1 なら InstanceNorm と同じ。nabla の `group-norm`（issue #260）は Flax の `nn.GroupNorm` に合わせ、分散は LayerNorm と同じ「速い分散」
+
 **LayerNorm の「速い分散」**
 : 分散を `E[x^2] - E[x]^2` で求める方式（Flax の `use_fast_variance` の既定）。データを1回なぞれば済むが、平均が標準偏差よりずっと大きいと桁落ちする（f32 で平均 3・標準偏差 2 の入力なら 1 桁ほど失う）。nabla の `layer-norm` は Flax と数値で一致させるため同じ式を使う。。平均が標準偏差よりずっと大きい行では分散が 0 に潰れ、出力が `(x - mean) / sqrt(epsilon)` に発散する（たとえば f32 の行 `[1e4, 1e4+1, 1e4+2, 1e4+3]` は E[x^2] と E[x]^2 が同じ値に丸まって分散が 0 になり、出力は ±1500 程度になる。Flax も同じ結果）
 
