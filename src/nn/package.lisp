@@ -79,3 +79,4 @@
    #:batch-norm-mean #:batch-norm-var #:batch-norm-momentum #:batch-norm-epsilon #:batch-norm-axis
    #:batch-norm-use-scale #:batch-norm-use-bias)
   (:documentation
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv、group-norm、batch-norm。"))
