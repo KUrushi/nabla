@@ -141,10 +141,40 @@ BODY は省略可の docstring と次の2つの節:
        (%make-optimizer (nabla:with-tracing ,(second init) ,@(%ignorable-body init))
                         (nabla:with-tracing ,(second update) ,@(%ignorable-body update))))))
 
+(defun %add-leaves (params updates)
+  "PARAMS と UPDATES（同じ構造の木）の葉ごとの和。"
+  (nabla:tree-map (lambda (p u) (%traced (p u) (+ p u))) params updates))
+
+(defun %apply-updates-walk (params updates)
+  "MAP-STATE と同じ規則（リスト・simple-vector・defmodule をたどる）で PARAMS と UPDATES を並べて歩き、
+:state のスロットの部分木は PARAMS の値をそのまま返し、それ以外の葉は足す。defpytree で登録した別の節は
+中に :state を持たないものとして TREE-MAP で足す。構造が同じことは呼び出し側が確かめてある。"
+  (cond ((listp params) (mapcar #'%apply-updates-walk params updates))
+        ((simple-vector-p params) (map 'simple-vector #'%apply-updates-walk params updates))
+        ((%module-entry params)
+         (%module-rebuild (class-name (class-of params))
+                          (lambda (name kind)
+                            (let ((value (slot-value params name)))
+                              (case kind
+                                (:param (%apply-updates-walk value (slot-value updates name)))
+                                (t value))))))
+        (t (%add-leaves params updates))))
+
 (defun apply-updates (params updates)
   "PARAMS（パラメータの木。モデルでもよい）の各葉に UPDATES の同じ位置の葉を足した、同じ構造の木を返す
-\(optimizer-update が返す更新量は、学習率の符号を含むので足すだけでよい)。"
-  (nabla:tree-map (lambda (p u) (%traced (p u) (+ p u))) params updates))
+\(optimizer-update が返す更新量は、学習率の符号を含むので足すだけでよい)。
+
+defmodule の :state のスロットの葉（BatchNorm の移動平均など。issue #260）には足さず、PARAMS の値を
+そのまま返す（学習しない状態をオプティマイザの更新量・weight decay で壊さない）。:state をたどる規則は
+MAP-STATE と同じ（リスト・simple-vector・defmodule）。状態を更新するモジュールの学習ステップでは、
+更新後のモジュール（value-and-grad の :has-aux の aux）に足す: (apply-updates new-model updates)。
+更新前のモデルに足すと、状態は更新されないまま残る。UPDATES の構造が PARAMS と違えば
+pytree-structure-mismatch。"
+  (unless (nabla:treedef= (nabla:tree-structure params) (nabla:tree-structure updates))
+    (error 'nabla:pytree-structure-mismatch
+           :format-control "apply-updates: params と updates の木の形が違う: ~S と ~S"
+           :format-arguments (list (nabla:tree-structure params) (nabla:tree-structure updates))))
+  (%apply-updates-walk params updates))
 
 ;;; --- 状態を持たない変換 ---
 
