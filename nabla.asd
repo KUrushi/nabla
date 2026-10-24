@@ -446,6 +446,8 @@
                (:file "tests/iree/input-limit-test")
                ;; stablehlo.if の枝が入力を素通しすると落ちる IREE のバグの回避（issue #226）
                (:file "tests/iree/cond-passthrough-test")
+               ;; 1 つの dispatch の binding の上限（32）に当たる IREE の制限の回避（issue #264）
+               (:file "tests/iree/binding-limit-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
                (:file "tests/iree/mlp-train-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）

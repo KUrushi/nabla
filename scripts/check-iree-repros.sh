@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docs/iree-repros/ の最小再現（IREE 3.11 のバグ 1〜8。docs/iree-upstream-bugs.md）を
+# docs/iree-repros/ の最小再現（IREE 3.11 のバグ 1〜8 と制限 10。docs/iree-upstream-bugs.md）を
 # 単体の iree-compile / iree-run-module にかけ、バグが今も再現するかを報告する。IREE を上げたときに
 # 回避策を外せるかの最初の確認に使う（手順は docs/iree-build.md）。
 #
@@ -22,6 +22,11 @@
 #           入力はファイルの `// INPUT: --input=...` の行（最初の入力は pred 用で、bug は 1.0 の
 #           else の枝で落ちる。control は 0.0 と 1.0 の両方で通る）。fail-bug は 1 回でも
 #           終了コードが 0 でなければ REPRODUCED、fail-control は全部 0 なら OK
+#   limit-bug / limit-control: ロード時に制限（binding count N > 32。docs/iree-upstream-bugs.md の 10）で
+#           失敗する形（終了コード 1）。nabla の回避策のフラグを付けずに iree-compile した vmfb を
+#           local-task と local-sync の両方で実行する（入力は main の引数の個数ぶんの --input=3xf32=1,2,3）。
+#           limit-bug は 1 回でも終了コードが 0 でなければ REPRODUCED（出力に "binding count" が
+#           無い失敗は別の原因なので終了コード 2 で止める）、limit-control は全部 0 なら OK
 #   race-bug / race-control: 実行時に、まれに結果が壊れるバグ（クラッシュではない）。vmfb を
 #           local-sync で 1 回実行した結果を正とし、local-task で RACE_RUNS 回実行して
 #           出力が違った回数を数える。入力はファイルの `// INPUT: --input=...` の行。
@@ -85,6 +90,8 @@ CASES=(
   "run-control local-task-161-inputs.mlir"
   "fail-bug     if-passthrough-operands.mlir"
   "fail-control if-passthrough-operands-select.mlir"
+  "limit-bug     elementwise-chain-32-inputs.mlir"
+  "limit-control elementwise-chain-31-inputs.mlir"
   "race-bug     nested-scan-ys-barrier-race.mlir"
   "race-control nested-scan-ys-no-barrier.mlir"
   "race-bug     nested-scan-ys-if-race.mlir"
@@ -138,6 +145,26 @@ fail_run() {
   echo "${bad}"
 }
 
+# limit_run ファイル: local-task と local-sync の両方で実行し、終了コードが 0 でなかった実行の回数を返す。
+# bug の側は、失敗した実行の出力に "binding count" が無ければ（別の理由で落ちた）コンパイルエラー扱いで止める
+limit_run() {
+  local file="$1" kind="$2" bad=0 dev out inputs j input_args=()
+  { "${IREE_COMPILE}" --iree-hal-target-device=local \
+      --iree-hal-local-target-device-backends=llvm-cpu \
+      "${REPRO_DIR}/${file}" -o "${WORK_DIR}/l.vmfb" >/dev/null; } 2>/dev/null || { echo "error: ${file} did not compile" >&2; exit 2; }
+  inputs=$(grep -m1 'func.func @main' "${REPRO_DIR}/${file}" | grep -o '%a[0-9]*:' | wc -l)
+  for ((j = 0; j < inputs; j++)); do input_args+=(--input=3xf32=1,2,3); done
+  for dev in local-task local-sync; do
+    if ! out=$("${IREE_RUN}" --device="${dev}" --module="${WORK_DIR}/l.vmfb" --function=main "${input_args[@]}" 2>&1); then
+      bad=$((bad + 1))
+      if [[ "${kind}" == limit-bug && "${out}" != *"binding count"* ]]; then
+        echo "error: ${file} failed on ${dev} for a reason other than the binding count" >&2; exit 2
+      fi
+    fi
+  done
+  echo "${bad}"
+}
+
 "${IREE_COMPILE}" --version | sed -n '2p'
 status=0
 start_stress
@@ -155,6 +182,16 @@ for entry in "${CASES[@]}"; do
       if ((bad == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
     fi
     printf '%-12s %-40s %-15s mismatches=%d/%d\n' "${kind}" "${file}" "${verdict}" "${bad}" "${RACE_RUNS}"
+    continue
+  fi
+  if [[ "${kind}" == limit-* ]]; then
+    bad=$(limit_run "${file}" "${kind}")
+    if [[ "${kind}" == limit-bug ]]; then
+      if ((bad > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
+    else
+      if ((bad == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
+    fi
+    printf '%-12s %-40s %-15s failing-runs=%d\n' "${kind}" "${file}" "${verdict}" "${bad}"
     continue
   fi
   if [[ "${kind}" == fail-* ]]; then

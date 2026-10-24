@@ -72,9 +72,6 @@ jobs:
       - name: Verify IREE (CPU only)
         run: scripts/verify-iree.sh
 
-      - name: TEMP binding experiment (issue 264)
-        run: scripts/tmp-binding-experiment.sh
-
       - name: Cache PJRT CPU plugin
         id: cache-pjrt
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -90,11 +87,10 @@ jobs:
         run: |
           echo "started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           SECONDS=0
-          NABLA_TMP_IREE_EXTRA_FLAGS=--iree-dispatch-creation-fuse-multi-use=false scripts/run-tests.sh
+          scripts/run-tests.sh
           echo "run-tests.sh took ${SECONDS}s. finished at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
       - name: Run nabla-mutate's own test suite
-        if: false
         run: |
           CL_SOURCE_REGISTRY="$(pwd)//:${NABLA_LISP_DEPS}//:" \
             sbcl --non-interactive \

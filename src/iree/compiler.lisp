@@ -122,21 +122,27 @@ SYSTEM-LIBRARY が真なら、:local に --iree-llvmcpu-link-embedded=false を
 共有ライブラリ）を作らせる。libm を呼ぶモジュール（%needs-libm-p）にだけ
 使うこと。理由と代償は %needs-libm-p を参照。:cuda では無視する。
 
+:local には --iree-dispatch-creation-fuse-multi-use=false を付ける（issue #264、
+docs/iree-upstream-bugs.md の 10）。IREE 3.11 の FuseMultiUseElementwiseProducerPass は
+dispatch のオペランドの上限（kIreeMaxOperandCount = 16）を見ずに要素ごとの演算を融合し、
+32 個以上の入力を逐次に足していく連鎖が 1 つの dispatch になって、ロード時に HAL モジュールの
+上限で `binding count N > 32` になる。このフラグはその pass（dispatch 形成の前の段）だけを
+止める。代償は dispatch の数（examples/transformer.lisp の学習ステップで 319 → 409）で、
+CPU で測った学習ステップの時間・コンパイル時間は変わらなかった。:cuda は未測定なので付けない。
+
 注意（将来 jit キャッシュを作るとき向け）: :local のフラグは
 NABLA_IREE_HOME/bin/iree-lld の有無というファイルシステムの状態に依存する。
 CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引数 +
 コンパイルターゲット）はこれを含まないので、そのままだとキャッシュキーに
 現れない「隠れた入力」になる。iree-lld を後から追加・削除する運用がある間は、
 jit の実装側でこれをキーに含めるか、プロセス起動時に固定するかを決めること。"
-  (append
-   (let ((tmp (uiop:getenv "NABLA_TMP_IREE_EXTRA_FLAGS"))) ; TEMP（#264 の実験）。消す
-     (and tmp (plusp (length tmp)) (list tmp)))
   (ecase target
     (:local (append (list "--iree-input-type=stablehlo"
                            "--iree-input-demote-f64-to-f32=false"
                            "--iree-hal-target-device=local"
                            "--iree-hal-local-target-device-backends=llvm-cpu"
-                           "--iree-llvmcpu-target-cpu=host")
+                           "--iree-llvmcpu-target-cpu=host"
+                           "--iree-dispatch-creation-fuse-multi-use=false")
                      (if system-library
                          (list "--iree-llvmcpu-link-embedded=false")
                          (%embedded-linker-flags))))
@@ -144,7 +150,7 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
                           "--iree-input-demote-f64-to-f32=false"
                           "--iree-hal-target-device=cuda")
                     (when cuda-arch
-                      (list (format nil "--iree-cuda-target=~A" cuda-arch))))))))
+                      (list (format nil "--iree-cuda-target=~A" cuda-arch)))))))
 
 (defparameter *libm-f64-ops* '("exponential" "log" "tanh"
                                "exponential_minus_one" "log_plus_one" "sine" "cosine")

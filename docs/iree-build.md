@@ -415,7 +415,7 @@ CPU: 4 コア、メモリ 15 GB、GPU なし。
 
 ## IREE を上げたときに回避策を外せるか確かめる手順
 
-IREE 3.11.0 のバグ（issue #73、#165、#199、#203、#220、#226、#243。詳細・最小の再現・上流への報告の下書きは [`docs/iree-upstream-bugs.md`](iree-upstream-bugs.md)）に対して、nabla は回避策を入れている。`third_party/iree.lock` を上げる PR では、次の手順で各バグが直ったかを確かめ、直ったものだけ回避策を外す（外すのは別の PR に分けてよい）。
+IREE 3.11.0 のバグ（issue #73、#165、#199、#203、#220、#226、#243、#264。詳細・最小の再現・上流への報告の下書きは [`docs/iree-upstream-bugs.md`](iree-upstream-bugs.md)）に対して、nabla は回避策を入れている。`third_party/iree.lock` を上げる PR では、次の手順で各バグが直ったかを確かめ、直ったものだけ回避策を外す（外すのは別の PR に分けてよい）。
 
 ### 1. 単体の iree-compile で最小の再現を流す
 
@@ -439,6 +439,8 @@ run-bug     local-task-162-inputs.mlir               REPRODUCED      crashes=20/
 run-control local-task-161-inputs.mlir               OK              crashes=0/20 exit-codes=0
 fail-bug     if-passthrough-operands.mlir             REPRODUCED      failing-runs=2
 fail-control if-passthrough-operands-select.mlir      OK              failing-runs=0
+limit-bug    elementwise-chain-32-inputs.mlir         REPRODUCED      failing-runs=2
+limit-control elementwise-chain-31-inputs.mlir        OK              failing-runs=0
 ```
 
 `error-bug` の行（`conv-convert-operand-type.mlir` と `conv-depthwise-collapse-shape.mlir`。`docs/iree-upstream-bugs.md` の 4・5、#203）は、クラッシュではなく通常のコンパイルエラー（終了コード 1）で落ちるバグの確認で、`iree-compile` の終了コードが 0 でない実行が 1 回でもあれば `REPRODUCED`。対の `control`（2つの f32 を `optimization_barrier` に通した形）は全回コンパイルできれば `OK`。`error-bug` が `NOT-REPRODUCED` になったら、`src/primitives/conv.lisp` の `%conv-emit-lines` が bf16 / f16 の畳み込みの operand を `stablehlo.optimization_barrier` に通す処理と、`tests/iree/conv-grad-test.lisp` の `convolution/iree-bf16-convert-conv-bugs-still-reproduce` を外せるか判断する（外した形で bf16 / f16 の畳み込みのテスト、depthwise を含めて通ることを確かめる）。
@@ -446,6 +448,8 @@ fail-control if-passthrough-operands-select.mlir      OK              failing-ru
 `fail-bug` / `fail-control` の行（`if-passthrough-operands*.mlir`。`docs/iree-upstream-bugs.md` の 8、#226）は、コンパイルは通り実行時に `ref is null` で失敗するバグの確認で、vmfb を local-task と local-sync の両方で `iree-run-module` に流す。`fail-bug` は pred = 1.0（else の枝）で終了コードが 0 でない実行が 1 回でもあれば `REPRODUCED`、`fail-control` は pred = 0.0 と 1.0 の全ての実行が 0 なら `OK`。`fail-bug` が `NOT-REPRODUCED` になったら、`src/primitives/cond.lisp` の `%cond-emit` が素通しの出力を `stablehlo.select` に書き換える処理（と `cond-passthrough/iree-known-bug-*` のテスト）を外せるか判断する。外すと `stablehlo.if` が素通しの結果をそのまま返す元の形に戻り、`cond/emit-*` の small テストも消す。
 
 `race-bug` / `race-control` の行（`nested-scan-ys-*.mlir`。`docs/iree-upstream-bugs.md` の 7、#220）は、実行時にまれに結果が壊れるバグの確認で、スクリプトが CPU の数だけ負荷をかけながら local-task と local-sync の出力を `--race-runs` 回（既定 4000）比べる。`race-bug` が `NOT-REPRODUCED` になったら、`--race-runs` を増やして（起きる確率は 0.05〜2%）もう一度確かめてから、`src/scan.lisp` の「ys の barrier を付けない」条件（本体の中の制御構造）を外せるか判断する。
+
+`limit-bug` / `limit-control` の行（`elementwise-chain-3*-inputs.mlir`。`docs/iree-upstream-bugs.md` の 10、#264）は、32 個以上の入力を逐次に足す連鎖が 1 つの dispatch に融合され、ロード時に `binding count N > 32` で失敗する制限の確認で、nabla の回避策のフラグを付けずにコンパイルした vmfb を local-task と local-sync で実行する。`limit-bug` は失敗が 1 回でもあれば `REPRODUCED`（出力に `binding count` が無い失敗は別の原因なので終了コード 2）、`limit-control`（31 個）は全部通れば `OK`。`limit-bug` が `NOT-REPRODUCED` になったら、`src/iree/compiler.lisp` の `compile-flags` が `:local` に付ける `--iree-dispatch-creation-fuse-multi-use=false` を外せるか判断する（外すと dispatch の融合が IREE の既定に戻る。`binding-limit/local-task-runs-elementwise-chains-of-32-to-161-leaves` が引き続き通ることを確かめる）。
 
 `run-bug` / `run-control` の行（`local-task-16*-inputs.mlir`。6、#199）はコンパイルした vmfb を `iree-run-module --device=local-task` で実行する版で、入力 162 個以上の関数を local-task device で呼ぶと落ちるバグ（#199）の確認。直ったら `nabla.iree` の `+local-task-max-inputs+` の検査（`src/iree/execute.lisp`）も外す。
 
@@ -468,6 +472,7 @@ NABLA_IREE_HOME=<新しい版> NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 | 6. local-task の入力 162 個以上（実行時） | `input-limit-test.lisp` の `input-limit/iree-known-bug-local-task-162-inputs-crashes`（`iree-run-module` を子プロセスで実行し、162 個で落ちること） | 失敗する |
 | 7. 制御構造をはさんだ ys の barrier の race | ガードテストは無い（まれにしか起きない）。手順 1 の `race-bug` で判断する | 失敗しない |
 | 8. `stablehlo.if` の素通し（#226） | `cond-passthrough-test.lisp` の `cond-passthrough/iree-known-bug-passthrough-operands-fail-at-run-time`（子プロセスで実行して失敗すること） | 失敗する |
+| 10. 要素ごとの連鎖の binding の上限（#264） | `binding-limit-test.lisp` の `binding-limit/iree-known-limit-32-input-chain-fails-at-load`（子プロセスで、フラグなしの 32 個の連鎖が `binding count 33 > 32` で失敗し、31 個とフラグ付きの 32 個が通ること） | 失敗する |
 
 回避策が新しい版でも効いていることは、`while-loop/iree-constant-carry-with-barrier-compiles-repeatedly`・`tests/iree/scan-test.lisp`・`tests/iree/dot-test.lisp` の `dot-general/zero-contracting-compiles-and-matches-eager` が引き続き確かめる（こちらは失敗してはいけない）。
 
