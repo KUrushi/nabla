@@ -741,7 +741,7 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 
 ## 10. 32 個以上の入力を逐次に足す要素ごとの連鎖が 1 つの dispatch に融合され、ロード時に `binding count N > 32` で失敗する（#264）
 
-コンパイルは通り、**モジュールのロード時**に失敗する（クラッシュではなく、終了コード 1 のエラー。nabla では `session-append-module` が `iree-status-error` を signal し、jit は `jit-compile-error` に包む）。IREE 3.11 はコマンドバッファをモジュールの初期化（`module.__init`）で記録するので、`hal.command_buffer.dispatch` の検査がロード時に走る。決定的。ドライバに依らない（local-task も local-sync も同じ）。
+コンパイルは通り、**モジュールのロード時**に失敗する（クラッシュではなく、終了コード 1 のエラー。nabla では `session-append-module` が `iree-status-error` を signal し、jit は `jit-compile-error` に包む）。IREE 3.11 はコマンドバッファをモジュールの初期化（`module.__init`）で記録するので、`hal.command_buffer.dispatch` の検査がロード時に走る。決定的。ドライバに依らない（local-task も local-sync も同じ）。CUDA ではドライバの上限が 16 なので、同じ連鎖が入力 16 個から別の検査（`binding_flags count N exceeds maximum of 16`）で落ちる（下の「CUDA」）。
 
 | 項目 | 内容 |
 | --- | --- |
@@ -749,13 +749,13 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 | 上流の状況 | 未検索（起票の前に `binding count`、`FuseMultiUseElementwiseProducer operand limit`、`kIreeMaxOperandCount` で検索すること）。upstream main（2026-10-24 に確認）でも `IREE_HAL_MODULE_MAX_DESCRIPTOR_BINDING_COUNT` は 32、`FuseMultiUseElementwiseProducer.cpp` に `kIreeMaxOperandCount` の検査は無い |
 | 再現ファイル | `docs/iree-repros/elementwise-chain-32-inputs.mlir`（`tensor<3xf32>` の入力 32 個を `%r = %r + %a_i` で逐次に足して 1 つ返す）。対照は `elementwise-chain-31-inputs.mlir`（31 個） |
 | 再現のしかた | `iree-compile` した vmfb を `iree-run-module --device=local-task --function=main --input=3xf32=1,2,3 …`（入力の個数ぶん）で実行する。`--device=local-sync` でも同じ。`scripts/check-iree-repros.sh` の limit-bug / limit-control の行 |
-| 症状 | `iree-src/runtime/src/iree/modules/hal/module.c:1077: OUT_OF_RANGE; binding count 33 > 32; while invoking native function hal.command_buffer.dispatch; while calling import; [ 1] bytecode module.__init:…` |
+| 症状 | `iree-src/runtime/src/iree/modules/hal/module.c:1077: OUT_OF_RANGE; binding count 33 > 32; while invoking native function hal.command_buffer.dispatch; while calling import; [ 1] bytecode module.__init:…`。CUDA では `iree-src/runtime/src/iree/hal/drivers/cuda/native_executable.c:230: INVALID_ARGUMENT; exports[0] binding_flags count 17 exceeds maximum of 16; while invoking native function hal.executable.create; while calling import;` |
 | 上限の出どころ | ランタイムの HAL の VM モジュール（`runtime/src/iree/modules/hal/module.c`）の `#define IREE_HAL_MODULE_MAX_DESCRIPTOR_BINDING_COUNT ((iree_host_size_t)32)`（「呼び出し中に stack があふれないように」というコメント付き）。コンパイル時の定数で、ランタイムにもコンパイラにもフラグは無い。ドライバの層より上なので、どのドライバでも同じ（ローカル実行の実行ファイル側の上限 `IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT` は 64、CUDA の `IREE_HAL_CUDA_MAX_DISPATCH_BINDING_COUNT` は 16） |
 | 原因 | コンパイラは `compiler/src/iree/compiler/DispatchCreation/FusionUtils.h` の `kIreeMaxOperandCount = 16`（「CUDA / HIP / Metal の 16 binding に合わせる」）で、`ElementwiseOpFusionPass`（`ElementwiseOpFusion.cpp`）と `FormDispatchRegionsPass`（`FusionGroup::wouldExceedOperandLimit`）の融合を止める。ところが dispatch 形成の前に走る `FuseMultiUseElementwiseProducerPass`（`FuseMultiUseElementwiseProducer.cpp`。名前に反して use が 1 つの producer も融合する）にはこの検査が無く、16 個未満ずつにまとまった `linalg.generic` をさらに 1 つに融合する。`--compile-to=flow` で見ると、入力 40 個の連鎖は 40 オペランドの `flow.dispatch` 1 つになる。この pass を止めるフラグ（下の回避策）だけで通ることと、ソースにこの検査が無いことから、この pass が原因と見ている（どの pass の後でオペランドが 16 を超えるかの IR の確認はしていない） |
 | binding の数え方 | その dispatch に入る別々のテンソル + 結果。入力 N 個の連鎖が 1 つの dispatch になると N + 1。何個ずつにまとまるかは融合のされ方で決まり、単調ではない（下の表） |
 | 回避策 | `--iree-dispatch-creation-fuse-multi-use=false`（`compiler/src/iree/compiler/Pipelines/Options.h` の `enableFuseMultiUse`、既定 true）。dispatch 形成の前の `FuseMultiUseElementwiseProducerPass` だけを止める（形成の後に dispatch の中で走る同じ pass は止めない）。入力 32〜160 個の連鎖が local-task / local-sync で通る（測った N は 33・40・100・120・128・129・140・150・155・158・159・160。161 個以上は local-task で 6 のクラッシュに当たる（下の「161 個の入力」）。local-sync は 1000 個まで通る）。全ての形で binding が 32 以下になる保証ではない（下の「nabla の回避策の選び方」の最後の段落） |
-| nabla の対応 | `src/iree/compiler.lisp` の `compile-flags` が `:local` にこのフラグを付ける（理由と代償は下）。回避策は `binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves`（葉 32〜160 個の連鎖を jit して eager と一致）が、「今も落ちること」は `binding-limit/iree-known-limit-32-input-chain-fails-at-load`（`tests/iree/binding-limit-test.lisp`。子プロセスでフラグなしの 32 個が失敗し、31 個とフラグ付きの 32 個が通る）が守り、直れば失敗する |
-| 確認した環境 | GitHub Actions の ubuntu-24.04（x86_64、ネイティブ）。PR #268 の CI の一時的な実験の run で測った（Actions の run 40083566337: 形と N の表・効かなかったフラグ、40084490175: N = 41〜170・slice・代償の測定・race、40087237694: 161 個の境界）。実験のスクリプトは消した |
+| nabla の対応 | `src/iree/compiler.lisp` の `compile-flags` が `:local` と `:cuda` の両方にこのフラグを付ける（理由と代償は下）。回避策は `binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves`（葉 32〜160 個の連鎖を jit して eager と一致）と、GPU の large テスト `binding-limit/cuda-runs-elementwise-chains-of-16-to-160-leaves`（cuda で葉 16〜160 個）が、「今も落ちること」は `binding-limit/iree-known-limit-32-input-chain-fails-at-load`（`tests/iree/binding-limit-test.lisp`。子プロセスでフラグなしの 32 個が失敗し、31 個とフラグ付きの 32 個が通る）が守り、直れば失敗する |
+| 確認した環境 | GitHub Actions の ubuntu-24.04（x86_64、ネイティブ）。PR #268 の CI の一時的な実験の run で測った（Actions の run 40083566337: 形と N の表・効かなかったフラグ、40084490175: N = 41〜170・slice・代償の測定・race、40087237694: 161 個の境界）。実験のスクリプトは消した。CUDA は Colab の Tesla T4（compute capability 7.5、ドライバ 580.82.07、x86_64 の Xeon 2 コア）で、nabla の jit から測った（2026-10-24、測定のスクリプトはリポジトリに入れていない） |
 
 6 の「2つ目の観察」（入力 170 個の連鎖で `51 > 32`、160 個で `41 > 32`）はこの制限で、下の表と一致する。
 
@@ -775,6 +775,27 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 
 効かなかったフラグ: `--iree-opt-level=O0`、`--iree-dispatch-creation-opt-level=O0`、`--iree-dispatch-creation-enable-aggressive-fusion=false`、`--iree-dispatch-creation-enable-fuse-horizontal-contractions=false`。
 
+### CUDA
+
+Colab の Tesla T4 で、葉 N 個の `tensor<3xf32>` を `%r = %r + %a_i` で逐次に足す関数を nabla の jit で cuda の backend に流し、eager と比べた（N ごとに別のプロセス）。同じ VM の local（フラグの有無を切り替え）も対照として測った。
+
+| target | フラグなし | フラグあり |
+| --- | --- | --- |
+| cuda | N = 8 は通る。N = 16・17・24・31・32・33・48 は `binding_flags count N+1 exceeds maximum of 16`、N = 64・100・160 は `count 41` でロード時に失敗 | N = 8〜160（8・16・17・24・31・32・33・48・64・100・160）がすべて通り、eager と一致 |
+| local | N ≤ 31 は通る。N = 32 から `binding count N+1 > 32`（64・100・160 は 41）で失敗 | N = 8〜160 がすべて通る |
+
+CUDA の上限はドライバの `IREE_HAL_CUDA_MAX_DISPATCH_BINDING_COUNT` = 16 で、HAL モジュールの 32 より先に当たる。失敗は `hal.executable.create` の中（モジュールのロード時）。binding の数は local と同じく N + 1 か 41 で、融合のされ方はターゲットに依らない。
+
+代償（`examples/transformer.lisp` の学習ステップ、バッチ 16、100 ステップの中央値。時計の分解能は約 1 ms）:
+
+| 項目 | フラグなし | フラグあり |
+| --- | --- | --- |
+| cuda、2 層: 学習ステップ / 最初の呼び出し（コンパイルを含む） | 19 ms / 11.8 s | 20 ms / 12.5 s |
+| cuda、6 層: 学習ステップ / 最初の呼び出し | 51 ms / 16.6 s | 52 ms / 17.6 s |
+| local（同じ VM）、2 層: 学習ステップ / 最初の呼び出し | 3 ms / 8.6 s | 4 ms / 10.2 s |
+
+CUDA ではカーネルの起動が増える分、学習ステップが約 1 ms（2〜5%）、最初の呼び出しが 5〜8% 遅くなった。連鎖が 16 個で落ちるのに比べて小さいので、`:cuda` にも付ける。local の 6 層は入力が 309 個で 6 の上限に当たり測れなかった（この測定のブランチに #242 の連結が無いため）。
+
 ### 161 個の入力（6 との関係）
 
 6 は「入力 162 個以上で local-task が落ちる」と書いたが、**入力 161 個でも落ちる形がある**。run 40087237694 で、入力 161 個の平衡二分木の加算（フラグなし）と、161 個の逐次の連鎖（フラグ付き。3 回とも）が local-task で SIGSEGV（終了コード 139）になった。160 個はどちらも通り、local-sync は 161・162 個とも通る。一方、161 個の `concatenate`（1 出力）と 161 個の独立の `tanh`（6 の `local-task-161-inputs.mlir`）は通る。中間の値（dispatch の間で受け渡す一時バッファ）を持つ形だけが 1 つ早く落ちるので、6 の落ちる場所（`iree_hal_task_queue_issue_cmd_allocate` の中の `iree_task_call_initialize`）から見て、入力に一時バッファの確保を足した数で決まっているように見える（未調査）。nabla の jit で葉 161 個の連鎖を local-task で呼ぶと、`+local-task-max-inputs+` = 161 の検査を通ってしまい、プロセスが `memory fault` で落ちた（PR #268 の CI）。`+local-task-max-inputs+` を 160 にするか、6 の条件を測り直すのは #242 の作業と合わせて決める（この PR では変えていない）。そのため `binding-limit/local-task-runs-elementwise-chains-of-32-to-160-leaves` は 160 個までを確かめる。
@@ -783,7 +804,7 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 
 | 案 | 判断 |
 | --- | --- |
-| (c) コンパイラのフラグ `--iree-dispatch-creation-fuse-multi-use=false` | **採用**（`:local` のみ）。変更は `compile-flags` の 1 行で、vmfb のキャッシュのキーはフラグを含む（`backend-fingerprint`）ので古い vmfb は使われない |
+| (c) コンパイラのフラグ `--iree-dispatch-creation-fuse-multi-use=false` | **採用**（`:local` と `:cuda`）。変更は `compile-flags` の 1 行で、vmfb のキャッシュのキーはフラグを含む（`backend-fingerprint`）ので古い vmfb は使われない |
 | (a) backend が binding の上限も申告し、#242 の連結（同じ dtype の葉を 1 本にまとめて本体で slice する）をこの形でも起こす | 見送り。連結の後の形（上の表の slice の行）はフラグなしでも通るので成立はするが、#242 のマージが前提で、葉が 32 個を超える jit が全てホスト側の連結のコストを払う。どの形が上限に当たるかはコンパイラの融合で決まり、nabla の側からは数えられない（入力の個数で決めると、当たらない形も連結する）。(c) で足りない形が見つかったときの後続にする |
 | (b) emit で大きな要素ごとの式を `optimization_barrier` で分ける | 見送り。全モデルの emit に影響し、どこで分ければ dispatch が上限の内に収まるかを nabla は知らない。(c) で足りる |
 
@@ -800,7 +821,7 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 | 7 の race の再現（バグの形 `nested-scan-ys-barrier-race.mlir` / `nested-scan-ys-if-race.mlir`） | 0 / 3 回 | 1 / 3 回 |
 | 既定のテストスイート（small + medium、IREE と PJRT を含む） | 通る | 通る（PR #268 の最終の CI。実験の run では small の `compile-flags` の先頭を確かめるテストが 1 件落ちたが、実験のためにフラグをリストの先頭に足したため） |
 
-dispatch は 3 割近く増えるが、CPU の時間には現れなかった（小さなテンソルでは dispatch あたりの費用が小さい）。7 の race はフラグの有無で傾向が変わらない（0 回は安全の証明ではない。7 の注意と同じ）。`:cuda` は測っていないので付けない。CUDA ではカーネルの起動が増える分だけ影響が大きくなりうるうえ、CUDA の dispatch の上限は 16 なので、フラグなしでは入力 17〜31 個の連鎖が CUDA で別の検査に当たる可能性がある（未確認。`scripts/colab-gpu-check.sh` で確かめるのが後続）。
+dispatch は 3 割近く増えるが、CPU の時間には現れなかった（小さなテンソルでは dispatch あたりの費用が小さい）。7 の race はフラグの有無で傾向が変わらない（0 回は安全の証明ではない。7 の注意と同じ）。CUDA の代償は下の「CUDA」の表。
 
 このフラグは見つけた 1 つの仕組み（`FuseMultiUseElementwiseProducerPass` が上限を見ないこと）を止めるだけで、全ての形で binding が 32 以下になる保証ではない（transformer の学習ステップには、フラグの有無に依らず `flow.dispatch` のオペランドが 38 個の dispatch がある。動いているので、スカラーや同じバッファの重複を含み binding は 32 以下と見ている。未調査）。別の形で `binding count N > 32` が出たら、この節に形を足し、(a) を検討する。
 
@@ -814,6 +835,8 @@ A chain of elementwise ops that folds 32 or more distinct inputs one after anoth
 `OUT_OF_RANGE; binding count 33 > 32; while invoking native function hal.command_buffer.dispatch`
 (`runtime/src/iree/modules/hal/module.c`, `IREE_HAL_MODULE_MAX_DESCRIPTOR_BINDING_COUNT` = 32).
 31 inputs work. It fails the same way with `--device=local-task` and `--device=local-sync`.
+On CUDA (Tesla T4) the same chain already fails at 16 inputs, with
+`exports[0] binding_flags count 17 exceeds maximum of 16` from `hal.executable.create`.
 
 DispatchCreation caps fused operands at `kIreeMaxOperandCount` = 16 in ElementwiseOpFusion and
 FormDispatchRegions, but `FuseMultiUseElementwiseProducerPass` has no such check: with

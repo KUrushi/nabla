@@ -102,3 +102,19 @@ backend で jit した結果は eager と一致する（回避策の --iree-disp
     (is (check-it (generator (uniform-integer :lo 33 :hi 159))
                   (lambda (n) (%bl-chain-matches-eager-p backend n))))
     (gc-and-run-finalizers)))
+
+(define-iree-test/large binding-limit/cuda-runs-elementwise-chains-of-16-to-160-leaves
+    "葉が 16〜160 個（境界の 16・160 と、その間のランダムな個数）の要素ごとの加算の連鎖を、cuda の
+backend で jit した結果は eager と一致する（回避策の --iree-dispatch-creation-fuse-multi-use=false が
+無いと、16 個以上はロード時に CUDA の dispatch の上限で `binding_flags count 17 exceeds maximum of 16`
+になる。Colab の T4 で測った。docs/iree-upstream-bugs.md の 10）。"
+  (skip-unless-iree :library :both)
+  (skip-unless-cuda)
+  (let ((backend (nabla:make-backend :iree :target :cuda))
+        (*num-trials* 6)
+        (nb:*compile-cache-directory* nil))
+    (dolist (n '(16 160))
+      (is (%bl-chain-matches-eager-p backend n) "葉 ~D 個の連鎖" n))
+    (is (check-it (generator (uniform-integer :lo 17 :hi 159))
+                  (lambda (n) (%bl-chain-matches-eager-p backend n))))
+    (gc-and-run-finalizers)))
