@@ -36,6 +36,14 @@
 
 JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 も確かめる。
 
+要素ごとの単項プリミティブ（expm1 / log1p / sin / cos、issue #223）には、さらに次を書く。
+
+- 特殊値（NaN・±inf・±0）を全 dtype で。出力の特殊値は IEEE 754 どおり（`expm1(-inf) = -1`、`log1p(-1) = -inf`、`log1p(x<-1) = NaN`、`sin(±inf) = NaN`、`sin(-0) = -0`）。CL の `log` や `sin` が複素数・例外を返す箇所は、直接呼んで確かめる
+- 恒等式: `log1p(expm1(x)) = x`、`expm1(log1p(y)) = y`、`sin²x + cos²x = 1`、`sin(-x) = -sin(x)`、`cos(-x) = cos(x)`、`cos(x) = sin(x + π/2)`（f64）
+- 小さい x の相対精度: `exp(x) - 1` のような素朴な参照では見えないので、別に Taylor 級数（4 項）と相対誤差で比べる。x が極小（`1 + x` が 1 になる大きさ）なら `expm1(x) = log1p(x) = x` が厳密に成り立つ
+- 導関数: jvp が中心差分と一致し（f64）、接線について線形。係数は主値・出力だけから作る（`expm1' = out + 1`、`log1p' = t/(1+x)`、`sin' = cos`、`cos' = -sin`）
+- JAX のフィクスチャは、定義域を絞る理由をコメントに書く（sin / cos は XLA の範囲縮約が大きい |x| で粗いので |x| ≤ 100）
+
 ### 自動微分（jvp† / transpose† / vjp† / grad）
 
 - `grad f` の結果 = 中心差分†（f64 で計算）の結果

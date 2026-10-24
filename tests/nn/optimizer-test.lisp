@@ -723,7 +723,7 @@ add-decayed-weights と params を挙げたエラーにする。"
     (finishes (optimizer-update (add-decayed-weights 0.1d0) nil nil))))
 
 (test (optimizer/bias-correction-matches-the-power-in-double :suite :nabla.small)
-  "1 - b^t の Taylor / exp の計算（%one-minus-pow）は、double の 1 - b^t と rtol 1e-6 で一致する。
+  "1 - b^t の -expm1(t log b) による計算（%one-minus-pow）は、double の 1 - b^t と rtol 1e-6 で一致する。
 b は 1 に近い値まで、t は 2^31 - 1 までの格子。f32 と f64 の両方。"
   (dolist (dtype '(:f32 :f64))
     (dolist (base '(0.5d0 0.9d0 0.99d0 0.999d0 0.999999d0))
@@ -735,7 +735,7 @@ b は 1 に近い値まで、t は 2^31 - 1 までの格子。f32 と f64 の両
               "dtype ~S: 1 - ~S^~D は ~S のはずが ~S" dtype base steps expected actual))))))
 
 (test (optimizer/cosine-helper-matches-cos :suite :nabla.small)
-  "cosine の多項式近似（%cosine-value）は 0.5 (1 + cos(pi t)) と f32 の許容誤差で一致する（t は 0..1 を
+  "cosine 値（%cosine-value。cos プリミティブによる 0.5 (1 + cos(pi t))）は 0.5 (1 + cos(pi t)) と f32 の許容誤差で一致する（t は 0..1 を
 1000 分割した格子と、その外側の clamp）。"
   (dotimes (count 1003)
     (let ((expected (* 0.5d0 (+ 1d0 (cos (* pi (/ (min count 1000) 1000d0))))))
