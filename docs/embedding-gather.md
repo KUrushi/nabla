@@ -7,6 +7,7 @@
 - one-hot 版の計算量とメモリは ids 数 × V × features に比例する（one-hot の配列 `[ids... V]` と、`[ids V] × [V features]` の `dot`）。gather 版は ids 数 × features で、V に依らない
 - 勾配も同じ形になる。one-hot 版は one-hot の転置との `dot`、gather 版は scatter-add（大きさ `[V features]` の 0 の配列に、ids 数 × features 個を足し込む）。gather 版の勾配で V に比例するのは、表と同じ形の出力を作る部分だけ
 - 下の eager の測定では、V = 50000 のとき one-hot 版は順伝播に約 45 秒・49 GB、勾配に約 92 秒・109 GB を確保した。gather 版は順伝播 0.02 ms、勾配 2.8 ms・7.8 MB だった
+- jit（IREE、Colab の VM。下の「jit（IREE）」）では、gather 版の順伝播は local・CUDA とも V に依らず 1 ms 未満だった。勾配は local（CPU）では V = 50000 で gather 版 8 ms・one-hot 版 42 ms と gather 版が速いが、CUDA では gather 版 16 ms・one-hot 版 6 ms と **gather 版（scatter-add）のほうが遅かった**
 - 振る舞いの違いが1つある。one-hot 版は表のほかの行にある inf / NaN が引いた行に漏れていた（0 × inf = NaN なので、表のどこかに inf があると、すべての引きのその列が NaN になる）。gather 版は引いた行だけを写すので漏れない（Flax の `jnp.take` と同じ）。範囲外の id が 0 の行になるのは同じ
 
 ## 測定
@@ -30,7 +31,25 @@ one-hot 版は時間も確保量も V にほぼ比例して増えた（V が 10 
 
 gather 版の勾配で確保量が V とともに増えるのは、勾配そのもの（表と同じ `[V 32]` の f32、V = 50000 で 6.4 MB）を作るため。順伝播が V に依らないことは、上の数値よりも graph の構造（`gather` の eqn が1つだけ。`tests/nn/layers-test.lisp` の `layers/embedding-lookup-does-not-scale-with-the-vocabulary` が守る）から言える。
 
+## jit（IREE）
+
+`scripts/bench-embedding.sh` の jit の行を、Colab の VM（Tesla T4、Xeon 2 コア、x86_64、SBCL 2.2.9）で local（CPU、local-task）と cuda の両方について測った（2026-10-24）。この PR のスクリプトは local だけを測るので、target を cuda にも替える一時的な変更を加えて測った（その変更は入れていない）。設定は eager と同じ（ids 256 個・features 32・f32）。時間はコンパイル後の呼び出しの中央値（20 回）で、戻り値の to-host を含む。表と ids は先に device array にしてある。**この SBCL の時計の分解能は約 1 ms** で、「<1」は 0.5 ms 未満を表す。
+
+| V | 方式 | local 順伝播 (ms) | local 勾配 (ms) | cuda 順伝播 (ms) | cuda 勾配 (ms) |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1000 | one-hot | 1 | 1 | <1 | 1 |
+| 1000 | gather | <1 | <1 | <1 | 1 |
+| 10000 | one-hot | 6 | 7 | 4 | 2 |
+| 10000 | gather | <1 | 2 | <1 | 7 |
+| 50000 | one-hot | 39 | 42 | 16 | 6 |
+| 50000 | gather | <1 | 8 | <1 | 16 |
+
+- 順伝播: gather 版は local・cuda とも V に依らず 1 ms 未満。one-hot 版は V とともに増え、V = 50000 で local 39 ms・cuda 16 ms
+- 勾配（local）: gather 版も V とともに増える（V = 50000 で 8 ms）。勾配の出力 `[V 32]` を 0 で埋めて to-host する分が V に比例するため。それでも one-hot 版の約 1/5
+- 勾配（cuda）: gather 版が one-hot 版より遅い（V = 10000 で 7 ms 対 2 ms、V = 50000 で 16 ms 対 6 ms）。どちらも同じ大きさ（`[V 32]`）の勾配を to-host するので、差は scatter-add そのものの費用と見ている。IREE 3.11 の CUDA が `stablehlo.scatter` を並列化しきれていない（重複しうる添字への足し込みを逐次に近い形で下ろしている）可能性があるが、原因は調べていない。CUDA で語彙の大きなモデルを学習するときは、勾配の費用が one-hot 版より増えうる
+
 ## 未測定のもの
 
-- **jit（IREE）の時間**: 測定に使ったマシン（macOS arm64）には IREE が無い。IREE の CPU 版の wheel は x86_64 Linux 専用で、ランタイムのビルドもこのマシンでは用意していない。IREE のある環境（`NABLA_IREE_HOME`）で `scripts/bench-embedding.sh` を実行すると、jit（local）の行が続けて出る（コンパイル後の呼び出しの中央値、20 回）。jit では表と ids を jit の引数にし（ids を閉包の定数にすると、one-hot の比較がコンパイル時に畳まれて実運用と形が変わる）、表は先に device array にしてから渡す（呼び出しごとのホストからの転送を測らない）。gather / scatter-add が IREE 3.11 で正しく動くことは、CI の medium テストで確かめる（`tests/iree/gather-test.lisp` は gather を足した PR の CI で通った。`tests/nn/layers-iree-test.lisp` の embedding が gather を通るのはこの変更から）
-- GPU（CUDA）: 測っていない
+- 時計の分解能（約 1 ms）より細かい差。測るなら呼び出しを繰り返して平均する
+- CUDA の scatter-add が遅い原因（IREE が出すカーネルの形）
+- one-hot 版の jit のメモリ（IREE の中の確保。Lisp のヒープの確保量では数えられない）
