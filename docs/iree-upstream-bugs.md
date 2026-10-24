@@ -798,7 +798,7 @@ different trigger of the same symptom. Verified on an x86_64 Linux VM running un
 | 同じ MLP のコンパイル（`backend-compile`、medium / large） | 686 / 692 ms | 696 / 714 ms |
 | 7 の race の再現（負荷のもとで 1500 回。nabla が出す形 `nested-scan-ys-no-barrier.mlir` / `nested-scan-ys-if-no-barrier.mlir`） | 0 / 0 回 | 0 / 0 回 |
 | 7 の race の再現（バグの形 `nested-scan-ys-barrier-race.mlir` / `nested-scan-ys-if-race.mlir`） | 0 / 3 回 | 1 / 3 回 |
-| 既定のテストスイート（small + medium、IREE と PJRT を含む） | 通る | medium は通る（small は、実験のためにフラグをリストの先頭に足したので `compile-flags` の先頭を確かめるテストが 1 件落ちた。フラグを末尾に足した最終の形は PR #268 の CI で通す） |
+| 既定のテストスイート（small + medium、IREE と PJRT を含む） | 通る | 通る（PR #268 の最終の CI。実験の run では small の `compile-flags` の先頭を確かめるテストが 1 件落ちたが、実験のためにフラグをリストの先頭に足したため） |
 
 dispatch は 3 割近く増えるが、CPU の時間には現れなかった（小さなテンソルでは dispatch あたりの費用が小さい）。7 の race はフラグの有無で傾向が変わらない（0 回は安全の証明ではない。7 の注意と同じ）。`:cuda` は測っていないので付けない。CUDA ではカーネルの起動が増える分だけ影響が大きくなりうるうえ、CUDA の dispatch の上限は 16 なので、フラグなしでは入力 17〜31 個の連鎖が CUDA で別の検査に当たる可能性がある（未確認。`scripts/colab-gpu-check.sh` で確かめるのが後続）。
 
