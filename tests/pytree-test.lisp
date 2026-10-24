@@ -1,5 +1,5 @@
 ;;;; PyTree の公開 API（defpytree / tree-flatten / tree-unflatten / tree-leaves /
-;;;; tree-structure / tree-map / treedef=。issue #195、small）。
+;;;; tree-structure / tree-map / treedef= / tree-children。issue #195・#239、small）。
 ;;;;
 ;;;; 守らせる性質:
 ;;;; - 往復: (tree-unflatten (tree-structure x) (tree-leaves x)) は x と同じ形・同じ葉。
@@ -198,3 +198,62 @@
     (nb:pytree-structure-mismatch (condition)
       (and (plusp (length (prin1-to-string (nb:tree-structure tree))))
            (plusp (length (princ-to-string condition)))))))
+
+;;; --- tree-children（issue #239） ---
+
+(defstruct (pytree-test-empty (:constructor make-pytree-test-empty ()))
+  "子を1つも持たない、DEFPYTREE で登録した節（葉と node-p で区別できることの確認用）。")
+
+(nb:defpytree pytree-test-empty
+  :flatten (lambda (object) (declare (ignore object)) (values '() :empty-aux))
+  :unflatten (lambda (aux children) (declare (ignore aux children)) (make-pytree-test-empty)))
+
+(defun %children-leaves (tree)
+  "TREE-CHILDREN だけで木をたどって集めた葉のリスト（左から順）。"
+  (multiple-value-bind (children aux node-p) (nb:tree-children tree)
+    (declare (ignore aux))
+    (if node-p
+        (loop for child in children append (%children-leaves child))
+        (list tree))))
+
+(def-pytree-property pytree/children-walk-gives-tree-leaves
+  "tree-children だけで再帰的にたどった葉の列は tree-leaves と一致する。"
+  (tree) (generator (tuple (pytree-spec)))
+  (equal (%children-leaves tree) (nb:tree-leaves tree)))
+
+(def-pytree-property pytree/children-node-p-agrees-with-flatten
+  "全ての部分木で、node-p は treedef が葉の treedef（葉1つの木の形）と違うことと一致し、
+葉は (values nil nil nil) になる。"
+  (tree) (generator (tuple (pytree-spec)))
+  (let ((leaf-treedef (nb:tree-structure 0)))
+    (labels ((agrees (node)
+               (multiple-value-bind (children aux node-p) (nb:tree-children node)
+                 (if node-p
+                     (and (not (nb:treedef= (nb:tree-structure node) leaf-treedef))
+                          (every #'agrees children))
+                     (and (nb:treedef= (nb:tree-structure node) leaf-treedef)
+                          (null children) (null aux))))))
+      (agrees tree))))
+
+(def-pytree-property pytree/children-are-the-direct-children
+  "リスト・ベクタ・登録した型の子は、構成した順の直下の要素で、aux は登録した型の補助データ。"
+  (a b tag) (generator (tuple (pytree-spec) (pytree-spec) (uniform-integer :lo 0 :hi 2)))
+  (and (equal (multiple-value-list (nb:tree-children (list a b))) (list (list a b) nil t))
+       (equal (multiple-value-list (nb:tree-children (vector a b))) (list (list a b) nil t))
+       (equal (multiple-value-list (nb:tree-children (make-pytree-test-pair a b tag)))
+              (list (list a b) tag t))))
+
+(test pytree/children-of-empty-nodes-and-leaves
+  "子が0個の節（NIL・空ベクタ・空の登録型）は node-p が真、葉は3値とも NIL で区別できる。
+NIL は tree-flatten と同じく空のリスト節。"
+  (is (equal '(nil nil t) (multiple-value-list (nb:tree-children nil))))
+  (is (equal '(nil nil t) (multiple-value-list (nb:tree-children (vector)))))
+  (is (equal '(nil :empty-aux t)
+             (multiple-value-list (nb:tree-children (make-pytree-test-empty)))))
+  (dolist (leaf (list 3 "str" :key 'sym 1.5d0 (make-array 3 :element-type 'single-float)))
+    (is (equal '(nil nil nil) (multiple-value-list (nb:tree-children leaf))))))
+
+(test pytree/children-rejects-improper-lists
+  "真リストでないコンスは tree-flatten と同じく PYTREE-ERROR。"
+  (signals nb:pytree-error (nb:tree-children (cons 1 2)))
+  (signals nb:pytree-error (nb:tree-children (list* 1 2 3))))
