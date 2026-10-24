@@ -70,6 +70,10 @@
    #:multi-head-attention-out #:multi-head-attention-dropout-rate #:multi-head-attention-broadcast-dropout
    ;; conv（issue #207）
    #:conv #:make-conv #:init-conv #:conv-kernel #:conv-bias #:conv-strides #:conv-padding
-   #:conv-kernel-dilation #:conv-feature-group-count #:conv-use-bias)
+   #:conv-kernel-dilation #:conv-feature-group-count #:conv-use-bias
+   ;; #260 batch-norm（call は (values 出力 新しいモジュール) を返す）
+   #:batch-norm #:make-batch-norm #:init-batch-norm #:batch-norm-scale #:batch-norm-bias
+   #:batch-norm-mean #:batch-norm-var #:batch-norm-momentum #:batch-norm-epsilon #:batch-norm-axis
+   #:batch-norm-use-scale #:batch-norm-use-bias)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv、batch-norm。"))

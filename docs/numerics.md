@@ -140,7 +140,7 @@ bf16 / f16 の reduce と dot は f32 で累積する（`docs/stablehlo-ops.md`�
 
 | 場所 | 危険 | 現状と判断 |
 | --- | --- | --- |
-| `src/nn/layers.lisp` の `layer-norm` | 「速い分散」 mean(x²) − mean(x)² は、平均が標準偏差より大きい（μ/σ ≈ 1e3）と f32 で数 % の誤差（catastrophic cancellation） | Flax の既定と同じ式（Transformer を Flax と数値で比べるため）。負になる分は 0 に切っている。2 パスの分散に変えると Flax と食い違う |
+| `src/nn/layers.lisp` の `layer-norm`、`src/nn/batch-norm.lisp` の `batch-norm` | 「速い分散」 mean(x²) − mean(x)² は、平均が標準偏差より大きい（μ/σ ≈ 1e3）と f32 で数 % の誤差（catastrophic cancellation） | Flax の既定と同じ式（Transformer を Flax と数値で比べるため）。負になる分は 0 に切っている。2 パスの分散に変えると Flax と食い違う |
 | `src/nn/layers.lisp` の `gelu` | tanh 近似の微分の 1 − tanh² が \|x\| > 9 で 0 に丸まる（真は約 4 e^{-2\|x\|}） | 勾配が 1e-8 以下の領域で、影響は小さい |
 | `examples/mlp.lisp` | 素朴な logsumexp（Collapse を起こす） | フェーズ2のベンチマークと JAX のフィクスチャのため core だけで書いたまま。コメントで nabla/nn の log-softmax を勧めている |
 | 利用者が書く one-hot の交差エントロピー | −inf のロジットと y = 0 の積が NaN | 2.3 節の末尾。整数ラベルの交差エントロピーの関数は持たない（必要になったら足す） |
