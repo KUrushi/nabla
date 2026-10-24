@@ -12,7 +12,7 @@
 ;;;;   [バッチ 空間... 群の数 群の大きさ] に reshape し、[バッチ 群の数 群ごとの要素数] に並べ替えて最後の軸で
 ;;;;   layer-norm と同じ統計（%layer-norm-statistics。速い分散 max(mean(x^2) - mean(x)^2, 0) と
 ;;;;   rsqrt(var + epsilon)）を取り、逆の並べ替えで形を戻す（Flax の jnp.repeat と同じ）。最後の軸だけを縮約する
-;;;;   のは IREE 3.11 の回避策（%group-norm-statistics）。
+;;;;   のはバックエンドのコンパイラのバグの回避策（%group-norm-statistics）。
 ;;;;   vmap の中では内側の入力の先頭の軸がバッチになる（Flax と同じ）。Flax の reduction_axes と mask は持たない。
 ;;;; - y = (x - mean) * (rsqrt(var + epsilon) * scale) + bias（Flax の _normalize と同じ順）。scale / bias の形は
 ;;;;   (チャンネル数)。use-scale / use-bias は layer-norm と同じ規則（偽なら対応するスロットは NIL）。
@@ -55,7 +55,7 @@
          (order (if (= rank 1)
                     '(0 1)
                     (append (list 0 (1- rank)) (loop for axis from 1 below (1- rank) collect axis) (list rank))))
-         ;; 大きさ 1 の軸は並べ替えに要らない（IREE 3.11 は大きさ 1 の軸を挟んだ grad の jit で落ちることがある）
+         ;; 大きさ 1 の軸は並べ替えに要らないので除く（並べ替えの eqn を小さくする）
          (kept (or (loop for axis to rank when (> (nth axis sizes) 1) collect axis) (list rank)))
          (perm (loop for axis in order when (member axis kept) collect (position axis kept)))
          (lead (if (= rank 1) (list groups) (list (first shape) groups)))
@@ -65,8 +65,8 @@
 (defun %group-norm-statistics (x groups epsilon)
   "X の群ごとの平均と 1/sqrt(速い分散 + EPSILON) を、X の形に戻した 2 つのリスト。
 群の要素を最後の 1 軸に並べ替えてから最後の軸だけを縮約する（layer-norm の既定と同じ形。群の要素が 1 つなら縮約
-しない）。先頭のバッチ軸と群の軸の間に空間の軸を挟んだまま縮約すると、IREE 3.11 で grad の jit が vector.contract
-の large vector sizes でコンパイルに失敗することがある（docs/iree-upstream-bugs.md の 9）。"
+しない）。先頭のバッチ軸と群の軸の間に空間の軸を挟んだまま縮約すると、jit した grad のコンパイルが
+vector.contract の large vector sizes で失敗することがある（CLAUDE.md の group-norm の項、上流のバグ一覧の 9）。"
   (let ((shape (%shape x)))
     (multiple-value-bind (group-shape perm flat-shape) (%group-norm-layout shape groups)
       (let* ((transposed-shape (mapcar (lambda (axis) (nth axis group-shape)) perm))
