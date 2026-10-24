@@ -1,0 +1,3 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME GATHER/SCATTER-ADD-IS-THE-ADJOINT :DATUM "0" :TIMESTAMP
+                 4001824792)
