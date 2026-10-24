@@ -35,9 +35,10 @@
       (error "フィクスチャにケース ~S が無い" name)))
 
 (defun %bn-array (case name)
-  "ケース CASE の配列 NAME（f32 のビットパターン）。無ければ NIL。"
-  (let ((entry (find name (getf case :arrays) :key #'first :test #'string=)))
-    (when entry
+  "ケース CASE の配列 NAME（f32 のビットパターン）。無ければ error（比べる相手が無いまま通らないように）。"
+  (let ((entry (or (find name (getf case :arrays) :key #'first :test #'string=)
+                   (error "フィクスチャのケース ~S に配列 ~S が無い" (getf case :name) name))))
+    (progn
       (destructuring-bind (name shape values) entry
         (declare (ignore name))
         (let ((array (make-array shape :element-type 'single-float)))
@@ -109,9 +110,11 @@
             (is (%bn-close (batch-norm-var aux) (%bn-array case (%bn-step-name "var" step)))
                 "~A: ステップ ~D の移動平均 var" name step)
             (is (%bn-close (batch-norm-mean new) (batch-norm-mean aux)) "~A: call と aux の mean" name)
-            (is (every #'%bn-close (%bn-param-grads (first grads))
-                       (%bn-expected-param-grads case "" (format nil ".~D" step)))
-                "~A: ステップ ~D の scale / bias の勾配" name step)
+            (is (%bn-close (batch-norm-var new) (batch-norm-var aux)) "~A: call と aux の var" name)
+            (let ((actual (%bn-param-grads (first grads)))
+                  (expected (%bn-expected-param-grads case "" (format nil ".~D" step))))
+              (is (and (= (length actual) (length expected)) (every #'%bn-close actual expected))
+                  "~A: ステップ ~D の scale / bias の勾配" name step))
             (is (%bn-close (second grads) (%bn-array case (%bn-step-name "grad.x" step)))
                 "~A: ステップ ~D の x の勾配" name step)
             (is (and (%all-zero-p (batch-norm-mean (first grads))) (%all-zero-p (batch-norm-var (first grads))))
@@ -124,8 +127,10 @@
         (is (%bn-close (batch-norm-var same) (batch-norm-var model)) "~A: 推論モードは状態を変えない" name))
       (multiple-value-bind (loss grads) (funcall evaluate model x ct)
         (declare (ignore loss))
-        (is (every #'%bn-close (%bn-param-grads (first grads)) (%bn-expected-param-grads case "eval." ""))
-            "~A: 推論モードの scale / bias の勾配" name)
+        (let ((actual (%bn-param-grads (first grads)))
+              (expected (%bn-expected-param-grads case "eval." "")))
+          (is (and (= (length actual) (length expected)) (every #'%bn-close actual expected))
+              "~A: 推論モードの scale / bias の勾配" name))
         (is (%bn-close (second grads) (%bn-array case "eval.grad.x")) "~A: 推論モードの x の勾配" name)
         (is (and (%all-zero-p (batch-norm-mean (first grads))) (%all-zero-p (batch-norm-var (first grads))))
             "~A: map-state で stop-gradient した mean / var の勾配はちょうど 0" name)))))
@@ -346,10 +351,33 @@ momentum、call の use-running-average が T / NIL でない、統計を取る�
   (signals error (init-batch-norm (nabla:prng-key 0) 3 :epsilon 0))
   (signals error (init-batch-norm (nabla:prng-key 0) 3 :momentum 1.5d0))
   (signals error (init-batch-norm (nabla:prng-key 0) 3 :use-bias :yes))
+  (signals error (init-batch-norm (nabla:prng-key 0) 3 :use-scale :yes))
+  (signals error (init-batch-norm (nabla:prng-key 0) 0))
+  (signals error (init-batch-norm (nabla:prng-key 0) 2.5))
+  (signals error (init-batch-norm (nabla:prng-key 0) 3 :momentum -0.1d0))
   (let ((m (init-batch-norm (nabla:prng-key 0) 3))
         (x (%rand '(4 3) 1)))
     (signals error (call m x :yes))
     (signals error (call m (%rand '(3) 1) nil))
     (signals error (call m (%rand '(4 5) 1) nil))
     (signals error (call (init-batch-norm (nabla:prng-key 0) 3 :axis 2) x nil))
-    (signals error (call (init-batch-norm (nabla:prng-key 0) '(4 3) :axis '(0 1)) x nil))))
+    (signals error (call (init-batch-norm (nabla:prng-key 0) '(4 3) :axis '(0 1)) x nil))
+    ;; 同じ軸の別の書き方（rank 2 の 1 と -1）は call で「重複」として error
+    (handler-case (progn (call (init-batch-norm (nabla:prng-key 0) '(3 3) :axis '(1 -1)) x nil)
+                         (fail "重複した axis が error にならなかった"))
+      (error (c) (is (search "重複" (princ-to-string c)))))))
+
+(test batch-norm/map-state-must-be-inside-the-loss
+  "推論モードでは移動平均が順伝播に使われるので、損失の中で map-state #'stop-gradient しないと mean / var に勾配が
+流れる。grad に渡す前に（損失の外で）かけても効かない（README の規約の根拠）。"
+  (let* ((model (%bn-random-model 9 '(3) t t 0.9d0 -1))
+         (x (%bn-shifted (%rand '(5 3) 10) 1))
+         (ct (%rand '(5 3) 11))
+         (outside (nabla:with-tracing (m x ct)
+                    (multiple-value-bind (y new) (call m x t) (declare (ignore new)) (nabla:reduce-sum (* y ct)))))
+         (grads (funcall (nabla:grad outside) (map-state #'nabla:stop-gradient model) x ct)))
+    (is (not (%all-zero-p (batch-norm-mean grads))))
+    (multiple-value-bind (loss grads-inside) (funcall (nabla:value-and-grad (%bn-loss t) :has-aux t) model x ct)
+      (declare (ignore loss))
+      (is (%all-zero-p (batch-norm-mean grads-inside)))
+      (is (%all-zero-p (batch-norm-var grads-inside))))))
