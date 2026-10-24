@@ -536,7 +536,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 
 決めたこと:
 
-- **embedding は gather ではなく one-hot と `dot`**: gather の勾配は scatter-add で、プリミティブ・StableHLO 出力・jvp / transpose / バッチ化ルールが要り、この issue の範囲を超える。one-hot + `dot` は既存の演算だけで、勾配は one-hot の転置との `dot` になる。代償は計算量が ids 数 × 語彙数 × features に比例すること（小さな語彙では問題にならない）。語彙が大きいモデルでは gather が要る。範囲外の id（負・語彙数以上）は 0 の行になる（Flax の `jnp.take` は NaN）
+- **embedding は gather で引く（issue #240）**: #204 では one-hot と `dot` で書いていた（計算量とメモリが ids 数 × 語彙数 × features に比例する）が、コアの `gather` に替えた（ids 数 × features）。勾配は scatter-add で、パラメータのパス名（`embedding`）と Flax との数値一致は変わらない。範囲外の id（負・語彙数以上）は 0 の行（`gather` の規約。one-hot のときと同じで、Flax の `jnp.take` は NaN）。one-hot と違い、表のほかの行にある inf / NaN は引いた行に漏れない（one-hot は 0 × inf = NaN で、表のどこかに inf があると全部の引きのその列が NaN になっていた。Flax の `jnp.take` と同じ側）。one-hot との速度・メモリの比較は `docs/embedding-gather.md`（`scripts/bench-embedding.sh`）
 - **embedding-attend（issue #241）**: Flax の `Embed.attend` はモジュールのメソッドだが、nabla の `call` は引きの 1 つなので `embedding-attend` という関数にした。`query` の最後の軸が `features` でなければ層名入りの error。重みの共有は、同じ `embedding` モジュールを `(call m ids)` と `(embedding-attend m h)` の両方に渡す（`defmodule` のスロットに 1 つだけ持つ）。`examples/transformer.lisp` は出力の dense を埋め込みと共有していない（変えていない）
 - **dropout**: モジュールは状態を持たないので、キーと `deterministic` は呼び出しの引数。`deterministic` は Lisp の真偽値で、`jit` では静的引数（`:static-args`）にするか閉包で渡す。`rate = 1` は全部 0（入力に inf / NaN があっても 0。Flax の `zeros_like` と同じ）。`deterministic` が偽でキーが `nil` なら error。`sequential` は1引数の層だけを並べる（Flax の `nn.Sequential` と同じ。dropout は並べられない）
 - 初期値は Flax と分布が同じで、値はビット単位では一致しない（nabla の PRNG は JAX と違う）。Flax との比較は同じパラメータを与えて順伝播と勾配で行う
@@ -554,7 +554,7 @@ Linen / Equinox 風の「モジュール = パラメータの PyTree ＋ 純粋�
 | `LayerNorm` の `use_scale` `use_bias` `reduction_axes` `feature_axes` | 実装 | 同名の `:use-scale` `:use-bias` `:reduction-axes` `:feature-axes`。既定も Flax と同じ |
 | `MultiHeadDotProductAttention` の `broadcast_dropout` | 実装 | `:broadcast-dropout`。既定は Flax と同じ真（**挙動変更**）。値は JAX とビット一致しないので統計的な性質で確かめる |
 | `Embed.attend` | 実装 | `embedding-attend`（関数。`call` は引きの 1 つなので、メソッドにしなかった） |
-| `Embed` の範囲外 id が NaN | 別の作業（#240） | 今は 0 の行。引きを gather に替える #240 で扱う |
+| `Embed` の範囲外 id が NaN | やらない（#240） | 引きは gather になったが、範囲外の id は 0 の行のままにする。gather の転置の scatter-add は範囲外の更新を捨てるので、0 の行と勾配が整合する（JAX の `FILL_OR_DROP` と同じ構造で、埋める値だけ違う）。NaN にすると、範囲外の id が1つあるだけで損失全体が NaN になる |
 | `Conv` の `input_dilation`、`ConvTranspose` | やらない | コアの `conv-general-dilated` は `lhs-dilation` を持つが、nn の層にするには padding の仕様（Flax / JAX の SAME は膨らませる前の入力の形で決め、`conv_transpose` は別の式を使う）を写してフィクスチャで確かめる別の作業になる。使い道はほぼ転置畳み込みなので、デコーダや U-Net を書く時点でまとめて足す |
 | `Conv` の `padding='CIRCULAR'`（と `'REFLECT'`） | やらない | Flax は入力を `jnp.pad(mode='wrap')` で端から複写して VALID にする。nabla には slice / concatenate / pad のプリミティブが無く（畳み込みの 0 埋めだけ）、足すのは別の作業。周期的な境界の畳み込みは当面の対象外 |
 | `Conv` の `padding='CAUSAL'` | やらない（明示の padding で書ける） | 1 次元で左だけ `(k-1) × dilation` を埋めるだけなので、`:padding '(((k-1)d 0))` と書けば同じ（`conv/explicit-left-padding-makes-a-causal-convolution` が因果性を確かめる）。層に別名を持たせない |

@@ -22,13 +22,10 @@
 ;;;;   入力のその軸の大きさ（軸の昇順）で、init-layer-norm の features は feature_axes が 1 つなら整数、
 ;;;;   複数ならその大きさのリスト。use-scale / use-bias は use_bias と同じ規則（偽なら対応するスロットは NIL）。
 ;;;;   reduction-axes が空（統計を取らない。Flax では x.mean(()) で退化する）は受け付けない。
-;;;; - embedding: one-hot と dot で書く。gather プリミティブは足さない。理由: gather の逆（勾配）は
-;;;;   scatter-add で、プリミティブ・StableHLO 出力・jvp / transpose / バッチ化ルールの5つが要り、この
-;;;;   issue の範囲を超える。one-hot + dot なら既存の演算だけで、勾配は dot の転置（one-hot^T ct）
-;;;;   として自然に出る。代償は、one-hot が [ids..., 語彙数] の配列になり、計算量とメモリが ids 数 ×
-;;;;   語彙数 × features に比例すること（gather は ids 数 × features）。小さな語彙（文字レベル・数千語）
-;;;;   では問題にならないが、語彙が大きいモデルでは gather が要る（後続の issue）。範囲外の id は one-hot が
-;;;;   全部 0 なので 0 の行になる（Flax の jnp.take は範囲外で NaN を返す）。初期値は
+;;;; - embedding: コアの gather（issue #240）で引く。#204 では one-hot と dot で書いていたが、計算量とメモリが
+;;;;   ids 数 × 語彙数 × features に比例するので gather に替えた（ids 数 × features。測定は docs/embedding-gather.md）。
+;;;;   勾配は gather の転置の scatter-add。範囲外の id（負・語彙数以上）は 0 の行で、one-hot のときと同じ
+;;;;   （Flax の jnp.take は範囲外で NaN を返す。gather の範囲外の規約は README の「gather」）。初期値は
 ;;;;   N(0, 1/features)（Flax の variance_scaling(1, "fan_in", "normal", out_axis=0)。Flax の
 ;;;;   サンプルの標準偏差が 1/sqrt(features) になることを tests/fixtures/layers で確かめてある）。
 ;;;; - dropout: 反転 dropout。keep = 1 - rate、マスクは uniform(key) < keep、保持した要素を 1/keep 倍
@@ -343,23 +340,10 @@ _canonicalize_axes）。範囲外は error。"
       (error "~A: ids は整数の配列でなければならない（dtype ~S）" name dtype))
     dtype))
 
-(defun %iota (n dtype)
-  "0 から N-1 の1次元配列（DTYPE は整数）。"
-  (let ((array (make-array n :element-type (nabla:dtype-element-type dtype))))
-    (dotimes (i n array) (setf (aref array i) i))))
-
 (defun %embedding-apply (ids table)
-  (let* ((ids-dtype (%check-integer-dtype "embedding" ids))
-         (vocabulary (first (%shape table)))
-         (full-shape (append (%shape ids) (list vocabulary)))
-         (iota (%iota vocabulary ids-dtype)))
-    (funcall (load-time-value
-              (nabla:with-tracing (ids table full-shape iota)
-                (let* ((ids-rank (1- (length full-shape)))
-                       (hits (= (nabla:broadcast-in-dim ids full-shape (%range ids-rank))
-                                (nabla:broadcast-in-dim iota full-shape (list ids-rank)))))
-                  (nabla:dot (nabla:convert hits (nabla:aval-dtype (nabla:value-aval table))) table))))
-             ids table full-shape iota)))
+  "TABLE（[語彙数 features]）の行を IDS（整数の配列かトレーサ）で引いた [ids... features]。範囲外の id は 0 の行。"
+  (%check-integer-dtype "embedding" ids)
+  (nabla:gather table ids))
 
 (defmodule embedding (embedding)
   (:init (key num-embeddings features &key (dtype :f32))
