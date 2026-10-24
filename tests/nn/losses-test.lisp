@@ -88,15 +88,19 @@ d = delta - sum(p delta) を外す変異はこの性質では区別できない�
 
 (def-layer-property losses/gradient-is-exactly-zero-for-a-shifted-teacher
   "z_s = z_t + C（C は整数、z_t は 1/64 の倍数なので和は厳密）なら softmax(z_s) = softmax(z_t) で、勾配は
-全要素がちょうど 0（中心化を sum(p delta) で取ると sum(p) = 1 の丸めで eps * C の勾配が残る）。"
+全要素がちょうど 0（中心化を sum(p delta) で取ると sum(p) = 1 の丸めで eps * C の勾配が残る）。教師の
+最大値は2つ同点にしてある。"
   (seed n c)
   (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 8) (uniform-integer :lo -100 :hi 100))
   (let* ((state (sb-ext:seed-random-state seed))
          (zt (make-array n :element-type 'single-float))
          (zs (make-array n :element-type 'single-float)))
     (dotimes (i n)
-      (setf (aref zt i) (/ (- (random 384 state) 192) 64.0)
-            (aref zs i) (+ (aref zt i) c)))
+      (setf (aref zt i) (/ (- (random 384 state) 192) 64.0)))
+    ;; 教師の最大値を2つ同点にする（中心化が同点の平均であることも確かめる）
+    (setf (aref zt 1) (setf (aref zt 0) 3.5))
+    (dotimes (i n)
+      (setf (aref zs i) (+ (aref zt i) c)))
     (every #'zerop (funcall (nabla:grad (%soft-ce)) zs zt))))
 
 (def-layer-property losses/value-is-the-cross-entropy
@@ -164,4 +168,6 @@ d = delta - sum(p delta) を外す変異はこの性質では区別できない�
     (is (%close-relative-p (vector (aref g 0) (aref g 2)) (vector (aref expected 0) (aref expected 2)) 1d-5) "~S" g))
   (let ((z (%f32-vector (list 1 sb-ext:single-float-negative-infinity 3))))
     (is (every #'zerop (funcall (nabla:grad (%soft-ce)) z z)) "-inf を含む z_s = z_t"))
-  (signals error (soft-target-cross-entropy (%f32-vector '(1 2)) (%f32-vector '(1 2 3)))))
+  (let ((message (%error-message (lambda () (soft-target-cross-entropy (%f32-vector '(1 2)) (%f32-vector '(1 2 3)))))))
+    (is (search "soft-target-cross-entropy" message) "~A" message)
+    (is (search "(2)" message) "~A" message)))
