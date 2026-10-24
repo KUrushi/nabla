@@ -77,7 +77,8 @@ APPLY-UPDATES が、自前の構造体で包んだモデルの中の :state ま�
   "TREE（モジュールを入れ子にしたリスト・ベクタ・モジュール）の :state のスロットの葉すべてに
 FUNCTION をかけた同じ形の木を返す。リスト・simple-vector・defmodule のモジュールに加えて、defpytree で
 登録した別の節（モデルを包む自前の構造体など）の子もたどる（issue #260）。:param と :static のスロットは
-（サブモジュールの中の :state を除いて）そのまま共有する。学習しない状態を grad から外すのに使う:
+（サブモジュールの中の :state を除いて）そのまま共有する。FUNCTION は葉を葉に写す（形を変える関数は
+登録した節の中では組み立て直せない）。学習しない状態を grad から外すのに使う:
 \(map-state #'nabla:stop-gradient model)。"
   (cond ((listp tree) (mapcar (lambda (child) (map-state function child)) tree))
         ((simple-vector-p tree)
