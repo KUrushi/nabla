@@ -545,6 +545,7 @@
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）
                (:file "tests/pjrt/bench-test")
                (:file "tests/pjrt/integer-test")
+               (:file "tests/pjrt/log1p-expm1-test")
                (:file "tests/pjrt/rng-test")
                (:file "tests/pjrt/prng-test")
                ;; :i1（PRED）の往復と jit の入出力（issue #166）

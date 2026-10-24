@@ -104,8 +104,8 @@
          (every #'zerop teacher-grad))))
 
 (test losses/infinities-and-shape-errors
-  "教師が -inf の位置は目標の確率 0（値・勾配とも有限）、生徒も -inf ならその位置の勾配は 0。形が違えば
-error。"
+  "教師が -inf の位置は目標の確率 0（値・勾配とも有限）、生徒も -inf ならその位置の勾配は 0。生徒だけが
+-inf なら損失は +inf、その位置の勾配は 0、他の位置は q - p。形が違えば error。"
   (let* ((-inf sb-ext:single-float-negative-infinity)
          (zs (%f32-vector '(1 2 3)))
          (zt (%f32-vector (list 0 -inf 1)))
@@ -118,6 +118,14 @@ error。"
       (is (not (sb-ext:float-nan-p value)))
       (is (notany #'sb-ext:float-nan-p g))
       (is (zerop (aref g 1)))))
+  (let* ((zs (%f32-vector (list 1 sb-ext:single-float-negative-infinity 3)))
+         (zt (%f32-vector '(0 0 1)))
+         (g (funcall (nabla:grad (%soft-ce)) zs zt))
+         (expected (%reference-soft-ce-grad (vector 1 -1000 3) zt)))
+    ;; 生徒だけが -inf: 損失は +inf、その位置の勾配は 0、他の位置は q - p（相対 1e-5）
+    (is (= sb-ext:single-float-positive-infinity (aref (funcall (%soft-ce) zs zt))))
+    (is (zerop (aref g 1)) "~S" g)
+    (is (%close-relative-p (vector (aref g 0) (aref g 2)) (vector (aref expected 0) (aref expected 2)) 1d-5) "~S" g))
   (let ((z (%f32-vector (list 1 sb-ext:single-float-negative-infinity 3))))
     (is (every #'zerop (funcall (nabla:grad (%soft-ce)) z z)) "-inf を含む z_s = z_t"))
   (signals error (soft-target-cross-entropy (%f32-vector '(1 2)) (%f32-vector '(1 2 3)))))

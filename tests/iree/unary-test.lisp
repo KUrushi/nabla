@@ -115,3 +115,36 @@ DEFINE-IREE-TEST を作る。"
 (def-iree-minmax-test iree/max/bf16/matches-eager :max :bf16 "maximum")
 (def-iree-minmax-test iree/min/f32/matches-eager :min :f32 "minimum")
 (def-iree-minmax-test iree/min/bf16/matches-eager :min :bf16 "minimum")
+
+(defun %log1p-expm1-small-inputs (dtype)
+  "小さな |x|（1 + x の丸めで x が消える値）と境界値。"
+  (let ((values (if (eq dtype :f64)
+                    '(4d-18 -3d-17 1d-12 -1d-10 1d-300 0.5d0 -0.75d0 3d0 -0d0)
+                    '(1d-10 -3d-9 1d-6 -1d-5 1d-30 0.5d0 -0.75d0 3d0 -0d0)))
+        (type (if (eq dtype :f64) 'double-float 'single-float)))
+    (make-array (length values) :element-type type
+                                :initial-contents (mapcar (lambda (v) (coerce v type)) values))))
+
+(defun %log1p-expm1-close-p (actual expected dtype)
+  "成分ごとに相対誤差 8 ulp（f64 は 1e-15、f32 は 1e-6）。±0 は符号まで一致。"
+  (let ((rtol (if (eq dtype :f64) 1d-15 1d-6)))
+    (every (lambda (a e)
+             (if (zerop e)
+                 (and (zerop a) (= (float-sign a) (float-sign e)))
+                 (<= (abs (- a e)) (* rtol (abs e)))))
+           actual expected)))
+
+(define-iree-test iree/log1p-expm1/keep-the-digits-of-small-inputs-under-jit
+    "IREE の local で jit した log1p / expm1 は、小さな |x| でも eager（libm）と相対誤差 8 ulp で一致する
+（f32 と f64）。IREE（llvm-cpu）は f64 の log_plus_one / exponential_minus_one を log(1 + x) /
+exp(x) - 1 に下ろすので、f64 は emit が Goldberg / Kahan の式を出している（primitives/unary.lisp）。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (nabla:*compile-cache-directory* nil))
+    (dolist (dtype '(:f32 :f64))
+      (let ((x (%log1p-expm1-small-inputs dtype)))
+        (dolist (entry (list (cons "log1p" (nb:with-tracing (x) (nb:log1p x)))
+                             (cons "expm1" (nb:with-tracing (x) (nb:expm1 x)))))
+          (let ((jitted (funcall (nb:jit (cdr entry) :backend backend) x))
+                (eager (funcall (cdr entry) x)))
+            (is (%log1p-expm1-close-p jitted eager dtype) "~A/~A: jit ~S, eager ~S" (car entry) dtype jitted eager)))))))

@@ -31,7 +31,14 @@ d = delta - sum(p delta)、s = log(q/p) = d - log1p(sum(p expm1(d)))、u = q - p
                      (taught (> p 0))
                      ;; 教師の確率が 0 の位置（-inf のロジット）は差を 0 にする（-inf - -inf = NaN を避ける）
                      (delta (nabla:where taught (- z-s z-t) 0))
-                     (d (- delta (%expand (nabla:reduce-sum (* p delta) :axes axes) shape axis)))
+                     ;; 中心化のずらしは、教師の確率が正で生徒が有限の位置だけで取る（生徒が -inf の位置が
+                     ;; あると sum(p delta) = -inf で行全体が NaN になる）。その位置は d = -inf、s = -inf で
+                     ;; 下の q - p に落ちる。ずらしの量は s の値を変えない（log1p の引数を小さく保つだけ）
+                     (finite (= (nabla:where taught (- z-s z-s) 1) 0))
+                     (d (nabla:where taught
+                                     (- delta (%expand (nabla:reduce-sum (nabla:where finite (* p delta) 0) :axes axes)
+                                                       shape axis))
+                                     0))
                      ;; 教師の確率が 0 の位置にある生徒の確率 Q_u は sum(p exp(delta)) に入らないので、
                      ;; log(q/p) に log1p(-Q_u) を足して補う（論文の式は p > 0 の行だけを考えている）
                      (untaught (nabla:reduce-sum (nabla:where taught 0 q) :axes axes))
@@ -54,8 +61,10 @@ KL 正則化に使う。LOGITS についての勾配 softmax(LOGITS) - softmax(T
 ときはちょうど 0（Softmax Cancellation を起こさない。docs/numerics.md）。
 
 TEACHER-LOGITS は定数として扱い、勾配を流さない。LOGITS についての2階微分（ヘッセ行列）までは正しく、
-3 階以上は正しくない。TEACHER-LOGITS が -inf の位置は目標の確率 0 として扱い、LOGITS も -inf ならその位置の損失と
-勾配は 0（NaN を出さない）。
+3 階以上は正しくない。TEACHER-LOGITS が -inf の位置（と、有限でも softmax が 0 にアンダーフローする位置）は目標の確率 0
+として扱い、LOGITS も -inf ならその位置の損失と勾配は 0（NaN を出さない）。LOGITS が -inf で目標の
+確率が正の位置があると損失は +inf で、その位置の勾配は 0（-inf のロジットは動かせない）、他の位置の
+勾配は q - p。
 LOGITS と TEACHER-LOGITS は同じ形・dtype の配列かトレーサ。"
   (unless (equal (%shape logits) (%shape teacher-logits))
     (error "soft-target-cross-entropy: LOGITS と TEACHER-LOGITS の形が違う: ~S と ~S"

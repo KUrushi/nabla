@@ -16,7 +16,7 @@ description: nabla（Common Lisp × IREE の深層学習ライブラリ）で、
 3. **逆伝播の式を読む**: nabla の `grad` は各プリミティブの jvp / transpose ルールを合成する。合成関数の各入力に集まる余接線の和を書き出し、大きな項どうしの打ち消し（`−1 + 1` など）がないか確かめる。値が正しくても勾配が壊れることがある（Collapse の本体はこちら）
 4. **端の値を決める**: −inf（マスク）、+inf、NaN、全部が −inf の行、同点、長さ 1 の軸、bf16 / f16 での振る舞いを決め、docstring に書く。where の選ばれない側の微分が NaN を作らないか見る（double where†）
 5. **テストを先に書く**: 下の「テストの性質」を、精度の崖の向こう側を生成する入力で書き、**素朴な実装で落ちることを確かめてから** 実装する
-6. **jit でも確かめる**: IREE で jit した結果も参照と比べる（medium）。バックエンドの数学関数の近似や融合で結果が変わりうる
+6. **jit でも確かめる**: IREE と PJRT で jit した結果も参照と比べる（medium）。バックエンドの数学関数の近似や代数的な簡約で結果が変わりうる。**全 dtype の小さな入力** で見る（IREE の llvm-cpu は f64 の `log_plus_one` を `log(1 + x)` に下ろしていた。f32 だけのテストでは見えない）
 7. **docs/numerics.md を更新する**: 新しく直した箇所・見つけた危険を「残っている危険の一覧」に足すか消す
 
 ## 書き換えの表
@@ -66,6 +66,7 @@ stop-gradient で勾配を差し替える（値は `sg(f)`、勾配は `sg(g) ·
 - 「最大値は stop-gradient で定数扱い。引いても微分は変わらない」は数学的には正しく、数値的には Collapse の原因（`examples/mlp.lisp` のコメント）
 - argmax の one-hot を host の iota 配列で作ると、`broadcast-in-dim` が eager に評価されて行列の大きさの定数が StableHLO に埋め込まれる。nabla の log-softmax は同点に対称な平均（`peak + Σ_M (x − peak)/c`。値は peak と厳密に等しい）で避けている
 - 論文の式は前提（p > 0 の行など）を持つことがある。端の値のテストが前提の外を突く（`soft-target-cross-entropy` の Q_u の補正はテストが見つけた）
+- 正確な式を StableHLO に出しても、バックエンドが代数的に簡約して素朴な式に戻すことがある（XLA は `(x + 1) - 1` を x に畳む）。丸めに意味のある中間値は `stablehlo.optimization_barrier` に通す（f64 の log1p / expm1 の emit、`src/primitives/unary.lisp`）
 - `|x|` を `max(x, (- x))` で作ると、`max` の jvp が同点を 0.5 / 0.5 に分けるので x = 0 での微分が 0 になる（sigmoid の勾配 1/4 が 0 になる）。符号で分けるなら `where(x >= 0, x, -x)` を使う
 - 参照の計算も崖を越える。σ(x) − y や 1 − p を double で引けば、参照自身が桁を失う。参照は小さな量を直接作る式か有理数で書く
 - `and` / `or` は with-tracing の中で `:i1` の論理積にならない（`tracing-error`）。条件の組み合わせは where の入れ子か、数値の比較で書く

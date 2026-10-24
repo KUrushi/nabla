@@ -44,8 +44,8 @@
 | tanh | `%0 = stablehlo.tanh %a : tensor<4xf32>`（pretty、単項） | `tanh` | ○ | ○ | |
 | sqrt | `%0 = stablehlo.sqrt %a : tensor<4xf32>`（pretty、単項） | `sqrt` | ○ | ○ | 負は NaN（issue #196） |
 | rsqrt | `%0 = stablehlo.rsqrt %a : tensor<4xf32>`（pretty、単項） | `rsqrt` | ○ | ○ | 負は NaN、0 は +無限大 |
-| log_plus_one | `%0 = stablehlo.log_plus_one %a : tensor<4xf32>`（pretty、単項） | `log1p` | ○ | ○ | issue #223。-1 は -無限大、-1 未満は NaN。f64 は libm を呼ぶ（下記） |
-| exponential_minus_one | `%0 = stablehlo.exponential_minus_one %a : tensor<4xf32>`（pretty、単項） | `expm1` | ○ | ○ | issue #223。f64 は libm を呼ぶ（下記） |
+| log_plus_one | `%0 = stablehlo.log_plus_one %a : tensor<4xf32>`（pretty、単項） | `log1p` | ○ | ○ | issue #223。-1 は -無限大、-1 未満は NaN。f64 は IREE が log(1+x) に下ろすので、emit は Goldberg の式（`stablehlo.add` → `optimization_barrier` → `log` / `subtract` / `divide` / `select`）を出す（`docs/numerics.md`） |
+| exponential_minus_one | `%0 = stablehlo.exponential_minus_one %a : tensor<4xf32>`（pretty、単項） | `expm1` | ○ | ○ | issue #223。f64 は IREE が exp(x)-1 に下ろすので、emit は Kahan の式（`exponential` → `optimization_barrier` → `log` / `subtract` / `divide` / `select`）を出す |
 | compare | `%0 = stablehlo.compare LT, %a, %b : (tensor<4xf32>, tensor<4xf32>) -> tensor<4xi1>`（pretty。方向は LT LE GT GE EQ NE、`, FLOAT` の compare_type 付きも可。generic form† `"stablehlo.compare"(%a, %b) {comparison_direction = #stablehlo<comparison_direction LT>}` も通る） | `compare` | ○ | ○ | 出力 dtype は nabla の `:i1`（issue #37）。`:i1` は IREE 側では1要素1バイトの `IREE_HAL_ELEMENT_TYPE_BOOL_8` になり、`to-device` / `to-host` が BIT 配列との間で詰め直す（issue #72）。関数の引数・返り値にも使える |
 | select | `%1 = stablehlo.select %pred, %a, %b : tensor<4xi1>, tensor<4xf32>`（pretty） | `select` | ○ | ○ | |
 | convert | `%0 = stablehlo.convert %a : (tensor<4xf32>) -> tensor<4xbf16>`（pretty） | `convert` | ○ | ○ | |
@@ -65,15 +65,15 @@ f16 / f64 は上記すべての op で advisor が確認済み（フィクスチ
 実行できる。IREE は既定で f64 を f32 に落とす（`demoteF64ToF32 = true`、
 `compiler/src/iree/compiler/Pipelines/Options.h`）ので、`compile-flags` は
 `--iree-input-demote-f64-to-f32=false` を付ける。llvm-cpu では
-exponential / log / tanh / log_plus_one / exponential_minus_one の f64 版が多項式近似されず（`MathTransformPass.cpp`
+exponential / log / tanh の f64 版が多項式近似されず（`MathTransformPass.cpp`
 の近似・f32 展開は f32 以下の型だけが対象）libm の `exp` / `log` / `tanh`
-（と `log1p` / `expm1`）の呼び出しとして残る。既定の embedded ELF（`-nostdlib -static`）ではこれが
+の呼び出しとして残る（f64 の log_plus_one / exponential_minus_one は libm を呼ばず、精度の低い log(1+x) / exp(x)-1 になるので nabla は出さない）。既定の embedded ELF（`-nostdlib -static`）ではこれが
 リンクできずにコンパイルが失敗する（`iree-lld: error: undefined symbol:
 tanh`）。そこで `backend-compile` は、StableHLO のテキストに f64 の
-この5つがあるとき（`nabla.iree::%needs-libm-p`）だけ
+この3つがあるとき（`nabla.iree::%needs-libm-p`）だけ
 `--iree-llvmcpu-link-embedded=false` を付け、ランタイムが dlopen で読み込む
 system library を作る。読み込み時にプロセスの libm に解決されるので、f64 の
-この5つも `jit` できる。代わりにそのモジュールのコンパイルには `ld.lld` が
+この3つも `jit` できる。代わりにそのモジュールのコンパイルには `ld.lld` が
 要る（IREE は system linker を `-nostdlib -static -shared` で呼び、これを
 共有ライブラリとして扱えるのは `ld.lld` だけ。`ld.bfd` / `ld.gold` では
 失敗する。固定コミットの `iree-lld` は `-flavor` を要求するので使えない）。

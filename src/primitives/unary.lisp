@@ -124,11 +124,69 @@ X = -1 は負の無限大、X < -1 は NaN（libm の log1p と同じ。複素�
 (defun %rsqrt-emit (in-names out-name out-aval)
   (%emit-elementwise "rsqrt" in-names out-name out-aval))
 
+(defun %unary-aux-name (tag out-name)
+  "OUT-NAME（\"%7\" のような SSA 名）の数字部分を使った補助 SSA 名（\"%l1p_u_7\"）。"
+  (format nil "%~A_~A" tag (subseq out-name 1)))
+
+(defun %f64-log1p-lines (x out-name out-aval)
+  "f64 の log1p を、log と四則で正確に計算する StableHLO の行（Goldberg の方法）:
+u = 1 + x、u = 1 なら x、u = +inf なら u、それ以外は log(u) x / (u - 1)。u - 1 は丸め
+誤差を含まないので、log(u) / (u - 1) の比が 1 + x の丸めを打ち消す。u は
+optimization_barrier に通す（XLA の代数的な簡約が (x + 1) - 1 を x に畳むのを止める）。
+
+IREE（llvm-cpu）は f64 の log_plus_one を多項式近似せず、MLIR の lowering が
+log(1 + x) をそのまま出すので、小さな x の桁が消える（f32 は正確に近似される）。"
+  (let ((type (tensor-type-string out-aval))
+        (bool-type (tensor-type-string (make-aval (aval-shape out-aval) :i1))))
+    (flet ((n (tag) (%unary-aux-name (concatenate 'string "l1p_" tag) out-name)))
+      (format nil "~@{~A~^~%~}"
+              (format nil "~A = stablehlo.constant dense<1.0> : ~A" (n "one") type)
+              (format nil "~A = stablehlo.constant dense<0x7FF0000000000000> : ~A" (n "inf") type)
+              (format nil "~A = stablehlo.add ~A, ~A : ~A" (n "sum") x (n "one") type)
+              ;; barrier が無いと XLA が (x + 1) - 1 を x に畳み、素朴な log(1 + x) に戻る
+              (format nil "~A = stablehlo.optimization_barrier ~A : ~A" (n "u") (n "sum") type)
+              (format nil "~A = stablehlo.subtract ~A, ~A : ~A" (n "d") (n "u") (n "one") type)
+              (format nil "~A = stablehlo.log ~A : ~A" (n "log") (n "u") type)
+              (format nil "~A = stablehlo.multiply ~A, ~A : ~A" (n "num") (n "log") x type)
+              (format nil "~A = stablehlo.divide ~A, ~A : ~A" (n "q") (n "num") (n "d") type)
+              (format nil "~A = stablehlo.compare EQ, ~A, ~A : (~A, ~A) -> ~A" (n "small") (n "u") (n "one") type type bool-type)
+              (format nil "~A = stablehlo.compare EQ, ~A, ~A : (~A, ~A) -> ~A" (n "big") (n "u") (n "inf") type type bool-type)
+              (format nil "~A = stablehlo.select ~A, ~A, ~A : ~A, ~A" (n "r") (n "small") x (n "q") bool-type type)
+              (format nil "~A = stablehlo.select ~A, ~A, ~A : ~A, ~A" out-name (n "big") (n "u") (n "r") bool-type type)))))
+
+(defun %f64-expm1-lines (x out-name out-aval)
+  "f64 の expm1 を、exp・log と四則で正確に計算する StableHLO の行（Kahan の方法）:
+u = exp(x)、u = 1 なら x、u - 1 = -1 なら -1、u = +inf なら u、それ以外は (u - 1) x / log(u)。
+理由は %F64-LOG1P-LINES と同じ（IREE の f64 の exponential_minus_one は exp(x) - 1 になる）。"
+  (let ((type (tensor-type-string out-aval))
+        (bool-type (tensor-type-string (make-aval (aval-shape out-aval) :i1))))
+    (flet ((n (tag) (%unary-aux-name (concatenate 'string "em1_" tag) out-name)))
+      (format nil "~@{~A~^~%~}"
+              (format nil "~A = stablehlo.constant dense<1.0> : ~A" (n "one") type)
+              (format nil "~A = stablehlo.constant dense<-1.0> : ~A" (n "mone") type)
+              (format nil "~A = stablehlo.constant dense<0x7FF0000000000000> : ~A" (n "inf") type)
+              (format nil "~A = stablehlo.exponential ~A : ~A" (n "e") x type)
+              (format nil "~A = stablehlo.optimization_barrier ~A : ~A" (n "u") (n "e") type)
+              (format nil "~A = stablehlo.subtract ~A, ~A : ~A" (n "d") (n "u") (n "one") type)
+              (format nil "~A = stablehlo.log ~A : ~A" (n "log") (n "u") type)
+              (format nil "~A = stablehlo.multiply ~A, ~A : ~A" (n "num") (n "d") x type)
+              (format nil "~A = stablehlo.divide ~A, ~A : ~A" (n "q") (n "num") (n "log") type)
+              (format nil "~A = stablehlo.compare EQ, ~A, ~A : (~A, ~A) -> ~A" (n "small") (n "u") (n "one") type type bool-type)
+              (format nil "~A = stablehlo.compare EQ, ~A, ~A : (~A, ~A) -> ~A" (n "low") (n "d") (n "mone") type type bool-type)
+              (format nil "~A = stablehlo.compare EQ, ~A, ~A : (~A, ~A) -> ~A" (n "big") (n "u") (n "inf") type type bool-type)
+              (format nil "~A = stablehlo.select ~A, ~A, ~A : ~A, ~A" (n "r1") (n "small") x (n "q") bool-type type)
+              (format nil "~A = stablehlo.select ~A, ~A, ~A : ~A, ~A" (n "r2") (n "low") (n "mone") (n "r1") bool-type type)
+              (format nil "~A = stablehlo.select ~A, ~A, ~A : ~A, ~A" out-name (n "big") (n "u") (n "r2") bool-type type)))))
+
 (defun %log1p-emit (in-names out-name out-aval)
-  (%emit-elementwise "log_plus_one" in-names out-name out-aval))
+  (if (eq (aval-dtype out-aval) :f64)
+      (%f64-log1p-lines (first in-names) out-name out-aval)
+      (%emit-elementwise "log_plus_one" in-names out-name out-aval)))
 
 (defun %expm1-emit (in-names out-name out-aval)
-  (%emit-elementwise "exponential_minus_one" in-names out-name out-aval))
+  (if (eq (aval-dtype out-aval) :f64)
+      (%f64-expm1-lines (first in-names) out-name out-aval)
+      (%emit-elementwise "exponential_minus_one" in-names out-name out-aval)))
 
 (defun %neg-eager (arrays in-avals)
   (with-ieee-arithmetic

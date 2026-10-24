@@ -32,7 +32,7 @@ Adam は ε より大きいこの「雑音の床」を一定の大きさの更�
 
 ### 2.1 log1p / expm1 プリミティブ（core）
 
-`nabla:log1p`（`stablehlo.log_plus_one`）と `nabla:expm1`（`stablehlo.exponential_minus_one`）を足した（issue #223 の一部）。小さな x で `log(1 + x)` / `exp(x) − 1` が失う桁を失わない。IREE の llvm-cpu では f64 版が libm を呼ぶので、f64 の exp / log / tanh と同じく system library としてリンクする（`docs/stablehlo-ops.md`）。
+`nabla:log1p`（`stablehlo.log_plus_one`）と `nabla:expm1`（`stablehlo.exponential_minus_one`）を足した（issue #223 の一部）。小さな x で `log(1 + x)` / `exp(x) − 1` が失う桁を失わない。f32 / bf16 / f16 は `log_plus_one` / `exponential_minus_one` をそのまま出す（IREE は f32 で正確に多項式近似する）。f64 は、IREE（llvm-cpu）が多項式近似せず MLIR の lowering が `log(1 + x)` / `exp(x) − 1` をそのまま出すので、emit が Goldberg / Kahan の式（`u = 1 + x` を `optimization_barrier` に通し、`u = 1 ? x : log(u)·x/(u − 1)`）を log と exp で出す。barrier が無いと XLA（PJRT）が `(x + 1) − 1` を x に畳む。どちらのバックエンドでも eager（libm）とビット単位で一致することを medium テストで守っている（`tests/iree/unary-test.lisp`、`tests/pjrt/log1p-expm1-test.lisp`）。この問題は Fable の敵対的レビューが見つけた
 
 ### 2.2 log-softmax / softmax（`src/nn/layers.lisp`）
 
@@ -52,6 +52,10 @@ softmax    = exp(logsoftmax)
 - 論文の JAX の実装は argmax の one-hot を使うが、nabla では使わない。iota を host の配列で作ると行列の大きさの定数が StableHLO に埋め込まれる（attention のスコア `(b h q k)` で大きい）ため。同点に対称なので、置換に対しても対称になる
 - `log1p` の引数は、**log1p の前で** select する（後で選ぶと、選ばれない log1p(−1) の勾配が inf × 0 = NaN になる。3.4 節）
 - NaN を含む行と全部が −inf の行は NaN（JAX と同じ）。−inf の要素は log-softmax が −inf、softmax が 0、勾配 0
+
+代償: reduce が 2 回（最大値・和）から 4 回（最大値・同点の数・同点の和・残りの和）になり、`softmax` は `exp(log-softmax)` なので、IREE の local-task で attention の形 `(8 12 128 128)` の softmax が約 1.25〜3 倍、勾配が約 1.6 倍遅くなった（Fable の測定。`(32 1000)` は変わらない）。正しさを優先し、速い経路は持たない。
+
+バックエンドの限界: IREE は非正規数を 0 に切り捨てるので、f32 で勾配が 0 に丸まらないのは余裕が約 87 まで（eager は非正規数を保つので約 103 まで）。
 
 論文の例 z = [9, −9, −9]（f32）で、log-softmax `[-3.046e-8, -18, -18]`、交差エントロピーの勾配 `[-3.046e-8, 1.523e-8, 1.523e-8]` が論文の値とビット単位で一致する。
 
@@ -73,7 +77,8 @@ g     = u − q Σ u                        ; 和が 0
 - **Q_u の補正**: 教師の確率が 0 の位置（−inf のロジット）があると、Σ p exp(delta) から生徒のその位置の確率の和 Q_u = Σ_{p=0} q が抜けるので、s に log1p(−Q_u) を足す。論文の式は p > 0 の行だけを考えていて、そのままだと勾配がずれる（テストが見つけた）
 - **2 階微分**: 論文の stop-gradient の形だけだとヘッセ行列が 0 になる。値が 0・1 階微分も 0 の項 (q − sg(q))(z_S − sg(z_S))/2 を足すと、2 階微分が (∂q_j/∂z_i + ∂q_i/∂z_j)/2 = diag(q) − q q^T になる（3 階以上は正しくない。docstring に書いてある）
 - **教師は定数**: 教師のロジットには勾配を流さない（混合 2 階微分まで正しくするのは割に合わない）
-- **±inf の扱い**: `z − sg(z)` は ±inf で NaN になるので、その位置は 0（勾配も 0）。教師と生徒が同じ位置で −inf のとき、損失と勾配は有限
+- **±inf の扱い**: `z − sg(z)` は ±inf で NaN になるので、その位置は 0（勾配も 0）。教師と生徒が同じ位置で −inf のとき、損失と勾配は有限。生徒だけが −inf の位置（教師の確率が正）は、中心化のずらしから外して NaN の中間値を作らず、損失は +inf、その位置の勾配は 0、他の位置は q − p
+- **アンダーフローした教師**: 有限の教師のロジットでも softmax が 0 にアンダーフローした位置（余裕が約 103 以上、IREE では約 87 以上）は、−inf と同じく目標の確率 0 として扱う（値は正しい）
 
 z_S = z_T なら勾配はちょうど 0（f32 / f64 / bf16、−inf を含む行も）。論文の例 z_T = [2, 1, 0]、z_S = z_T + [−1e-7, 1e-7, 0] で厳密な勾配 `[-4.596e-8, 4.144e-8, 4.513e-9]` と一致する。
 

@@ -343,7 +343,7 @@ loss[29] = 0.4449
 
 **rsqrt / sqrt**（issue #196）: `rsqrt`（export。`(rsqrt x)` = 1/sqrt(x) を要素ごとに返す関数で、配列・トレーサ・数値を取る。`with-tracing` の中でも同じ関数として書ける）と、CL の `sqrt` を `with-tracing` が書き換えたもの。どちらも bf16 / f16 / f32 / f64 に対応し、負の入力は NaN、`rsqrt(0)` は +無限大。数値（リテラル）の引数は CL の演算にそのまま委ね、負の値や 0 では CL の挙動（複素数・除算エラー）になる（`log` と同じ制限）。
 
-**log1p / expm1**（issue #223）: `log1p`（`log(1 + x)`）と `expm1`（`exp(x) - 1`）を要素ごとに返す関数（export）。配列・トレーサ・数値を取り、`with-tracing` の中でも同じ関数として書ける。小さな `x` で `(log (+ 1 x))` / `(- (exp x) 1)` が 1 との足し引きの丸めで失う桁を失わない（softmax の正規化項に使う。`docs/numerics.md`）。bf16 / f16 / f32 / f64 に対応し、`log1p(-1)` は -無限大、-1 未満は NaN、`expm1(-inf)` は -1。jvp とバッチ化のルールを持つ。IREE（llvm-cpu）の f64 は libm を呼ぶので、f64 の `exp` / `log` / `tanh` と同じく system library としてリンクする（`docs/stablehlo-ops.md`）。
+**log1p / expm1**（issue #223）: `log1p`（`log(1 + x)`）と `expm1`（`exp(x) - 1`）を要素ごとに返す関数（export）。配列・トレーサ・数値を取り、`with-tracing` の中でも同じ関数として書ける。小さな `x` で `(log (+ 1 x))` / `(- (exp x) 1)` が 1 との足し引きの丸めで失う桁を失わない（softmax の正規化項に使う。`docs/numerics.md`）。bf16 / f16 / f32 / f64 に対応し、`log1p(-1)` は -無限大、-1 未満は NaN、`expm1(-inf)` は -1。jvp とバッチ化のルールを持つ。f64 は、IREE（llvm-cpu）が `log_plus_one` / `exponential_minus_one` を精度の低い `log(1 + x)` / `exp(x) - 1` に下ろすので、`log` と `exp` を使う正確な式（Goldberg / Kahan）で出す（`docs/numerics.md`）。
 
 **value-aval**（issue #204）: `(value-aval x)` は `x` の `aval`（`aval-shape` / `aval-dtype` で形と dtype が読める）を返す関数。`with-tracing` の本体（`defmodule` の `:call` など）が入力の形を知るために使う。受け付けるのはトレーサ・dtype が決まる配列・device array で、文字列・数値・リストは `tracing-error`、dtype が決まらない配列（`(unsigned-byte 16)`・`simple-vector`）は `dtype-mismatch`。
 
