@@ -102,6 +102,8 @@
    #:expm1
    #:log1p
    #:stop-gradient #:value-aval
+   ;; gather（issue #240）
+   #:gather
    ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
    #:emit-stablehlo
    #:primitive-not-emittable

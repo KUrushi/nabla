@@ -301,3 +301,26 @@ LHS・RHS の片方が配列でもう片方がトレーサなら、配列をト�
 
 (defmethod conv-general-dilated ((lhs tracer) (rhs array) &rest keys)
   (apply #'conv-general-dilated lhs (%lift-array rhs lhs) keys))
+
+;;; --- gather: 先頭の軸を整数の添字の配列で引く（issue #240）---
+
+(defgeneric gather (operand indices)
+  (:documentation
+   "OPERAND [N, rest...] の先頭の軸を整数（:i32 / :u32 / :u64）の添字の配列 INDICES [idx...] で引き、
+[idx..., rest...] を返す（JAX の jnp.take(operand, indices, axis=0)）。範囲外の添字（負・N 以上）の行は
+0 になる（JAX は NaN）。勾配は、範囲内の添字の行に余接線を足し込んだもの（範囲外の添字は寄与しない）。
+OPERAND は :i1 以外の dtype。片方が配列、もう片方がトレーサなら、配列を自分の dtype の定数にリフトする
+（OPERAND と INDICES は dtype が違うので、DOT と違いトレーサの dtype には合わせない）。"))
+
+(defmethod gather ((operand array) (indices array))
+  (apply (primitive-eager (find-primitive :gather)) (list operand indices)
+         (list (list (array-aval operand) (array-aval indices)))))
+
+(defmethod gather ((operand tracer) (indices tracer))
+  (%trace-eqn :gather (list operand indices)))
+
+(defmethod gather ((operand array) (indices tracer))
+  (gather (%lift-array-to operand (aval-dtype (array-aval operand))) indices))
+
+(defmethod gather ((operand tracer) (indices array))
+  (gather operand (%lift-array-to indices (aval-dtype (array-aval indices)))))

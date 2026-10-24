@@ -95,7 +95,7 @@ make-eqn が例外を出さずに成功する（params の宣言と呼び出し�
 
 (defparameter *linear-primitive-names*
   '(:add :sub :neg :convert :reshape :transpose :broadcast-in-dim :reduce-sum
-    :select :mul :div :dot-general :cond :scan :convolution :rev)
+    :select :mul :div :dot-general :cond :scan :convolution :rev :gather :scatter-add)
   "接線について線形に使われうる（:transpose を持つべき）プリミティブ。mul / div /
 dot-general / convolution（issue #203。lhs と rhs の双線形）は片側だけが線形、rev（軸の反転）は線形、select は条件以外の分岐が線形、cond は pred 以外の入力が線形（枝が線形な cond だけが transpose される。issue #134）、scan（issue #139）は
 partial eval で分けた線形な scan（残差を consts / xs で受ける）が線形。max / min / exp / log /
