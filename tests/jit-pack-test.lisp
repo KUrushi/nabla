@@ -118,14 +118,17 @@ dtype の種類の数になる。"
                 :regression-file (regression-path "jit-pack-later-operations"))))
 
 (test jit-pack/zero-size-rank-0-and-non-simple-leaves-round-trip
-  "要素数 0 の葉（形 (0 3)）、rank 0 の葉・Lisp の実数、simple でない配列（adjustable）の葉が混ざった木も、
+  "要素数 0 の葉（形 (0 3)）、rank 0 の葉・Lisp の実数、simple でない配列（displaced）の葉が混ざった木も、
 連結して戻すと同じ木になる（PBT の生成器は次元が 1 以上で simple な配列だけなので、ここで見る）。"
   (let* ((backend (make-instance '%pack-recording-backend :max-inputs 1))
          (empty (make-array '(0 3) :element-type 'single-float))
          (scalar (make-array '() :element-type 'single-float :initial-element 2.5))
          (vector (make-array '(2) :element-type 'single-float :initial-contents '(1.0 -1.0)))
-         (adjustable (make-array '(2 2) :element-type 'single-float :adjustable t
-                                        :initial-contents '((4.0 5.0) (6.0 7.0))))
+         ;; displaced（simple でなく、array-storage-vector も使えない）配列
+         (adjustable (make-array '(2 2) :element-type 'single-float
+                                        :displaced-to (make-array 6 :element-type 'single-float
+                                                                    :initial-contents '(0.0 0.0 4.0 5.0 6.0 7.0))
+                                        :displaced-index-offset 2))
          (result (%pack-call-eagerly backend (nb:with-tracing (xs) xs)
                                      (list empty scalar 3.0 vector adjustable))))
     (is (= 1 (%main-input-count (first (%pack-texts backend)))))
