@@ -83,14 +83,18 @@ jit では表と ids を jit の引数にし（ids を閉包の定数にする�
                             (funcall jf table-arg ids-arg) ; コンパイル
                             (lambda () (funcall jf table-arg ids-arg)))
                           (lambda () (funcall f table-arg ids-arg)))))
-            (let ((bytes (bytes-consed run)))
-              (report :backend (if backend :iree :eager) :vocab vocabulary :features features :ids 256
-                      :method method :pass pass :repeats repeats
-                      :median-ms (/ (round (* 1000 (median-ms run repeats))) 1000d0)
-                      :bytes-consed bytes))))))))
+            ;; jit の戻り値はホストの配列（to-host まで含めて測る）。確保したバイト数は Lisp のヒープの分だけなので、
+            ;; IREE の中の確保を数えない jit では出さない。
+            (let ((bytes (and (null backend) (bytes-consed run))))
+              (apply #'report :backend (if backend :iree :eager) :vocab vocabulary :features features :ids 256
+                     :method method :pass pass :repeats repeats
+                     :median-ms (/ (round (* 1000 (median-ms run repeats))) 1000d0)
+                     (and bytes (list :bytes-consed bytes))))))))))
 
 (let ((vocabs (let ((env (sb-ext:posix-getenv "NABLA_EMBED_VOCABS")))
-                (if env (read-from-string (format nil "(~A)" env)) '(1000 10000 50000)))))
+                (if env
+                    (mapcar #'parse-integer (uiop:split-string (string-trim " " env) :separator " "))
+                    '(1000 10000 50000)))))
   (report :kind :env :lisp (lisp-implementation-version) :machine (machine-type) :os (software-type))
   (dolist (v vocabs) (measure nil v))
   (asdf:load-system "nabla/iree")
