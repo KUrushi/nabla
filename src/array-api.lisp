@@ -228,6 +228,21 @@ dtype は同じ真偽の rank 0 の PRED を渡したときと同じ）。PRED �
 WITH-TRACING は CL の sqrt と同じく、この関数の呼び出しも書き換える。"
   (%t-rsqrt x))
 
+;;; --- log1p / expm1（issue #223） ---
+
+(defun log1p (x)
+  "log(1 + X)（要素ごと）。X が小さいとき (log (+ 1 x)) は 1 + X の丸めで X の桁を失うが、
+これは失わない（softmax の正規化項などに使う。docs/numerics.md）。X は浮動小数点の配列・
+トレーサ・数値（数値は CL の float にしてから計算し、その型で返す）。X = -1 は負の無限大、
+X < -1 は NaN。WITH-TRACING の中でも同じ関数として書ける。"
+  (%t-log1p x))
+
+(defun expm1 (x)
+  "exp(X) - 1（要素ごと）。X が小さいとき (- (exp x) 1) は桁を失うが、これは失わない。X は
+浮動小数点の配列・トレーサ・数値（数値は CL の float にしてから計算し、その型で返す）。
+WITH-TRACING の中でも同じ関数として書ける。"
+  (%t-expm1 x))
+
 ;;; --- stop-gradient（issue #80） ---
 
 (defgeneric stop-gradient (x)

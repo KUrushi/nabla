@@ -393,6 +393,32 @@ rank 0 で SHAPE が rank 0 でなければ :BROADCAST-IN-DIM で SHAPE まで
 (defmethod %t-rsqrt ((a tracer))
   (%trace-op-tracer :rsqrt a))
 
+;;; --- %t-log1p / %t-expm1（issue #223）。 ---
+
+(defgeneric %t-log1p (a)
+  (:documentation "LOG(1 + A)（トレース対象の (nabla:log1p a)）。"))
+
+(defmethod %t-log1p ((a real))
+  (%trace-op-real (lambda (x) (with-ieee-arithmetic (%log1p-element (float x)))) a))
+
+(defmethod %t-log1p ((a array))
+  (%trace-op-array :log1p a))
+
+(defmethod %t-log1p ((a tracer))
+  (%trace-op-tracer :log1p a))
+
+(defgeneric %t-expm1 (a)
+  (:documentation "EXP(A) - 1（トレース対象の (nabla:expm1 a)）。"))
+
+(defmethod %t-expm1 ((a real))
+  (%trace-op-real (lambda (x) (with-ieee-arithmetic (%expm1-element (float x)))) a))
+
+(defmethod %t-expm1 ((a array))
+  (%trace-op-array :expm1 a))
+
+(defmethod %t-expm1 ((a tracer))
+  (%trace-op-tracer :expm1 a))
+
 ;;; --- %t-tanh: TANH(A)（トレース対象の (tanh a)）。 ---
 
 (defgeneric %t-tanh (a)

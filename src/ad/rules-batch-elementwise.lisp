@@ -50,6 +50,8 @@ broadcast は無い）なので、バッチされていない引数は元の形�
 (def-batch-rule tanh (args batch-dims) (%batch-elementwise :tanh args batch-dims nil))
 (def-batch-rule sqrt (args batch-dims) (%batch-elementwise :sqrt args batch-dims nil))
 (def-batch-rule rsqrt (args batch-dims) (%batch-elementwise :rsqrt args batch-dims nil))
+(def-batch-rule log1p (args batch-dims) (%batch-elementwise :log1p args batch-dims nil))
+(def-batch-rule expm1 (args batch-dims) (%batch-elementwise :expm1 args batch-dims nil))
 (def-batch-rule select (args batch-dims) (%batch-elementwise :select args batch-dims nil))
 (def-batch-rule stop-gradient (args batch-dims)
   (%batch-elementwise :stop-gradient args batch-dims nil))

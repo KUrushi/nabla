@@ -51,6 +51,12 @@ DEFINE-IREE-TEST を作る。DOMAIN は入力の生成域（log は 0除算・�
 (def-iree-unary-test iree/rsqrt/f32/matches-eager :rsqrt :f32 "rsqrt" :positive)
 (def-iree-unary-test iree/rsqrt/bf16/matches-eager :rsqrt :bf16 "rsqrt" :positive)
 (def-iree-unary-test iree/rsqrt/f64/matches-eager :rsqrt :f64 "rsqrt" :positive)
+(def-iree-unary-test iree/log1p/f32/matches-eager :log1p :f32 "log_plus_one" :positive)
+(def-iree-unary-test iree/log1p/bf16/matches-eager :log1p :bf16 "log_plus_one" :positive)
+(def-iree-unary-test iree/log1p/f64/matches-eager :log1p :f64 "log_plus_one" :positive)
+(def-iree-unary-test iree/expm1/f32/matches-eager :expm1 :f32 "exponential_minus_one" :any)
+(def-iree-unary-test iree/expm1/bf16/matches-eager :expm1 :bf16 "exponential_minus_one" :any)
+(def-iree-unary-test iree/expm1/f64/matches-eager :expm1 :f64 "exponential_minus_one" :any)
 
 (define-iree-test iree/sqrt-rsqrt/matches-jax-fixture
     "sqrt / rsqrt（f32 / f64 / bf16 / f16）を IREE の local backend で実行した結果は、JAX の

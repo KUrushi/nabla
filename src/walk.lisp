@@ -237,6 +237,8 @@ ARGS は1個以上を前提とする）。"
 (defun %rewrite-log (args form path) (%rewrite-unary-1 '%t-log args form path))
 (defun %rewrite-sqrt (args form path) (%rewrite-unary-1 '%t-sqrt args form path))
 (defun %rewrite-rsqrt (args form path) (%rewrite-unary-1 '%t-rsqrt args form path))
+(defun %rewrite-log1p (args form path) (%rewrite-unary-1 '%t-log1p args form path))
+(defun %rewrite-expm1 (args form path) (%rewrite-unary-1 '%t-expm1 args form path))
 
 (defun %rewrite-1+ (args form path)
   (if (= 1 (length args)) (list '%t-add (first args) 1) (%unsupported form path)))
@@ -268,6 +270,8 @@ ARGS は1個以上を前提とする）。"
         (cons 'log '%rewrite-log)
         (cons 'sqrt '%rewrite-sqrt)
         (cons 'rsqrt '%rewrite-rsqrt)
+        (cons 'log1p '%rewrite-log1p)
+        (cons 'expm1 '%rewrite-expm1)
         (cons '1+ '%rewrite-1+)
         (cons '1- '%rewrite-1-)
         (cons '< (lambda (args form path) (%rewrite-compare '< args form path)))
@@ -278,7 +282,7 @@ ARGS は1個以上を前提とする）。"
         (cons '/= (lambda (args form path) (%rewrite-compare '/= args form path))))
   "書き換え対象の CL シンボルから、書き換え関数への対応表。書き換え関数は
 (WALKED-ARGS FORM PATH) を取り、書き換え後のフォームを返す。値はシンボル
-（+ - * / max min exp tanh log sqrt rsqrt 1+ 1- の各 %REWRITE-* 関数名）か、比較演算子
+（+ - * / max min exp tanh log sqrt rsqrt log1p expm1 1+ 1- の各 %REWRITE-* 関数名）か、比較演算子
 用のクロージャ。SYMBOL-FUNCTION ではなく SYMBOL そのものを持たせているのは、
 FUNCALL に渡す SYMBOL は呼ぶたびに現在のグローバル定義を引く（再定義の
 影響を受ける）のに対し、#'NAME はこの DEFPARAMETER が評価された時点の
@@ -338,7 +342,7 @@ PATH は NIL）。"
 %WALK でその展開結果を歩く（対応していない形式は UNSUPPORTED-FORM を
 マクロ展開時に signal する）。本体の定型の DO（src/loop-scan.lisp。
 カウンタ・carry・終了条件 (>= i n) / (= i n)）は、展開される前に1つの SCAN になる。
-CL の + - * / max min exp log tanh sqrt 1+ 1-（と nabla の rsqrt）
+CL の + - * / max min exp log tanh sqrt 1+ 1-（と nabla の rsqrt log1p expm1）
 < <= > >= = /= は、この時点でトレース対象の内部ジェネリック（%T-ADD 等）
 への呼び出しに書き換わる。それ以外のシンボルを演算子に持つ呼び出しは
 そのまま残す（ふつうの Lisp として実行される。トレーサを渡すと、その

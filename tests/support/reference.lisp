@@ -104,6 +104,20 @@
     (dotimes (i (array-total-size a) result)
       (setf (row-major-aref result i) (/ 1d0 (sqrt (coerce (row-major-aref a i) 'double-float)))))))
 
+;; issue #223。実装（libm の log1p / expm1）とは別の式で、double の log(1 + x) / exp(x) - 1。
+;; 入力が f32 / bf16 / f16 なら double で十分に正確（f64 の小さな値は別の例ベースのテストで見る）。
+(defun reference-log1p (a)
+  "LOG(1 + A)（要素ごと、double の素朴な式）を返す。A は -1 より大きい。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (log (+ 1d0 (coerce (row-major-aref a i) 'double-float)))))))
+
+(defun reference-expm1 (a)
+  "EXP(A) - 1（要素ごと、double の素朴な式）を返す。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (- (exp (coerce (row-major-aref a i) 'double-float)) 1d0)))))
+
 ;; issue #31 p2
 (defun reference-max (a b)
   "MAX(A, B)（要素ごとの大きい方）を返す。A と B は同じ shape を持つこと。

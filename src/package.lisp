@@ -99,6 +99,7 @@
    #:convert
    #:where
    #:rsqrt
+   #:log1p #:expm1
    #:stop-gradient #:value-aval
    ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
    #:emit-stablehlo

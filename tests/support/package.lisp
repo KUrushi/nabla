@@ -59,6 +59,8 @@
    #:reference-tanh
    #:reference-sqrt
    #:reference-rsqrt
+   #:reference-log1p
+   #:reference-expm1
    #:load-sqrt-jax-fixture
    #:sqrt-fixture-input-array
    #:sqrt-fixture-match-p

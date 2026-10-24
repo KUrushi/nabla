@@ -343,6 +343,8 @@ loss[29] = 0.4449
 
 **rsqrt / sqrt**（issue #196）: `rsqrt`（export。`(rsqrt x)` = 1/sqrt(x) を要素ごとに返す関数で、配列・トレーサ・数値を取る。`with-tracing` の中でも同じ関数として書ける）と、CL の `sqrt` を `with-tracing` が書き換えたもの。どちらも bf16 / f16 / f32 / f64 に対応し、負の入力は NaN、`rsqrt(0)` は +無限大。数値（リテラル）の引数は CL の演算にそのまま委ね、負の値や 0 では CL の挙動（複素数・除算エラー）になる（`log` と同じ制限）。
 
+**log1p / expm1**（issue #223）: `log1p`（`log(1 + x)`）と `expm1`（`exp(x) - 1`）を要素ごとに返す関数（export）。配列・トレーサ・数値を取り、`with-tracing` の中でも同じ関数として書ける。小さな `x` で `(log (+ 1 x))` / `(- (exp x) 1)` が 1 との足し引きの丸めで失う桁を失わない（softmax の正規化項に使う。`docs/numerics.md`）。bf16 / f16 / f32 / f64 に対応し、`log1p(-1)` は -無限大、-1 未満は NaN、`expm1(-inf)` は -1。jvp とバッチ化のルールを持つ。IREE（llvm-cpu）の f64 は libm を呼ぶので、f64 の `exp` / `log` / `tanh` と同じく system library としてリンクする（`docs/stablehlo-ops.md`）。
+
 **value-aval**（issue #204）: `(value-aval x)` は `x` の `aval`（`aval-shape` / `aval-dtype` で形と dtype が読める）を返す関数。`with-tracing` の本体（`defmodule` の `:call` など）が入力の形を知るために使う。受け付けるのはトレーサ・dtype が決まる配列・device array で、文字列・数値・リストは `tracing-error`、dtype が決まらない配列（`(unsigned-byte 16)`・`simple-vector`）は `dtype-mismatch`。
 
 配列レベルの公開 API は11個の総称関数（`array` と `tracer` の両方のメソッドを持つ。`conv-general-dilated` は下の「畳み込み」）: `dot`（最後の軸と最初の軸を縮約する、バッチ無しの `dot-general`。rank 0 は `tracing-error`。配列とトレーサを混ぜて呼ぶと、配列をトレーサと同じ dtype の定数としてリフトする）, `dot-general`（`(dot-general a b :lhs-contracting .. :rhs-contracting .. :lhs-batch .. :rhs-batch ..)`。縮約軸とバッチ軸（先頭でなくてもよい）を明示する StableHLO の dot_general。結果の軸はバッチ軸、a の残り、b の残りの順。attention のスコアのように複数のバッチ軸があるときに使う。issue #208）, `reshape`, `transpose`（`perm` 省略時は軸を逆順にする）, `broadcast-in-dim`, `reduce-sum` / `reduce-max`（`axes` 省略時は全軸を潰す。`axes` を明示的に空リストで渡すと reduce しない＝X をそのまま返す。トレース時は eqn も足さない。省略とは区別される）, `convert`, `where`（`pred`・`a`・`b`。`pred` が真の要素は `a`、偽の要素は `b`。`pred` が eager な bit 配列でも `a`・`b` の少なくとも一方がトレーサなら `pred` を定数としてリフトしてトレースする。`pred` が rank 0 で `a`・`b` が rank 1 以上なら `pred` を分岐の shape にブロードキャストする（`if` の条件も同じ）。`pred` が Lisp のブール値 `t`／`nil` なら、ふつうの `if` と同じく片方の分岐を静的に選び `select` をトレースしない（結果の shape・dtype は同じ真偽の rank 0 の `pred` と同じ）。それ以外のふつうの Lisp の値は `tracing-error`）, `stop-gradient`（issue #80。値は引数そのままで、自動微分では定数として扱われる＝接線がゼロ。任意の dtype を通し、配列には中身の等しい新しい配列を返す。StableHLO では `stablehlo.optimization_barrier` になる）。数値・rank 0 の値は、もう一方の分岐・オペランドの shape・dtype に合わせて自動でブロードキャストされる（それ以外の shape の不一致は `primitive-error`）。`where`（および `if`/`select` への書き換え）の両方の分岐が数値だと dtype を決められず `tracing-error` になる。
@@ -362,7 +364,7 @@ loss[29] = 0.4449
 
 
 
-**整数 dtype**（`src/dtype.lisp`、`src/primitives/*.lisp`、issue #126）: `:i32`（Lisp では `(signed-byte 32)`、StableHLO では `i32`）、`:u32`（`(unsigned-byte 32)`、`ui32`）、`:u64`（`(unsigned-byte 64)`、`ui64`。THREE_FRY の状態 `ui64[2]` のために足した）。`add` `sub` `mul` `max` `min` `neg` `compare` `select` `convert` `broadcast-in-dim` `reshape` `transpose` `reduce-sum` `reduce-max` は整数を受け付け、`div` `exp` `log` `tanh` `sqrt` `rsqrt` `dot-general` は整数を `primitive-error`（トレース時）で拒否する。整数どうしの演算は dtype が一致していなければならず（暗黙の型昇格はしない）、eager の算術は StableHLO と同じく 2 の補数（符号なしは法 2^n）で折り返す。`convert` は整数 ⇔ 浮動小数点 ⇔ `:i1` を変換できる（浮動小数点 → 整数は 0 方向へ丸め、NaN は 0、範囲外（±無限大を含む）は整数の端に飽和。これはどのバックエンドでも同じになるよう、出力する StableHLO が clamp と select で飽和と NaN → 0 を明示する。整数 → `:bf16` は f32 を経由する2段の convert。→ `:i1` は 0 以外が真）。`with-tracing` の中の整数リテラルは相手の整数 dtype にリフトされる（浮動小数点のリテラルや範囲外の整数は `tracing-error`。浮動小数点のトレーサと組むリテラルは従来どおり `:f32`）。整数の接線は変換の中では常に symbolic zero で、整数の入力に対する `grad` は `autodiff-error`、整数を経由する計算の勾配はゼロ。IREE と PJRT（CPU）の `to-device` / `to-host` は整数に対応する。新しい export はない。
+**整数 dtype**（`src/dtype.lisp`、`src/primitives/*.lisp`、issue #126）: `:i32`（Lisp では `(signed-byte 32)`、StableHLO では `i32`）、`:u32`（`(unsigned-byte 32)`、`ui32`）、`:u64`（`(unsigned-byte 64)`、`ui64`。THREE_FRY の状態 `ui64[2]` のために足した）。`add` `sub` `mul` `max` `min` `neg` `compare` `select` `convert` `broadcast-in-dim` `reshape` `transpose` `reduce-sum` `reduce-max` は整数を受け付け、`div` `exp` `log` `tanh` `sqrt` `rsqrt` `log1p` `expm1` `dot-general` は整数を `primitive-error`（トレース時）で拒否する。整数どうしの演算は dtype が一致していなければならず（暗黙の型昇格はしない）、eager の算術は StableHLO と同じく 2 の補数（符号なしは法 2^n）で折り返す。`convert` は整数 ⇔ 浮動小数点 ⇔ `:i1` を変換できる（浮動小数点 → 整数は 0 方向へ丸め、NaN は 0、範囲外（±無限大を含む）は整数の端に飽和。これはどのバックエンドでも同じになるよう、出力する StableHLO が clamp と select で飽和と NaN → 0 を明示する。整数 → `:bf16` は f32 を経由する2段の convert。→ `:i1` は 0 以外が真）。`with-tracing` の中の整数リテラルは相手の整数 dtype にリフトされる（浮動小数点のリテラルや範囲外の整数は `tracing-error`。浮動小数点のトレーサと組むリテラルは従来どおり `:f32`）。整数の接線は変換の中では常に symbolic zero で、整数の入力に対する `grad` は `autodiff-error`、整数を経由する計算の勾配はゼロ。IREE と PJRT（CPU）の `to-device` / `to-host` は整数に対応する。新しい export はない。
 
 
 
@@ -387,7 +389,7 @@ loss[29] = 0.4449
 
 #### 要素演算のバッチ化ルール（issue #128）
 
-`add sub mul div neg exp log tanh sqrt rsqrt max min compare select convert stop-gradient` は共通のバッチ化ルール1つ（`src/ad/rules-batch-elementwise.lisp`）を持つ。バッチされた引数のバッチ軸がすべて同じ位置ならそのまま元の演算を適用し（`transpose` も `broadcast-in-dim` も足さない）、位置が違うときは先頭へ `transpose` で揃える。バッチされていない引数には `broadcast-in-dim` でその位置に軸を足す（要素演算は形が全引数で一致する前提で、暗黙のスカラー拡張は無い）。`select` は条件だけがバッチされる場合も扱う。
+`add sub mul div neg exp log tanh sqrt rsqrt log1p expm1 max min compare select convert stop-gradient` は共通のバッチ化ルール1つ（`src/ad/rules-batch-elementwise.lisp`）を持つ。バッチされた引数のバッチ軸がすべて同じ位置ならそのまま元の演算を適用し（`transpose` も `broadcast-in-dim` も足さない）、位置が違うときは先頭へ `transpose` で揃える。バッチされていない引数には `broadcast-in-dim` でその位置に軸を足す（要素演算は形が全引数で一致する前提で、暗黙のスカラー拡張は無い）。`select` は条件だけがバッチされる場合も扱う。
 
 
 

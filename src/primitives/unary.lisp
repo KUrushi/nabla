@@ -1,5 +1,5 @@
 ;;;; primitives/unary: 単項プリミティブ neg / exp / log / tanh（issue #31 p2）と
-;;;; sqrt / rsqrt（issue #196）。
+;;;; sqrt / rsqrt（issue #196）、log1p / expm1（issue #223）。
 ;;;;
 ;;;; いずれも1入力・浮動小数点専用で、出力は入力そのものの AVAL
 ;;;; （%UNARY-FLOAT-ABSTRACT-EVAL、src/primitives/common.lisp）。arith.lisp
@@ -63,6 +63,25 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
       ((minusp x) (%quiet-nan (if double-p 'double-float 'single-float)))
       (t (/ 1 (sqrt x))))))
 
+(defun %libm-expm1 (x)
+  "libm の expm1（DOUBLE-FLOAT）。SBCL は SB-KERNEL:%LOG1P を持つが %EXPM1 は持たない。"
+  (sb-alien:alien-funcall (sb-alien:extern-alien "expm1" (function double-float double-float)) x))
+
+(defun %log1p-element (x)
+  "LOG(1 + X)（1要素）。小さな X でも 1 + X の丸めで桁を失わない（softmax の正規化項
+log(1 + 小さな和) のため。docs/numerics.md）。double で計算して X の型に丸める。
+X = -1 は負の無限大、X < -1 は NaN（libm の log1p と同じ。複素数は返さない）。"
+  (if (sb-ext:float-nan-p x)
+      x
+      (coerce (sb-kernel:%log1p (coerce x 'double-float)) (type-of x))))
+
+(defun %expm1-element (x)
+  "EXP(X) - 1（1要素）。小さな X でも桁を失わない。double で計算して X の型に丸める
+（大きな X は +無限大、負の無限大は -1）。"
+  (if (sb-ext:float-nan-p x)
+      x
+      (coerce (%libm-expm1 (coerce x 'double-float)) (type-of x))))
+
 (defun %neg-abstract-eval (in-avals)
   (%unary-numeric-abstract-eval :neg in-avals))
 
@@ -81,6 +100,12 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
 (defun %rsqrt-abstract-eval (in-avals)
   (%unary-float-abstract-eval :rsqrt in-avals))
 
+(defun %log1p-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :log1p in-avals))
+
+(defun %expm1-abstract-eval (in-avals)
+  (%unary-float-abstract-eval :expm1 in-avals))
+
 (defun %neg-emit (in-names out-name out-aval)
   (%emit-elementwise "negate" in-names out-name out-aval))
 
@@ -98,6 +123,12 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
 
 (defun %rsqrt-emit (in-names out-name out-aval)
   (%emit-elementwise "rsqrt" in-names out-name out-aval))
+
+(defun %log1p-emit (in-names out-name out-aval)
+  (%emit-elementwise "log_plus_one" in-names out-name out-aval))
+
+(defun %expm1-emit (in-names out-name out-aval)
+  (%emit-elementwise "exponential_minus_one" in-names out-name out-aval))
 
 (defun %neg-eager (arrays in-avals)
   (with-ieee-arithmetic
@@ -122,6 +153,14 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
 (defun %rsqrt-eager (arrays in-avals)
   (with-ieee-arithmetic
     (%elementwise-eager #'%rsqrt-element arrays in-avals (%rsqrt-abstract-eval in-avals))))
+
+(defun %log1p-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%log1p-element arrays in-avals (%log1p-abstract-eval in-avals))))
+
+(defun %expm1-eager (arrays in-avals)
+  (with-ieee-arithmetic
+    (%elementwise-eager #'%expm1-element arrays in-avals (%expm1-abstract-eval in-avals))))
 
 (defprimitive neg ()
   :abstract-eval (lambda (in-avals) (%neg-abstract-eval in-avals))
@@ -164,3 +203,17 @@ NaN のチェックを先に行う（%LOG-ELEMENT と同じ理由）。"
           (declare (ignore in-avals))
           (%rsqrt-emit in-names out-name out-aval))
   :eager (lambda (arrays in-avals) (%rsqrt-eager arrays in-avals)))
+
+(defprimitive log1p ()
+  :abstract-eval (lambda (in-avals) (%log1p-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%log1p-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%log1p-eager arrays in-avals)))
+
+(defprimitive expm1 ()
+  :abstract-eval (lambda (in-avals) (%expm1-abstract-eval in-avals))
+  :emit (lambda (in-names in-avals out-name out-aval)
+          (declare (ignore in-avals))
+          (%expm1-emit in-names out-name out-aval))
+  :eager (lambda (arrays in-avals) (%expm1-eager arrays in-avals)))

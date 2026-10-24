@@ -143,7 +143,7 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
                     (when cuda-arch
                       (list (format nil "--iree-cuda-target=~A" cuda-arch)))))))
 
-(defparameter *libm-f64-ops* '("exponential" "log" "tanh")
+(defparameter *libm-f64-ops* '("exponential" "log" "tanh" "log_plus_one" "exponential_minus_one")
   "llvm-cpu が f64 のときに libm の呼び出しとして残す StableHLO の op 名
 （stablehlo. を除いたもの）。%needs-libm-p が使う。")
 
@@ -161,7 +161,7 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
 
 (defun %needs-libm-p (text)
   "StableHLO の TEXT（emit-stablehlo が出す pretty form）に、f64 の
-exp / log / tanh（*libm-f64-ops*）が1つでもあれば真を返す。
+exp / log / tanh / log1p / expm1（*libm-f64-ops*）が1つでもあれば真を返す。
 
 llvm-cpu はこれらの f64 版を多項式近似せず（MathTransformPass.cpp の近似・
 f32 展開は f32 以下の型だけが対象）libm の exp / log / tanh の呼び出しとして
