@@ -201,25 +201,16 @@ safetensors の書く順序とは限らず、保証するのは読み書きの�
 
 (defun write-safetensors (path entries &key metadata)
   "ENTRIES（ENCODE-SAFETENSORS と同じ）を PATH に safetensors として書く。
-一時ファイルに書いてから rename するので、読む側は書きかけのファイルを見ず、
-書き込みに失敗しても（プロセスの失敗に対して。fsync はしないので OS クラッシュ・電源断は対象外）PATH の既存のファイルは壊れない。書き込んだファイルのパス名（PATH を現在のディレクトリを基準に絶対化したもの）を返す。"
-  (let* ((octets (encode-safetensors entries :metadata metadata))
-         (path (merge-pathnames path (uiop:getcwd)))
-         (tmp (merge-pathnames (format nil "~A.~D.tmp" (file-namestring path)
-                                       (random most-positive-fixnum (make-random-state t)))
-                               path)))
-    ;; 型の無い PATH は :unspecific にしないと、rename が移動元の型（tmp）を移動先に引き継ぐ。
-    (ensure-directories-exist path)
-    (unwind-protect
-         (progn
-           (with-open-file (stream tmp :direction :output :element-type '(unsigned-byte 8)
-                                       :if-exists :supersede :if-does-not-exist :create)
-             (write-sequence octets stream)
-             (finish-output stream))
-           (uiop:rename-file-overwriting-target tmp (make-pathname :type (or (pathname-type path) :unspecific) :defaults path))
-           (setf tmp nil))
-      (when (and tmp (probe-file tmp)) (delete-file tmp)))
-    path))
+NABLA:WITH-ATOMIC-OUTPUT-FILE で一時ファイルに書いてから fsync して rename し、
+親ディレクトリも fsync する（issue #263）。読む側は書きかけのファイルを見ず、
+rename までに失敗すれば PATH の既存のファイルは変わらない。正常に戻った後は、
+プロセスの失敗に加えて OS のクラッシュ・電源断の後も PATH は完全な新しい中身に
+なる（macOS では NABLA:*FULL-FSYNC* を真にしない限り、ドライブの書き込み
+キャッシュは対象外）。書き込んだファイルのパス名（PATH を現在のディレクトリを
+基準に絶対化したもの）を返す。"
+  (let ((octets (encode-safetensors entries :metadata metadata)))
+    (nabla:with-atomic-output-file (stream path)
+      (write-sequence octets stream))))
 
 ;;; --- 読み込み ---
 

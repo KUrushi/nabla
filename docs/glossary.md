@@ -125,6 +125,9 @@ pretty form を出力する。
 **dispatch / binding（IREE）**
 : IREE がプログラムを分けた、デバイスで 1 回に起動する計算の単位が dispatch（GPU のカーネル 1 つに当たる）。IREE のコンパイラは要素ごとの演算などを融合（fusion）して 1 つの dispatch にまとめる。binding は 1 つの dispatch が読み書きするバッファの 1 つ 1 つで、ふつうは「その dispatch に入る別々のテンソル（関数の入力や、他の dispatch の結果）+ 結果」の数になる。IREE 3.11 のランタイムは 1 つの dispatch の binding を 32 個までしか受け付けない（`docs/iree-upstream-bugs.md` の 10、issue #264）。
 
+**fsync / F_FULLFSYNC**
+: `write` で書いたデータは、まず OS のメモリ（ページキャッシュ）に溜まり、ディスクへは後でまとめて書かれる。プロセスが落ちても OS が書いてくれるが、OS のクラッシュや電源断ではその分が失われる。`fsync(2)` は「このファイルの中身をディスクに届けるまで待つ」システムコール。一時ファイルに書いて rename で置き換えるときは、rename の前にファイルを、後に親ディレクトリ（rename そのものの記録）を fsync しないと、電源断の後に空か壊れたファイルが残りうる（nabla の `with-atomic-output-file`、issue #263）。macOS の `fsync` はデータをドライブに渡すだけで、ドライブ内の書き込みキャッシュまでは書き出さない。そこまで待つのが `fcntl(F_FULLFSYNC)` で、ずっと遅い（nabla では `*full-fsync*` で選ぶ）。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**

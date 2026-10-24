@@ -14,7 +14,7 @@
   :description "Common Lisp で書く JAX 相当の深層学習ライブラリ（コア。実行系の実装は知らない）"
   :author "KUrushi"
   :license "Apache-2.0"
-  :depends-on ("ironclad" "trivial-garbage" (:require "sb-cltl2"))
+  :depends-on ("ironclad" "trivial-garbage" (:require "sb-cltl2") (:require "sb-posix"))
   :components ((:file "src/package")
                (:file "src/dtype")
                ;; bf16 / f16 のビット列 <-> single-float 変換（issue #38、u4）
@@ -78,6 +78,8 @@
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
+               ;; 一時ファイル + fsync + rename の書き込み（issue #263）
+               (:file "src/atomic-file")
                (:file "src/compile-cache")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "src/jit")
@@ -191,6 +193,7 @@
                (:file "tests/aval-test")
                (:file "tests/backend-test")
                (:file "tests/compile-cache-test")
+               (:file "tests/atomic-file-test")
                (:file "tests/load-warnings-test")
                ;; IR と defprimitive（issue #29、u1a）
                (:file "tests/test-primitives")

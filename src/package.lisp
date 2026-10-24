@@ -46,6 +46,9 @@
    #:unsupported-dtype-dtype
    ;; vmfb ディスクキャッシュ（issue #10）
    #:*compile-cache-directory*
+   ;; #263 一時ファイル + fsync + rename の書き込み
+   #:with-atomic-output-file
+   #:*full-fsync*
    ;; IR と defprimitive（issue #29、u1a）
    #:defprimitive
    #:primitive-name
