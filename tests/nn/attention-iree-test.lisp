@@ -4,7 +4,7 @@
 ;;;; - jit した順伝播と jit した grad が、Flax のフィクスチャ（attention-test.lisp と同じ全ケース）と一致する。
 ;;;; - dropout は jit しても eager と同じ出力（同じキー → 同じマスク）。deterministic は静的引数。
 ;;;; - init で作ったモデルを因果マスクつきで jit して eager と一致する（use-bias が偽のモデルも、issue #241）。
-;;;; 入力は 1 回の jit で 162 個まで（IREE local-task の制限、CLAUDE.md）。ここのモデルは葉が 8 個。
+;;;; IREE local-task は入力 160 個まで（それを超える葉は jit が連結する。CLAUDE.md、issue #242）。ここのモデルは葉が 8 個。
 
 (in-package #:nabla.nn.tests)
 

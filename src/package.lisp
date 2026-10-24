@@ -113,6 +113,8 @@
    #:jit
    #:jit-error
    #:*default-backend*
+   ;; jit の入力の連結（issue #242）
+   #:backend-max-inputs
    ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
    #:defjit
    #:jit-compile-error
