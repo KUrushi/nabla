@@ -403,7 +403,7 @@ loss[29] = 0.4449
 
 
 
-**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry を返す（JAX の `lax.while_loop`）。`init` は PyTree（リスト・ベクタ・`defpytree` / `defmodule` の型の入れ子、配列そのものでもよい。issue #201）で、葉は配列（トレース中はトレーサでもよい）を1つ以上持つ。`cond-fn` / `body-fn` は carry の木を1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ木の形（`treedef=`）・同じ葉の aval（shape・dtype）の木を返す。結果は `init` と同じ木の形。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` / `body-fn` の戻り値が PyTree として不正、`init` に葉が無い・葉が配列でない、関数でない）、`while-loop-carry-mismatch`（`body-fn` の戻り値の木の形か葉の aval が `init` と違う。木の形が違うときもメッセージに両方の treedef が出る。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。前進モードの jvp には対応する（`src/ad/rules-control.lisp`、issue #134。接線を持つ carry の接線を carry に足した `while-loop` にする。最初は接線がゼロの carry も本体を通ると非ゼロになりうるので、JAX と同じく不動点まで広げる）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、プリミティブ名 `:while-loop` を含む `autodiff-error` になる。
+**`while-loop`**（`src/while-loop.lisp`、issue #131）: `(while-loop cond-fn body-fn init)` は、`cond-fn` が真の間 `body-fn` を繰り返して最後の carry を返す（JAX の `lax.while_loop`）。`init` は PyTree（リスト・ベクタ・`defpytree` / `defmodule` の型の入れ子、配列そのものでもよい。issue #201）で、葉は配列（トレース中はトレーサでもよい）か Lisp の実数を1つ以上持つ。実数の葉は `cond-fn` / `body-fn` に渡す前に rank 0 の配列に持ち上げる（`scan` と同じ規則: double-float は `:f64`、それ以外の整数・有理数・single-float は `:f32`。**整数も `:f32` になる**ので、整数のカウンタが要るなら `:i32` の配列で渡す。`body-fn` が返す実数リテラルも同じ規則で持ち上がるので、`init` の同じ種類の実数と aval が一致する）。`cond-fn` / `body-fn` は carry の木を1つ受け取る関数（`with-tracing` で作る）。`cond-fn` は rank 0 の `:i1` を返し、`body-fn` は `init` と同じ木の形（`treedef=`）・同じ葉の aval（shape・dtype）の木を返す。結果は `init` と同じ木の形。配列だけで `with-tracing` の外から呼べば eager（Lisp のループ）、`with-tracing` / `jit` の中では `:while-loop` の eqn になり StableHLO の `stablehlo.while` で出る。`cond-fn` / `body-fn` は外側のトレーサを閉包で捕まえてよく、捕まえた値は loop 不変の追加のオペランドになる。エラーは `while-loop-error` の子: `while-loop-argument-error`（`init` / `body-fn` の戻り値が PyTree として不正、`init` に葉が無い・葉が配列・トレーサ・実数でない（文字列など）、関数でない）、`while-loop-carry-mismatch`（`body-fn` の戻り値の木の形か葉の aval が `init` と違う。木の形が違うときもメッセージに両方の treedef が出る。トレース時に検出し、0回で終わるループでも出る。`while-loop-carry-mismatch-expected` / `-actual`）、`while-loop-condition-error`（`cond-fn` の結果が rank 0 の `:i1` でない）。前進モードの jvp には対応する（`src/ad/rules-control.lisp`、issue #134。接線を持つ carry の接線を carry に足した `while-loop` にする。最初は接線がゼロの carry も本体を通ると非ゼロになりうるので、JAX と同じく不動点まで広げる）。逆モードの `grad` は対応しない（反復回数が分からず残差を保存できない）。`grad` が通ると、プリミティブ名 `:while-loop` を含む `autodiff-error` になる。
 
 
 
@@ -471,6 +471,7 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 | `(tree-flatten tree)` | 葉を左から順に並べたリストと treedef の2値 |
 | `(tree-unflatten treedef leaves)` | treedef の形の木を葉のリストから作る（葉の個数が違えば `pytree-error`） |
 | `(tree-leaves tree)` / `(tree-structure tree)` | `tree-flatten` の1つ目 / 2つ目の値 |
+| `(tree-children object)` | 節なら `(values 子のリスト 補助データ t)`、葉なら `(values nil nil nil)`。節の判定は `tree-flatten` と同じ（`nil` は子の無いリストの節）。子0個の節と葉は3つ目の値で区別でき、子を再帰でたどった葉の列は `tree-leaves` と一致する。リスト・ベクタの補助データは `nil` |
 | `(tree-map function tree &rest more-trees)` | 葉ごとに `function` を呼んだ同じ形の木。複数の木は同じ位置の葉を引数にし、形が違えば `pytree-structure-mismatch` |
 | `(defpytree type :flatten f :unflatten g)` | クラス名 `type` を節として登録する。`f` は `(object) → (values 子のリスト 補助データ)`、`g` は `(aux children) → object` |
 | `treedef` / `treedef-num-leaves` / `treedef=` | 木の形（不透明な構造体）、その葉の個数、形の比較 |
@@ -613,7 +614,7 @@ sbcl --non-interactive --load examples/transformer.lisp   # 100 ステップ。�
 
 | 関数 | 役割 |
 | --- | --- |
-| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、失敗しても既存のファイルは壊れない |
+| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、プロセスの失敗に対しては既存のファイルが壊れない。`fsync` はしない（OS クラッシュ・電源断は対象外） |
 | `(read-safetensors path)` | `(values entries metadata)` |
 | `(encode-safetensors entries &key metadata)` / `(decode-safetensors octets &key path)` | ファイルを介さないバイト列版 |
 | `safetensors-error` / `-path` / `-reason` / `-detail` | 壊れた入力・不正な引数のコンディション。`reason` は `:truncated` `:header-length` `:invalid-header` `:unknown-dtype` `:size-mismatch` `:bad-offsets` `:invalid-bool` `:invalid-entries`（意味は docstring） |
@@ -638,6 +639,8 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - モデルとオプティマイザ状態は1つの木にまとめれば同じファイルに入る: `(defmodule train-state ((params) (opt)))` → `"params.w"`、`"opt.0"`。別々に保存してもよい（API に接頭辞は持たない）
 - `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元でも、ひな形の葉が `(unsigned-byte 16)` の配列なら `:dtypes` で言う必要がある（言わなければ `:dtype-mismatch`。bf16 のモデルを f16 のファイルから生のビットで復元する事故を防ぐ。`device-array` と `aval` のひな形は自分の dtype を持つ）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
 - 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
+- データローダの再開状態（エポック数・バッチ内の位置・シャッフルの PRNG キー・小さな配列）は、**配列だけの `defmodule` にして**モデルとオプティマイザ状態と同じ木に入れる。整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
+- メモリ: `load-checkpoint` はファイルの約 2 倍、`save-checkpoint` は約 3 倍（木の分を含む）のピークになり、ヒープが 1 GiB のとき（測定環境の SBCL 2.6.7 / macOS arm64 の既定。`(sb-ext:dynamic-space-size)` で確かめる）、save は 256 MiB が通り 320 MiB で枯渇し、load は 448 MiB が通り 512 MiB で枯渇した。大きなモデルでは起動時に `--dynamic-space-size` を上げる。測定は [docs/checkpoint-memory.md](docs/checkpoint-memory.md)。世代管理（最新 n 個を残す）は持たないので、必要なら保存先の名前にステップ数を含めて呼び出し側で古いものを消す
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
 

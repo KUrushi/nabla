@@ -175,15 +175,15 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - 以下のうち、#223 / #226 / #227 / #233 / #237 は各 PR の検証で起こしたフォローアップで、#239〜#245 は #211 で起こした。
 - **#223: `expm1` / `log1p` / `sin` / `cos` のプリミティブが無い**。cosine decay と Adam のバイアス補正は級数で計算している（§3.7）。足して置き換える。解決済み（#223 で expm1 / log1p / sin / cos を足し、`%one-minus-pow` と `%cosine-value` を置き換えた）。
 - **#226: `stablehlo.if` の枝が入力を素通しすると IREE で失敗する**（§4.3 の 4）。#201 の IREE の `cond*` のテストから素通しのケースを外してある。
-- **#227: `while-loop` の carry に Lisp の実数を渡せない**（`scan` / `cond*` の operands は実数を葉にできる）。
-- **#233: 本体に制御構造がある scan の ys が、更新のたびに丸ごとコピーされる**（外側の長さの 2 乗。§4.3 の 3）。レイヤーを scan で回して本体に dropout や `cond*` があると効く。
-- **#237: scan の emitter の mutation の生き残り**（`while` のブロック引数の型・戻り値の名前の個数・カウンタの型。medium では捕まるが small のテストが無い）。
-- **#239: nn が core の内部シンボル `nabla::%pytree-node-entry` を使っている**。子を返す公開関数（`tree-children`）を export して移す。
+- **#227: `while-loop` の carry に Lisp の実数を渡せない**（`scan` / `cond*` の operands は実数を葉にできる）。済み: `scan` と同じ規則で rank 0 の配列に持ち上げる（double-float は `:f64`、それ以外は `:f32`。整数も `:f32`）。
+- **#233: 本体に制御構造がある scan の ys が、更新のたびに丸ごとコピーされる**（外側の長さの 2 乗。§4.3 の 3）。レイヤーを scan で回して本体に dropout や `cond*` があると効く。調査済み（解決ではない）: 代償は `scripts/bench-scan-ys.sh` で測れる（L=64・ys 16 MB で 1 ステップ 1.0〜1.5 ms 対 4.3〜5.6 ms。Rosetta の VM の参考値）。ys と制御構造の結果を1つの barrier に通す形はコピーを消せたが、競合の安全性を x86 ネイティブで確かめるまで既定は変えない。上流の修正待ち。判断と手順は docs/iree-upstream-bugs.md の 7。
+- **#237: scan の emitter の mutation の生き残り**（`while` のブロック引数の型・戻り値の名前の個数・カウンタの型。medium では捕まるが small のテストが無い）。解決済み（`scan/emitted-while-has-one-slot-per-counter-carry-and-ys` と exclusions の4件）。
+- **#239: nn が core の内部シンボル `nabla::%pytree-node-entry` を使っている**。子を返す公開関数（`tree-children`）を export して移した（解消済み）。
 - **#240: gather プリミティブが無く、embedding が one-hot + `dot`**（§3.6）。
 - **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。
 - **#242: jit の入力が 161 個を超えるモデルは local-task で学習できない**（葉が約 50 個を超える Adam の学習ステップ）。dtype ごとに葉を連結する案。
 - **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
-- **#244: チェックポイントは全体をメモリに読む**。葉ごとの遅延読み込みと、データパイプラインの状態の保存（フェーズ5の前提）。
+- **#244: チェックポイントは全体をメモリに読む**。測定と判断は [checkpoint-memory.md](checkpoint-memory.md)（load は約 2 倍、save は約 3 倍。フェーズ5には遅延読み込みも世代管理も要らない（測定・判断済み。遅延読み込みは 25M パラメータ超のモデルを扱う段階で #262、fsync は #263）。データパイプラインの状態は配列だけの `defmodule` で往復する）。
 - **#245: check-it の回帰 datum の文字列のバグ**。#236 が `check-it::datum` に足した防御のメソッドの扱い。
 - **`while-loop` の逆モード（`grad`）は引き続き対応しない**（フェーズ3から）。`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」も変わらない。
 - **nn の API は `defmodule` の `:call` が必須引数のみ**。可変個の引数や省略可能な引数（Flax の `mask=None`）は、位置引数に `nil` を渡して表す。
@@ -212,10 +212,10 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **`nabla/data` システムはまだ無い**（`nabla.asd` にコメントがあるだけで、`src/data/` も無い）。フェーズ5の最初の作業で、`nabla/data` と `nabla/data/tests` を新設する（`nabla/nn` を作った #198 / PR #213 が手本。`scripts/run-tests.sh` への追加と CI も）。データ層は core にも nn にも依存しない形を保つ。
 - **バッチは PyTree**: 学習ステップの引数は `(model opt-state batch)` で、バッチは配列のリスト・ベクタ・`defmodule` など何でもよい。`jit` はバッチの treedef と葉の aval をキャッシュのキーに入れるので、**バッチの形（最後の端数のバッチを含む）が変わると再コンパイルされる**。データローダは固定の形のバッチを返す（端数は捨てるか詰める）。
 - **学習ステップは `jit` した純粋関数**（チュートリアルと `examples/transformer.lisp`）。データの読み込みは Lisp 側のループで、`to-device` を挟んで渡す。1 回の呼び出しの内訳（to-device / invoke / to-host）は `scripts/profile-call-overhead.lisp` で測れる（#190）。先読み（prefetch）で入力の転送と計算を重ねたいときの比較対象になる。
-- **再開できる学習**: チェックポイントは「モデル + オプティマイザ状態」を 1 つの木に入れて往復できる（ビット単位で一致する再開をテスト済み）。データローダの位置（エポック、シャッフル用の PRNG キー、バッチ内の位置）も、整数と `:u32` のキーの葉を持つ `defmodule` にすれば同じ木に入れられるはず。方針は #244 で決める。**シャッフルは PRNG のキーから決定的に作る**（`fold-in` でエポックを混ぜる）と、位置の保存が小さく済む。
+- **再開できる学習**: チェックポイントは「モデル + オプティマイザ状態」を 1 つの木に入れて往復できる（ビット単位で一致する再開をテスト済み）。データローダの位置（エポック、シャッフル用の PRNG キー、バッチ内の位置）も、整数と `:u32` のキーの葉を持つ `defmodule` にすれば同じ木に入れられるはず。往復は #244 でテスト済み（Lisp の整数は葉にできないので配列で持つ。[checkpoint-memory.md](checkpoint-memory.md) §3）。構造はフェーズ5の最初の Issue で決める。**シャッフルは PRNG のキーから決定的に作る**（`fold-in` でエポックを混ぜる）と、位置の保存が小さく済む。
 - **PRNG**: `split` / `fold-in` / `uniform` / `normal` / `truncated-normal`。バッチされた rng の emit は K 行ずつの while（フェーズ3）。データ拡張で `vmap` してキーをバッチするとコンパイル時間は行数に依らないが、実行時間は行数 / 16 に比例する。
 - **並列**: 処理系は SBCL で、並列は lparallel を使う（CLAUDE.md の構成）。finalizer は別スレッドで走るので、`device-array` を並列のワーカーから作るときの解放の順序（CLAUDE.md の device-array の節）に注意する。
-- **safetensors の読み書きは使い回せる**（データセットの配列の保存にも）。ただし今はファイル全体をメモリに読む（#244）。
+- **safetensors の読み書きは使い回せる**（データセットの配列の保存にも）。ただし今はファイル全体をメモリに読む（ピークは約 2 倍。#244、[checkpoint-memory.md](checkpoint-memory.md)）。
 - **README のチュートリアルの手書きのループ**は、データローダの最初の利用者になる。フェーズ5の例は、このチュートリアルの `make-batch` を置き換える形にするとよい。
 - **残っている IREE の制限**（§4.3）は、データを入れても変わらない。特に学習ステップの入力が 161 個を超えない（#242）こと。
 - GPU の未測定は、フェーズ3までと同じ手順で Colab で測る。
