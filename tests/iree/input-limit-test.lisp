@@ -106,3 +106,53 @@
     (return-from iree-test))
   (is (eql 0 (%run-repro-on-local-task "local-task-161-inputs.mlir")))
   (is (< 128 (%run-repro-on-local-task "local-task-162-inputs.mlir"))))
+
+;;; --- 調べ（#242）: 出力の個数にも 162 の制限が効くか ---
+
+(defun %generated-io-mlir (inputs outputs)
+  "INPUTS 個の tensor<3xf32> を取り、OUTPUTS 個の tensor<3xf32> を返す main の MLIR。
+出力 i は a0 に定数 i を足したもの（CSE で畳まれないように）。使わない入力は捨てる。"
+  (with-output-to-string (s)
+    (format s "module {~%func.func @main(~{%a~D: tensor<3xf32>~^, ~}) -> (~{~*tensor<3xf32>~^, ~}) {~%"
+            (loop for i below inputs collect i) (loop repeat outputs collect 0))
+    (dotimes (i outputs)
+      (format s "  %c~D = stablehlo.constant dense<~D.0> : tensor<3xf32>~%" i i)
+      (format s "  %r~D = stablehlo.add %a~D, %c~D : tensor<3xf32>~%" i (mod i inputs) i))
+    (format s "  return ~{%r~D~^, ~} : ~{~*tensor<3xf32>~^, ~}~%}~%}~%"
+            (loop for i below outputs collect i) (loop repeat outputs collect 0))))
+
+(defun %run-generated-on-local-task (inputs outputs)
+  (let ((file (uiop:tmpize-pathname #p"/tmp/nabla-io-probe.mlir")))
+    (with-open-file (s file :direction :output :if-exists :supersede)
+      (write-string (%generated-io-mlir inputs outputs) s))
+    (let* ((vmfb (namestring (uiop:tmpize-pathname #p"/tmp/nabla-io-probe.vmfb")))
+           (compile-code
+             (nth-value 2 (uiop:run-program
+                           (list (%iree-bin "iree-compile")
+                                 "--iree-hal-target-device=local"
+                                 "--iree-hal-local-target-device-backends=llvm-cpu"
+                                 (namestring file) "-o" vmfb)
+                           :ignore-error-status t :output nil :error-output nil))))
+      (unwind-protect
+           (if (zerop compile-code)
+               (nth-value 2 (uiop:run-program
+                             (append (list (%iree-bin "iree-run-module")
+                                           "--device=local-task" (format nil "--module=~A" vmfb)
+                                           "--function=main")
+                                     (loop repeat inputs collect "--input=3xf32=1,2,3"))
+                             :ignore-error-status t :output nil :error-output nil))
+               :compile-failed)
+        (ignore-errors (delete-file vmfb))
+        (ignore-errors (delete-file file))))))
+
+(define-iree-test input-limit/probe-output-count
+    "調べ（#242、一時的）: local-task で入力と出力の個数を変えて落ちるかを記録する。"
+  (skip-unless-iree :library :both)
+  (unless (and (probe-file (%iree-bin "iree-run-module"))
+               (probe-file (%iree-bin "iree-compile")))
+    (skip "iree-compile / iree-run-module が無い")
+    (return-from iree-test))
+  (dolist (io '((170 1) (1 170) (1 161) (1 162) (100 100) (162 1) (2 300)))
+    (let ((code (%run-generated-on-local-task (first io) (second io))))
+      (format t "~&PROBE-242 inputs=~D outputs=~D exit=~S~%" (first io) (second io) code)
+      (is (eql 0 code) "PROBE-242 inputs=~D outputs=~D exit=~S" (first io) (second io) code))))
