@@ -2,9 +2,10 @@
 ;;;; プロセスごと落ちる（issue #199、docs/iree-upstream-bugs.md の 6）。nabla.iree はその呼び出しを
 ;;;; 拒否する（iree-too-many-inputs）。守らせる性質:
 ;;;; - local-task で入力 162 個の関数を invoke すると、落ちずに iree-too-many-inputs を signal する。
-;;;; - jit は葉が 161 個を超えると dtype ごとに連結して渡す（issue #242）: local-task で葉 170 個・dtype と
+;;;; - jit は葉が 160 個を超えると dtype ごとに連結して渡す（issue #242）: local-task で葉 170 個・dtype と
 ;;;;   device array の混ざった葉 200 個の木が動き、eager と一致する。backend が上限を申告するのは local-task だけ。
-;;;; - 境界の 161 個は（連結せずに）動く。
+;;;; - 境界の 160 個は（連結せずに）動く。中間の値を持つ形（平衡二分木の和）は 161 個を連結しないと落ちるが、
+;;;;   jit は連結するので 160・161・170 個とも動く（子プロセス）。
 ;;;; - 出力は 162 個以上でも落ちない（連結を入力だけにする根拠。子プロセス）。
 ;;;; - local-sync device（make-backend :iree :driver :local-sync）なら 170 個でも動き、結果は eager と一致する。
 ;;;; - バグが IREE に残っていること（直ったら失敗する。検査と回避策を外す合図）: 最小の再現
@@ -29,7 +30,7 @@
   (uiop:read-file-string (asdf:system-relative-pathname "nabla" (format nil "docs/iree-repros/~A" file))))
 
 (define-iree-test input-limit/invoke-on-local-task-refuses-162-inputs-instead-of-crashing
-    "local-task device で入力 162 個の関数を invoke すると、iree-too-many-inputs を signal する
+    "local-task device で入力 162 個（上限 160 を超える）の関数を invoke すると、iree-too-many-inputs を signal する
 （プロセスは落ちない）。エラーは個数と上限を持つ。jit はこの手前で葉を連結するので、ここに来るのは
 invoke を直接呼んだときだけ。"
   (skip-unless-iree :library :both)
@@ -46,8 +47,8 @@ invoke を直接呼んだときだけ。"
                  (is (search "local-sync" (princ-to-string condition)))))
           (mapc #'release-device-array arguments))))))
 
-(define-iree-test input-limit/backend-max-inputs-is-161-only-on-local-task
-    "IREE の backend は local-task（:local の既定、:local-task、文字列 \"local-task\"）のときだけ入力の上限 161 を
+(define-iree-test input-limit/backend-max-inputs-is-160-only-on-local-task
+    "IREE の backend は local-task（:local の既定、:local-task、文字列 \"local-task\"）のときだけ入力の上限 160 を
 申告し、local-sync では上限なし（NIL）。jit はこの値を超える葉を連結する（issue #242）。"
   (skip-unless-iree :library :both)
   (dolist (driver '(nil :local :local-task "local-task"))
@@ -105,13 +106,14 @@ dtype ごとに連結されて動き、各葉が eager と一致する（葉ご�
                  "葉 ~D（~S）が一致しない" i dtype))
     (gc-and-run-finalizers)))
 
-(define-iree-test input-limit/local-task-runs-161-inputs
-    "境界の入力 161 個は local-task でも動き、eager と一致する。"
+(define-iree-test input-limit/local-task-runs-160-inputs
+    "境界の入力 160 個（+local-task-max-inputs+）は local-task で連結せずに動き、eager と一致する。"
   (skip-unless-iree :library :both)
+  (is (= 160 nabla.iree:+local-task-max-inputs+))
   (let ((backend (nabla:make-backend :iree :target :local))
         (nb:*compile-cache-directory* nil))
-    (multiple-value-bind (result expected) (%input-limit-jit-call backend 161)
-      (is (= 161 (length result)))
+    (multiple-value-bind (result expected) (%input-limit-jit-call backend 160)
+      (is (= 160 (length result)))
       (is (every (lambda (r e) (allclose r e :dtype :f32)) result expected)))
     (gc-and-run-finalizers)))
 
@@ -217,7 +219,7 @@ iree-run-module）。jit が連結するのは入力だけでよい根拠（issu
   (is (eql 0 (%run-generated-on-local-task 1 170)))
   (is (eql 0 (%run-generated-on-local-task 2 300))))
 
-;;; --- 中間の値を持つ形は入力 161 個で落ちる（PR #268 の観察。#242 で上限を見直す）---
+;;; --- 中間の値を持つ形は入力 161 個で落ちる（PR #268 の観察。#242 で上限を 160 に下げた）---
 
 (defun %tree-mlir (inputs ops)
   "INPUTS 個の tensor<3xf32> を、OPS（\"add\" / \"multiply\" のリスト）ごとに平衡二分木で畳んだ値を返す main。"
@@ -262,18 +264,6 @@ iree-run-module）。jit が連結するのは入力だけでよい根拠（issu
              :compile-failed)
       (ignore-errors (delete-file vmfb))
       (ignore-errors (delete-file file)))))
-
-(define-iree-test input-limit/probe-242-intermediate-values
-    "調べ（#242、一時的）: 平衡二分木（中間の値を持つ形）の入力の個数と local-task の落ち方を記録する。"
-  (skip-unless-iree :library :both)
-  (unless (and (probe-file (%iree-bin "iree-run-module"))
-               (probe-file (%iree-bin "iree-compile")))
-    (skip "iree-compile / iree-run-module が無い")
-    (return-from iree-test))
-  (dolist (ops '(("add") ("add" "multiply")))
-    (dolist (n '(150 158 159 160 161 162))
-      (let ((codes (loop repeat 5 collect (%run-mlir-on-local-task (%tree-mlir n ops) n))))
-        (format t "~&PROBE-242B ops=~{~A~^+~} inputs=~D exits=~S~%" ops n codes)))))
 
 (defparameter *tree-sum-child-source*
   "(require :asdf)
@@ -329,4 +319,5 @@ PR #268 の観察）を local-task で jit すると、落ちずに eager と一
     (multiple-value-bind (code output error-output) (%run-tree-sum-in-child n)
       (is (and (eql 0 code) (search "RESULT=OK" output))
           "葉 ~D 個: 終了コード ~S~%stdout: ~A~%stderr: ~A" n code output
-          (subseq error-output (max 0 (- (length error-output) 2000)))))))
+          (let ((start (or (search "Unhandled" error-output) (search "debugger" error-output) 0)))
+            (subseq error-output start (min (length error-output) (+ start 2000))))))))

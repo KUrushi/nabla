@@ -7,7 +7,7 @@
 ;;;; 守らせる性質:
 ;;;; - small: モデル全体が因果的（位置 i のロジットは、位置 i より後のトークンを変えても変わらず、位置 i
 ;;;;   のトークンを変えると変わる）。パス名は Flax と同じ。データの部品（コピーの系列と、損失の印のついた
-;;;;   one-hot）。jit する学習ステップの入力の葉の数は IREE local-task の上限（161）に収まる。
+;;;;   one-hot）。jit する学習ステップの入力の葉の数は IREE local-task の上限（160）に収まる。
 ;;;; - medium（IREE local）: Flax + Optax と、損失（20 ステップ）、1 ステップ後・5 ステップ後のパラメータが
 ;;;;   f32 の許容誤差で一致する。損失が下がる（100 ステップで最初の 5% 未満）。同じ入力から同じ損失の
 ;;;;   列になる（決定的）。学習の途中で保存・復元（モデル + オプティマイザの状態を1つの木で1ファイル）
@@ -82,7 +82,7 @@
 
 (test (transformer/paths-match-flax-and-leaf-count-fits-iree :suite :nabla.small)
   "チェックポイントのパス名は Flax の flatten_dict と同じ（blocks_<i> は blocks.<i>）。学習ステップの
-jit の入力 = パラメータ + mu + nu + count + バッチは、IREE local-task の上限（161）に収まる。"
+jit の入力 = パラメータ + mu + nu + count + バッチは、IREE local-task の上限（160）に収まる。"
   (let* ((model (%tf "MAKE-EXAMPLE-TRANSFORMER"))
          (paths (tree-paths model))
          (optimizer (%tf "MAKE-OPTIMIZER"))
@@ -95,7 +95,7 @@ jit の入力 = パラメータ + mu + nu + count + バッチは、IREE local-ta
       ;; jit の入力の数 = モデルの葉 + 状態の葉 + バッチ（トークンと正解）
       (let ((inputs (length (nabla:tree-leaves (list model state tokens targets)))))
         (is (= (+ (length paths) (* 2 (length paths)) 1 2) inputs))
-        (is (< inputs 162) "jit の入力が ~D 個で、IREE local-task の上限（161）を超える" inputs)))))
+        (is (<= inputs 160) "jit の入力が ~D 個で、IREE local-task の上限（160）を超える" inputs)))))
 
 (test (transformer/copy-batch :suite :nabla.small)
   "コピーの系列は x1..xN SEP x1..xN で SEP は区切りだけに現れる。バッチのトークンは系列の先頭 2N 個、
@@ -324,7 +324,7 @@ Adam）は、Flax + Optax と 20 ステップの損失、1 ステップ後・5 �
 
 (defparameter *deep-transformer-layers* 4
   "ブロック 4 つで、パラメータの葉は 70 個。学習ステップの入力は 70 * 3 + 1 + 2 = 213 個で、IREE local-task の
-上限（161）を超える（jit が dtype ごとに連結して渡す）。")
+上限（160）を超える（jit が dtype ごとに連結して渡す）。")
 
 (defun %tf-step-function (optimizer)
   "MAKE-TRAIN-STEP と同じ学習ステップの TRACEABLE-FUNCTION（jit しない。eager でも呼べる）。"
@@ -336,11 +336,11 @@ Adam）は、Flax + Optax と 20 ステップの損失、1 ステップ後・5 �
           (values loss (apply-updates model updates) new-state))))))
 
 (test (transformer/deep-model-exceeds-the-local-task-input-limit :suite :nabla.small)
-  "深いモデル（ブロック 4 つ）の学習ステップの入力の葉は 162 個以上（medium のテストが上限を超える形を確かめるための前提）。"
+  "深いモデル（ブロック 4 つ）の学習ステップの入力の葉は 161 個以上（medium のテストが上限を超える形を確かめるための前提）。"
   (let* ((optimizer (%tf "MAKE-OPTIMIZER"))
          (model (%tf "MAKE-EXAMPLE-TRANSFORMER" :num-layers *deep-transformer-layers*)))
     (multiple-value-bind (tokens targets) (%tf "SEQUENCES->BATCH" (%tf-training-sequences 0))
-      (is (> (length (nabla:tree-leaves (list model (optimizer-init optimizer model) tokens targets))) 161)))))
+      (is (> (length (nabla:tree-leaves (list model (optimizer-init optimizer model) tokens targets))) 160)))))
 
 (test (transformer/deep-model-past-the-input-limit-trains-on-iree-local-task :suite :nabla.medium)
   "入力の葉が 213 個の学習ステップを IREE の local-task で jit すると（葉は dtype ごとに連結される）、2 ステップの
@@ -356,7 +356,7 @@ Adam）は、Flax + Optax と 20 ステップの損失、1 ステップ後・5 �
            (step (nabla:jit step-fn :backend backend))
            (model (%tf "MAKE-EXAMPLE-TRANSFORMER" :num-layers *deep-transformer-layers*))
            (state (optimizer-init optimizer model)))
-      (is (eql 161 (nabla:backend-max-inputs backend)))
+      (is (eql 160 (nabla:backend-max-inputs backend)))
       (multiple-value-bind (jit-losses jit-model) (%tf-run-steps step model state #'%tf-training-sequences 0 2)
         (multiple-value-bind (eager-losses eager-model)
             (%tf-run-steps step-fn model state #'%tf-training-sequences 0 2)
@@ -377,7 +377,7 @@ Adam）は、Flax + Optax と 20 ステップの損失、1 ステップ後・5 �
         (multiple-value-bind (tokens targets) (%tf "SEQUENCES->BATCH" (%tf-training-sequences 0))
           (let* ((leaves (nabla:tree-leaves (list model state tokens targets)))
                  (avals (mapcar #'nabla:value-aval leaves))
-                 (plan (nabla::%jit-pack-plan avals 161))
+                 (plan (nabla::%jit-pack-plan avals 160))
                  (start (get-internal-real-time)))
             (dotimes (i 100) (nabla::%jit-pack-leaves plan leaves (nabla::%jit-packed-avals plan avals)))
             (format t "~&deep transformer: ホストでの連結 ~,3F ms/ステップ（入力 ~D 個 → ~D 個）~%"

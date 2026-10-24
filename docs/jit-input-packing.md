@@ -8,7 +8,7 @@ jit した関数の入力は引数の PyTree の葉の個数なので、Adam の
 ## 仕組み
 
 - 実行系は総称関数 `backend-max-inputs`（`src/backend.lisp`）で入力の上限を申告する。既定は `nil`（上限なし）。
-  nabla/iree は local-task のとき（`:local` の既定、`:local-task`、文字列 `"local-task"`）だけ 161 を返し、
+  nabla/iree は local-task のとき（`:local` の既定、`:local-task`、文字列 `"local-task"`）だけ 160 を返し（`+local-task-max-inputs+`。中間の値を持つ形は入力 161 個でも落ちるため。下の「上限を 160 にした理由」）、
   local-sync と CUDA は `nil`。core は IREE の名前を知らないまま
 - jit（`src/jit.lisp` の `%jit-call`）は、葉の個数がこの上限を **超えるときだけ** 連結する。上限の内側では
   何もしないので、StableHLO もディスクキャッシュ（vmfb）も今までと同じ
@@ -21,12 +21,29 @@ jit した関数の入力は引数の PyTree の葉の個数なので、Adam の
   jvp / transpose / バッチ化のルールは持たない
 - 出力は連結しない。local-task は出力 170 個・300 個でも落ちない（`input-limit/local-task-runs-many-outputs`）
 - コンパイルに失敗したときの `use-eager` も、連結した入力で graph を評価する
-- dtype の種類の数そのものが上限を超えるときは `jit-error`（161 では起きない）
+- dtype の種類の数そのものが上限を超えるときは `jit-error`（160 では起きない）
 
 device array の葉をデバイス上で連結する方法（連結用の小さな関数をもう 1 つコンパイルする）は採らなかった。
 葉が上限を超えるのは学習ステップのような大きな木で、その入力はたいてい前のステップの戻り値（ホストの配列）
 だからで、ホストでのコピーの費用は下の表のとおり小さい。ただし葉を device array のまま持ち回る使い方では、
 連結するたびにデバイス → ホスト → デバイスの往復が入る（その費用は測っていない）。
+
+## 上限を 160 にした理由
+
+最初は 6 の再現（独立の `tanh` 162 個で落ち、161 個は通る）に合わせて上限を 161 にしたが、PR #268 が、
+中間の値を持つ形（要素ごとの連鎖 `r = r + a_i`、平衡二分木の和）は入力 161 個でも local-task で落ちることを
+見つけた。#242 で CI（ubuntu-24.04、run 40089043353）で測り直した結果:
+
+| 形（`iree-run-module --device=local-task`、各 5 回） | 150・158・159・160 個 | 161・162 個 |
+| --- | --- | --- |
+| 平衡二分木の和（出力 1 個） | 5 回とも通る | 5 回とも SIGSEGV（139） |
+| 和と積の平衡二分木 2 本（出力 2 個） | 5 回とも通る | 5 回とも SIGSEGV（139） |
+
+nabla の jit で葉 161 個を平衡二分木で足すと、上限 161 では連結されずに渡り、子プロセスが落ちた
+（`input-limit/jit-on-local-task-sums-a-tree-of-leaves-past-the-boundary` を先に書いて確かめた）。
+上限を 160 にすると 161 個は連結されて通る。`+local-task-max-inputs+`（`invoke` の検査）と
+`backend-max-inputs` は同じ定数を使うので揃っている。160 個はここで測った形ではどれも通ったが、
+すべての形で安全だという保証ではない（落ちる条件は IREE の内側で、未調査）。
 
 ## 費用
 

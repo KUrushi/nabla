@@ -506,8 +506,9 @@ leaves the operand types inconsistent): conv-convert-operand-type.mlir fails wit
 | 症状 | SIGSEGV（終了コード 139）。161 個までは通り、162 個で決定的に落ちる |
 | 落ちる場所 | `iree_task_call_initialize` ← `iree_hal_task_queue_issue_cmd_allocate`（local-task ドライバの runtime） |
 | 回避策 | `--device=local-sync` は 170 個・309 個の入力でも通る。nabla では `(make-backend :iree :driver :local-sync)` で選べる |
-| nabla の対応 | `nabla.iree:invoke` が local-task device で入力 162 個以上を呼ぶ前に `iree-too-many-inputs`（`iree-error` の子）を signal する（`+local-task-max-inputs+` = 161）。jit は葉が 161 個を超えると dtype ごとに 1 本へ連結して渡す（#242、`docs/jit-input-packing.md`） |
+| nabla の対応 | `nabla.iree:invoke` が local-task device で入力 161 個以上を呼ぶ前に `iree-too-many-inputs`（`iree-error` の子）を signal する（`+local-task-max-inputs+` = 160。#242 で 161 から下げた。下の「中間の値を持つ形」）。jit は葉が 160 個を超えると dtype ごとに 1 本へ連結して渡す（#242、`docs/jit-input-packing.md`） |
 | 追加の観察（#242、2026-10-24、CI の ubuntu-24.04） | 出力の個数は効かない: 入力 1 個・出力 170 個、入力 2 個・出力 300 個は通る（`input-limit/local-task-runs-many-outputs`）。入力が 170 個・162 個でも、使うのが 1 個だけ（出力 1 個）なら通る。落ちるのは入力を 162 個以上 **使う** 関数で、宣言した引数の個数だけでは決まらないらしい（未確定） |
+| 中間の値を持つ形（#242 で測り直し、2026-10-24、CI の ubuntu-24.04、run 40089043353） | 入力を平衡二分木で足す関数（`stablehlo.add` の木 1 本、または add と multiply の木 2 本で出力 2 個）を `iree-run-module --device=local-task` で各 5 回: 入力 150・158・159・160 個は 5 回とも通り、161・162 個は 5 回とも SIGSEGV（終了コード 139）。中間の値（dispatch の間の一時バッファ）を持つ形は、独立の `tanh`（上の再現ファイル）より 1 つ早い 161 個で落ちる（PR #268 も要素ごとの連鎖で同じ境界を見た）。nabla の jit で葉 161 個の木を足すと、上限 161 の検査を通ってプロセスが落ちた（同じ run の子プロセス）。そのため上限を 160 にした。160 個は木 1 本・2 本とも通ったが、すべての形で 160 個が安全という証明ではない |
 
 jit した関数の入力の個数は、引数の PyTree の葉の個数に等しい（#199）。Adam の学習ステップ（パラメータ + m + v + バッチ）のような大きなモデルは、この上限に当たりうる。
 
