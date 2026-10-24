@@ -40,12 +40,14 @@
   "フィクスチャのケース名。medium からも使う。")
 
 (defun %att-projection (case prefix)
-  (make-dense-general :kernel (%fx-array case (concatenate 'string prefix ".kernel"))
-                      :bias (%fx-array case (concatenate 'string prefix ".bias"))
-                      :contract-axes (if (string= prefix "out") 2 1)))
+  (let ((bias (%fx-entry case (concatenate 'string prefix ".bias"))))
+    (make-dense-general :use-bias (and bias t)
+                        :kernel (%fx-array case (concatenate 'string prefix ".kernel"))
+                        :bias (and bias (%fx-array case (concatenate 'string prefix ".bias")))
+                        :contract-axes (if (string= prefix "out") 2 1))))
 
 (defun %att-model (case)
-  (make-multi-head-attention :query (%att-projection case "query") :key (%att-projection case "key")
+  (make-multi-head-attention :broadcast-dropout t :query (%att-projection case "query") :key (%att-projection case "key")
                              :value (%att-projection case "value") :out (%att-projection case "out")
                              :dropout-rate 0))
 
@@ -124,6 +126,20 @@
         (loop for a in actual for e in expected for leaf in (%att-grad-names case)
               do (%att-check-leaf name leaf a e))))))
 
+(defparameter *attention-no-bias-case-names* '("self-no-bias" "cross-padding-no-bias")
+  "use_bias=False のフィクスチャのケース名（フィクスチャの再生成が要る）。medium からも使う。")
+
+(test attention/without-bias-matches-flax
+  "Flax の MultiHeadDotProductAttention(use_bias=False) のフィクスチャ（自己 attention と、padding マスク付きの交差
+attention）で、出力と kernel・入力の勾配が一致する。4 つの射影の bias はどれも NIL。"
+  (dolist (name *attention-no-bias-case-names*)
+    (let ((model (%att-model (%att-case name))))
+      (is (every #'null (mapcar (lambda (f) (dense-general-bias (funcall f model)))
+                                '(multi-head-attention-query multi-head-attention-key
+                                  multi-head-attention-value multi-head-attention-out)))
+          "~A: bias が NIL でない" name))
+    (%check-attention-case name)))
+
 (test attention/forward-and-grads-match-flax
   "マスクなし・因果・padding（全部のキーが隠れた行を含む）・交差（入力の幅が違う）・バッチ軸なし・
 バッチ軸2つ（因果 + padding）の各ケースで、順伝播の出力と、パラメータと入力の勾配が Flax と一致する。"
@@ -183,13 +199,13 @@
 
 (defun %random-attention (seed in kv-in heads dim out)
   "f64 の乱数のパラメータの multi-head-attention（bias も 0 でない）。"
-  (flet ((proj (s fan features) (make-dense-general :kernel (%rand (append (list fan) features) s :f64)
+  (flet ((proj (s fan features) (make-dense-general :use-bias t :kernel (%rand (append (list fan) features) s :f64)
                                                     :bias (%rand features (+ s 1) :f64)
                                                     :contract-axes 1)))
     (make-multi-head-attention
-     :query (proj seed in (list heads dim)) :key (proj (+ seed 10) kv-in (list heads dim))
+     :broadcast-dropout t :query (proj seed in (list heads dim)) :key (proj (+ seed 10) kv-in (list heads dim))
      :value (proj (+ seed 20) kv-in (list heads dim))
-     :out (make-dense-general :kernel (%rand (list heads dim out) (+ seed 30) :f64)
+     :out (make-dense-general :use-bias t :kernel (%rand (list heads dim out) (+ seed 30) :f64)
                               :bias (%rand (list out) (+ seed 31) :f64)
                               :contract-axes 2)
      :dropout-rate 0)))
@@ -294,16 +310,17 @@ softmax）と一致する。全部のキーが隠れた行も含む。"
   "スコアが大きくても（最大値を引くので）出力は有限で、重みは 1 に正規化される: kv の値が全部同じ
 ベクトル v なら、出力は（スコアによらず）v の out への射影そのもの。"
   (let* ((model (make-multi-head-attention
-                 :query (make-dense-general :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
+                 :broadcast-dropout t
+                 :query (make-dense-general :use-bias t :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
                                             :bias (make-array '(1 2) :element-type 'single-float :initial-element 0.0)
                                             :contract-axes 1)
-                 :key (make-dense-general :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
+                 :key (make-dense-general :use-bias t :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 1000.0)
                                           :bias (make-array '(1 2) :element-type 'single-float :initial-element 0.0)
                                           :contract-axes 1)
-                 :value (make-dense-general :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 0.0)
+                 :value (make-dense-general :use-bias t :kernel (make-array '(2 1 2) :element-type 'single-float :initial-element 0.0)
                                             :bias (make-array '(1 2) :element-type 'single-float :initial-contents '((1.0 2.0)))
                                             :contract-axes 1)
-                 :out (make-dense-general :kernel (make-array '(1 2 2) :element-type 'single-float
+                 :out (make-dense-general :use-bias t :kernel (make-array '(1 2 2) :element-type 'single-float
                                                                        :initial-contents '(((1.0 0.0) (0.0 1.0))))
                                           :bias (make-array '(2) :element-type 'single-float :initial-element 0.0)
                                           :contract-axes 2)
@@ -316,6 +333,67 @@ softmax）と一致する。全部のキーが隠れた行も含む。"
                                          :dtype :f32 :rtol 1d-5 :atol 1d-5)))))
 
 ;;; --- init ---
+
+(defun %zero-bias-attention (model)
+  "bias が NIL の MODEL と同じ kernel で bias が 0 の multi-head-attention。"
+  (flet ((twin (f) (%zero-bias-twin (funcall f model))))
+    (make-multi-head-attention :broadcast-dropout t :query (twin 'multi-head-attention-query) :key (twin 'multi-head-attention-key)
+                               :value (twin 'multi-head-attention-value) :out (twin 'multi-head-attention-out)
+                               :dropout-rate 0)))
+
+(def-layer-property attention/without-bias-is-the-zero-bias-model
+  "use-bias が偽の multi-head-attention は、4 つの射影（query / key / value / out）のどれにも bias が無い（NIL）。
+出力は、同じ kernel で bias が 0 のモデルと、ループの参照実装（f64、マスクの有無）の両方と一致し、葉は 4 つの kernel
+だけ（パス名は query.kernel key.kernel value.kernel out.kernel）、勾配の葉も 4 つで 0 bias のモデルの kernel の勾配と
+等しい。"
+  (seed batch tq tk heads dim masked) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 2)
+                                             (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 4)
+                                             (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 3)
+                                             (uniform-integer :lo 0 :hi 1))
+  (let* ((features (* heads dim))
+         (plain (init-multi-head-attention (nabla:prng-key seed) heads features :use-bias nil :dtype :f64))
+         (twin (%zero-bias-attention plain))
+         (x (%rand (list batch tq features) (+ seed 1) :f64))
+         (kv (%rand (list batch tk features) (+ seed 2) :f64))
+         (mask (when (plusp masked) (%random-bits (list batch 1 tq tk) (+ seed 3))))
+         (out (call plain x kv mask nil t))
+         (ct (%rand (array-dimensions out) (+ seed 4) :f64))
+         (loss (nabla:with-tracing (m x kv mask ct) (nabla:reduce-sum (* (call m x kv mask nil t) ct))))
+         (grad (funcall (nabla:grad loss) plain x kv mask ct))
+         (twin-grad (funcall (nabla:grad loss) twin x kv mask ct)))
+    (and (every #'null (mapcar (lambda (f) (dense-general-bias (funcall f plain)))
+                               '(multi-head-attention-query multi-head-attention-key
+                                 multi-head-attention-value multi-head-attention-out)))
+         (every #'null (mapcar (lambda (f) (dense-general-use-bias (funcall f plain)))
+                               '(multi-head-attention-query multi-head-attention-key
+                                 multi-head-attention-value multi-head-attention-out)))
+         (equal '("query.kernel" "key.kernel" "value.kernel" "out.kernel") (nabla.nn:tree-paths plain))
+         (equalp out (call twin x kv mask nil t))
+         (allclose out (%ref-attention twin x kv mask) :dtype :f64)
+         (= 4 (length (nabla:tree-leaves grad)))
+         (every #'equalp
+                (mapcar #'dense-general-kernel
+                        (list (multi-head-attention-query grad) (multi-head-attention-key grad)
+                              (multi-head-attention-value grad) (multi-head-attention-out grad)))
+                (mapcar #'dense-general-kernel
+                        (list (multi-head-attention-query twin-grad) (multi-head-attention-key twin-grad)
+                              (multi-head-attention-value twin-grad) (multi-head-attention-out twin-grad)))))))
+
+(test attention/use-bias-init-and-misuse
+  "init-multi-head-attention の use-bias の既定は真（4 つの射影に bias）。真偽値でなければ層の名前入りの error。
+use-bias が偽でも qkv / kv / out の幅の指定は効く。"
+  (let ((with (init-multi-head-attention (nabla:prng-key 1) 2 4))
+        (without (init-multi-head-attention (nabla:prng-key 1) 2 4 :qkv-features 6 :kv-features 5 :out-features 3
+                                                                    :use-bias nil)))
+    (is (every #'dense-general-use-bias (list (multi-head-attention-query with) (multi-head-attention-out with))))
+    (is (equal '(4 2 3) (array-dimensions (dense-general-kernel (multi-head-attention-query without)))))
+    (is (equal '(5 2 3) (array-dimensions (dense-general-kernel (multi-head-attention-key without)))))
+    (is (equal '(2 3 3) (array-dimensions (dense-general-kernel (multi-head-attention-out without)))))
+    (is (equal '("query.kernel" "query.bias" "key.kernel" "key.bias" "value.kernel" "value.bias"
+                 "out.kernel" "out.bias")
+               (nabla.nn:tree-paths with))))
+  (is (search "multi-head-attention"
+              (or (%error-message (lambda () (init-multi-head-attention (nabla:prng-key 1) 2 4 :use-bias 1))) ""))))
 
 (test attention/init-shapes-names-and-distribution-match-flax
   "init-multi-head-attention (4 ヘッド、qkv = 64、入力 64) の形が Flax と同じ: query/key/value の kernel (64 4 16)、
@@ -334,7 +412,7 @@ qkv-features と out-features の既定は入力の幅。"
     (is (every #'zerop (%elements (dense-general-bias q))))
     (is (every #'zerop (%elements (dense-general-bias o))))
     (is (equal '(("query" . :param) ("key" . :param) ("value" . :param) ("out" . :param)
-                 ("dropout-rate" . :static))
+                 ("dropout-rate" . :static) ("broadcast-dropout" . :static))
                (%slot-names 'multi-head-attention)))
     (destructuring-bind (&key query-kernel out-kernel &allow-other-keys)
         (loop for (name . rest) in (getf (%attention-fixture) :init-stats)
@@ -370,7 +448,7 @@ qkv-features と out-features の既定は入力の幅。"
 同じ出力・別のキーで別の出力・deterministic の出力とも違う。偽でキーが無いと error。rate = 0 なら偽でもキー不要で
 deterministic と同じ。"
   (let* ((base (init-multi-head-attention (nabla:prng-key 1) 2 4))
-         (model (make-multi-head-attention :query (multi-head-attention-query base) :key (multi-head-attention-key base)
+         (model (make-multi-head-attention :broadcast-dropout t :query (multi-head-attention-query base) :key (multi-head-attention-key base)
                                            :value (multi-head-attention-value base) :out (multi-head-attention-out base)
                                            :dropout-rate 0.5))
          (x (%rand '(2 5 4) 2))
@@ -419,3 +497,134 @@ dropout-rate と contract-axes は :static なので現れない。"
   (is (equal '("query.kernel" "query.bias" "key.kernel" "key.bias" "value.kernel" "value.bias"
                "out.kernel" "out.bias")
              (nabla.nn:tree-paths (init-multi-head-attention (nabla:prng-key 1) 2 4)))))
+
+;;; --- broadcast_dropout（issue #241）---
+;;;
+;;; attention の重みは直接見えないので、重みが一様（query / key の kernel が 0 ならスコアは全部 0 で softmax は
+;;; 1/幅）で、value が単位行列（v[b k h d] = [k = d]）、out が (h d) を平らにする恒等になるように作ったモデルで
+;;; 調べる。すると出力 [... q (h 幅 + k)] = 重み[... h q k] = マスク[... h q k] / (幅 (1 - rate))（落ちた位置は 0）で、
+;;; マスクがそのまま読める。Flax の dropout_rng でビット単位の比較はできない（nabla の PRNG は JAX と違う）ので、
+;;; 保持率・平均の保存・マスクが共有される軸と独立な軸を確かめる。
+
+(defun %all-indices (dims)
+  "DIMS（大きさのリスト）の添字のリストをすべて（辞書順で）並べたもの。DIMS が空なら (())。"
+  (if (null dims)
+      (list '())
+      (loop for i below (first dims)
+            append (mapcar (lambda (rest) (cons i rest)) (%all-indices (rest dims))))))
+
+(defun %dropout-probe-model (heads width broadcast rate)
+  "ファイル冒頭のコメントの、重みが出力にそのまま現れる multi-head-attention（入力の幅 = ヘッドの幅 = WIDTH）。"
+  (flet ((zeros (&rest dims) (make-array dims :element-type 'single-float :initial-element 0.0))
+         (projection (kernel contract-axes)
+           (make-dense-general :kernel kernel :bias nil :contract-axes contract-axes :use-bias nil)))
+    (let ((value-kernel (make-array (list width heads width) :element-type 'single-float :initial-element 0.0))
+          (out-kernel (make-array (list heads width (* heads width)) :element-type 'single-float
+                                                                      :initial-element 0.0)))
+      (dotimes (f width) (dotimes (h heads) (setf (aref value-kernel f h f) 1.0)))
+      (dotimes (h heads) (dotimes (d width) (setf (aref out-kernel h d (+ (* h width) d)) 1.0)))
+      (make-multi-head-attention :query (projection (zeros width heads width) 1)
+                                 :key (projection (zeros width heads width) 1)
+                                 :value (projection value-kernel 1)
+                                 :out (projection out-kernel 2)
+                                 :dropout-rate rate :broadcast-dropout broadcast))))
+
+(defun %dropout-probe (batch heads queries width broadcast rate seed)
+  "プローブのモデルを BATCH（先頭の軸の大きさのリスト）つきの入力に適用して、出力の配列を返す。"
+  (let ((kv (make-array (append batch (list width width)) :element-type 'single-float :initial-element 0.0))
+        (q (make-array (append batch (list queries width)) :element-type 'single-float :initial-element 0.0)))
+    (dolist (index (%all-indices batch))
+      (dotimes (k width) (setf (apply #'aref kv (append index (list k k))) 1.0)))
+    (call (%dropout-probe-model heads width broadcast rate) q kv nil (nabla:prng-key seed) nil)))
+
+(defun %probe-mask (out batch heads queries width)
+  "プローブの出力から、(バッチ添字 ヘッド) ごとの q × k のマスク（保持なら 1、落ちたなら 0 の bit のリスト）の
+連想リストを作る。"
+  (loop for index in (%all-indices batch)
+        append (loop for h below heads
+                     collect (cons (append index (list h))
+                                   (loop for q below queries
+                                         append (loop for k below width
+                                                      collect (if (plusp (apply #'aref out (append index (list q (+ (* h width) k)))))
+                                                                  1 0)))))))
+
+(def-layer-property attention/broadcast-dropout-shares-one-mask-over-batch-axes-and-heads
+  "broadcast-dropout が真（Flax の既定）のとき、dropout のマスクはバッチ軸（0 個・1 個・2 個）とヘッドで共有される:
+どの (バッチ添字, ヘッド) でも q × k のマスクが同じ。マスクは重みの要素ごとに 0 / 1 で、保持した重みは 1/(幅 (1 - rate))、
+落ちた重みは 0。"
+  (seed rate-percent batch-rank) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 10 :hi 90)
+                                        (uniform-integer :lo 0 :hi 2))
+  (let* ((rate (/ rate-percent 100f0))
+         (batch (subseq '(2 3) 0 batch-rank))
+         (out (%dropout-probe batch 2 4 5 t rate seed))
+         (masks (%probe-mask out batch 2 4 5))
+         (kept-value (/ 1 (* 5 (- 1 rate)))))
+    (and (every (lambda (entry) (equal (cdr entry) (cdr (first masks)))) masks)
+         (loop for i below (array-total-size out)
+               always (let ((v (row-major-aref out i)))
+                        (or (zerop v) (< (abs (- v kept-value)) (* 1d-5 kept-value))))))))
+
+(def-layer-property attention/dropout-without-broadcast-draws-independent-masks
+  "broadcast-dropout が偽のとき、マスクは重みの要素ごとに独立: 2 つのバッチ × 2 つのヘッドの 4 つの q × k
+のマスク（8 × 8）はどの 2 つも違う（rate 30% から 70% では、同じになる確率は 1e-15 未満）。"
+  (seed rate-percent) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 30 :hi 70))
+  (let* ((out (%dropout-probe '(2) 2 8 8 nil (/ rate-percent 100f0) seed))
+         (masks (mapcar #'cdr (%probe-mask out '(2) 2 8 8))))
+    (= 4 (length (remove-duplicates masks :test #'equal)))))
+
+(defun %probe-statistics (broadcast rate seed)
+  "プローブ（バッチ 2 × ヘッド 2 × q 32 × k 32）の (values 保持率 出力の平均 × 幅 独立な標本の数)。
+出力の平均 × 幅 は重みの総和の平均 = mean(mask) / (1 - rate) で、保存されていれば 1 に近い。"
+  (let* ((out (%dropout-probe '(2) 2 32 32 broadcast rate seed))
+         (n (array-total-size out))
+         (kept (loop for i below n count (plusp (row-major-aref out i)))))
+    (values (/ kept n)
+            (* 32 (/ (loop for i below n sum (row-major-aref out i)) n))
+            (if broadcast (* 32 32) n))))
+
+(def-layer-property attention/dropout-keeps-the-expected-fraction-and-preserves-the-mean
+  "broadcast-dropout が真でも偽でも、attention の dropout の保持率は 1 - rate に近い（二項分布の 4.5 標準偏差以内。
+独立な標本の数は、共有するときは q × k の 1024、しないときは重みの全要素）。重みの総和の平均 × 幅 は
+保持率 / (1 - rate) に等しい（保持した重みが 1/(1 - rate) 倍になる）ので、平均が 1 に保たれることは、保持率の検査を
+別の形で見たもの（独立な性質ではない）。誤って落ちる確率は 1e-5 未満。"
+  (seed rate-percent broadcast) (tuple (uniform-integer :lo 0 :hi 1000000) (uniform-integer :lo 10 :hi 90)
+                                       (uniform-integer :lo 0 :hi 1))
+  (let ((rate (/ rate-percent 100d0)))
+    (multiple-value-bind (fraction mean n) (%probe-statistics (plusp broadcast) (coerce rate 'single-float) seed)
+      (let* ((keep (- 1 rate))
+             (sd (sqrt (/ (* keep rate) n))))
+        (and (< (abs (- fraction keep)) (* 4.5 sd))
+             (< (abs (- mean 1)) (* 4.5 (/ sd keep))))))))
+
+(test attention/broadcast-dropout-default-and-same-key-same-mask
+  "init-multi-head-attention の broadcast-dropout の既定は真（Flax と同じ）、偽も選べる。broadcast-dropout が真でも偽でも、
+同じキーなら同じ出力・別のキーなら別の出力で、deterministic が真なら broadcast-dropout によらず dropout なしと同じ出力。
+真偽値でなければ層名入りの error。"
+  (let ((on (init-multi-head-attention (nabla:prng-key 1) 2 4 :dropout-rate 0.5))
+        (off (init-multi-head-attention (nabla:prng-key 1) 2 4 :dropout-rate 0.5 :broadcast-dropout nil))
+        (x (%rand '(2 6 4) 2)))
+    (is (eq t (multi-head-attention-broadcast-dropout on)))
+    (is (null (multi-head-attention-broadcast-dropout off)))
+    (dolist (model (list on off))
+      (is (equalp (call model x x nil (nabla:prng-key 3) nil) (call model x x nil (nabla:prng-key 3) nil)))
+      (is (not (equalp (call model x x nil (nabla:prng-key 3) nil) (call model x x nil (nabla:prng-key 4) nil))))
+      (is (equalp (call model x x nil nil t) (call (init-multi-head-attention (nabla:prng-key 1) 2 4) x x nil nil t))))
+    (is (not (equalp (call on x x nil (nabla:prng-key 3) nil) (call off x x nil (nabla:prng-key 3) nil)))
+        "共有するマスクと独立なマスクでは同じキーでも出力が違う")
+    (is (search "multi-head-attention"
+                (or (%error-message (lambda () (init-multi-head-attention (nabla:prng-key 1) 2 4 :broadcast-dropout 1)))
+                    "")))))
+
+(test attention/broadcast-dropout-with-rate-zero-and-no-batch-axes
+  "rate = 0 なら broadcast-dropout によらず dropout なし。バッチ軸が無い入力（[長さ 幅]）でも、共有される軸は
+ヘッドだけで動く（マスクがヘッドで共有される）。"
+  (let ((x (%rand '(5 4) 2)))
+    (dolist (broadcast '(t nil))
+      (let ((model (init-multi-head-attention (nabla:prng-key 1) 2 4 :broadcast-dropout broadcast)))
+        (is (equalp (call model x x nil (nabla:prng-key 3) nil) (call model x x nil nil t))
+            "broadcast-dropout ~S: rate 0 は dropout なし" broadcast))))
+  (let ((masks (mapcar #'cdr (%probe-mask (%dropout-probe '() 3 6 4 t 0.5f0 11) '() 3 6 4))))
+    (is (= 3 (length masks)) "ヘッドの数")
+    (is (= 24 (length (first masks))) "q × k")
+    (is (= 1 (length (remove-duplicates masks :test #'equal))) "3 つのヘッドが同じマスク")
+    (is (< 0 (reduce #'+ (first masks)) 24) "全部保持でも全部落ちでもない")))

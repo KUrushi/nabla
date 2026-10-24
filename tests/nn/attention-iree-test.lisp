@@ -3,7 +3,7 @@
 ;;;; 守らせる性質:
 ;;;; - jit した順伝播と jit した grad が、Flax のフィクスチャ（attention-test.lisp と同じ全ケース）と一致する。
 ;;;; - dropout は jit しても eager と同じ出力（同じキー → 同じマスク）。deterministic は静的引数。
-;;;; - init で作ったモデルを因果マスクつきで jit して eager と一致する。
+;;;; - init で作ったモデルを因果マスクつきで jit して eager と一致する（use-bias が偽のモデルも、issue #241）。
 ;;;; 入力は 1 回の jit で 162 個まで（IREE local-task の制限、CLAUDE.md）。ここのモデルは葉が 8 個。
 
 (in-package #:nabla.nn.tests)
@@ -16,7 +16,7 @@ Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
   (when (%layers-require-iree-or-skip)
     (let ((backend (nabla:find-backend :iree))
           (nabla:*compile-cache-directory* nil))
-      (dolist (name *attention-case-names*)
+      (dolist (name (append *attention-case-names* *attention-no-bias-case-names*))
         (let ((case (%att-case name)))
           (multiple-value-bind (loss forward argnums) (%att-loss-and-forward case)
             (let* ((model (%att-model case))
@@ -43,7 +43,7 @@ Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
     (let* ((backend (nabla:find-backend :iree))
            (nabla:*compile-cache-directory* nil)
            (base (init-multi-head-attention (nabla:prng-key 3) 2 8))
-           (model (make-multi-head-attention :query (multi-head-attention-query base)
+           (model (make-multi-head-attention :broadcast-dropout t :query (multi-head-attention-query base)
                                              :key (multi-head-attention-key base)
                                              :value (multi-head-attention-value base)
                                              :out (multi-head-attention-out base) :dropout-rate 0.3f0))
@@ -106,3 +106,44 @@ Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
                (is (every (lambda (v) (= v v)) (%elements out)) "~A: NaN が無い" dtype)
                (is (allclose out expected :dtype :f32 :rtol 5d-2 :atol 5d-2) "~A: f32 と一致する" dtype))
           (nabla::%jit-cache-forget f))))))
+
+(test attention/jit-of-a-model-without-bias-matches-eager
+  "init-multi-head-attention :use-bias nil（bias の無い 4 つの射影）のモデルを因果マスクつきで jit した出力と勾配
+\(葉は 4 つの kernel だけ）が eager と一致する。"
+  (when (%layers-require-iree-or-skip)
+    (let* ((backend (nabla:find-backend :iree))
+           (nabla:*compile-cache-directory* nil)
+           (model (init-multi-head-attention (nabla:prng-key 9) 4 16 :use-bias nil))
+           (x (%rand '(3 5 16) 8))
+           (mask (make-causal-mask 5))
+           (f (nabla:with-tracing (m x mask) (call m x x mask nil t)))
+           (loss (nabla:with-tracing (m x mask) (nabla:reduce-sum (call m x x mask nil t))))
+           (g (nabla:grad loss))
+           (jf (nabla:jit f :backend backend))
+           (jg (nabla:jit g :backend backend)))
+      (unwind-protect
+           (let ((jit-grad (funcall jg model x mask)) (eager-grad (funcall g model x mask)))
+             (is (%close-f32 (funcall jf model x mask) (funcall f model x mask)))
+             (is (= 4 (length (nabla:tree-leaves jit-grad))))
+             (is (every #'%close-f32 (nabla:tree-leaves jit-grad) (nabla:tree-leaves eager-grad))))
+        (nabla::%jit-cache-forget f)
+        (nabla::%jit-cache-forget g)))))
+
+(test attention/broadcast-dropout-jit-matches-eager-for-both-settings
+  "broadcast-dropout が真でも偽でも、attention の dropout を jit した出力は eager と同じ（同じキー → 同じマスク）で、
+バッチ軸とヘッドで共有されるマスクのときの出力は共有しないときと違う（issue #241）。"
+  (when (%layers-require-iree-or-skip)
+    (let* ((backend (nabla:find-backend :iree))
+           (nabla:*compile-cache-directory* nil)
+           (f (nabla:with-tracing (m x key) (call m x x nil key nil)))
+           (jf (nabla:jit f :backend backend))
+           (x (%rand '(2 6 8) 5))
+           (key (nabla:prng-key 77))
+           (outputs nil))
+      (unwind-protect
+           (dolist (broadcast '(t nil))
+             (let ((model (init-multi-head-attention (nabla:prng-key 3) 2 8 :dropout-rate 0.3 :broadcast-dropout broadcast)))
+               (is (%close-f32 (funcall jf model x key) (funcall f model x key)) "broadcast-dropout ~S" broadcast)
+               (push (funcall jf model x key) outputs)))
+        (nabla::%jit-cache-forget f))
+      (is (not (equalp (first outputs) (second outputs)))))))

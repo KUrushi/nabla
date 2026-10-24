@@ -29,10 +29,11 @@
    #:checkpoint-error-name
    #:checkpoint-error-detail
    ;; 基本レイヤー（issue #204）。make-* はパラメータを与えて作る（チェックポイントの読み込み・テスト用）
-   #:dense #:make-dense #:init-dense #:dense-kernel #:dense-bias
+   #:dense #:make-dense #:init-dense #:dense-kernel #:dense-bias #:dense-use-bias
    #:layer-norm #:make-layer-norm #:init-layer-norm
    #:layer-norm-scale #:layer-norm-bias #:layer-norm-epsilon
-   #:embedding #:make-embedding #:init-embedding #:embedding-embedding
+   #:layer-norm-use-scale #:layer-norm-use-bias #:layer-norm-reduction-axes #:layer-norm-feature-axes
+   #:embedding #:make-embedding #:init-embedding #:embedding-embedding #:embedding-attend
    #:dropout #:make-dropout #:init-dropout #:dropout-rate
    #:sequential #:make-sequential #:init-sequential #:sequential-layers
    #:activation #:make-activation #:init-activation #:activation-fn
@@ -61,14 +62,14 @@
    #:warmup-cosine-decay-schedule
    ;; dense-general と attention のマスクの部品（issue #208）
    #:dense-general #:make-dense-general #:init-dense-general #:dense-general-kernel #:dense-general-bias
-   #:dense-general-contract-axes
+   #:dense-general-contract-axes #:dense-general-use-bias
    #:make-causal-mask #:make-attention-mask #:combine-masks
    ;; multi-head attention（issue #208）
    #:multi-head-attention #:make-multi-head-attention #:init-multi-head-attention
    #:multi-head-attention-query #:multi-head-attention-key #:multi-head-attention-value
-   #:multi-head-attention-out #:multi-head-attention-dropout-rate
+   #:multi-head-attention-out #:multi-head-attention-dropout-rate #:multi-head-attention-broadcast-dropout
    ;; conv（issue #207）
    #:conv #:make-conv #:init-conv #:conv-kernel #:conv-bias #:conv-strides #:conv-padding
-   #:conv-kernel-dilation #:conv-feature-group-count)
+   #:conv-kernel-dilation #:conv-feature-group-count #:conv-use-bias)
   (:documentation
    "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv。"))

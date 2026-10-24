@@ -226,18 +226,14 @@ params を渡す）。adamw は adam の後にこれを置く（decoupled weight
                  (make-momentum-state :trace trace)))))))
 
 (defun %one-minus-pow (base count dtype)
-  "1 - BASE^COUNT（COUNT は rank 0 の :i32、結果は DTYPE のスカラー）。pow のプリミティブが無いので
-x = -COUNT log BASE として 1 - exp(-x) を計算する。ただし BASE が 1 に近いと x が小さく、1 - exp(-x) は
-桁落ちするので、x < 1/4 では -expm1(-x) の Taylor 展開（13 次）を使う。BASE = 0 は常に 1。"
+  "1 - BASE^COUNT（COUNT は rank 0 の :i32、結果は DTYPE のスカラー）。pow のプリミティブは無いので
+BASE^COUNT = exp(COUNT log BASE) として -expm1(COUNT log BASE) を計算する（Optax の 1 - b^t を pow なしで書いた同値な式で、Optax は decay**count を直接書く。
+BASE が 1 に近くても 1 - exp(...) のような桁落ちが起きない）。BASE = 0 は常に 1。"
   (if (zerop base)
       1
-      (let ((rate (- (log base)))
-            (orders (loop for k from 13 downto 2 collect k)))
+      (let ((log-base (log base)))
         (%traced (count)
-          (let ((x (* (nabla:convert count dtype) rate)))
-            (nabla:where (< x 0.25)
-                         (* x (reduce (lambda (s k) (- 1 (/ (* x s) k))) orders :initial-value 1))
-                         (- 1 (exp (- x)))))))))
+          (- (nabla:expm1 (* (nabla:convert count dtype) log-base)))))))
 
 (defun scale-by-adam (&key (b1 0.9d0) (b2 0.999d0) (eps 1d-8) (eps-root 0d0))
   "Adam の更新量 mu_hat / (sqrt(nu_hat + EPS-ROOT) + EPS)（学習率は掛けない。Optax の scale_by_adam）。
@@ -356,17 +352,11 @@ update には params を渡すこと。"
       (+ (* (- init end) (- 1 (/ (nabla:convert progress :f32) steps))) end))))
 
 (defun %cosine-value (count init end steps)
-  "COUNT での cosine decay: 0.5 (1 + cos(pi t)) = 0.5 (1 - sin(pi (t - 1/2))) で INIT から END へ、
-t = min(COUNT, STEPS) / STEPS。sin は [-pi/2, pi/2] の Taylor 展開 u (1 - u^2/(2 3) (1 - u^2/(4 5) ...))。"
-  (let ((orders (loop for n from 7 downto 1 collect n)))
-    (%traced (count)
-      (let* ((fraction (/ (nabla:convert (min count steps) :f32) steps))
-             (u (* pi (- fraction 0.5)))
-             (u2 (* u u))
-             (sine (* u (reduce (lambda (s n) (- 1 (/ (* u2 s) (* (* 2 n) (+ (* 2 n) 1)))))
-                                orders :initial-value 1)))
-             (cosine-weight (* 0.5 (+ 1 (- sine)))))
-        (+ (* (- init end) cosine-weight) end)))))
+  "COUNT での cosine decay: 0.5 (1 + cos(pi t)) で INIT から END へ、t = min(COUNT, STEPS) / STEPS。"
+  (%traced (count)
+    (let* ((fraction (/ (nabla:convert (min count steps) :f32) steps))
+           (cosine-weight (* 0.5 (+ 1 (cos (* pi fraction))))))
+      (+ (* (- init end) cosine-weight) end))))
 
 (defun constant-schedule (value)
   "どの count でも VALUE を返すスケジュール（count → rank 0 の :f32 のスカラー）。"
@@ -387,8 +377,7 @@ t = min(COUNT, STEPS) / STEPS。sin は [-pi/2, pi/2] の Taylor 展開 u (1 - u
 
 (defun cosine-decay-schedule (init-value decay-steps &key (alpha 0d0))
   "INIT-VALUE から DECAY-STEPS かけて半周期の cosine で INIT-VALUE * ALPHA まで下がり、以降はその値
-\(Optax の cosine_decay_schedule。count → rank 0 の :f32 のスカラー）。cos のプリミティブが無いので
-多項式近似（打ち切り誤差は 1e-11 未満で、f32 の丸め 1e-7 程度が残る）。"
+\(Optax の cosine_decay_schedule。count → rank 0 の :f32 のスカラー）。"
   (let* ((init (%hyper 'cosine-decay-schedule "init-value" init-value (constantly t)))
          (alpha (%hyper 'cosine-decay-schedule "alpha" alpha (constantly t)))
          (steps (%positive-integer 'cosine-decay-schedule "decay-steps" decay-steps))

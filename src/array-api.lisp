@@ -228,20 +228,21 @@ dtype は同じ真偽の rank 0 の PRED を渡したときと同じ）。PRED �
 WITH-TRACING は CL の sqrt と同じく、この関数の呼び出しも書き換える。"
   (%t-rsqrt x))
 
-;;; --- log1p / expm1（issue #223） ---
-
-(defun log1p (x)
-  "log(1 + X)（要素ごと）。X が小さいとき (log (+ 1 x)) は 1 + X の丸めで X の桁を失うが、
-これは失わない（softmax の正規化項などに使う。docs/numerics.md）。X は浮動小数点の配列・
-トレーサ・数値（数値は CL の float にしてから計算し、その型で返す）。X = -1 は負の無限大、
-X < -1 は NaN。WITH-TRACING の中でも同じ関数として書ける。"
-  (%t-log1p x))
+;;; --- expm1 / log1p（issue #223） ---
 
 (defun expm1 (x)
-  "exp(X) - 1（要素ごと）。X が小さいとき (- (exp x) 1) は桁を失うが、これは失わない。X は
-浮動小数点の配列・トレーサ・数値（数値は CL の float にしてから計算し、その型で返す）。
-WITH-TRACING の中でも同じ関数として書ける。"
+  "exp(X) - 1（要素ごと）。X が小さくても桁落ちしない。X は浮動小数点の配列・トレーサ・
+数値。配列には eager 実装、トレーサには expm1 の eqn、数値には（CL に expm1 が無いので）
+eager 実装と同じ計算を使う。数値の結果は X が double-float なら double-float、それ以外は
+single-float。WITH-TRACING は CL の exp と同じく、この関数の呼び出しも書き換える。"
   (%t-expm1 x))
+
+(defun log1p (x)
+  "log(1 + X)（要素ごと）。X が小さくても桁落ちしない。X は浮動小数点の配列・トレーサ・
+数値。配列とトレーサでは、X < -1 は NaN、X = -1 は -無限大になる（数値も同じ）。
+配列には eager 実装、トレーサには log1p の eqn を使う。WITH-TRACING は CL の log と同じく、
+この関数の呼び出しも書き換える。"
+  (%t-log1p x))
 
 ;;; --- stop-gradient（issue #80） ---
 

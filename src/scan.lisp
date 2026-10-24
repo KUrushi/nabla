@@ -355,7 +355,7 @@ while のオペランドが constant にならないので、定数で初期化�
   "VALUE（トレーサ・配列・実数）を、トレーサか配列にして返す。"
   (typecase value
     (tracer value)
-    (real (%scalar-array value (if (typep value 'double-float) :f64 :f32)))
+    (real (%real-scalar-array value))
     (string (%scan-error 'scan-error "~A に文字列は渡せない: ~S" what value))
     (array value)
     (t (%scan-error 'scan-error "~A はトレーサ・配列・実数でなければならない: ~S" what value))))

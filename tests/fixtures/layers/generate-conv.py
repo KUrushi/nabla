@@ -9,6 +9,8 @@ case / rnd をそのまま使うので、同じディレクトリに置く。
 :groups）。padding は "SAME" / "VALID" / 明示の ((low high) ...)。:init-stats は Flax の init を
 1回サンプルした kernel の形・標準偏差・最大絶対値。
 
+注: JAX / Flax は Linux の Rosetta VM では import できないので、macOS arm64 の venv で生成する（issue #241）。
+
 使い方 (jax[cpu]==0.10.2 と flax の入った venv で):
     python3 tests/fixtures/layers/generate-conv.py > tests/fixtures/layers/flax-conv.lisp
 """
@@ -28,16 +30,18 @@ from generate import case, rnd
 
 
 def conv_case(rng, name, x_shape, kernel_size, features, in_features, strides=1, padding="SAME",
-              kernel_dilation=1, groups=1):
+              kernel_dilation=1, groups=1, use_bias=True):
     k = tuple(kernel_size)
     module = nn.Conv(features, k, strides=strides, padding=padding, kernel_dilation=kernel_dilation,
-                     feature_group_count=groups)
+                     feature_group_count=groups, use_bias=use_bias)
     kernel = rnd(rng, *k, in_features // groups, features)
     x = rnd(rng, *x_shape)
-    bias = rnd(rng, features)
-    out = module.apply({"params": {"kernel": kernel, "bias": bias}}, x)
+    params = {"kernel": kernel}
+    if use_bias:
+        params["bias"] = rnd(rng, features)
+    out = module.apply({"params": params}, x)
     ct = rnd(rng, *out.shape)
-    text = case(name, module, {"kernel": kernel, "bias": bias}, x, ct)
+    text = case(name, module, params, x, ct)
     s = strides if isinstance(strides, (tuple, list)) else (strides,) * len(k)
     d = kernel_dilation if isinstance(kernel_dilation, (tuple, list)) else (kernel_dilation,) * len(k)
     if isinstance(padding, str):
@@ -63,12 +67,17 @@ def main():
         conv_case(rng, "kernel-dilation", (2, 8, 7, 2), (3, 3), 3, 2, kernel_dilation=(2, 1)),
         conv_case(rng, "unbatched", (6, 7, 3), (3, 3), 4, 3, strides=(2, 1)),
         conv_case(rng, "conv1d", (2, 9, 3), (3,), 4, 3, strides=2),
+        # issue #241: use_bias=False（乱数列は既存のケースの後ろなので、既存のケースは変わらない）
+        conv_case(rng, "no-bias", (2, 6, 7, 3), (3, 3), 4, 3, use_bias=False),
+        conv_case(rng, "no-bias-stride2-groups", (2, 7, 6, 4), (3, 2), 6, 4, strides=(2, 1), groups=2,
+                  use_bias=False),
     ]
     key = jax.random.PRNGKey(207)
     kernel = nn.Conv(16, (3, 3), feature_group_count=2).init(key, jnp.zeros((1, 8, 8, 16)))["params"]["kernel"]
     shape = " ".join(str(d) for d in kernel.shape)
     print(";;;; Flax (flax.linen.Conv) との突き合わせ用フィクスチャ（issue #207）。")
     print(";;;; 生成: tests/fixtures/layers/generate-conv.py。形式は generate.py と generate-conv.py の docstring。")
+    print(";;;; issue #241 のケースを足した版は macOS arm64（Apple Silicon）で JAX 0.10.2 / Flax 0.12.8 / x64 無効で生成した。")
     print(f'(:versions "jax {jax.__version__} flax {flax.__version__}"')
     print(" :cases (")
     for c in cases:

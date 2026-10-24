@@ -18,6 +18,8 @@ init の分布は、Flax の init を1回サンプルした標準偏差と最大
    :cases ((:name "dense" :arrays (("kernel" (5 4) (...)) ...)) ...)
    :init-stats ((:dense-kernel (512 256) std maxabs) ...))
 
+注: JAX / Flax は Linux の Rosetta VM では import できないので、macOS arm64 の venv で生成する（issue #241）。
+
 使い方 (jax[cpu]==0.10.2 と flax の入った venv で):
     python3 tests/fixtures/layers/generate.py > tests/fixtures/layers/flax-layers.lisp
 """
@@ -102,6 +104,66 @@ class Act(nn.Module):
         return nn.log_softmax(x, axis=self.axis)
 
 
+class EmbedAttend:
+    """case() に渡すための薄い包み: nn.Embed.attend を apply で呼ぶ。"""
+
+    def __init__(self, embed):
+        self.embed = embed
+
+    def apply(self, variables, x):
+        return self.embed.apply(variables, x, method=nn.Embed.attend)
+
+
+class TiedEmbed(nn.Module):
+    """ids → 埋め込み → 同じ埋め込みの attend（入力の埋め込みと出力の logits で重みを共有する）。"""
+
+    @nn.compact
+    def __call__(self, ids):
+        embed = nn.Embed(7, 4, name="embed")
+        return embed.attend(embed(ids))
+
+
+def extra_cases(rng):
+    """issue #241（Flax との差）で足したケース。"""
+    cases = []
+    cases.append(case("dense-no-bias", nn.Dense(4, use_bias=False), {"kernel": rnd(rng, 5, 4)},
+                      rnd(rng, 2, 3, 5), rnd(rng, 2, 3, 4)))
+
+    # layer-norm の use_scale / use_bias / reduction_axes / feature_axes。平均がずれた入力
+    # （generate の layer-norm と同じ。許容誤差は layers-test.lisp の %case-tolerance）
+    x = rnd(rng, 2, 3, 6, scale=2.0, shift=3.0)
+    ct = rnd(rng, 2, 3, 6)
+    scale6 = rnd(rng, 6, scale=0.5, shift=1.0)
+    bias6 = rnd(rng, 6)
+    cases.append(case("layer-norm-no-scale", nn.LayerNorm(epsilon=1e-6, use_scale=False), {"bias": bias6}, x, ct))
+    cases.append(case("layer-norm-no-bias", nn.LayerNorm(epsilon=1e-6, use_bias=False), {"scale": scale6}, x, ct))
+    cases.append(case("layer-norm-no-scale-no-bias", nn.LayerNorm(epsilon=1e-6, use_scale=False, use_bias=False),
+                      {}, x, ct))
+    # 群ごとに正規化する軸を変える。reduction_axes=(1, 2)、feature_axes は既定の最後の軸（scale と bias は (5)）
+    cases.append(case("layer-norm-reduction-axes", nn.LayerNorm(epsilon=1e-6, reduction_axes=(1, 2)),
+                      {"scale": rnd(rng, 5, scale=0.5, shift=1.0), "bias": rnd(rng, 5)},
+                      rnd(rng, 2, 3, 4, 5, scale=2.0, shift=3.0), rnd(rng, 2, 3, 4, 5)))
+    # 真ん中の軸（-2）で正規化する。scale と bias は最後の軸の大きさ
+    cases.append(case("layer-norm-reduction-middle-axis", nn.LayerNorm(epsilon=1e-6, reduction_axes=-2),
+                      {"scale": rnd(rng, 5, scale=0.5, shift=1.0), "bias": rnd(rng, 5)},
+                      rnd(rng, 4, 3, 5, scale=2.0, shift=3.0), rnd(rng, 4, 3, 5)))
+    # feature_axes=(1, 2): scale と bias は入力の軸 1, 2 の大きさ (3, 4)
+    cases.append(case("layer-norm-feature-axes",
+                      nn.LayerNorm(epsilon=1e-6, reduction_axes=(1, 2), feature_axes=(1, 2)),
+                      {"scale": rnd(rng, 3, 4, scale=0.5, shift=1.0), "bias": rnd(rng, 3, 4)},
+                      rnd(rng, 2, 3, 4, scale=2.0, shift=3.0), rnd(rng, 2, 3, 4)))
+
+    # Embed.attend: query [2 5 4] と埋め込み (7 4) の転置の内積 → [2 5 7]
+    cases.append(case("embedding-attend", EmbedAttend(nn.Embed(7, 4)), {"embedding": rnd(rng, 7, 4)},
+                      rnd(rng, 2, 5, 4), rnd(rng, 2, 5, 7)))
+    # 重みの共有: ids → 引き → attend。同じ id の繰り返しを含む（勾配は引きと attend の和）
+    ids = rng.integers(0, 7, size=(2, 5)).astype(np.int32)
+    ids[1, 2] = ids[1, 0]
+    cases.append(case("embedding-tied", TiedEmbed(), {"embed.embedding": rnd(rng, 7, 4)}, ids,
+                      rnd(rng, 2, 5, 7), x_is_float=False))
+    return cases
+
+
 def main():
     rng = np.random.default_rng(204)
     cases = []
@@ -136,6 +198,10 @@ def main():
                        "2.kernel": rnd(rng, 6, 3), "2.bias": rnd(rng, 3)},
                       rnd(rng, 4, 5), rnd(rng, 4, 3)))
 
+    # issue #241: 既存のケースの乱数列を変えないよう、別のシードで足す
+    rng = np.random.default_rng(241)
+    cases += extra_cases(rng)
+
     key = jax.random.PRNGKey(204)
     kernel = nn.Dense(256).init(key, jnp.zeros((1, 512)))["params"]["kernel"]
     embedding = nn.Embed(1000, 64).init(key, jnp.zeros((1,), jnp.int32))["params"]["embedding"]
@@ -145,6 +211,7 @@ def main():
     ]
     print(";;;; Flax (flax.linen) との突き合わせ用フィクスチャ（issue #204）。")
     print(";;;; 生成: tests/fixtures/layers/generate.py。形式は generate.py の docstring。")
+    print(";;;; issue #241 のケースを足した版は macOS arm64（Apple Silicon）で JAX 0.10.2 / Flax 0.12.8 / x64 無効で生成した。")
     print(f'(:versions "jax {jax.__version__} flax {flax.__version__}"')
     print(" :cases (")
     for c in cases:

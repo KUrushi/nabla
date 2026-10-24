@@ -106,7 +106,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **PR を 3 本に分けた**（#228 core の `dot-general`、#229 `dense-general` とマスク、#230 attention）。差分が大きすぎるという Advisor の指摘による。
 - スロットは Flax と同じ `query` / `key` / `value` / `out`（`dense-general`）で、チェックポイントのパス名は Flax の `flatten_dict` と一致する。`dense-general` が縮約する入力の軸の数は `:static` の `contract-axes` に持つ（bias の rank の差から推論するのをやめた。Advisor の指摘）。
 - 先頭に任意個のバッチ軸を置ける。スコアは先頭のバッチ軸とヘッドをバッチ軸にした `dot-general`。q は `sqrt(head_dim)` で割ってから dot を取る。隠す位置は select で dtype の有限の最小値にして、max を引く softmax を使う。全部隠した行は一様な重みになり NaN は出ない。bf16 / f16 でマスクを付けると落ちる件が検証で見つかり、直した。
-- **dropout は要素ごとに独立なマスク**（Flax の `broadcast_dropout=False` 相当）。Flax の既定（batch とヘッドでマスクを共有）とは違うが、nabla の PRNG は JAX とビット単位で一致しないので値は比べられない（#241）。
+- **dropout は要素ごとに独立なマスク**（Flax の `broadcast_dropout=False` 相当）。Flax の既定（batch とヘッドでマスクを共有）とは違うが、nabla の PRNG は JAX とビット単位で一致しないので値は比べられない（#241）。**→ #241 で `broadcast-dropout`（既定は Flax と同じ真）を足して解決済み**（統計的な性質で確かめる）。
 
 ### 3.9 conv レイヤー（#207）
 
@@ -153,12 +153,12 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 
 ### 4.3 フェーズ4で見つけた IREE 3.11 のバグ
 
-詳細・最小の再現・上流への報告の下書きは `docs/iree-upstream-bugs.md`。上流への報告はまだ（#243）。
+詳細・最小の再現・上流への報告の下書きは `docs/iree-upstream-bugs.md`。上流への報告はまだ。#243 で項目 4〜8 の英語の下書きと上流の既存 issue の検索（重複と断定できる issue は無し、8 に関連の [#24753](https://github.com/iree-org/iree/issues/24753)）、`scripts/check-iree-repros.sh` の 4・5 の行を足した。起票はリポジトリのオーナー（下書き済み・未報告）。
 
 1. **local-task device で入力が 162 個以上の関数を呼ぶと NULL を参照して落ちる**（項目 6、#199）。入力の個数だけで決まり、形・演算に依らない（手書きのモジュールでも 162 個で落ちる）。`:local-sync` は動く。`nabla.iree:invoke` が呼ぶ前に `iree-too-many-inputs` を signal する（`+local-task-max-inputs+` = 161。ドライバを文字列で指定しても検査する）。もう 1 つの制限として、入力 170 個の要素ごとの加算の連鎖は、ロード時に `binding count 51 > 32` で失敗する。Advisor が、テストを 8 葉に制限して隠していたのを見つけた。根本対処は #242。
 2. **bf16 / f16 を f32 に convert した畳み込みの 2 件**（項目 4・5、#203）。(a) 転置したカーネルを convert して畳み込むと、片方の operand の dtype が元に戻ってコンパイルエラー（lhs の勾配）。(b) O/G = 1 の depthwise で `tensor.collapse_shape` の型エラー。回避策は、f32 に直した 2 入力をまとめて `stablehlo.optimization_barrier` に通してから畳み込む。f32 の emit は変わらない。「今も落ちること」を `convolution/iree-bf16-convert-conv-bugs-still-reproduce` が守る。Advisor が bf16 / f16 の lhs の勾配が落ちる（14 件）ことを見つけた。
 3. **local-task の実行時の競合**（項目 7、#220 / PR #236）。scan の本体が ys を `optimization_barrier` に通したあと、制御構造（`stablehlo.while` / `stablehlo.if`）をはさんで in-place の `dynamic_update_slice` をすると、CPU に負荷があるとき ys の行が 0 のまま返る（0.3〜2%。`cond*` の本体では 0.3%。local-sync と worker 数 1 では起きない。コンパイル結果は決定的）。**テストの許容誤差の問題ではなかった**。回避策は、本体に制御構造がある scan では ys の barrier を付けないこと。代償は、外側の長さについて 2 乗の費用（L=64・ys 16 MB で 788 ms 対 68 ms の 11 倍。#233）。
-4. **`stablehlo.if` の枝が入力をそのまま返すと `ref is null`**（#226）。片方の枝が入力を素通しし、その枝がほかに 3 つ以上の出力を計算するとき、invoke で失敗する（local-task・local-sync の両方）。#201 の検証で見つかった。再現・回避策・テストはまだ（#226）。
+4. **`stablehlo.if` の枝が入力をそのまま返すと `ref is null`**（項目 8、#226）。片方の枝が入力を素通しし、もう片方の枝を選ぶと、invoke で失敗する（local-task・local-sync の両方。出力の並びによる）。#201 の検証で見つかった。**解決済み（#226）**: 素通しの出力を `stablehlo.if` の結果から外し、if の外の `stablehlo.select` にする（`%cond-emit`。barrier に通す案は効かなかった）。最小の再現は `docs/iree-repros/if-passthrough-operands.mlir`。
 
 ### 4.4 mutation testing
 
@@ -173,16 +173,16 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 ## 5. 既知の制限と積み残し
 
 - 以下のうち、#223 / #226 / #227 / #233 / #237 は各 PR の検証で起こしたフォローアップで、#239〜#245 は #211 で起こした。
-- **#223: `expm1` / `log1p` / `sin` / `cos` のプリミティブが無い**。cosine decay と Adam のバイアス補正は級数で計算している（§3.7）。足して置き換える。
-- **#226: `stablehlo.if` の枝が入力を素通しすると IREE で失敗する**（§4.3 の 4）。#201 の IREE の `cond*` のテストから素通しのケースを外してある。
-- **#227: `while-loop` の carry に Lisp の実数を渡せない**（`scan` / `cond*` の operands は実数を葉にできる）。
-- **#233: 本体に制御構造がある scan の ys が、更新のたびに丸ごとコピーされる**（外側の長さの 2 乗。§4.3 の 3）。レイヤーを scan で回して本体に dropout や `cond*` があると効く。
+- **#223: `expm1` / `log1p` / `sin` / `cos` のプリミティブが無い**。cosine decay と Adam のバイアス補正は級数で計算している（§3.7）。足して置き換える。解決済み（#223 で expm1 / log1p / sin / cos を足し、`%one-minus-pow` と `%cosine-value` を置き換えた）。
+- **#226: `stablehlo.if` の枝が入力を素通しすると IREE で失敗する**（§4.3 の 4）。素通しの出力を `stablehlo.select` にして直し、#201 の IREE の `cond*` のテストに素通しのケースを戻した（解消済み）。
+- **#227: `while-loop` の carry に Lisp の実数を渡せない**（`scan` / `cond*` の operands は実数を葉にできる）。済み: `scan` と同じ規則で rank 0 の配列に持ち上げる（double-float は `:f64`、それ以外は `:f32`。整数も `:f32`）。
+- **#233: 本体に制御構造がある scan の ys が、更新のたびに丸ごとコピーされる**（外側の長さの 2 乗。§4.3 の 3）。レイヤーを scan で回して本体に dropout や `cond*` があると効く。調査済み（解決ではない）: 代償は `scripts/bench-scan-ys.sh` で測れる（L=64・ys 16 MB で 1 ステップ 1.0〜1.5 ms 対 4.3〜5.6 ms。Rosetta の VM の参考値）。ys と制御構造の結果を1つの barrier に通す形はコピーを消せたが、競合の安全性を x86 ネイティブで確かめるまで既定は変えない。上流の修正待ち。判断と手順は docs/iree-upstream-bugs.md の 7。
 - **#237: scan の emitter の mutation の生き残り**（`while` のブロック引数の型・戻り値の名前の個数・カウンタの型。medium では捕まるが small のテストが無い）。解決済み（`scan/emitted-while-has-one-slot-per-counter-carry-and-ys` と exclusions の4件）。
 - **#239: nn が core の内部シンボル `nabla::%pytree-node-entry` を使っている**。子を返す公開関数（`tree-children`）を export して移した（解消済み）。
 - **#240: gather プリミティブが無く、embedding が one-hot + `dot`**（§3.6）。
-- **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。
+- **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。**解決済み**（`use_bias`・layer-norm の引数・`broadcast_dropout`・`attend` は実装、conv の入力 dilation / CIRCULAR / CAUSAL / 文字列 padding / `conv_transpose` と BatchNorm / GroupNorm は理由を README の「Flax との差」に書いて「やらない」とした。BatchNorm / GroupNorm は #260、`:static` の既定値は #261）。
 - **#242: jit の入力が 161 個を超えるモデルは local-task で学習できない**（葉が約 50 個を超える Adam の学習ステップ）。dtype ごとに葉を連結する案。
-- **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
+- **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**（下書き済み・未報告。起票はリポジトリのオーナー）。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
 - **#244: チェックポイントは全体をメモリに読む**。測定と判断は [checkpoint-memory.md](checkpoint-memory.md)（load は約 2 倍、save は約 3 倍。フェーズ5には遅延読み込みも世代管理も要らない（測定・判断済み。遅延読み込みは 25M パラメータ超のモデルを扱う段階で #262、fsync は #263）。データパイプラインの状態は配列だけの `defmodule` で往復する）。
 - **#245: check-it の回帰 datum の文字列のバグ**。#236 が `check-it::datum` に足した防御のメソッドの扱い。
 - **`while-loop` の逆モード（`grad`）は引き続き対応しない**（フェーズ3から）。`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」も変わらない。

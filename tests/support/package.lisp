@@ -59,9 +59,12 @@
    #:reference-tanh
    #:reference-sqrt
    #:reference-rsqrt
-   #:reference-log1p
    #:reference-expm1
+   #:reference-log1p
+   #:reference-sin
+   #:reference-cos
    #:load-sqrt-jax-fixture
+   #:load-unary-jax-fixture
    #:sqrt-fixture-input-array
    #:sqrt-fixture-match-p
    #:reference-max

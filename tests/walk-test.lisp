@@ -277,8 +277,10 @@ UNSUPPORTED な形式の path はそのバインディングの位置を反映�
 (%def-nullary-rewrite-unsupported-test walk/nullary-log-signals-unsupported-form (log))
 (%def-nullary-rewrite-unsupported-test walk/nullary-sqrt-signals-unsupported-form (sqrt))
 (%def-nullary-rewrite-unsupported-test walk/nullary-rsqrt-signals-unsupported-form (nb:rsqrt))
-(%def-nullary-rewrite-unsupported-test walk/nullary-log1p-signals-unsupported-form (nb:log1p))
 (%def-nullary-rewrite-unsupported-test walk/nullary-expm1-signals-unsupported-form (nb:expm1))
+(%def-nullary-rewrite-unsupported-test walk/nullary-log1p-signals-unsupported-form (nb:log1p))
+(%def-nullary-rewrite-unsupported-test walk/nullary-sin-signals-unsupported-form (sin))
+(%def-nullary-rewrite-unsupported-test walk/nullary-cos-signals-unsupported-form (cos))
 (%def-nullary-rewrite-unsupported-test walk/nullary-1+-signals-unsupported-form (1+))
 (%def-nullary-rewrite-unsupported-test walk/nullary-1--signals-unsupported-form (1-))
 

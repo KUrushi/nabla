@@ -17,10 +17,18 @@
 ;;;;   その dtype の最小値（Flax の jnp.finfo(dtype).min。-inf ではない。f32 / f64 / bf16 / f16）を
 ;;;;   `if`（= select）で入れ、softmax（layers.lisp の softmax。最大値を引いてから exp する）で正規化する。
 ;;;;   最小値なので、全部のキーが隠れた行は一様な重みになる（Flax と同じ。NaN にならない）。
-;;;; - dropout は重みに layers.lisp の `%dropout-apply` をそのまま使う（rate・key・deterministic の規則は
-;;;;   dropout と同じ）。Flax の既定の broadcast_dropout=True（マスクをバッチ軸とヘッドで共有する）とは違い、
-;;;;   重みの要素ごとに独立のマスクを引く（Flax の broadcast_dropout=False と同じ）。PRNG が JAX と
-;;;;   ビット単位で一致しないので Flax と値を比べられず、独立なマスクのほうが素直なため。
+;;;; - dropout は重みに layers.lisp の `%dropout-apply` を使う（rate・key・deterministic の規則は dropout と
+;;;;   同じ）。broadcast_dropout（issue #241。init の :broadcast-dropout、:static のスロット、既定は Flax と同じ
+;;;;   真）が真のとき、マスクをバッチ軸とヘッドで共有する: Flax は重み [バッチ... ヘッド q k] に対して
+;;;;   形 [1 ... 1 q k]（先頭の バッチ軸の数 + 1 個が 1）のマスクを引いてブロードキャストする
+;;;;   （dot_product_attention_weights の dropout_shape）ので、%dropout-apply の broadcast-dims に「最後の 2 軸以外
+;;;;   すべて」を渡す。偽なら重みの要素ごとに独立のマスク（Flax の broadcast_dropout=False）。#241 より前は
+;;;;   偽だけだった（挙動変更: 既定が真になった）。PRNG が JAX とビット単位で一致しないので Flax と値は
+;;;;   比べられず、保持率・平均の保存・共有される軸と独立な軸の統計的な性質で確かめる。
+;;;; - use_bias（issue #241）: init の :use-bias（既定は真）を query / key / value / out の 4 つの
+;;;;   dense-general すべてに渡す（Flax の use_bias も 4 つの DenseGeneral すべてに効く）。偽なら 4 つとも
+;;;;   bias は NIL（パス名は query.kernel など kernel だけ）。use-bias は各 dense-general が持つので、
+;;;;   multi-head-attention 自身のスロットにはしない（食い違うスロットを増やさない）。
 ;;;; - ロジックは `defmodule` の外の `defun` に出す。トレースされる部品は
 ;;;;   `(funcall (load-time-value (nabla:with-tracing ...)) 引数...)` の形（layers.lisp と同じ）。
 
@@ -118,11 +126,16 @@
                        (%attention-mask-logits logits mask (%attention-large-negative dtype)
                                                (%check-attention-mask mask (%shape logits)))
                        logits))
-           (weights (%dropout-apply (softmax masked) key (multi-head-attention-dropout-rate model) deterministic)))
+           (weights (%dropout-apply (softmax masked) key (multi-head-attention-dropout-rate model) deterministic
+                                    (when (multi-head-attention-broadcast-dropout model)
+                                      (%range (- (length (%shape masked)) 2))))))
       (call (multi-head-attention-out model) (%attention-context weights v batch-rank)))))
 
-(defmodule multi-head-attention (query key value out (dropout-rate :static))
-  (:init (key num-heads in-features &key qkv-features kv-features out-features (dtype :f32) (dropout-rate 0))
+(defmodule multi-head-attention (query key value out (dropout-rate :static) (broadcast-dropout :static))
+  (:init (key num-heads in-features &key qkv-features kv-features out-features (dtype :f32) (dropout-rate 0)
+                                      (use-bias t) (broadcast-dropout t))
+   (%check-use-bias "multi-head-attention" use-bias)
+   (%check-use-flag "multi-head-attention" "broadcast-dropout" broadcast-dropout)
    (let* ((qkv-features (or qkv-features in-features))
           (kv-features (or kv-features in-features))
           (out-features (or out-features in-features)))
@@ -135,10 +148,11 @@
      (let ((head-dim (floor qkv-features num-heads))
            (keys (split-keys key 4)))
        (make-multi-head-attention
-        :query (init-dense-general (first keys) in-features (list num-heads head-dim) :dtype dtype)
-        :key (init-dense-general (second keys) kv-features (list num-heads head-dim) :dtype dtype)
-        :value (init-dense-general (third keys) kv-features (list num-heads head-dim) :dtype dtype)
-        :out (init-dense-general (fourth keys) (list num-heads head-dim) out-features :dtype dtype)
-        :dropout-rate dropout-rate))))
+        :query (init-dense-general (first keys) in-features (list num-heads head-dim) :dtype dtype :use-bias use-bias)
+        :key (init-dense-general (second keys) kv-features (list num-heads head-dim) :dtype dtype :use-bias use-bias)
+        :value (init-dense-general (third keys) kv-features (list num-heads head-dim) :dtype dtype :use-bias use-bias)
+        :out (init-dense-general (fourth keys) (list num-heads head-dim) out-features :dtype dtype :use-bias use-bias)
+        :dropout-rate dropout-rate
+        :broadcast-dropout broadcast-dropout))))
   (:call (self inputs-q inputs-kv mask key deterministic)
    (%multi-head-attention-apply self inputs-q inputs-kv mask key deterministic)))

@@ -95,7 +95,7 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
                      "~A: ~D 番目の勾配が Flax と一致しない" name i)))))
 
 (defun %fx-dense (case prefix)
-  (make-dense :kernel (%fx-array case (concatenate 'string prefix "kernel"))
+  (make-dense :use-bias t :kernel (%fx-array case (concatenate 'string prefix "kernel"))
               :bias (%fx-array case (concatenate 'string prefix "bias"))))
 
 (defparameter *layers-case-table*
@@ -103,11 +103,11 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
    (list "dense" (lambda (case) (%fx-dense case "")) (nabla:with-tracing (m x) (call m x)) nil)
    (list "dense-rank1" (lambda (case) (%fx-dense case "")) (nabla:with-tracing (m x) (call m x)) nil)
    (list "layer-norm"
-         (lambda (case) (make-layer-norm :scale (%fx-array case "scale") :bias (%fx-array case "bias")
+         (lambda (case) (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale (%fx-array case "scale") :bias (%fx-array case "bias")
                                          :epsilon 1f-6))
          (nabla:with-tracing (m x) (call m x)) nil)
    (list "layer-norm-tiny-variance"
-         (lambda (case) (make-layer-norm :scale (%fx-array case "scale") :bias (%fx-array case "bias")
+         (lambda (case) (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale (%fx-array case "scale") :bias (%fx-array case "bias")
                                          :epsilon 1f-6))
          (nabla:with-tracing (m x) (call m x)) nil)
    (list "embedding" (lambda (case) (make-embedding :embedding (%fx-array case "embedding")))
@@ -125,6 +125,57 @@ Flax の値と比べる。MODEL が NIL（パラメータ無し）のときは x
                                           (%fx-dense case "2."))))
          (nabla:with-tracing (m x) (call m x)) nil))
   "(ケース名 モデルを作る関数 順伝播（traceable-function (m x)） x が整数か)。medium からも使う。")
+
+(defun %fx-layer-norm (case &key (use-scale t) (use-bias t) (reduction-axes '(-1)) (feature-axes '(-1)))
+  "ケースの scale / bias（use-scale / use-bias が偽なら NIL）から layer-norm を作る。"
+  (make-layer-norm :scale (and use-scale (%fx-array case "scale")) :bias (and use-bias (%fx-array case "bias"))
+                   :epsilon 1f-6 :use-scale use-scale :use-bias use-bias
+                   :reduction-axes reduction-axes :feature-axes feature-axes))
+
+(defmodule tied-embedding-head (embed)
+  (:call (self ids)
+   (embedding-attend (tied-embedding-head-embed self) (call (tied-embedding-head-embed self) ids))))
+
+(defparameter *layers-extra-case-table*
+  (list
+   (list "dense-no-bias"
+         (lambda (case) (make-dense :kernel (%fx-array case "kernel") :bias nil :use-bias nil))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-no-scale"
+         (lambda (case) (%fx-layer-norm case :use-scale nil :use-bias t))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-no-bias"
+         (lambda (case) (%fx-layer-norm case :use-scale t :use-bias nil))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-no-scale-no-bias"
+         (lambda (case) (%fx-layer-norm case :use-scale nil :use-bias nil))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-reduction-axes"
+         (lambda (case) (%fx-layer-norm case :reduction-axes '(1 2)))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-reduction-middle-axis"
+         (lambda (case) (%fx-layer-norm case :reduction-axes '(-2)))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   (list "layer-norm-feature-axes"
+         (lambda (case) (%fx-layer-norm case :reduction-axes '(1 2) :feature-axes '(1 2)))
+         (nabla:with-tracing (m x) (call m x)) nil)
+   ;; Embed.attend: 埋め込みの転置との内積（query は [2 5 4]、語彙 7）
+   (list "embedding-attend" (lambda (case) (make-embedding :embedding (%fx-array case "embedding")))
+         (nabla:with-tracing (m x) (embedding-attend m x)) nil)
+   ;; 入力の埋め込みと出力の logits で重みを共有する形（ids → embed → attend）。埋め込みへの勾配は引きと attend の和
+   (list "embedding-tied"
+         (lambda (case) (make-tied-embedding-head :embed (make-embedding :embedding (%fx-array case "embed.embedding"))))
+         (nabla:with-tracing (m x) (call m x)) t))
+  "issue #241 で足した Flax との差のケース（*layers-case-table* と同じ形）。フィクスチャの再生成が要る。
+medium からも使う。")
+
+(test layers/extra-cases-match-flax
+  "Flax の nn.Dense(use_bias=False) と、nn.LayerNorm の use_scale=False / use_bias=False / reduction_axes /
+feature_axes 付きのフィクスチャと、nn.Embed の attend（単独と、引きと attend で重みを共有する形）のフィクスチャで、
+eager の出力と、パラメータ（あるものだけ）・入力の勾配が一致する。"
+  (dolist (entry *layers-extra-case-table*)
+    (destructuring-bind (name make forward ints) entry
+      (%check-flax-case name (funcall make (%fx-case name)) forward :ints ints))))
 
 (test layers/forward-and-grads-match-flax
   "dense（rank 3 と rank 1 の入力）、layer-norm（平均のずれた入力と分散がほぼ 0 の入力）、embedding、
@@ -166,7 +217,7 @@ relu / gelu / softmax（軸 -1 と 0）/ log-softmax、dense + relu + dense の 
         (is (<= (abs (- max flax-max)) (* 0.03 flax-max)))))
     (is (equal '(256) (array-dimensions (dense-bias dense))))
     (is (every #'zerop (%elements (dense-bias dense))))
-    (is (equal '(("kernel" . :param) ("bias" . :param)) (%slot-names 'dense)))))
+    (is (equal '(("kernel" . :param) ("bias" . :param) ("use-bias" . :static)) (%slot-names 'dense)))))
 
 (test layers/embedding-init-matches-flax
   "init-embedding (1000 × 64) の embedding は N(0, 1/features)（Flax の embed 初期化）: 標準偏差が
@@ -189,7 +240,9 @@ Flax のサンプルと 3% 以内で 1/sqrt(64) に一致する。形 (num-embed
     (is (eql 1f-5 (layer-norm-epsilon (init-layer-norm (nabla:prng-key 1) 5 :epsilon 1f-5))))
     (is (eq 'double-float (array-element-type
                            (layer-norm-scale (init-layer-norm (nabla:prng-key 1) 5 :dtype :f64)))))
-    (is (equal '(("scale" . :param) ("bias" . :param) ("epsilon" . :static)) (%slot-names 'layer-norm)))
+    (is (equal '(("scale" . :param) ("bias" . :param) ("epsilon" . :static) ("use-scale" . :static)
+                 ("use-bias" . :static) ("reduction-axes" . :static) ("feature-axes" . :static))
+               (%slot-names 'layer-norm)))
     (is (equal '(("embedding" . :param)) (%slot-names 'embedding)))))
 
 (defmacro def-layer-property (name docstring (&rest vars) generator &body body)
@@ -271,7 +324,7 @@ kernel と bias の形は (in out) と (out)。"
          (scale (%rand (list features) (+ seed 1)))
          (bias (%rand (list features) (+ seed 2)))
          (plain (call (init-layer-norm (nabla:prng-key 0) features) x))
-         (full (call (make-layer-norm :scale scale :bias bias :epsilon 1f-6) x)))
+         (full (call (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale scale :bias bias :epsilon 1f-6) x)))
     (loop for r below 2
           always (loop for f below features
                        always (< (abs (- (aref full r f)
@@ -302,7 +355,7 @@ kernel と bias の形は (in out) と (out)。"
   "dense の出力は x kernel + bias（行ごと）。入力は rank 1 から 3。"
   (seed rank in out) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3)
                             (uniform-integer :lo 1 :hi 5) (uniform-integer :lo 1 :hi 5))
-  (let* ((dense (make-dense :kernel (%rand (list in out) seed) :bias (%rand (list out) (+ seed 1))))
+  (let* ((dense (make-dense :use-bias t :kernel (%rand (list in out) seed) :bias (%rand (list out) (+ seed 1))))
          (shape (append (make-list (1- rank) :initial-element 2) (list in)))
          (x (%rand shape seed))
          (y (call dense x))
@@ -478,7 +531,7 @@ tanh 近似の定義式（係数 0.044715d0）と一致する（相対誤差 1e-
 (test layers/layer-norm-clamps-a-negative-fast-variance
   "速い分散 E[x^2] - E[x]^2 は定数の行でも f32 の丸めで負になることがある（たとえば定数 6.29 の 8 要素は
 約 -7.6e-6）。Flax と同じく 0 で切るので、epsilon が極小でも NaN にならず、出力は有限（定数の行は bias のまま）。"
-  (let ((norm (make-layer-norm :scale (%ones '(8)) :bias (make-array 8 :element-type 'single-float
+  (let ((norm (make-layer-norm :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1) :scale (%ones '(8)) :bias (make-array 8 :element-type 'single-float
                                                                        :initial-element 0.5)
                                :epsilon 1f-30)))
     (dolist (c '(1.85 3.33 4.81 6.29 6.66))
@@ -523,7 +576,7 @@ tanh 近似の定義式（係数 0.044715d0）と一致する（相対誤差 1e-
 (test layers/dense-feature-mismatch-error-names-the-layer
   "入力の最後の軸の長さが kernel の in と違うとき、eager でも grad のトレースの中でも、エラーは dense の検査が出す
 （メッセージに dense と期待する長さが入っている）。"
-  (let* ((dense (make-dense :kernel (%rand '(4 3) 1) :bias (%rand '(3) 2)))
+  (let* ((dense (make-dense :use-bias t :kernel (%rand '(4 3) 1) :bias (%rand '(3) 2)))
          (bad (%rand '(2 5) 3))
          (loss (nabla:with-tracing (m x) (nabla:reduce-sum (call m x)))))
     (dolist (thunk (list (lambda () (call dense bad))
@@ -542,3 +595,309 @@ tanh 近似の定義式（係数 0.044715d0）と一致する（相対誤差 1e-
     (is (equal (mapcar #'zerop (%elements out32)) (mapcar #'zerop (%elements out64))))
     (is (some #'zerop (%elements out32)))
     (is (notevery #'zerop (%elements out32)))))
+
+;;; --- use_bias（issue #241）---
+
+(defun %dtype-keyword (array)
+  (if (eq 'double-float (array-element-type array)) :f64 :f32))
+
+(defun %zero-bias-twin (model)
+  "bias が NIL の MODEL（dense / dense-general）と同じ kernel で、bias が 0 の（use-bias が真の）モデル。"
+  (etypecase model
+    (dense (make-dense :kernel (dense-kernel model)
+                       :bias (nabla.nn::%filled (last (array-dimensions (dense-kernel model))) (%dtype-keyword (dense-kernel model)) 0)
+                       :use-bias t))
+    (dense-general (make-dense-general :kernel (dense-general-kernel model)
+                                       :bias (nabla.nn::%filled (nthcdr (dense-general-contract-axes model)
+                                                              (array-dimensions (dense-general-kernel model)))
+                                                      (%dtype-keyword (dense-general-kernel model)) 0)
+                                       :contract-axes (dense-general-contract-axes model) :use-bias t))))
+
+(def-layer-property layers/dense-without-bias-is-dense-with-zero-bias
+  "use-bias が偽の dense は、同じ kernel で bias が 0 の dense と同じ出力と kernel の勾配を返す。bias は NIL
+（空の部分木）で葉は kernel の 1 つだけ、チェックポイントのパス名は kernel のまま。bias のある dense との差は
+行ごとに bias そのもの（入力は rank 1 から 3）。"
+  (seed rank in out) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3)
+                            (uniform-integer :lo 1 :hi 5) (uniform-integer :lo 1 :hi 5))
+  (let* ((plain (init-dense (nabla:prng-key seed) in out :use-bias nil))
+         (twin (%zero-bias-twin plain))
+         (biased (make-dense :kernel (dense-kernel plain) :bias (%rand (list out) (+ seed 1)) :use-bias t))
+         (x (%rand (append (make-list (1- rank) :initial-element 2) (list in)) seed))
+         (ct (%rand (append (make-list (1- rank) :initial-element 2) (list out)) (+ seed 2)))
+         (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (call m x) ct))))
+         (grad (funcall (nabla:grad loss) plain x ct))
+         (twin-grad (funcall (nabla:grad loss) twin x ct)))
+    (and (null (dense-bias plain)) (not (dense-use-bias plain))
+         (equalp (call twin x) (call plain x))
+         (equal '("kernel") (nabla.nn:tree-paths plain))
+         (= 1 (length (nabla:tree-leaves grad)))
+         (null (dense-bias grad))
+         (equalp (dense-kernel twin-grad) (dense-kernel grad))
+         (let ((with (call biased x)) (without (call plain x)))
+           (loop for i below (array-total-size with)
+                 always (< (abs (- (row-major-aref with i) (row-major-aref without i)
+                                   (aref (dense-bias biased) (mod i out))))
+                           1d-5))))))
+
+(test layers/dense-use-bias-init-slots-and-misuse
+  "init-dense の use-bias の既定は真（bias は 0）。偽なら bias は NIL。use-bias は :static でスロットの最後。
+真偽値でない use-bias、use-bias が真なのに bias が NIL、偽なのに bias がある dense は dense の名前入りの error。"
+  (let ((with (init-dense (nabla:prng-key 1) 3 2))
+        (without (init-dense (nabla:prng-key 1) 3 2 :use-bias nil)))
+    (is (eq t (dense-use-bias with)))
+    (is (equal '(2) (array-dimensions (dense-bias with))))
+    (is (null (dense-bias without)))
+    (is (null (dense-use-bias without)))
+    (is (equalp (dense-kernel with) (dense-kernel without)) "use-bias は kernel の初期値に影響しない")
+    (is (equal '("kernel" "bias") (nabla.nn:tree-paths with)))
+    (is (equal '("kernel") (nabla.nn:tree-paths without)))
+    (is (equal '(("kernel" . :param) ("bias" . :param) ("use-bias" . :static)) (%slot-names 'dense)))
+    (is (not (nabla:treedef= (nabla:tree-structure with) (nabla:tree-structure without)))))
+  (flet ((names (thunk) (search "dense" (or (%error-message thunk) ""))))
+    (is (names (lambda () (init-dense (nabla:prng-key 1) 3 2 :use-bias 1))) "use-bias が真偽値でない")
+    (is (names (lambda () (call (make-dense :kernel (%rand '(3 2) 1) :bias nil :use-bias t) (%rand '(3) 2))))
+        "use-bias が真なのに bias が無い")
+    (is (names (lambda () (call (make-dense :kernel (%rand '(3 2) 1) :bias (%rand '(2) 1) :use-bias nil)
+                                (%rand '(3) 2))))
+        "use-bias が偽なのに bias がある")))
+
+;;; --- layer-norm の use_scale / use_bias / reduction_axes / feature_axes（issue #241）---
+
+(defun %ref-layer-norm (x reduce-axes epsilon)
+  "rank 3 の f64 の X を、REDUCE-AXES（0 以上の軸のリスト）で定まる群ごとに平均 0・分散 1（+ EPSILON）に
+正規化した配列（二重ループの素朴な参照実装。2 パスで平均と分散を取る）。"
+  (destructuring-bind (d0 d1 d2) (array-dimensions x)
+    (let ((groups (make-hash-table :test 'equal))
+          (y (make-array (array-dimensions x) :element-type 'double-float)))
+      (flet ((group-of (i j k)
+               (loop for axis below 3 for index in (list i j k) unless (member axis reduce-axes) collect index)))
+        (dotimes (i d0) (dotimes (j d1) (dotimes (k d2) (push (aref x i j k) (gethash (group-of i j k) groups)))))
+        (dotimes (i d0)
+          (dotimes (j d1)
+            (dotimes (k d2)
+              (let* ((values (gethash (group-of i j k) groups))
+                     (n (length values))
+                     (mean (/ (reduce #'+ values) n))
+                     (variance (/ (reduce #'+ (mapcar (lambda (v) (expt (- v mean) 2)) values)) n)))
+                (setf (aref y i j k) (/ (- (aref x i j k) mean) (sqrt (+ variance epsilon))))))))
+        y))))
+
+(defun %axes-from-mask (mask negative)
+  "MASK（1 から 7）のビットが立つ軸（0 1 2）のリスト。NEGATIVE が真なら負の添字（-3 -2 -1）で表す。"
+  (loop for axis below 3 when (logbitp axis mask) collect (if negative (- axis 3) axis)))
+
+(def-layer-property layers/layer-norm-matches-the-loop-reference-over-any-reduction-axes
+  "rank 3 の入力で、1 つ以上の任意の軸の部分集合（負の添字でも）を reduction-axes にした layer-norm（scale 1・bias 0）は、
+その軸で作った群ごとに平均 0・分散 1 に正規化する参照実装（f64）と一致する。feature-axes の既定（最後の軸）の
+scale / bias は軸の部分集合と独立。"
+  (seed d0 d1 d2 mask negative) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 4)
+                                       (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 4)
+                                       (uniform-integer :lo 1 :hi 7) (uniform-integer :lo 0 :hi 1))
+  (let* ((axes (%axes-from-mask mask (plusp negative)))
+         (norm (init-layer-norm (nabla:prng-key 0) d2 :dtype :f64 :reduction-axes axes))
+         (x (%rand (list d0 d1 d2) seed :f64)))
+    (allclose (call norm x) (%ref-layer-norm x (%axes-from-mask mask nil) 1d-6) :dtype :f64 :rtol 1d-9 :atol 1d-9)))
+
+(def-layer-property layers/layer-norm-scale-and-bias-follow-the-feature-axes
+  "feature-axes が最後の軸・中の軸・先頭と最後・後ろの 2 軸のとき、scale と bias の形は入力のその軸の大きさ
+（軸の昇順）で、出力は「scale・bias なしの出力 × scale[特徴の添字] + bias[特徴の添字]」と等しい。"
+  (seed d0 d1 d2 which) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 4)
+                               (uniform-integer :lo 2 :hi 4) (uniform-integer :lo 2 :hi 4)
+                               (uniform-integer :lo 0 :hi 3))
+  (let* ((feature-axes (nth which '((-1) (1) (0 2) (1 2))))
+         (positive (sort (mapcar (lambda (a) (if (minusp a) (+ a 3) a)) feature-axes) #'<))
+         (dims (list d0 d1 d2))
+         (sizes (mapcar (lambda (a) (nth a dims)) positive))
+         (plain (init-layer-norm (nabla:prng-key 0) sizes :dtype :f64 :reduction-axes '(0 1 2)
+                                                          :feature-axes feature-axes :use-scale nil :use-bias nil))
+         (full (make-layer-norm :scale (%rand sizes (+ seed 1) :f64) :bias (%rand sizes (+ seed 2) :f64)
+                                :epsilon 1d-6 :use-scale t :use-bias t :reduction-axes '(0 1 2)
+                                :feature-axes feature-axes))
+         (x (%rand dims seed :f64))
+         (base (call plain x))
+         (out (call full x)))
+    (and (equal sizes (array-dimensions (layer-norm-scale full)))
+         (loop for i below d0
+               always (loop for j below d1
+                            always (loop for k below d2
+                                         for feature = (mapcar (lambda (a) (nth a (list i j k))) positive)
+                                         always (< (abs (- (aref out i j k)
+                                                           (+ (* (aref base i j k)
+                                                                 (apply #'aref (layer-norm-scale full) feature))
+                                                              (apply #'aref (layer-norm-bias full) feature))))
+                                                   1d-9)))))))
+
+(def-layer-property layers/layer-norm-without-scale-or-bias-is-the-identity-scale-and-bias
+  "use-scale / use-bias が偽の layer-norm は、対応するパラメータが NIL（空の部分木）で、scale = 1・bias = 0 の
+layer-norm と同じ出力・同じ入力の勾配を返す。葉と checkpoint のパス名は残ったパラメータだけ（scale と bias の
+4 通りの組み合わせ）。"
+  (seed use-scale use-bias) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 0 :hi 1)
+                                   (uniform-integer :lo 0 :hi 1))
+  (let* ((features 5)
+         (norm (init-layer-norm (nabla:prng-key 0) features :use-scale (plusp use-scale) :use-bias (plusp use-bias)))
+         (twin (make-layer-norm :scale (nabla.nn::%filled (list features) :f32 1)
+                                :bias (nabla.nn::%filled (list features) :f32 0)
+                                :epsilon (layer-norm-epsilon norm) :use-scale t :use-bias t
+                                :reduction-axes '(-1) :feature-axes '(-1)))
+         (x (%rand (list 3 features) seed))
+         (ct (%rand (list 3 features) (+ seed 1)))
+         (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (call m x) ct))))
+         (grads (funcall (nabla:grad loss :argnums '(0 1)) norm x ct))
+         (twin-grads (funcall (nabla:grad loss :argnums '(0 1)) twin x ct)))
+    (and (eq (null (layer-norm-scale norm)) (zerop use-scale))
+         (eq (null (layer-norm-bias norm)) (zerop use-bias))
+         (eq (layer-norm-use-scale norm) (plusp use-scale))
+         (eq (layer-norm-use-bias norm) (plusp use-bias))
+         (equal (append (when (plusp use-scale) '("scale")) (when (plusp use-bias) '("bias")))
+                (nabla.nn:tree-paths norm))
+         (= (+ use-scale use-bias) (length (nabla:tree-leaves (first grads))))
+         (equalp (call twin x) (call norm x))
+         (equalp (second twin-grads) (second grads)))))
+
+(test layers/layer-norm-init-options-and-slots
+  "init-layer-norm の既定は Flax と同じ（use-scale / use-bias は真、reduction-axes と feature-axes は最後の軸）。
+reduction-axes と feature-axes は整数かそのリストで、重複は取り除いて :static に持つ。feature-axes が複数のとき features は
+各軸の大きさのリスト。scale と bias の形は features。"
+  (let ((norm (init-layer-norm (nabla:prng-key 1) 5)))
+    (is (eq t (layer-norm-use-scale norm)))
+    (is (eq t (layer-norm-use-bias norm)))
+    (is (equal '(-1) (layer-norm-reduction-axes norm)))
+    (is (equal '(-1) (layer-norm-feature-axes norm)))
+    (is (equal '("scale" "bias") (nabla.nn:tree-paths norm))))
+  (let ((norm (init-layer-norm (nabla:prng-key 1) '(3 4) :reduction-axes '(1 2 1) :feature-axes '(1 2))))
+    (is (equal '(1 2) (layer-norm-reduction-axes norm)))
+    (is (equal '(1 2) (layer-norm-feature-axes norm)))
+    (is (equal '(3 4) (array-dimensions (layer-norm-scale norm))))
+    (is (equal '(3 4) (array-dimensions (layer-norm-bias norm)))))
+  (is (equal '(2) (layer-norm-reduction-axes (init-layer-norm (nabla:prng-key 1) 5 :reduction-axes 2))))
+  (is (not (nabla:treedef= (nabla:tree-structure (init-layer-norm (nabla:prng-key 1) 5))
+                           (nabla:tree-structure (init-layer-norm (nabla:prng-key 1) 5 :reduction-axes '(0 -1))))))
+  (is (null (layer-norm-scale (init-layer-norm (nabla:prng-key 1) 5 :use-scale nil)))))
+
+(test layers/layer-norm-option-misuse-names-the-layer
+  "reduction-axes が空・整数でない・範囲外（rank 以上、-rank 未満）、feature-axes が範囲外か features の個数と合わない、
+use-scale / use-bias が真偽値でない、use-scale と scale が食い違う、scale や bias の形が入力の特徴の軸と合わないときは、
+layer-norm の名前と問題の引数の名前（reduction-axes / feature-axes / use-scale / scale / bias）を含む error。"
+  (flet ((says (thunk &rest words)
+           (let ((message (or (%error-message thunk) "")))
+             (every (lambda (word) (search word message)) (cons "layer-norm" words))))
+         (bare (&rest options) (apply #'init-layer-norm (nabla:prng-key 0) 4 :use-scale nil :use-bias nil options)))
+    (is (says (lambda () (bare :reduction-axes '())) "reduction-axes") "reduction-axes が空")
+    (is (says (lambda () (bare :reduction-axes 1.5)) "reduction-axes") "整数でない")
+    (is (says (lambda () (bare :feature-axes '(0 1))) "feature-axes") "features の個数と合わない")
+    (is (says (lambda () (init-layer-norm (nabla:prng-key 0) '(4 4) :feature-axes '(-1))) "feature-axes")
+        "features が多い")
+    (is (says (lambda () (init-layer-norm (nabla:prng-key 0) 4 :use-scale 1) ) "use-scale") "use-scale が真偽値でない")
+    (is (says (lambda () (init-layer-norm (nabla:prng-key 0) 4 :use-bias :no)) "use-bias") "use-bias が真偽値でない")
+    (is (says (lambda () (call (bare :reduction-axes 2) (%rand '(2 4) 1))) "reduction-axes")
+        "軸 2 は rank 2 の範囲外（rank 以上）")
+    (is (says (lambda () (call (bare :reduction-axes -3) (%rand '(2 4) 1))) "reduction-axes")
+        "軸 -3 は rank 2 の範囲外（-rank 未満）")
+    (is (says (lambda () (call (bare :feature-axes 3) (%rand '(2 3 4) 1))) "feature-axes") "feature-axes が範囲外")
+    (is (says (lambda () (call (bare :reduction-axes -2) (%rand '(4) 1))) "reduction-axes") "rank 1 に軸 -2")
+    (is (= 2 (length (array-dimensions (call (bare :reduction-axes -2) (%rand '(3 4) 1))))) "-rank ちょうどは通る")
+    (is (= 2 (length (array-dimensions (call (bare :reduction-axes 1) (%rand '(3 4) 1))))) "rank - 1 は通る")
+    ;; make-layer-norm で直接作ったモジュール: 整数の axes と重複は init と同じに扱い、空・整数でないものは error
+    (flet ((hand-made (reduction-axes feature-axes)
+             (make-layer-norm :scale (%rand '(4) 1) :bias (%rand '(4) 2) :epsilon 1f-6 :use-scale t :use-bias t
+                              :reduction-axes reduction-axes :feature-axes feature-axes)))
+      (is (equalp (call (hand-made -1 -1) (%rand '(2 4) 3)) (call (hand-made '(-1) '(-1)) (%rand '(2 4) 3)))
+          "整数の axes はリストと同じ")
+      (is (equalp (call (hand-made '(-1 1 1) '(-1 -1)) (%rand '(2 4) 3)) (call (hand-made '(-1 1) '(-1)) (%rand '(2 4) 3)))
+          "重複は取り除かれる")
+      (is (says (lambda () (call (hand-made '() '(-1)) (%rand '(2 4) 3))) "reduction-axes") "空の reduction-axes")
+      (is (says (lambda () (call (hand-made '(-1) '(1.5)) (%rand '(2 4) 3))) "feature-axes") "整数でない feature-axes")
+      (is (says (lambda () (call (hand-made '(-1 . 0) '(-1)) (%rand '(2 4) 3))) "reduction-axes") "ドット対"))
+    (let ((norm (init-layer-norm (nabla:prng-key 0) 4 :reduction-axes '(1 2) :feature-axes 2)))
+      (is (says (lambda () (call norm (%rand '(2 3 5) 1))) "scale") "scale の形が特徴の軸と合わない")
+      (is (= 3 (length (array-dimensions (call norm (%rand '(2 3 4) 1))))) "正しい入力は通る"))
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias (%rand '(5) 1) :epsilon 1f-6
+                                                :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "bias")
+        "bias の形が特徴の軸と合わない")
+    (is (says (lambda () (call (make-layer-norm :scale nil :bias (%rand '(4) 1) :epsilon 1f-6 :use-scale t
+                                                :use-bias t :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-scale" "scale が NIL")
+        "use-scale が真なのに scale が NIL")
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias nil :epsilon 1f-6
+                                                :use-scale t :use-bias t :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-bias" "bias が NIL")
+        "use-bias が真なのに bias が NIL")
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias (%rand '(4) 2) :epsilon 1f-6
+                                                :use-scale t :use-bias nil :reduction-axes '(-1)
+                                                :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-bias" "bias がある")
+        "use-bias が偽なのに bias がある")
+    (is (says (lambda () (call (make-layer-norm :scale (%rand '(4) 1) :bias nil :epsilon 1f-6 :use-scale nil
+                                                :use-bias nil :reduction-axes '(-1) :feature-axes '(-1))
+                               (%rand '(2 4) 1)))
+              "use-scale" "scale がある")
+        "use-scale が偽なのに scale がある")))
+
+;;; --- embedding の attend（issue #241）---
+
+(def-layer-property layers/embedding-attend-is-the-inner-product-with-every-row
+  "embedding-attend の出力 [... 語彙数] は、query [... features] と embedding の各行との内積（先頭の軸は rank 1 から 3、
+f64）。出力の形は query の最後の軸だけが語彙数に変わる。"
+  (seed rank vocab features) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3)
+                                    (uniform-integer :lo 1 :hi 6) (uniform-integer :lo 1 :hi 5))
+  (let* ((module (make-embedding :embedding (%rand (list vocab features) seed :f64)))
+         (table (embedding-embedding module))
+         (shape (append (make-list (1- rank) :initial-element 2) (list features)))
+         (query (%rand shape (+ seed 1) :f64))
+         (logits (embedding-attend module query)))
+    (and (equal (append (butlast shape) (list vocab)) (array-dimensions logits))
+         (loop for row below (floor (array-total-size query) features)
+               always (loop for v below vocab
+                            always (< (abs (- (row-major-aref logits (+ (* row vocab) v))
+                                              (loop for f below features
+                                                    sum (* (row-major-aref query (+ (* row features) f))
+                                                           (aref table v f)))))
+                                      1d-12))))))
+
+(def-layer-property layers/embedding-attend-of-a-looked-up-row-is-a-gram-row
+  "ids を引いた埋め込みを attend すると、各行は Gram 行列 E E^T の ids[i] 行（対称なので、i 番目の ids の行の
+j 番目 = j 番目の語彙の行の ids[i] 番目）。引きと attend が同じ重みを使っていること（重みの共有）を確かめる。"
+  (seed vocab features) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 6)
+                               (uniform-integer :lo 1 :hi 4))
+  (let* ((module (make-embedding :embedding (%rand (list vocab features) seed :f64)))
+         (ids (make-array 3 :element-type '(signed-byte 32)
+                            :initial-contents (list 0 (1- vocab) (mod seed vocab))))
+         (rows (embedding-attend module (call module ids)))
+         (everything (embedding-attend module (embedding-embedding module))))
+    (loop for i below 3
+          always (loop for v below vocab
+                       always (and (< (abs (- (aref rows i v) (aref everything (aref ids i) v))) 1d-12)
+                                   (< (abs (- (aref everything v (aref ids i)) (aref everything (aref ids i) v))) 1d-12))))))
+
+(test layers/embedding-attend-errors-and-gradients
+  "query の最後の軸が features と違う・rank 0 は embedding の名前入りの error。embedding への勾配は ct^T query
+（attend は embedding について線形）、query への勾配は ct embedding。"
+  (let* ((module (make-embedding :embedding (%rand '(5 3) 1)))
+         (query (%rand '(2 4 3) 2))
+         (ct (%rand '(2 4 5) 3))
+         (loss (nabla:with-tracing (m q ct) (nabla:reduce-sum (* (embedding-attend m q) ct))))
+         (grads (funcall (nabla:grad loss :argnums '(0 1)) module query ct)))
+    (flet ((names (thunk) (search "embedding" (or (%error-message thunk) ""))))
+      (is (names (lambda () (embedding-attend module (%rand '(2 4) 1)))) "最後の軸が合わない")
+      (is (names (lambda () (embedding-attend module (make-array '() :element-type 'single-float :initial-element 1.0))))
+          "rank 0"))
+    (let ((table-grad (embedding-embedding (first grads)))
+          (query-grad (second grads)))
+      (is (equal '(5 3) (array-dimensions table-grad)))
+      (is (equal '(2 4 3) (array-dimensions query-grad)))
+      (dotimes (v 5)
+        (dotimes (f 3)
+          (is (< (abs (- (aref table-grad v f)
+                         (loop for b below 2 sum (loop for tt below 4 sum (* (aref ct b tt v) (aref query b tt f))))))
+                 1d-5))))
+      (dotimes (b 2)
+        (dotimes (tt 4)
+          (dotimes (f 3)
+            (is (< (abs (- (aref query-grad b tt f)
+                           (loop for v below 5 sum (* (aref ct b tt v) (aref (embedding-embedding module) v f)))))
+                   1d-5))))))))

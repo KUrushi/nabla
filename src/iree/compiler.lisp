@@ -143,7 +143,8 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
                     (when cuda-arch
                       (list (format nil "--iree-cuda-target=~A" cuda-arch)))))))
 
-(defparameter *libm-f64-ops* '("exponential" "log" "tanh")
+(defparameter *libm-f64-ops* '("exponential" "log" "tanh"
+                               "exponential_minus_one" "log_plus_one" "sine" "cosine")
   "llvm-cpu が f64 のときに libm の呼び出しとして残す StableHLO の op 名
 （stablehlo. を除いたもの）。%needs-libm-p が使う。")
 
@@ -161,12 +162,12 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
 
 (defun %needs-libm-p (text)
   "StableHLO の TEXT（emit-stablehlo が出す pretty form）に、f64 の
-exp / log / tanh（*libm-f64-ops*）が1つでもあれば真を返す（f64 の log1p / expm1 は
-log と exp を使う式で出すので、これに当たる）。
+exp / log / tanh / expm1 / log1p / sin / cos（*libm-f64-ops*）が1つでもあれば真を返す。
 
 llvm-cpu はこれらの f64 版を多項式近似せず（MathTransformPass.cpp の近似・
-f32 展開は f32 以下の型だけが対象）libm の exp / log / tanh の呼び出しとして
-残す。既定の embedded ELF は iree-lld で -nostdlib にリンクするので
+f32 展開は f32 以下の型だけが対象）libm の exp / log / tanh / expm1 / log1p /
+sin / cos の呼び出しとして残す（expm1 / log1p / sin / cos は issue #223 で足した。
+IREE が未実行の環境で書いたので、Linux の IREE で確かめること）。既定の embedded ELF は iree-lld で -nostdlib にリンクするので
 undefined symbol になりコンパイルできない（issue #72）。そこで真のときだけ
 COMPILE-FLAGS の :system-library で system library を作らせ、読み込み時に
 プロセスの libm に解決させる。
@@ -179,10 +180,10 @@ ld.lld、無ければ ld を使い、-nostdlib -static -shared で呼ぶ。こ�
 ld.gold は拒否する。IREE の UnixLinkerTool.cpp のコメント）なので、実際には
 ld.lld が要る。固定コミットのリンカも使えない。そのため libm が要らない
 モジュールは従来どおり embedded ELF にし、この依存を f64 の
-exp / log / tanh を含むモジュールだけに閉じ込める。
+exp / log / tanh / expm1 / log1p / sin / cos を含むモジュールだけに閉じ込める。
 
 generic form（\"stablehlo.tanh\"(...)）は見ない。そこに f64 の
-exp / log / tanh があると、embedded ELF のリンクで失敗する。"
+exp / log / tanh / expm1 / log1p / sin / cos があると、embedded ELF のリンクで失敗する。"
   (with-input-from-string (stream text)
     (loop for line = (read-line stream nil)
           while line

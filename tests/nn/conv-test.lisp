@@ -36,7 +36,8 @@
 (defun %cfx-model (case)
   "ケースの kernel・bias と :config から conv を作る（make-conv は N 次元でも作れる）。"
   (destructuring-bind (&key strides padding kernel-dilation groups) (getf case :config)
-    (make-conv :kernel (%fx-array case "kernel") :bias (%fx-array case "bias")
+    (make-conv :use-bias (and (%fx-entry case "bias") t) :kernel (%fx-array case "kernel")
+               :bias (and (%fx-entry case "bias") (%fx-array case "bias"))
                  :strides strides
                  :padding (if (stringp padding) (intern padding :keyword) padding)
                  :kernel-dilation kernel-dilation :feature-group-count groups)))
@@ -48,7 +49,8 @@
   "畳み込みの f32 の許容誤差（allclose の既定、rtol 1e-5 / atol 1e-6。実測で Flax と一致する。bf16 だけ別）。")
 
 (defun %check-conv-case (name forward)
-  "ケース NAME で loss = sum(FORWARD(model, x) * ct) を作り、出力と勾配を Flax と比べる。"
+  "ケース NAME で loss = sum(FORWARD(model, x) * ct) を作り、出力と勾配を Flax と比べる（bias の無いケースは
+bias の勾配が無い）。"
   (let* ((case (%cfx-case name))
          (model (%cfx-model case))
          (x (%fx-array case "x"))
@@ -56,10 +58,12 @@
          (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (funcall forward m x) ct))))
          (grads (funcall (nabla:grad loss :argnums '(0 1)) model x ct))
          (actual (append (nabla:tree-leaves (first grads)) (list (second grads))))
-         (expected (list (%fx-array case "grad.kernel") (%fx-array case "grad.bias") (%fx-array case "grad.x"))))
+         (grad-names (append '("kernel") (when (%fx-entry case "bias") '("bias")) '("x")))
+         (expected (mapcar (lambda (label) (%fx-array case (concatenate 'string "grad." label))) grad-names)))
     (is (apply #'%close-f32 (funcall forward model x) (%fx-array case "out") *conv-tolerance*)
         "~A: 順伝播の出力が Flax と一致しない" name)
-    (loop for a in actual for e in expected for label in '("kernel" "bias" "x")
+    (is (= (length expected) (length actual)) "~A: 勾配の個数が違う" name)
+    (loop for a in actual for e in expected for label in grad-names
           do (is (apply #'%close-f32 a e *conv-tolerance*) "~A: ~A の勾配が Flax と一致しない" name label))))
 
 (test conv/forward-and-grads-match-flax
@@ -67,6 +71,13 @@
 明示の padding・グループ・depthwise・kernel の dilation・バッチ軸の無い入力・1次元）で、eager の出力と、
 kernel・bias・入力への勾配が一致する。"
   (dolist (name (%conv-case-names))
+    (%check-conv-case name (nabla:with-tracing (m x) (call m x)))))
+
+(test conv/without-bias-matches-flax
+  "Flax の nn.Conv(use_bias=False) のフィクスチャ（SAME・stride 2・グループ）で、出力と kernel・入力への勾配が一致する。
+bias の勾配は無い（bias は NIL）。フィクスチャの生成が要る（generate-conv.py の no-bias ケース）。"
+  (dolist (name '("no-bias" "no-bias-stride2-groups"))
+    (is (null (conv-bias (%cfx-model (%cfx-case name)))) "~A: bias が NIL でない" name)
     (%check-conv-case name (nabla:with-tracing (m x) (call m x)))))
 
 ;;; --- SAME の padding ---
@@ -125,7 +136,7 @@ VALID と明示のときは、実効 kernel が（padding を入れた）入力�
                     (0 :same)
                     (1 :valid)
                     (2 (list (list pad (mod (+ pad seed) 3)) (list (mod (+ pad 1) 3) pad)))))
-         (module (make-conv :kernel (%rand (list k1 k2 (floor channels groups) features) seed)
+         (module (make-conv :use-bias t :kernel (%rand (list k1 k2 (floor channels groups) features) seed)
                               :bias (%rand (list features) (+ seed 1))
                               :strides strides :padding padding :kernel-dilation dilation
                               :feature-group-count groups))
@@ -166,7 +177,7 @@ VALID と明示のときは、実効 kernel が（padding を入れた）入力�
   (seed n1 n2 k s d) (tuple (uniform-integer :lo 0 :hi 1000) (uniform-integer :lo 1 :hi 9)
                             (uniform-integer :lo 1 :hi 9) (uniform-integer :lo 1 :hi 5)
                             (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 2))
-  (let* ((module (make-conv :kernel (%rand (list k k 2 3) seed) :bias (%rand '(3) seed)
+  (let* ((module (make-conv :use-bias t :kernel (%rand (list k k 2 3) seed) :bias (%rand '(3) seed)
                               :strides (list s s) :padding :same :kernel-dilation (list d d)
                               :feature-group-count 1))
          (y (call module (%rand (list 1 n1 n2 2) seed))))
@@ -182,9 +193,9 @@ VALID と明示のときは、実効 kernel が（padding を入れた）入力�
          (flat (make-array (list in out) :element-type 'single-float
                                          :displaced-to kernel))
          (x (%rand (list 2 n1 n2 in) (+ seed 2)))
-         (conv (make-conv :kernel kernel :bias bias :strides '(1 1) :padding :valid
+         (conv (make-conv :use-bias t :kernel kernel :bias bias :strides '(1 1) :padding :valid
                             :kernel-dilation '(1 1) :feature-group-count 1))
-         (dense (make-dense :kernel (let ((copy (make-array (list in out) :element-type 'single-float)))
+         (dense (make-dense :use-bias t :kernel (let ((copy (make-array (list in out) :element-type 'single-float)))
                                       (dotimes (i (* in out) copy) (setf (row-major-aref copy i) (row-major-aref flat i))))
                             :bias bias)))
     (allclose (call conv x) (call dense x) :dtype :f32 :rtol 1d-5 :atol 1d-5)))
@@ -223,7 +234,7 @@ VALID と明示のときは、実効 kernel が（padding を入れた）入力�
     (is (equal '(16) (array-dimensions (conv-bias module))))
     (is (every #'zerop (%elements (conv-bias module))))
     (is (equal '(("kernel" . :param) ("bias" . :param) ("strides" . :static) ("padding" . :static)
-                 ("kernel-dilation" . :static) ("feature-group-count" . :static))
+                 ("kernel-dilation" . :static) ("feature-group-count" . :static) ("use-bias" . :static))
                (%slot-names 'conv)))))
 
 (test conv/init-defaults-and-normalized-options
@@ -272,14 +283,14 @@ ceil(入力 / stride) になる。"
          (bias (%rand '(4) 2))
          (x (%rand '(2 7 6 2) 3)))
     (dolist (padding '(:same :valid))
-      (let ((short (make-conv :kernel kernel :bias bias :strides 2 :padding padding :kernel-dilation 1
+      (let ((short (make-conv :use-bias t :kernel kernel :bias bias :strides 2 :padding padding :kernel-dilation 1
                               :feature-group-count 1))
-            (full (make-conv :kernel kernel :bias bias :strides '(2 2) :padding padding
+            (full (make-conv :use-bias t :kernel kernel :bias bias :strides '(2 2) :padding padding
                              :kernel-dilation '(1 1) :feature-group-count 1)))
         (is (equalp (call full x) (call short x)))
         (is (equal (array-dimensions (call full x)) (array-dimensions (call short x))))))
     (is (equal '(2 4 3 4)
-               (array-dimensions (call (make-conv :kernel kernel :bias bias :strides 2 :padding :same
+               (array-dimensions (call (make-conv :use-bias t :kernel kernel :bias bias :strides 2 :padding :same
                                                   :kernel-dilation 1 :feature-group-count 1)
                                        x))))))
 
@@ -324,21 +335,21 @@ dtype が不正でも error。VALID で kernel が入力より大きいときも
     (%is-conv-error (call module (%rand '(5 3) 1)))
     (%is-conv-error (call module (%rand '(2 2 5 5 3) 1)))
     ;; bias の長さが出力のチャネル数と違う
-    (%is-conv-error (call (make-conv :kernel (conv-kernel module) :bias (%rand '(5) 1) :strides '(1 1)
+    (%is-conv-error (call (make-conv :use-bias t :kernel (conv-kernel module) :bias (%rand '(5) 1) :strides '(1 1)
                                      :padding :same :kernel-dilation '(1 1) :feature-group-count 1)
                           (%rand '(2 5 5 3) 1)))
     ;; kernel の rank が 3 未満
-    (%is-conv-error (call (make-conv :kernel (%rand '(3 4) 1) :bias (%rand '(4) 1) :strides 1
+    (%is-conv-error (call (make-conv :use-bias t :kernel (%rand '(3 4) 1) :bias (%rand '(4) 1) :strides 1
                                      :padding :same :kernel-dilation 1 :feature-group-count 1)
                           (%rand '(5 3) 1)))
     ;; hand-built で正規化できない値
     (let ((bad-strides (%error-text (lambda ()
-                                      (call (make-conv :kernel (conv-kernel module) :bias (conv-bias module)
+                                      (call (make-conv :use-bias t :kernel (conv-kernel module) :bias (conv-bias module)
                                                        :strides 0 :padding :same :kernel-dilation 1
                                                        :feature-group-count 1)
                                             (%rand '(2 5 5 3) 1)))))
           (bad-dilation (%error-text (lambda ()
-                                       (call (make-conv :kernel (conv-kernel module) :bias (conv-bias module)
+                                       (call (make-conv :use-bias t :kernel (conv-kernel module) :bias (conv-bias module)
                                                         :strides 1 :padding :same :kernel-dilation 0
                                                         :feature-group-count 1)
                                              (%rand '(2 5 5 3) 1))))))
@@ -367,7 +378,7 @@ dtype が不正でも error。VALID で kernel が入力より大きいときも
   (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 0 :hi 1)
          (uniform-integer :lo 1 :hi 2) (uniform-integer :lo 0 :hi 1))
   (let* ((groups (expt 2 group-exponent))
-         (module (make-conv :kernel (%rand (list 3 3 (floor 4 groups) 4) seed) :bias (%rand '(4) (1+ seed))
+         (module (make-conv :use-bias t :kernel (%rand (list 3 3 (floor 4 groups) 4) seed) :bias (%rand '(4) (1+ seed))
                               :strides (list stride stride) :padding (if (zerop mode) :same :valid)
                               :kernel-dilation '(1 1) :feature-group-count groups))
          (images (%rand (list batch 6 5 4) (+ seed 2)))
@@ -396,7 +407,7 @@ dtype が不正でも error。VALID で kernel が入力より大きいときも
 (test conv/per-example-gradients-through-vmap-of-grad-match-per-image-grads
   "vmap (grad loss) :in-axes (nil 0 0)（モデルはバッチしない、画像と余接線はバッチする。#200）で得た、モデルと同じ
 構造の勾配の葉（kernel と bias）の先頭にバッチ軸がつき、各行は画像を単独に grad した勾配と一致する。"
-  (let* ((module (make-conv :kernel (%rand '(3 3 2 4) 1) :bias (%rand '(4) 2) :strides '(2 1)
+  (let* ((module (make-conv :use-bias t :kernel (%rand '(3 3 2 4) 1) :bias (%rand '(4) 2) :strides '(2 1)
                             :padding :same :kernel-dilation '(1 1) :feature-group-count 1))
          (images (%rand '(3 6 5 2) 3))
          (cts (%rand '(3 3 5 4) 4))
@@ -410,3 +421,91 @@ dtype が不正でも error。VALID で kernel が入力より大きいときも
       (let ((single (funcall grad module (%row-slice images b) (%row-slice cts b))))
         (is (every (lambda (batched-leaf leaf) (%close-f32 (%row-slice batched-leaf b) leaf))
                    (nabla:tree-leaves batched) (nabla:tree-leaves single)))))))
+
+;;; --- use_bias（issue #241）---
+
+(def-conv-property conv/without-bias-is-the-zero-bias-conv
+  "use-bias が偽の conv（任意の stride・dilation・padding・グループ・バッチ軸の有無）は、同じ kernel で bias が 0 の
+conv と同じ出力と kernel・入力の勾配を返す。bias は NIL で、葉は kernel の 1 つだけ（チェックポイントのパス名は kernel）。
+bias のある conv との差はチャネルごとに bias そのもの。"
+  (seed n1 n2 k1 k2 s1 s2 mode groups-exponent)
+  (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 3 :hi 7) (uniform-integer :lo 3 :hi 7)
+         (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 1 :hi 3)
+         (uniform-integer :lo 1 :hi 3) (uniform-integer :lo 0 :hi 1) (uniform-integer :lo 0 :hi 1))
+  (let* ((groups (expt 2 groups-exponent))
+         (plain (init-conv (nabla:prng-key seed) 4 4 (list k1 k2) :strides (list s1 s2)
+                                                                  :padding (if (zerop mode) :same :valid)
+                                                                  :feature-group-count groups :use-bias nil))
+         (twin (make-conv :kernel (conv-kernel plain) :bias (nabla.nn::%filled '(4) :f32 0) :strides (conv-strides plain)
+                          :padding (conv-padding plain) :kernel-dilation (conv-kernel-dilation plain)
+                          :feature-group-count groups :use-bias t))
+         (biased (make-conv :kernel (conv-kernel plain) :bias (%rand '(4) (+ seed 1))
+                            :strides (conv-strides plain) :padding (conv-padding plain)
+                            :kernel-dilation (conv-kernel-dilation plain) :feature-group-count groups :use-bias t))
+         (x (%rand (list 2 n1 n2 4) (+ seed 2)))
+         (y (call plain x))
+         (ct (%rand (array-dimensions y) (+ seed 3)))
+         (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (call m x) ct))))
+         (grads (funcall (nabla:grad loss :argnums '(0 1)) plain x ct))
+         (twin-grads (funcall (nabla:grad loss :argnums '(0 1)) twin x ct))
+         (with (call biased x)))
+    (and (null (conv-bias plain)) (not (conv-use-bias plain))
+         (equalp y (call twin x))
+         (equal '("kernel") (nabla.nn:tree-paths plain))
+         (= 1 (length (nabla:tree-leaves (first grads))))
+         (null (conv-bias (first grads)))
+         (equalp (conv-kernel (first twin-grads)) (conv-kernel (first grads)))
+         (equalp (second twin-grads) (second grads))
+         (loop for i below (array-total-size y)
+               always (< (abs (- (row-major-aref with i) (row-major-aref y i)
+                                 (aref (conv-bias biased) (mod i 4))))
+                         1d-5)))))
+
+(test conv/use-bias-init-slots-unbatched-and-misuse
+  "init-conv の use-bias の既定は真。偽なら bias は NIL でパス名は kernel だけ。バッチ軸の無い入力でも bias なしで動く。
+真偽値でない use-bias、use-bias と bias が食い違う conv は conv の名前入りの error。"
+  (let ((with (init-conv (nabla:prng-key 1) 3 4 '(3 3)))
+        (without (init-conv (nabla:prng-key 1) 3 4 '(3 3) :use-bias nil)))
+    (is (eq t (conv-use-bias with)))
+    (is (null (conv-use-bias without)))
+    (is (null (conv-bias without)))
+    (is (equalp (conv-kernel with) (conv-kernel without)))
+    (is (equal '("kernel" "bias") (nabla.nn:tree-paths with)))
+    (is (equal '("kernel") (nabla.nn:tree-paths without)))
+    (is (equal '(5 6 4) (array-dimensions (call without (%rand '(5 6 3) 2))))))
+  (flet ((names (thunk) (search "conv" (or (%error-message thunk) ""))))
+    (is (names (lambda () (init-conv (nabla:prng-key 1) 3 4 '(3 3) :use-bias 0))))
+    (is (names (lambda () (call (make-conv :kernel (%rand '(3 3 3 4) 1) :bias nil :strides '(1 1) :padding :same
+                                           :kernel-dilation '(1 1) :feature-group-count 1 :use-bias t)
+                                (%rand '(1 5 5 3) 2)))))
+    (is (names (lambda () (call (make-conv :kernel (%rand '(3 3 3 4) 1) :bias (%rand '(4) 1) :strides '(1 1)
+                                           :padding :same :kernel-dilation '(1 1) :feature-group-count 1
+                                           :use-bias nil)
+                                (%rand '(1 5 5 3) 2)))))))
+
+;;; --- 因果畳み込みは明示の padding で書ける（Flax の CAUSAL を持たない代わり。issue #241、README）---
+
+(def-conv-property conv/explicit-left-padding-makes-a-causal-convolution
+  "1 次元の conv に明示の padding ((k-1) d 0)（Flax の CAUSAL と同じ左だけの padding。d は kernel の dilation）を渡すと、
+出力の長さは入力と同じで、位置 t の出力は t より後の入力を変えても変わらない。t の入力を変えると t の出力は変わる。"
+  (seed n k d) (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 3 :hi 9)
+                      (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 2))
+  (let* ((module (init-conv (nabla:prng-key seed) 2 3 (list k) :kernel-dilation d
+                                                             :padding (list (list (* (1- k) d) 0))))
+         (x (%rand (list 1 n 2) seed))
+         (t0 (floor n 2))
+         (changed-after (let ((y (make-array (list 1 n 2) :element-type 'single-float)))
+                          (dotimes (i (array-total-size x) y)
+                            (setf (row-major-aref y i)
+                                  (if (> (floor i 2) t0) (+ 1.5 (row-major-aref x i)) (row-major-aref x i))))))
+         (changed-at (let ((y (make-array (list 1 n 2) :element-type 'single-float)))
+                       (dotimes (i (array-total-size x) y)
+                         (setf (row-major-aref y i)
+                               (if (= (floor i 2) t0) (+ 1.5 (row-major-aref x i)) (row-major-aref x i))))))
+         (out (call module x))
+         (after (call module changed-after))
+         (at (call module changed-at)))
+    (and (equal (list 1 n 3) (array-dimensions out))
+         (loop for pos from 0 to t0
+               always (loop for c below 3 always (= (aref out 0 pos c) (aref after 0 pos c))))
+         (loop for c below 3 thereis (/= (aref out 0 t0 c) (aref at 0 t0 c))))))

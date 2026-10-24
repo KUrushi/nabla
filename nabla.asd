@@ -444,6 +444,8 @@
                (:file "tests/iree/pytree-control-test")
                ;; local-task device の入力 162 個以上のバグの回避（issue #199）
                (:file "tests/iree/input-limit-test")
+               ;; stablehlo.if の枝が入力を素通しすると落ちる IREE のバグの回避（issue #226）
+               (:file "tests/iree/cond-passthrough-test")
                ;; 2層 MLP の学習 end-to-end（issue #88）
                (:file "tests/iree/mlp-train-test")
                ;; ベンチマークスクリプトを小さな設定で1回走らせる（issue #89）

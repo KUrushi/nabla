@@ -366,15 +366,17 @@ differ: not restored to SBCL's own handler. output:~%~A"
                (compile-flags :cuda :cuda-arch "sm_80" :system-library t)))))
 
 (fiveam:test (compiler/needs-libm-p/only-f64-transcendentals :suite :nabla.small)
-  "単項演算1つ（- / exp / log / tanh / log1p / expm1）を浮動小数点の dtype でトレースした
+  "単項演算1つ（- / exp / log / tanh / expm1 / log1p / sin / cos）を浮動小数点の dtype でトレースした
 graph の emit-stablehlo の結果に %needs-libm-p が真を返すのは、dtype が
-:f64 で演算が exp / log / tanh / log1p / expm1 のときだけ（issue #223）。"
+:f64 で演算が - 以外のときだけ。"
   (let ((ops (list (cons :neg (nb:with-tracing (a) (- a)))
                    (cons :exp (nb:with-tracing (a) (exp a)))
                    (cons :log (nb:with-tracing (a) (log a)))
                    (cons :tanh (nb:with-tracing (a) (tanh a)))
+                   (cons :expm1 (nb:with-tracing (a) (nb:expm1 a)))
                    (cons :log1p (nb:with-tracing (a) (nb:log1p a)))
-                   (cons :expm1 (nb:with-tracing (a) (nb:expm1 a))))))
+                   (cons :sin (nb:with-tracing (a) (sin a)))
+                   (cons :cos (nb:with-tracing (a) (cos a))))))
     (is (check-it (generator (tuple (array-spec :dtypes '(:f32 :f64 :f16 :bf16) :max-rank 3 :max-dim 4)
                                      (uniform-integer :lo 0 :hi (1- (length ops)))))
                   (lambda (args)
@@ -384,7 +386,7 @@ graph の emit-stablehlo の結果に %needs-libm-p が真を返すのは、dtyp
                                (text (nb:emit-stablehlo (nb:trace-to-graph fn (list aval)))))
                           (eq (and (nabla.iree::%needs-libm-p text) t)
                               (and (eq (array-spec-dtype spec) :f64)
-                                   (member op-name '(:exp :log :tanh :log1p :expm1))
+                                   (member op-name '(:exp :log :tanh :expm1 :log1p :sin :cos))
                                    t))))))))))
 
 (define-iree-test compiler/compiler-revision/mentions-locked-commit

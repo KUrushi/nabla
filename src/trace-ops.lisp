@@ -393,10 +393,23 @@ rank 0 で SHAPE が rank 0 でなければ :BROADCAST-IN-DIM で SHAPE まで
 (defmethod %t-rsqrt ((a tracer))
   (%trace-op-tracer :rsqrt a))
 
-;;; --- %t-log1p / %t-expm1（issue #223）。 ---
+;;; --- %t-expm1 / %t-log1p / %t-sin / %t-cos（issue #223）。数値には、eager の要素関数と
+;;; 同じ計算（%EXPM1-ELEMENT など。CL に expm1 / log1p は無い）を使う。 ---
+
+(defgeneric %t-expm1 (a)
+  (:documentation "EXPM1(A) = exp(A) - 1（トレース対象の (expm1 a)）。"))
+
+(defmethod %t-expm1 ((a real))
+  (%trace-op-real (lambda (x) (with-ieee-arithmetic (%expm1-element (float x)))) a))
+
+(defmethod %t-expm1 ((a array))
+  (%trace-op-array :expm1 a))
+
+(defmethod %t-expm1 ((a tracer))
+  (%trace-op-tracer :expm1 a))
 
 (defgeneric %t-log1p (a)
-  (:documentation "LOG(1 + A)（トレース対象の (nabla:log1p a)）。"))
+  (:documentation "LOG1P(A) = log(1 + A)（トレース対象の (log1p a)）。"))
 
 (defmethod %t-log1p ((a real))
   (%trace-op-real (lambda (x) (with-ieee-arithmetic (%log1p-element (float x)))) a))
@@ -407,17 +420,29 @@ rank 0 で SHAPE が rank 0 でなければ :BROADCAST-IN-DIM で SHAPE まで
 (defmethod %t-log1p ((a tracer))
   (%trace-op-tracer :log1p a))
 
-(defgeneric %t-expm1 (a)
-  (:documentation "EXP(A) - 1（トレース対象の (nabla:expm1 a)）。"))
+(defgeneric %t-sin (a)
+  (:documentation "SIN(A)（トレース対象の (sin a)）。"))
 
-(defmethod %t-expm1 ((a real))
-  (%trace-op-real (lambda (x) (with-ieee-arithmetic (%expm1-element (float x)))) a))
+(defmethod %t-sin ((a real))
+  (%trace-op-real #'sin a))
 
-(defmethod %t-expm1 ((a array))
-  (%trace-op-array :expm1 a))
+(defmethod %t-sin ((a array))
+  (%trace-op-array :sin a))
 
-(defmethod %t-expm1 ((a tracer))
-  (%trace-op-tracer :expm1 a))
+(defmethod %t-sin ((a tracer))
+  (%trace-op-tracer :sin a))
+
+(defgeneric %t-cos (a)
+  (:documentation "COS(A)（トレース対象の (cos a)）。"))
+
+(defmethod %t-cos ((a real))
+  (%trace-op-real #'cos a))
+
+(defmethod %t-cos ((a array))
+  (%trace-op-array :cos a))
+
+(defmethod %t-cos ((a tracer))
+  (%trace-op-tracer :cos a))
 
 ;;; --- %t-tanh: TANH(A)（トレース対象の (tanh a)）。 ---
 
