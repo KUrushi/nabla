@@ -57,6 +57,15 @@ elif shape == "concat-tanh":
     body.append(f"%c = stablehlo.concatenate " + ", ".join(f"%a{i}" for i in range(n)) + f", dim = 0 : ({', '.join([t]*n)}) -> {rt}")
     body.append(f"%h = stablehlo.tanh %c : {rt}")
     ret = "%h"
+elif shape == "slice-chain":
+    args = f"%big: tensor<{n}x{w}xf32>"
+    for i in range(n):
+        body.append(f"%q{i} = stablehlo.slice %big [{i}:{i+1}, 0:{w}] : (tensor<{n}x{w}xf32>) -> tensor<1x{w}xf32>")
+        body.append(f"%a{i} = stablehlo.reshape %q{i} : (tensor<1x{w}xf32>) -> {t}")
+    body.append(f"%r1 = stablehlo.add %a0, %a1 : {t}")
+    for i in range(2, n):
+        body.append(f"%r{i} = stablehlo.add %r{i-1}, %a{i} : {t}")
+    ret, rt = f"%r{n-1}", t
 elif shape == "map":
     for i in range(n):
         body.append(f"%m{i} = stablehlo.tanh %a{i} : {t}")
@@ -77,6 +86,7 @@ try() { # shape n width flags...
     return
   fi
   local inputs=(); for ((j = 0; j < n; j++)); do inputs+=("--input=${w}xf32=1"); done
+  if [[ $shape == slice-chain ]]; then inputs=("--input=${n}x${w}xf32=1"); fi
   local out=""
   for dev in local-task local-sync; do
     local o code=0
@@ -87,7 +97,7 @@ try() { # shape n width flags...
   printf 'RESULT %-12s n=%-4s w=%-5s flags=[%s]%s\n' "$shape" "$n" "$w" "$*" "$out"
 }
 
-"$C" --version | sed -n 2p
+part1() { # 1 回目の実験（済み）
 for shape in chain chain-mul tree loss reduce-chain concat concat-tanh map; do
   for n in 8 15 16 17 20 24 30 31 32 33 34 40 64 100 160; do
     try "$shape" "$n" 3
@@ -118,4 +128,55 @@ echo "=== passes that touch dispatch regions (chain n=40)"
 grep -n 'IR Dump After' "$W/ir.txt" | awk -F'IR Dump After ' '{print $2}' | uniq | head -150
 echo "--- first dump containing flow.dispatch.region"
 awk '/IR Dump After/{hdr=$0} /flow.dispatch.region/{print hdr; exit}' "$W/ir.txt"
+}
+
+"$C" --version | sed -n 2p
+NOFUSE=--iree-dispatch-creation-fuse-multi-use=false
+for n in 31 32 40 41 48 64 100 160 170; do try chain "$n" 3; done
+for n in 16 17 31 32 40 170; do try slice-chain "$n" 3; try slice-chain "$n" 3 $NOFUSE; done
+for n in 200 300 1000; do try chain "$n" 3 $NOFUSE; done
+
+operand_counts() { grep 'flow.dispatch @' "$1" | awk -F'(' '{print $2}' | awk -F')' '{print gsub(/%/,"")}'; }
+count_dispatches() { # file flags...
+  local f=$1; shift
+  "$C" --iree-hal-target-device=local --iree-hal-local-target-device-backends=llvm-cpu --iree-input-type=stablehlo \
+       --iree-input-demote-f64-to-f32=false "$@" --compile-to=flow "$f" -o "$W/f.mlir" 2>&1 | head -3
+  echo "dispatches=$(grep -c 'flow.dispatch @' "$W/f.mlir") max-operands=$(operand_counts "$W/f.mlir" | sort -n | tail -1)"
+}
+gen chain 170 3 > "$W/c170.mlir"
+echo "=== chain 170 dispatch operand counts"
+"$C" --iree-hal-target-device=local --iree-hal-local-target-device-backends=llvm-cpu --compile-to=flow "$W/c170.mlir" -o "$W/f.mlir"
+operand_counts "$W/f.mlir" | tr '\n' ' '; echo
+
+export CL_SOURCE_REGISTRY="$PWD/:${NABLA_LISP_DEPS}//:"
+TMP_EXP_TEXT_OUT="$W/tr.mlir" sbcl --non-interactive --load scripts/tmp-binding-experiment.lisp 2>&1 | grep -a '^EXP'
+echo "=== transformer step dispatches default"; count_dispatches "$W/tr.mlir"
+echo "=== transformer step dispatches $NOFUSE"; count_dispatches "$W/tr.mlir" $NOFUSE
+NABLA_TMP_IREE_EXTRA_FLAGS=$NOFUSE sbcl --non-interactive --load scripts/tmp-binding-experiment.lisp 2>&1 | grep -a '^EXP'
+sbcl --non-interactive --load scripts/tmp-binding-experiment.lisp 2>&1 | grep -a '^EXP transformer'
+NABLA_TMP_IREE_EXTRA_FLAGS=$NOFUSE sbcl --non-interactive --load scripts/tmp-binding-experiment.lisp 2>&1 | grep -a '^EXP transformer'
+
+echo "=== bench default"
+scripts/bench-backends.sh --backends iree-local --configs small,medium,large --steps 100 --reps 3 2>&1 | tail -25
+echo "=== bench $NOFUSE"
+NABLA_TMP_IREE_EXTRA_FLAGS=$NOFUSE scripts/bench-backends.sh --backends iree-local --configs small,medium,large --steps 100 --reps 3 2>&1 | tail -25
+
+race() { # file runs flags...
+  local f=$1 runs=$2; shift 2
+  local args=() line
+  while IFS= read -r line; do args+=("${line#// INPUT: }"); done < <(grep '^// INPUT: ' "docs/iree-repros/$f")
+  "$C" --iree-hal-target-device=local --iree-hal-local-target-device-backends=llvm-cpu "$@" "docs/iree-repros/$f" -o "$W/r.vmfb" || { echo "compile fail $f"; return; }
+  local ref; ref=$("$R" --device=local-sync --module="$W/r.vmfb" --function=main "${args[@]}" 2>&1)
+  local bad=0 i cur
+  for ((i = 0; i < runs; i++)); do
+    cur=$("$R" --device=local-task --module="$W/r.vmfb" --function=main "${args[@]}" 2>&1) || true
+    [[ "$cur" == "$ref" ]] || bad=$((bad + 1))
+  done
+  echo "RACE $f flags=[$*] mismatches=$bad/$runs"
+}
+pids=(); for ((k = 0; k < $(nproc); k++)); do yes >/dev/null & pids+=($!); done
+for f in nested-scan-ys-barrier-race.mlir nested-scan-ys-no-barrier.mlir nested-scan-ys-if-race.mlir nested-scan-ys-if-no-barrier.mlir; do
+  race $f 1500; race $f 1500 $NOFUSE
+done
+kill "${pids[@]}" 2>/dev/null
 rm -rf "$W"

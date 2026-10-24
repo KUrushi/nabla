@@ -128,6 +128,9 @@ CLAUDE.md の jit キャッシュキー（関数の同一性 + aval + 静的引�
 コンパイルターゲット）はこれを含まないので、そのままだとキャッシュキーに
 現れない「隠れた入力」になる。iree-lld を後から追加・削除する運用がある間は、
 jit の実装側でこれをキーに含めるか、プロセス起動時に固定するかを決めること。"
+  (append
+   (let ((tmp (uiop:getenv "NABLA_TMP_IREE_EXTRA_FLAGS"))) ; TEMP（#264 の実験）。消す
+     (and tmp (plusp (length tmp)) (list tmp)))
   (ecase target
     (:local (append (list "--iree-input-type=stablehlo"
                            "--iree-input-demote-f64-to-f32=false"
@@ -141,7 +144,7 @@ jit の実装側でこれをキーに含めるか、プロセス起動時に固�
                           "--iree-input-demote-f64-to-f32=false"
                           "--iree-hal-target-device=cuda")
                     (when cuda-arch
-                      (list (format nil "--iree-cuda-target=~A" cuda-arch)))))))
+                      (list (format nil "--iree-cuda-target=~A" cuda-arch))))))))
 
 (defparameter *libm-f64-ops* '("exponential" "log" "tanh"
                                "exponential_minus_one" "log_plus_one" "sine" "cosine")

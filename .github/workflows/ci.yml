@@ -87,11 +87,10 @@ jobs:
         run: scripts/fetch-pjrt.sh
 
       - name: Run default test suite (small + medium)
-        if: false
         run: |
           echo "started at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           SECONDS=0
-          scripts/run-tests.sh
+          NABLA_TMP_IREE_EXTRA_FLAGS=--iree-dispatch-creation-fuse-multi-use=false scripts/run-tests.sh
           echo "run-tests.sh took ${SECONDS}s. finished at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
       - name: Run nabla-mutate's own test suite
