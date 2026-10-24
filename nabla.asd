@@ -579,7 +579,9 @@
                ;; multi-head attention（issue #208）
                (:file "src/nn/attention")
                ;; conv レイヤー（issue #207）
-               (:file "src/nn/conv")))
+               (:file "src/nn/conv")
+               ;; batch-norm と状態を更新して返す call の規約（issue #260）
+               (:file "src/nn/batch-norm")))
 
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
@@ -617,5 +619,8 @@
                ;; conv レイヤー（issue #207）
                (:file "tests/nn/conv-test")
                (:file "tests/nn/conv-iree-test")
+               ;; batch-norm（issue #260）
+               (:file "tests/nn/batch-norm-test")
+               (:file "tests/nn/batch-norm-iree-test")
                ;; README のチュートリアル（issue #210。examples/tutorial.lisp を load し、README のコードブロックと突き合わせる）
                (:file "tests/nn/tutorial-test")))
