@@ -104,6 +104,35 @@
     (dotimes (i (array-total-size a) result)
       (setf (row-major-aref result i) (/ 1d0 (sqrt (coerce (row-major-aref a i) 'double-float)))))))
 
+;; issue #223。expm1 / log1p は素朴な別の式（exp / log を使う）。x が小さいときの精度は
+;; この式では確かめられないので、別に級数との比較（tests/primitives/unary-test.lisp）で見る。
+(defun reference-expm1 (a)
+  "EXP(A) - 1（要素ごと）を返す。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (- (exp (coerce (row-major-aref a i) 'double-float)) 1d0)))))
+
+;; issue #223
+(defun reference-log1p (a)
+  "LOG(1 + A)（要素ごと）を返す。A の要素はすべて -1 より大きいこと。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (log (+ 1d0 (coerce (row-major-aref a i) 'double-float)))))))
+
+;; issue #223
+(defun reference-sin (a)
+  "SIN(A)（要素ごと）を返す。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (sin (coerce (row-major-aref a i) 'double-float))))))
+
+;; issue #223
+(defun reference-cos (a)
+  "COS(A)（要素ごと）を返す。"
+  (let ((result (make-array (array-dimensions a) :element-type 'double-float)))
+    (dotimes (i (array-total-size a) result)
+      (setf (row-major-aref result i) (cos (coerce (row-major-aref a i) 'double-float))))))
+
 ;; issue #31 p2
 (defun reference-max (a b)
   "MAX(A, B)（要素ごとの大きい方）を返す。A と B は同じ shape を持つこと。
@@ -341,6 +370,24 @@ BATCH-SUBS[i] を、FREE-DIMS[i] 番目に FREE-SUBS[i] を、CONTRACT-DIMS[i]
                   (with-open-file (stream (asdf:system-relative-pathname
                                            "nabla" "tests/fixtures/sqrt/jax-sqrt.lisp"))
                     (read stream))))))
+    (loop for row in rows
+          when (eq (first row) dtype) collect (rest row))))
+
+(defun load-unary-jax-fixture (name dtype)
+  "tests/fixtures/unary/NAME（\"jax-expm1-log1p.lisp\" または \"jax-sin-cos.lisp\"、issue #223）の
+うち DTYPE の行を (入力 出力1 出力2)（すべてビットパターンの整数）のリストで返す。行の形は
+sqrt のフィクスチャと同じなので、sqrt-fixture-input-array / sqrt-fixture-match-p で扱える。
+ファイルが無ければ（生成前は）、ファイル名を挙げたエラーでそのテストだけが失敗する
+（OPEN の FILE-DOES-NOT-EXIST は FiveAM がレポートを出せず、スイート全体が落ちるため）。"
+  (let* ((path (asdf:system-relative-pathname
+                "nabla" (format nil "tests/fixtures/unary/~A" name)))
+         (rows (progn
+                 (unless (probe-file path)
+                   (error "JAX のフィクスチャ ~A がない。tests/fixtures/unary/generate.py で生成する" name))
+                 (with-standard-io-syntax
+                   (let ((*read-eval* nil))
+                     (with-open-file (stream path)
+                       (read stream)))))))
     (loop for row in rows
           when (eq (first row) dtype) collect (rest row))))
 

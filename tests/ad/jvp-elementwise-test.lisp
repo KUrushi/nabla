@@ -35,6 +35,15 @@
          :fn (nb:with-tracing (x) (sqrt x)))
    (list :name :rsqrt :n 1 :domains '(:positive) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x) (nb:rsqrt x)))
+   (list :name :expm1 :n 1 :domains '(:any) :dtypes '(:f32 :f64 :bf16 :f16)
+         :fn (nb:with-tracing (x) (nb:expm1 x)))
+   ;; log1p の定義域は x > -1。:positive（0.1 以上）なら 1/(1+x) の 3 階微分も小さい
+   (list :name :log1p :n 1 :domains '(:positive) :dtypes '(:f32 :f64 :bf16 :f16)
+         :fn (nb:with-tracing (x) (nb:log1p x)))
+   (list :name :sin :n 1 :domains '(:any) :dtypes '(:f32 :f64 :bf16 :f16)
+         :fn (nb:with-tracing (x) (sin x)))
+   (list :name :cos :n 1 :domains '(:any) :dtypes '(:f32 :f64 :bf16 :f16)
+         :fn (nb:with-tracing (x) (cos x)))
    (list :name :max :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64 :bf16 :f16)
          :fn (nb:with-tracing (x y) (max x y)))
    (list :name :min :n 2 :domains '(:any :distinct) :dtypes '(:f32 :f64 :bf16 :f16)
@@ -251,8 +260,8 @@ check-graph を満たす（compare は :i1 の主値に :i1 の接線が付く�
                 :regression-file (regression-path "jvp-elementwise-convert"))))
 
 (test jvp-elementwise/every-elementwise-primitive-has-a-jvp-rule
-  "sub mul div exp log tanh max min convert compare select neg add に jvp ルールがある。"
-  (dolist (name '(:add :neg :sub :mul :div :exp :log :tanh :sqrt :rsqrt :max :min :convert :compare :select))
+  "sub mul div exp log tanh sqrt rsqrt expm1 log1p sin cos max min convert compare select neg add に jvp ルールがある。"
+  (dolist (name '(:add :neg :sub :mul :div :exp :log :tanh :sqrt :rsqrt :expm1 :log1p :sin :cos :max :min :convert :compare :select))
     (is (nb::primitive-jvp (nb::find-primitive name)) "~S" name)))
 
 (test jvp-elementwise/max-min-ties-in-half-precision

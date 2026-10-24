@@ -1,0 +1,40 @@
+// 候補 (a): ys ではなくインデックス（カウンタ）にだけ optimization_barrier をかける（issue #233）。
+// dynamic_update_slice の添字 %bi を barrier に通した %ib を使う。ys のバッファ %by は barrier に通さない。
+module {
+  func.func @main(%h: tensor<@W@xf32>) -> (tensor<@W@xf32>, tensor<@L@x@W@xf32>) {
+    %i0c = stablehlo.constant dense<0> : tensor<i32>
+    %z = stablehlo.constant dense<0.0> : tensor<f32>
+    %salt = stablehlo.constant dense<@L@> : tensor<i32>
+    %i0, %zs, %u = stablehlo.optimization_barrier %i0c, %z, %salt : tensor<i32>, tensor<f32>, tensor<i32>
+    %yb = stablehlo.broadcast_in_dim %zs, dims = [] : (tensor<f32>) -> tensor<@L@x@W@xf32>
+    %y0 = stablehlo.optimization_barrier %yb : tensor<@L@x@W@xf32>
+    %n, %c, %ys = "stablehlo.while"(%i0, %h, %y0) ({
+    ^bb0(%ci: tensor<i32>, %cc: tensor<@W@xf32>, %cy: tensor<@L@x@W@xf32>):
+      %len = stablehlo.constant dense<@L@> : tensor<i32>
+      %lt = stablehlo.compare LT, %ci, %len : (tensor<i32>, tensor<i32>) -> tensor<i1>
+      stablehlo.return %lt : tensor<i1>
+    }, {
+    ^bb0(%bi: tensor<i32>, %bc: tensor<@W@xf32>, %by: tensor<@L@x@W@xf32>):
+      %zi = stablehlo.constant dense<0> : tensor<i32>
+      %half = stablehlo.constant dense<0.5> : tensor<f32>
+      %init = stablehlo.constant dense<0.0> : tensor<f32>
+      %sum = stablehlo.reduce(%bc init: %init) applies stablehlo.add across dimensions = [0] : (tensor<@W@xf32>, tensor<f32>) -> tensor<f32>
+      %pr = stablehlo.compare LT, %sum, %half : (tensor<f32>, tensor<f32>) -> tensor<i1>
+      %ic = "stablehlo.if"(%pr) ({
+        %t = stablehlo.tanh %bc : tensor<@W@xf32>
+        stablehlo.return %t : tensor<@W@xf32>
+      }, {
+        %t2 = stablehlo.tanh %bc : tensor<@W@xf32>
+        %t3 = stablehlo.tanh %t2 : tensor<@W@xf32>
+        stablehlo.return %t3 : tensor<@W@xf32>
+      }) : (tensor<i1>) -> tensor<@W@xf32>
+      %u0 = stablehlo.reshape %ic : (tensor<@W@xf32>) -> tensor<1x@W@xf32>
+      %ib, %zb = stablehlo.optimization_barrier %bi, %zi : tensor<i32>, tensor<i32>
+      %w = stablehlo.dynamic_update_slice %by, %u0, %ib, %zb : (tensor<@L@x@W@xf32>, tensor<1x@W@xf32>, tensor<i32>, tensor<i32>) -> tensor<@L@x@W@xf32>
+      %one = stablehlo.constant dense<1> : tensor<i32>
+      %next = stablehlo.add %bi, %one : tensor<i32>
+      stablehlo.return %next, %ic, %w : tensor<i32>, tensor<@W@xf32>, tensor<@L@x@W@xf32>
+    }) : (tensor<i32>, tensor<@W@xf32>, tensor<@L@x@W@xf32>) -> (tensor<i32>, tensor<@W@xf32>, tensor<@L@x@W@xf32>)
+    func.return %c, %ys : tensor<@W@xf32>, tensor<@L@x@W@xf32>
+  }
+}
