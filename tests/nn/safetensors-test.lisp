@@ -671,3 +671,15 @@ SAFETENSORS-ERROR）。切り詰めたファイルを読み過ぎたり、他の
       (is (equalp committed
                   (encode-safetensors (fixture-entries)
                                       :metadata '(("format" . "pt") ("note" . "fixture"))))))))
+
+(test (safetensors/write-fsyncs-the-file-and-the-directory :suite :nabla.medium)
+  "write-safetensors は rename の前に一時ファイルを、後に親ディレクトリを fsync する（#263）。
+fsync の呼び出しは内部のフック nabla::*fsync-function* で数える。"
+  (with-temporary-directory (dir)
+    (let ((kinds '()))
+      (let ((nabla::*fsync-function*
+              (lambda (fd)
+                (push (if (sb-posix:s-isdir (sb-posix:stat-mode (sb-posix:fstat fd))) :directory :file)
+                      kinds))))
+        (write-safetensors (merge-pathnames "m.safetensors" dir) (random-entries 2 2)))
+      (is (equal '(:file :directory) (reverse kinds))))))

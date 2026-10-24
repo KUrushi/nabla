@@ -46,6 +46,9 @@
    #:unsupported-dtype-dtype
    ;; vmfb ディスクキャッシュ（issue #10）
    #:*compile-cache-directory*
+   ;; #263 一時ファイル + fsync + rename の書き込み
+   #:with-atomic-output-file
+   #:*full-fsync*
    ;; IR と defprimitive（issue #29、u1a）
    #:defprimitive
    #:primitive-name
@@ -110,6 +113,8 @@
    #:jit
    #:jit-error
    #:*default-backend*
+   ;; jit の入力の連結（issue #242）
+   #:backend-max-inputs
    ;; defjit、compile-error のリスタート、end-to-end jit テスト（issue #34、wave 4 j2）
    #:defjit
    #:jit-compile-error
