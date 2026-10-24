@@ -223,8 +223,9 @@ HAS-AUX（既定 NIL。JAX の has_aux）が真なら、F は (VALUES 損失 aux
 rank 0 の浮動小数点1つ、aux は任意の PyTree（BatchNorm の更新後のモジュールなど）で、微分しない。
 戻り値は多値の (勾配 aux)（JAX と同じ順）。aux のトレーサの葉は F を評価した値になり、トレーサで
 ない葉（ホストの配列・Lisp の値）はそのまま返る。aux はこの GRAD では微分しないが、外側の変換
-（外側の GRAD・JIT・VMAP）からは普通の値として見える（JAX と同じ）。JIT の中では、aux の Lisp の値の
-葉（キーワードなど）は JIT の戻り値の規則で返せない（DEFMODULE の :STATIC は葉でないので通る）。微分する
+（外側の GRAD・JIT・VMAP）からは普通の値として見える（JAX と同じ）。JIT の中では、aux のトレーサでない
+葉も JIT の戻り値の規則に従う: 配列はそのまま定数、Lisp の実数は rank 0 の配列（整数も :F32）になり、キーワードなどは
+返せない（DEFMODULE の :STATIC は葉でないので通る）。微分する
 引数に依存する WHILE-LOOP の結果は aux に入れられない（AUTODIFF-ERROR。WHILE-LOOP の逆モードが無いため）。2値でない・損失が木で包まれて
 いる・rank 0 でないときは GRAD-REQUIRES-SCALAR-OUTPUT。"
   (%make-grad-function f argnums nil has-aux))
