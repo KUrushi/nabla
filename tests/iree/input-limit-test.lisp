@@ -184,28 +184,8 @@ dtype ごとに連結されて動き、各葉が eager と一致する（葉ご�
             (loop for i below outputs collect i) (loop repeat outputs collect 0))))
 
 (defun %run-generated-on-local-task (inputs outputs)
-  (let ((file (uiop:tmpize-pathname #p"/tmp/nabla-io-probe.mlir")))
-    (with-open-file (s file :direction :output :if-exists :supersede)
-      (write-string (%generated-io-mlir inputs outputs) s))
-    (let* ((vmfb (namestring (uiop:tmpize-pathname #p"/tmp/nabla-io-probe.vmfb")))
-           (compile-code
-             (nth-value 2 (uiop:run-program
-                           (list (%iree-bin "iree-compile")
-                                 "--iree-hal-target-device=local"
-                                 "--iree-hal-local-target-device-backends=llvm-cpu"
-                                 (namestring file) "-o" vmfb)
-                           :ignore-error-status t :output nil :error-output nil))))
-      (unwind-protect
-           (if (zerop compile-code)
-               (nth-value 2 (uiop:run-program
-                             (append (list (%iree-bin "iree-run-module")
-                                           "--device=local-task" (format nil "--module=~A" vmfb)
-                                           "--function=main")
-                                     (loop repeat inputs collect "--input=3xf32=1,2,3"))
-                             :ignore-error-status t :output nil :error-output nil))
-               :compile-failed)
-        (ignore-errors (delete-file vmfb))
-        (ignore-errors (delete-file file))))))
+  "%GENERATED-IO-MLIR を local-task で実行した終了コード（%RUN-MLIR-ON-LOCAL-TASK）。"
+  (%run-mlir-on-local-task (%generated-io-mlir inputs outputs) inputs))
 
 (define-iree-test input-limit/local-task-runs-many-outputs
     "local-task は出力が 162 個以上でも落ちない（入力 1 個・出力 170 個、入力 2 個・出力 300 個。子プロセスの
@@ -248,8 +228,8 @@ CONSTANTS 個の splat でない定数（dense<[1.0, 2.0, k]>）も木の葉に�
 
 (defun %run-mlir-on-local-task (text inputs)
   "TEXT を iree-compile して、iree-run-module --device=local-task で（INPUTS 個の入力で）実行した終了コード。"
-  (let ((file (uiop:tmpize-pathname #p"/tmp/nabla-242-probe.mlir"))
-        (vmfb (namestring (uiop:tmpize-pathname #p"/tmp/nabla-242-probe.vmfb"))))
+  (let ((file (uiop:tmpize-pathname #p"/tmp/nabla-local-task-run.mlir"))
+        (vmfb (namestring (uiop:tmpize-pathname #p"/tmp/nabla-local-task-run.vmfb"))))
     (with-open-file (s file :direction :output :if-exists :supersede)
       (write-string text s))
     (unwind-protect
@@ -269,18 +249,6 @@ CONSTANTS 個の splat でない定数（dense<[1.0, 2.0, k]>）も木の葉に�
       (ignore-errors (delete-file vmfb))
       (ignore-errors (delete-file file)))))
 
-(define-iree-test input-limit/probe-242-non-splat-constants
-    "調べ（#242、一時的）: 平衡二分木に splat でない定数を足すと、落ちる入力の個数が下がるか。"
-  (skip-unless-iree :library :both)
-  (unless (and (probe-file (%iree-bin "iree-run-module"))
-               (probe-file (%iree-bin "iree-compile")))
-    (skip "iree-compile / iree-run-module が無い")
-    (return-from iree-test))
-  (dolist (k '(0 1 2 3 5 10))
-    (dolist (n '(150 155 157 158 159 160))
-      (let ((codes (loop repeat 3 collect (%run-mlir-on-local-task (%tree-mlir n '("add") :constants k) n))))
-        (format t "~&PROBE-242C constants=~D inputs=~D exits=~S~%" k n codes)))))
-
 (defparameter *tree-sum-child-source*
   "(require :asdf)
 (asdf:load-system \"nabla/iree\")
@@ -290,7 +258,7 @@ CONSTANTS 個の splat でない定数（dense<[1.0, 2.0, k]>）も木の葉に�
       (car xs)
       (let ((h (floor (length xs) 2)))
         (funcall *add* (tree-sum (subseq xs 0 h)) (tree-sum (nthcdr h xs))))))
-(let* ((n (parse-integer (car (last sb-ext:*posix-argv*))))
+(let* ((n *n*)
        (nabla:*compile-cache-directory* nil)
        (arrays (loop for i below n
                      collect (make-array 3 :element-type 'single-float
@@ -302,29 +270,18 @@ CONSTANTS 個の splat でない定数（dense<[1.0, 2.0, k]>）も木の葉に�
   (format t \"RESULT=~:[MISMATCH~;OK~]~%\"
           (every (lambda (a e) (< (abs (- a e)) 1e-3)) actual expected)))
 "
-  "子プロセスで、N 個（コマンドラインの最後の引数）の葉を平衡二分木で足す関数を local-task で jit して
-eager と比べ、RESULT=OK / MISMATCH を出す。")
+  "子プロセスで、*N* 個（%RUN-TREE-SUM-IN-CHILD が先頭に足す）の葉を平衡二分木で足す関数を local-task で
+jit して eager と比べ、RESULT=OK / MISMATCH を出す。")
 
 (defun %run-tree-sum-in-child (n)
-  "*TREE-SUM-CHILD-SOURCE* を葉 N 個で子 SBCL に流す。(values 終了コード 標準出力 標準エラー出力)。"
-  (uiop:with-temporary-file (:pathname script :prefix "nabla-242-tree-" :type "lisp" :keep t)
-    (unwind-protect
-         (progn
-           (with-open-file (stream script :direction :output :if-exists :supersede)
-             (write-string *tree-sum-child-source* stream))
-           (let* ((output (make-string-output-stream))
-                  (error-output (make-string-output-stream))
-                  (process (sb-ext:run-program
-                            "timeout"
-                            (list (princ-to-string *child-sbcl-timeout-seconds*)
-                                  "sbcl" "--non-interactive" "--load" (namestring script)
-                                  "--end-toplevel-options" (princ-to-string n))
-                            :search t :environment (%child-sbcl-environment)
-                            :output output :error error-output)))
-             (values (sb-ext:process-exit-code process)
-                     (get-output-stream-string output)
-                     (get-output-stream-string error-output))))
-      (ignore-errors (delete-file script)))))
+  "*TREE-SUM-CHILD-SOURCE* を葉 N 個で子 SBCL に流す（%RUN-IN-CHILD-SBCL）。(values 終了コード 標準出力 標準エラー出力)。"
+  (%run-in-child-sbcl (format nil "(defparameter cl-user::*n* ~D)~%~A" n *tree-sum-child-source*)))
+
+(defun %head-and-tail (text)
+  "TEXT の先頭 1500 文字と末尾 500 文字（子プロセスの stderr の、条件名とバックトレースの終わり）。"
+  (if (<= (length text) 2000)
+      text
+      (concatenate 'string (subseq text 0 1500) (format nil "~%...~%") (subseq text (- (length text) 500)))))
 
 (define-iree-test input-limit/jit-on-local-task-sums-a-tree-of-leaves-past-the-boundary
     "葉 160・161・170 個を平衡二分木で足す関数（中間の値を持つ形。入力 161 個でも local-task が落ちる。
@@ -335,5 +292,19 @@ PR #268 の観察）を local-task で jit すると、落ちずに eager と一
     (multiple-value-bind (code output error-output) (%run-tree-sum-in-child n)
       (is (and (eql 0 code) (search "RESULT=OK" output))
           "葉 ~D 個: 終了コード ~S~%stdout: ~A~%stderr: ~A" n code output
-          (let ((start (or (search "Unhandled" error-output) (search "debugger" error-output) 0)))
-            (subseq error-output start (min (length error-output) (+ start 2000))))))))
+          (%head-and-tail error-output)))))
+
+(define-iree-test input-limit/iree-known-bug-local-task-161-inputs-with-intermediates-crashes
+    "IREE 3.11 のバグが残っていること（中間の値を持つ形）: 入力を平衡二分木で足す関数は、local-task で入力 160 個
+なら通り（splat でない定数 10 個・出力 2 個でも通る）、161 個で落ちる（終了コード 128 超。子プロセスの
+iree-run-module）。直ると失敗する——そのときは
++local-task-max-inputs+（src/iree/execute.lisp）を 161 に戻せるか、6 の検査ごと外せるかを判断する（issue #242）。"
+  (skip-unless-iree :library :both)
+  (unless (and (probe-file (%iree-bin "iree-run-module"))
+               (probe-file (%iree-bin "iree-compile")))
+    (skip "iree-compile / iree-run-module が無い")
+    (return-from iree-test))
+  (is (eql 0 (%run-mlir-on-local-task (%tree-mlir 160 '("add")) 160)))
+  ;; 対照: splat でない定数 10 個を足し、木を 2 本にしても 160 個は通る（上限 160 の余裕の確認）
+  (is (eql 0 (%run-mlir-on-local-task (%tree-mlir 160 '("add" "multiply") :constants 10) 160)))
+  (is (< 128 (%run-mlir-on-local-task (%tree-mlir 161 '("add")) 161))))

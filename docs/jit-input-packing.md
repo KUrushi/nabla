@@ -42,8 +42,12 @@ device array の葉をデバイス上で連結する方法（連結用の小さ�
 nabla の jit で葉 161 個を平衡二分木で足すと、上限 161 では連結されずに渡り、子プロセスが落ちた
 （`input-limit/jit-on-local-task-sums-a-tree-of-leaves-past-the-boundary` を先に書いて確かめた）。
 上限を 160 にすると 161 個は連結されて通る。`+local-task-max-inputs+`（`invoke` の検査）と
-`backend-max-inputs` は同じ定数を使うので揃っている。160 個はここで測った形ではどれも通ったが、
-すべての形で安全だという保証ではない（落ちる条件は IREE の内側で、未調査）。
+`backend-max-inputs` は同じ定数を使うので揃っている。splat でない定数を 1〜10 個足した木も 150〜160 個で
+通った（run 40090885017）。160 個はここで測った形ではどれも通ったが、すべての形で安全だという保証ではない。
+落ちる仕組みの見立て（local-task のキューがコマンドを binding の数に比例した大きさで 4 KiB のブロックから
+確保し、binding が約 163 を超えると壊れる。入力のほかに中間値・結果のバッファが binding になる）は
+`docs/iree-upstream-bugs.md` の 6 に書いた。この見立てが正しければ、連結した後の graph は入力が dtype の
+種類の数なので、上限から遠い。
 
 ## 費用
 

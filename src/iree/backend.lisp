@@ -37,7 +37,7 @@ CPU に依存する。BACKEND-FINGERPRINT に含めて、キャッシュキー�
               :documentation "\"sm_80\" のような文字列、または NIL（IREE の既定）。")
    (driver :initarg :driver :initform nil :reader %iree-backend-driver
            :documentation "NIL（TARGET の既定のドライバ）または :local-sync など、MAKE-DEVICE に
-渡すドライバ。入力が 162 個以上の関数は local-task では呼べない（IREE 3.11 のバグ）ため、
+渡すドライバ。入力が +LOCAL-TASK-MAX-INPUTS+（160）を超える関数は local-task では落ちうる（IREE 3.11 のバグ）ため、
 :local の回避策として :local-sync を選べる。")
    (device :initform nil :accessor %iree-backend-device
            :documentation "遅延生成する nabla.iree:device。最初の BACKEND-LOAD /
@@ -98,7 +98,7 @@ model name）を文字列のリストにして返す。COMPILE-FLAGS は毎回�
 
 (defmethod nabla:backend-max-inputs ((backend iree-backend))
   "local-task device（:local の既定のドライバ）なら +LOCAL-TASK-MAX-INPUTS+（IREE 3.11 のバグ。
-入力が 162 個以上の関数を呼ぶと落ちる）、ほかのドライバ（:local-sync・:cuda）なら NIL（上限なし）。
+入力がこれを超える関数は落ちうる）、ほかのドライバ（:local-sync・:cuda）なら NIL（上限なし）。
 jit はこれを超える葉を dtype ごとに連結して渡す（issue #242）。device はまだ作らない。"
   (when (string= (%driver-name-string
                   (%canonical-driver (or (%iree-backend-driver backend) (nabla:backend-target backend))))

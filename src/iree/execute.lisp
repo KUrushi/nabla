@@ -22,7 +22,8 @@ plain ERROR を signal する。"
   "IREE 3.11 の local-task device で安全に呼べる関数の入力の最大個数。入力を 162 個以上使う関数は
 iree_task_call_initialize（iree_hal_task_queue_issue_cmd_allocate 経由）が NULL を参照して
 プロセスが落ち（docs/iree-repros/local-task-162-inputs.mlir）、中間の値（dispatch の間の一時
-バッファ）を持つ形（要素ごとの連鎖・平衡二分木の和）は 161 個でも落ちる。160 個はどの形でも通った
+バッファ）を持つ形（要素ごとの連鎖・平衡二分木の和）は 161 個でも落ちる。160 個は測った形
+（独立の tanh、平衡二分木 1 本・2 本、splat でない定数 10 個を足した木）では通った
 （issue #242、docs/iree-upstream-bugs.md の 6）。local-sync は影響を受けない。")
 
 (defun invoke (session full-name &rest arguments)
