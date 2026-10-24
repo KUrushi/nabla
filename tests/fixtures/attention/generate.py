@@ -18,6 +18,8 @@ nn.MultiHeadDotProductAttention（deterministic=True）に渡し、
    :cases ((:name "self" :num-heads 2 :arrays (("query.kernel" (6 2 3) (...)) ...)) ...)
    :init-stats ((:query-kernel (64 4 16) std maxabs) ...))
 
+注: JAX / Flax は Linux の Rosetta VM では import できないので、macOS arm64 の venv で生成する（issue #241）。
+
 使い方 (jax[cpu]==0.10.2 と flax の入った venv で):
     python3 tests/fixtures/attention/generate.py > tests/fixtures/attention/flax-attention.lisp
 """
@@ -58,22 +60,24 @@ def nest(flat):
     return out
 
 
-def make_params(rng, in_q, in_kv, heads, qkv, out):
+def make_params(rng, in_q, in_kv, heads, qkv, out, use_bias=True):
     d = qkv // heads
     p = {}
     for name, fan in [("query", in_q), ("key", in_kv), ("value", in_kv)]:
         p[f"{name}.kernel"] = rnd(rng, fan, heads, d, scale=0.5)
-        p[f"{name}.bias"] = rnd(rng, heads, d, scale=0.3)
+        if use_bias:
+            p[f"{name}.bias"] = rnd(rng, heads, d, scale=0.3)
     p["out.kernel"] = rnd(rng, heads, d, out, scale=0.5)
-    p["out.bias"] = rnd(rng, out, scale=0.3)
+    if use_bias:
+        p["out.bias"] = rnd(rng, out, scale=0.3)
     return p
 
 
-def case(name, rng, x, kv, heads, qkv, out, mask=None):
+def case(name, rng, x, kv, heads, qkv, out, mask=None, use_bias=True):
     """kv が None なら自己 attention（inputs_q だけ渡す）。"""
     layer = nn.MultiHeadDotProductAttention(num_heads=heads, qkv_features=qkv, out_features=out,
-                                            deterministic=True)
-    params = make_params(rng, x.shape[-1], (x if kv is None else kv).shape[-1], heads, qkv, out)
+                                            deterministic=True, use_bias=use_bias)
+    params = make_params(rng, x.shape[-1], (x if kv is None else kv).shape[-1], heads, qkv, out, use_bias)
     flat = {k: jnp.asarray(v) for k, v in params.items()}
     m = None if mask is None else jnp.asarray(mask)
 
@@ -138,6 +142,11 @@ def main():
     both = nn.combine_masks(nn.make_causal_mask(x4[..., 0]), nn.make_attention_mask(pad, pad))
     cases.append(case("self-two-batch-dims-causal-padding", rng, x4, None, 3, 6, 6, both))
 
+    # issue #241: use_bias=False（4 つの射影すべてに効く）。乱数列は既存のケースの後ろ
+    cases.append(case("self-no-bias", rng, x, None, 2, 6, 6, use_bias=False))
+    cases.append(case("cross-padding-no-bias", rng, q_in, kv_in, 4, 8, 4,
+                      nn.make_attention_mask(np.ones((2, 3), np.float32), kv_valid), use_bias=False))
+
     key = jax.random.PRNGKey(208)
     layer = nn.MultiHeadDotProductAttention(num_heads=4, qkv_features=64, deterministic=True)
     p = layer.init(key, jnp.zeros((1, 3, 64)))["params"]
@@ -149,6 +158,7 @@ def main():
     ]
     print(";;;; Flax (flax.linen) の MultiHeadDotProductAttention との突き合わせ用フィクスチャ（issue #208）。")
     print(";;;; 生成: tests/fixtures/attention/generate.py。形式は generate.py の docstring。")
+    print(";;;; issue #241 のケースを足した版は macOS arm64（Apple Silicon）で JAX 0.10.2 / Flax 0.12.8 / x64 無効で生成した。")
     print(f'(:versions "jax {jax.__version__} flax {flax.__version__}"')
     print(" :cases (")
     for c in cases:

@@ -17,12 +17,12 @@
              nil)))
 
 (test layers/jit-forward-and-grads-match-flax-on-iree-local
-  "layers-test.lisp のフィクスチャの全ケースで、IREE の local で jit した順伝播と jit した grad が
+  "layers-test.lisp のフィクスチャの全ケース（issue #241 の追加分を含む）で、IREE の local で jit した順伝播と jit した grad が
 Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
   (when (%layers-require-iree-or-skip)
     (let ((backend (nabla:find-backend :iree))
           (nabla:*compile-cache-directory* nil))
-      (dolist (entry *layers-case-table*)
+      (dolist (entry (append *layers-case-table* *layers-extra-case-table*))
         (destructuring-bind (name make forward ints) entry
           (let* ((case (%fx-case name))
                  (model (funcall make case))
@@ -112,3 +112,27 @@ Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
              (is (notevery #'zerop (%elements out))))
         (nabla.iree:release-device-array device-x)
         (nabla::%jit-cache-forget f)))))
+
+(test layers/jit-of-a-sequential-without-bias-matches-eager
+  "bias の無い dense（init-dense :use-bias nil）を並べた sequential を jit した出力と勾配（葉は kernel だけ）が
+eager と一致する。"
+  (when (%layers-require-iree-or-skip)
+    (let* ((backend (nabla:find-backend :iree))
+           (nabla:*compile-cache-directory* nil)
+           (net (init-sequential (nabla:prng-key 3)
+                                 (list (lambda (k) (init-dense k 6 8 :use-bias nil))
+                                       (lambda (k) (init-activation k :gelu))
+                                       (lambda (k) (init-dense k 8 3 :use-bias nil)))))
+           (x (%rand '(4 6) 8))
+           (f (nabla:with-tracing (m x) (call m x)))
+           (loss (nabla:with-tracing (m x) (nabla:reduce-sum (call m x))))
+           (g (nabla:grad loss))
+           (jf (nabla:jit f :backend backend))
+           (jg (nabla:jit g :backend backend)))
+      (unwind-protect
+           (let ((jit-grad (funcall jg net x)) (eager-grad (funcall g net x)))
+             (is (%close-f32 (funcall jf net x) (funcall f net x)))
+             (is (= 2 (length (nabla:tree-leaves jit-grad))))
+             (is (every #'%close-f32 (nabla:tree-leaves jit-grad) (nabla:tree-leaves eager-grad))))
+        (nabla::%jit-cache-forget f)
+        (nabla::%jit-cache-forget g)))))

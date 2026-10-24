@@ -18,6 +18,8 @@ init の分布は、Flax の init を1回サンプルした標準偏差と最大
    :cases ((:name "dense" :arrays (("kernel" (5 4) (...)) ...)) ...)
    :init-stats ((:dense-kernel (512 256) std maxabs) ...))
 
+注: JAX / Flax は Linux の Rosetta VM では import できないので、macOS arm64 の venv で生成する（issue #241）。
+
 使い方 (jax[cpu]==0.10.2 と flax の入った venv で):
     python3 tests/fixtures/layers/generate.py > tests/fixtures/layers/flax-layers.lisp
 """
@@ -102,6 +104,14 @@ class Act(nn.Module):
         return nn.log_softmax(x, axis=self.axis)
 
 
+def extra_cases(rng):
+    """issue #241（Flax との差）で足したケース。"""
+    cases = []
+    cases.append(case("dense-no-bias", nn.Dense(4, use_bias=False), {"kernel": rnd(rng, 5, 4)},
+                      rnd(rng, 2, 3, 5), rnd(rng, 2, 3, 4)))
+    return cases
+
+
 def main():
     rng = np.random.default_rng(204)
     cases = []
@@ -136,6 +146,10 @@ def main():
                        "2.kernel": rnd(rng, 6, 3), "2.bias": rnd(rng, 3)},
                       rnd(rng, 4, 5), rnd(rng, 4, 3)))
 
+    # issue #241: 既存のケースの乱数列を変えないよう、別のシードで足す
+    rng = np.random.default_rng(241)
+    cases += extra_cases(rng)
+
     key = jax.random.PRNGKey(204)
     kernel = nn.Dense(256).init(key, jnp.zeros((1, 512)))["params"]["kernel"]
     embedding = nn.Embed(1000, 64).init(key, jnp.zeros((1,), jnp.int32))["params"]["embedding"]
@@ -145,6 +159,7 @@ def main():
     ]
     print(";;;; Flax (flax.linen) との突き合わせ用フィクスチャ（issue #204）。")
     print(";;;; 生成: tests/fixtures/layers/generate.py。形式は generate.py の docstring。")
+    print(";;;; issue #241 のケースを足した版は macOS arm64（Apple Silicon）で JAX 0.10.2 / Flax 0.12.8 / x64 無効で生成した。")
     print(f'(:versions "jax {jax.__version__} flax {flax.__version__}"')
     print(" :cases (")
     for c in cases:
