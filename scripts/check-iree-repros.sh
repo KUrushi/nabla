@@ -191,7 +191,7 @@ for entry in "${CASES[@]}"; do
     else
       if ((bad == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
     fi
-    printf '%-12s %-40s %-15s failing-runs=%d\n' "${kind}" "${file}" "${verdict}" "${bad}"
+    printf '%-13s %-40s %-15s failing-runs=%d\n' "${kind}" "${file}" "${verdict}" "${bad}"
     continue
   fi
   if [[ "${kind}" == fail-* ]]; then

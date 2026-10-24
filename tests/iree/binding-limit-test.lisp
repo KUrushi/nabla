@@ -61,8 +61,9 @@ local-task でも local-sync でも \"binding count 33 > 32\" で失敗し、31 
     (is (eql 0 (%run-chain-repro "elementwise-chain-31-inputs.mlir" device))
         "~A: 31 個の連鎖は通るはず" device)
     (multiple-value-bind (code output) (%run-chain-repro "elementwise-chain-32-inputs.mlir" device)
-      (is (and (integerp code) (/= 0 code) (search "binding count 33 > 32" output))
-          "~A: 32 個の連鎖が \"binding count 33 > 32\" にならなかった（制限が直った？）: ~S ~A"
+      ;; 数（33）や文言の細部は IREE の版で変わりうるので、"binding count" と上限の "> 32" で見る
+      (is (and (integerp code) (/= 0 code) (search "binding count" output) (search "> 32" output))
+          "~A: 32 個の連鎖が binding count の上限で失敗しなかった（制限が直った？ 別の原因？）: ~S ~A"
           device code output))
     (multiple-value-bind (code output)
         (%run-chain-repro "elementwise-chain-32-inputs.mlir" device

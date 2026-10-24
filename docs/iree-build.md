@@ -439,8 +439,8 @@ run-bug     local-task-162-inputs.mlir               REPRODUCED      crashes=20/
 run-control local-task-161-inputs.mlir               OK              crashes=0/20 exit-codes=0
 fail-bug     if-passthrough-operands.mlir             REPRODUCED      failing-runs=2
 fail-control if-passthrough-operands-select.mlir      OK              failing-runs=0
-limit-bug    elementwise-chain-32-inputs.mlir         REPRODUCED      failing-runs=2
-limit-control elementwise-chain-31-inputs.mlir        OK              failing-runs=0
+limit-bug     elementwise-chain-32-inputs.mlir         REPRODUCED      failing-runs=2
+limit-control elementwise-chain-31-inputs.mlir         OK              failing-runs=0
 ```
 
 `error-bug` の行（`conv-convert-operand-type.mlir` と `conv-depthwise-collapse-shape.mlir`。`docs/iree-upstream-bugs.md` の 4・5、#203）は、クラッシュではなく通常のコンパイルエラー（終了コード 1）で落ちるバグの確認で、`iree-compile` の終了コードが 0 でない実行が 1 回でもあれば `REPRODUCED`。対の `control`（2つの f32 を `optimization_barrier` に通した形）は全回コンパイルできれば `OK`。`error-bug` が `NOT-REPRODUCED` になったら、`src/primitives/conv.lisp` の `%conv-emit-lines` が bf16 / f16 の畳み込みの operand を `stablehlo.optimization_barrier` に通す処理と、`tests/iree/conv-grad-test.lisp` の `convolution/iree-bf16-convert-conv-bugs-still-reproduce` を外せるか判断する（外した形で bf16 / f16 の畳み込みのテスト、depthwise を含めて通ることを確かめる）。
