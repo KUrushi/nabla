@@ -96,6 +96,15 @@ model name）を文字列のリストにして返す。COMPILE-FLAGS は毎回�
                    (when (eq target :local)
                      (list (format nil "host=~A" (%machine-version))))))))
 
+(defmethod nabla:backend-max-inputs ((backend iree-backend))
+  "local-task device（:local の既定のドライバ）なら +LOCAL-TASK-MAX-INPUTS+（IREE 3.11 のバグ。
+入力が 162 個以上の関数を呼ぶと落ちる）、ほかのドライバ（:local-sync・:cuda）なら NIL（上限なし）。
+jit はこれを超える葉を dtype ごとに連結して渡す（issue #242）。device はまだ作らない。"
+  (when (string= (%driver-name-string
+                  (%canonical-driver (or (%iree-backend-driver backend) (nabla:backend-target backend))))
+                 "local-task")
+    +local-task-max-inputs+))
+
 (defmethod nabla:backend-compile ((backend iree-backend) text)
   "TEXT を BACKEND の target / cuda-arch から求めた COMPILE-FLAGS で
 COMPILE-STABLEHLO する。:local で TEXT が libm を呼ぶ（%needs-libm-p）ときだけ

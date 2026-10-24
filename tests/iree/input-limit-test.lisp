@@ -1,8 +1,11 @@
 ;;;; IREE 3.11 の local-task device は、入力が 162 個以上の関数を呼ぶと NULL を参照して
 ;;;; プロセスごと落ちる（issue #199、docs/iree-upstream-bugs.md の 6）。nabla.iree はその呼び出しを
 ;;;; 拒否する（iree-too-many-inputs）。守らせる性質:
-;;;; - local-task で入力 170 個の jit した関数を呼ぶと、落ちずに iree-too-many-inputs を signal する。
-;;;; - 境界の 161 個は動く。
+;;;; - local-task で入力 162 個の関数を invoke すると、落ちずに iree-too-many-inputs を signal する。
+;;;; - jit は葉が 161 個を超えると dtype ごとに連結して渡す（issue #242）: local-task で葉 170 個・dtype と
+;;;;   device array の混ざった葉 200 個の木が動き、eager と一致する。backend が上限を申告するのは local-task だけ。
+;;;; - 境界の 161 個は（連結せずに）動く。
+;;;; - 出力は 162 個以上でも落ちない（連結を入力だけにする根拠。子プロセス）。
 ;;;; - local-sync device（make-backend :iree :driver :local-sync）なら 170 個でも動き、結果は eager と一致する。
 ;;;; - バグが IREE に残っていること（直ったら失敗する。検査と回避策を外す合図）: 最小の再現
 ;;;;   （docs/iree-repros/）を iree-run-module で local-task に流すと 162 個で落ち、161 個は通る。
@@ -22,27 +25,74 @@
          (values (funcall jf arrays) (funcall f arrays))
       (nb::%jit-cache-forget f))))
 
-(define-iree-test input-limit/local-task-refuses-170-inputs-instead-of-crashing
-    "local-task device で入力 170 個の jit した関数を呼ぶと、iree-too-many-inputs を signal する
-（プロセスは落ちない）。エラーは個数と上限を持つ。"
+(defun %read-repro (file)
+  (uiop:read-file-string (asdf:system-relative-pathname "nabla" (format nil "docs/iree-repros/~A" file))))
+
+(define-iree-test input-limit/invoke-on-local-task-refuses-162-inputs-instead-of-crashing
+    "local-task device で入力 162 個の関数を invoke すると、iree-too-many-inputs を signal する
+（プロセスは落ちない）。エラーは個数と上限を持つ。jit はこの手前で葉を連結するので、ここに来るのは
+invoke を直接呼んだときだけ。"
+  (skip-unless-iree :library :both)
+  (with-device (device :local-task)
+    (with-session (session device)
+      (session-append-module session (compile-stablehlo (%read-repro "local-task-162-inputs.mlir")))
+      (let ((arguments (loop repeat 162 collect (to-device (make-random-array (make-array-spec '(3) :f32)) device))))
+        (unwind-protect
+             (handler-case (progn (apply #'invoke session "module.main" arguments)
+                                  (fail "iree-too-many-inputs にならなかった"))
+               (nabla.iree:iree-too-many-inputs (condition)
+                 (is (= 162 (nabla.iree:iree-too-many-inputs-count condition)))
+                 (is (= nabla.iree:+local-task-max-inputs+ (nabla.iree:iree-too-many-inputs-limit condition)))
+                 (is (search "local-sync" (princ-to-string condition)))))
+          (mapc #'release-device-array arguments))))))
+
+(define-iree-test input-limit/backend-max-inputs-is-161-only-on-local-task
+    "IREE の backend は local-task（:local の既定、:local-task、文字列 \"local-task\"）のときだけ入力の上限 161 を
+申告し、local-sync では上限なし（NIL）。jit はこの値を超える葉を連結する（issue #242）。"
+  (skip-unless-iree :library :both)
+  (dolist (driver '(nil :local :local-task "local-task"))
+    (is (eql nabla.iree:+local-task-max-inputs+
+             (nabla:backend-max-inputs (nabla:make-backend :iree :target :local :driver driver)))
+        "driver ~S" driver))
+  (is (null (nabla:backend-max-inputs (nabla:make-backend :iree :target :local :driver :local-sync)))))
+
+(define-iree-test input-limit/jit-on-local-task-concatenates-170-leaves
+    "local-task で葉 170 個の木を jit すると、葉を dtype ごとに連結して渡すので落ちずに動き、eager と一致する
+（issue #242。連結しなければ入力 170 個で iree-too-many-inputs になる形）。"
   (skip-unless-iree :library :both)
   (let ((backend (nabla:make-backend :iree :target :local))
         (nb:*compile-cache-directory* nil))
-    (handler-case (progn (%input-limit-jit-call backend 170)
-                         (fail "iree-too-many-inputs にならなかった"))
-      (nabla.iree:iree-too-many-inputs (condition)
-        (is (= 170 (nabla.iree:iree-too-many-inputs-count condition)))
-        (is (= nabla.iree:+local-task-max-inputs+ (nabla.iree:iree-too-many-inputs-limit condition)))
-        (is (search "local-sync" (princ-to-string condition)))))
+    (multiple-value-bind (result expected) (%input-limit-jit-call backend 170)
+      (is (= 170 (length result)))
+      (is (every (lambda (r e) (allclose r e :dtype :f32)) result expected)))
     (gc-and-run-finalizers)))
 
-(define-iree-test input-limit/local-task-named-by-string-also-refuses-170-inputs
-    "ドライバを文字列 \"local-task\" で指定した backend でも、入力 170 個は iree-too-many-inputs に
-なる（キーワードでない指定で検査をすり抜けてプロセスが落ちないこと）。"
+(define-iree-test input-limit/jit-on-local-task-concatenates-mixed-dtypes-and-device-arrays
+    "local-task で、f32・f64・i32 の葉と device array（bf16 を含む）が混ざった 200 個の葉の木を jit すると、
+dtype ごとに連結されて動き、各葉が eager と一致する（葉ごとに x + x）。"
   (skip-unless-iree :library :both)
-  (let ((backend (nabla:make-backend :iree :target :local :driver "local-task"))
-        (nb:*compile-cache-directory* nil))
-    (signals nabla.iree:iree-too-many-inputs (%input-limit-jit-call backend 170))
+  (let* ((backend (nabla:make-backend :iree :target :local))
+         (nb:*compile-cache-directory* nil)
+         (dtypes '(:f32 :f64 :i32 :bf16))
+         (hosts (loop for i below 200
+                      collect (make-random-array (make-array-spec (subseq '(2 3 1) 0 (mod i 3))
+                                                                  (nth (mod i 4) dtypes))
+                                                 :seed i)))
+         (leaves (loop for host in hosts for i from 0
+                       collect (if (or (eq :bf16 (nth (mod i 4) dtypes)) (zerop (mod i 5)))
+                                   (nabla:to-device host backend :dtype (nth (mod i 4) dtypes))
+                                   host)))
+         (f (nb:with-tracing (xs) (nb:tree-map (lambda (x) (+ x x)) xs)))
+         (result (funcall (nb:jit f :backend backend) leaves)))
+    (is (= 200 (length result)))
+    (loop for r in result for host in hosts for i from 0
+          for dtype = (nth (mod i 4) dtypes)
+          for expected = (if (eq dtype :bf16)
+                             (nabla:to-host (funcall (nb:jit (nb:with-tracing (x) (+ x x)) :backend backend)
+                                                     (nabla:to-device host backend :dtype :bf16)))
+                             (funcall f host))
+          do (is (if (eq dtype :i32) (equalp r expected) (allclose r expected :dtype dtype))
+                 "葉 ~D（~S）が一致しない" i dtype))
     (gc-and-run-finalizers)))
 
 (define-iree-test input-limit/local-task-runs-161-inputs
@@ -107,7 +157,7 @@
   (is (eql 0 (%run-repro-on-local-task "local-task-161-inputs.mlir")))
   (is (< 128 (%run-repro-on-local-task "local-task-162-inputs.mlir"))))
 
-;;; --- 調べ（#242）: 出力の個数にも 162 の制限が効くか ---
+;;; --- 出力の個数には 162 の制限が効かない（#242。連結を入力だけにする根拠）---
 
 (defun %generated-io-mlir (inputs outputs)
   "INPUTS 個の tensor<3xf32> を取り、OUTPUTS 個の tensor<3xf32> を返す main の MLIR。
@@ -145,14 +195,14 @@
         (ignore-errors (delete-file vmfb))
         (ignore-errors (delete-file file))))))
 
-(define-iree-test input-limit/probe-output-count
-    "調べ（#242、一時的）: local-task で入力と出力の個数を変えて落ちるかを記録する。"
+(define-iree-test input-limit/local-task-runs-many-outputs
+    "local-task は出力が 162 個以上でも落ちない（入力 1 個・出力 170 個、入力 2 個・出力 300 個。子プロセスの
+iree-run-module）。jit が連結するのは入力だけでよい根拠（issue #242。学習ステップは出力も 200 個を超える）。
+落ちるようになったら、出力も連結する。"
   (skip-unless-iree :library :both)
   (unless (and (probe-file (%iree-bin "iree-run-module"))
                (probe-file (%iree-bin "iree-compile")))
     (skip "iree-compile / iree-run-module が無い")
     (return-from iree-test))
-  (dolist (io '((170 1) (1 170) (1 161) (1 162) (100 100) (162 1) (2 300)))
-    (let ((code (%run-generated-on-local-task (first io) (second io))))
-      (format t "~&PROBE-242 inputs=~D outputs=~D exit=~S~%" (first io) (second io) code)
-      (is (eql 0 code) "PROBE-242 inputs=~D outputs=~D exit=~S" (first io) (second io) code))))
+  (is (eql 0 (%run-generated-on-local-task 1 170)))
+  (is (eql 0 (%run-generated-on-local-task 2 300))))
