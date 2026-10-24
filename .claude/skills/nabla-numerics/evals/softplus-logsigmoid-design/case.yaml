@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: softplus-logsigmoid-design
+expected_outcome: |
+  design.md が softplus と log-sigmoid を log1p と符号の分岐で安定に設計し、|x| を max(x, -x) で作らない（x = 0 で微分が壊れる）ことに触れ、テスト計画で f64 を含む全 dtype の小さな入力・大きな入力を IREE と PJRT の jit でも確かめ、素朴な実装で落ちることを確かめる手順を含む。
