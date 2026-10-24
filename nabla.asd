@@ -51,6 +51,8 @@
                (:file "src/eval")
                ;; issue #31 p6: reduce-sum / reduce-max
                (:file "src/primitives/reduce")
+               ;; gather / scatter-add（issue #240）
+               (:file "src/primitives/gather")
                ;; トレーサ（issue #32、t1）
                (:file "src/trace")
                (:file "src/trace-ops")
@@ -75,6 +77,8 @@
                (:file "src/ad/rules-shape")
                ;; convolution と rev の jvp / transpose ルール（issue #203）
                (:file "src/ad/rules-conv")
+               ;; gather / scatter-add の jvp / transpose ルール（issue #240）
+               (:file "src/ad/rules-gather")
                ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
                (:file "src/stablehlo")
                (:file "src/backend")
@@ -98,6 +102,8 @@
                (:file "src/ad/rules-batch-shape")
                ;; convolution と rev のバッチ化ルール（issue #203）
                (:file "src/ad/rules-batch-conv")
+               ;; gather / scatter-add のバッチ化ルール（issue #240）
+               (:file "src/ad/rules-batch-gather")
 
 
 
@@ -276,6 +282,8 @@
                ;; jvp-shape-test / transpose-rules-test / vmap-shape-test のヘルパーを使う
                (:file "tests/primitives/rev-test")
                (:file "tests/ad/conv-ad-test")
+               ;; gather / scatter-add（issue #240）。上の jvp / transpose / vmap のテストのヘルパーを使う
+               (:file "tests/primitives/gather-test")
 
 
 
@@ -526,6 +534,8 @@
 
 
                (:file "tests/iree/rnn-train-test")
+               ;; gather / scatter-add（issue #240）
+               (:file "tests/iree/gather-test")
                ))
 
 (defsystem "nabla/pjrt"

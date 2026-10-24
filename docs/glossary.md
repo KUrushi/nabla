@@ -22,6 +22,12 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **reduction / 初期値（init value）**
 : 配列のいくつかの次元を、要素同士を1つずつ組み合わせる二項演算（総和・最大値など）で潰して次元を減らすこと。StableHLO の `stablehlo.reduce`（nabla の `reduce-sum` / `reduce-max` プリミティブ）は、潰す次元ごとに空でないスライスを1つの値にまとめる。init value（初期値）は、その組み合わせを始める前に置いておく値で、演算の単位元（総和なら 0、最大値なら -∞）を使う。潰す次元のサイズが0（スライスが空）のときは、この初期値がそのまま出力になる。
 
+**gather / scatter-add（ギャザー・スキャッター加算）**
+: gather は配列の行を添字の配列で引き集める演算（nabla の `gather` は先頭の軸を引く形だけで、JAX の `jnp.take(x, i, axis=0)` に当たる）。scatter-add はその逆向きで、値を添字の行へ足し込む（同じ添字が何度も出れば足し合わさる）。gather の転置（勾配）が scatter-add になる。embedding の引きと、その勾配に使う。
+
+**FILL_OR_DROP（範囲外の添字の扱い）**
+: JAX の gather / scatter の範囲外の添字の扱いの1つ（`jnp.take` の既定）。gather では範囲外の添字の結果を決まった値で埋め（fill）、scatter ではその更新を捨てる（drop）。埋めた結果の勾配が捨てた更新と対応するので、転置として整合する。nabla の `gather` はこの構造で、埋める値は JAX の NaN でなく 0。
+
 **形状推論（abstract-eval）**
 : 入力の `aval`（形状と dtype）とパラメタから、実際の数値を計算せずに出力の `aval` を決めること。プリミティブごとに `defprimitive` の `:abstract-eval` として書く。トレース中は実データが無いので、この計算だけで IR の各 `var` の形状・dtype を決められる。
 
