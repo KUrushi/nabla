@@ -244,6 +244,8 @@
                (:file "tests/ad/transpose-rules-test")
                ;; grad / value-and-grad（issue #86）
                (:file "tests/ad/grad-test")
+               ;; grad / value-and-grad の :has-aux（issue #260）
+               (:file "tests/ad/grad-has-aux-test")
                ;; jit とインメモリのコンパイルキャッシュ（issue #34、wave 4 j1）
                (:file "tests/jit-test")
                ;; jit キャッシュのモジュール解放・並行性・defjit の :static-args（issue #71）
