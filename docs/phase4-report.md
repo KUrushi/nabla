@@ -153,7 +153,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 
 ### 4.3 フェーズ4で見つけた IREE 3.11 のバグ
 
-詳細・最小の再現・上流への報告の下書きは `docs/iree-upstream-bugs.md`。上流への報告はまだ（#243）。
+詳細・最小の再現・上流への報告の下書きは `docs/iree-upstream-bugs.md`。上流への報告はまだ。#243 で項目 4〜8 の英語の下書きと上流の既存 issue の検索（重複と断定できる issue は無し、8 に関連の [#24753](https://github.com/iree-org/iree/issues/24753)）、`scripts/check-iree-repros.sh` の 4・5 の行を足した。起票はリポジトリのオーナー（下書き済み・未報告）。
 
 1. **local-task device で入力が 162 個以上の関数を呼ぶと NULL を参照して落ちる**（項目 6、#199）。入力の個数だけで決まり、形・演算に依らない（手書きのモジュールでも 162 個で落ちる）。`:local-sync` は動く。`nabla.iree:invoke` が呼ぶ前に `iree-too-many-inputs` を signal する（`+local-task-max-inputs+` = 161。ドライバを文字列で指定しても検査する）。もう 1 つの制限として、入力 170 個の要素ごとの加算の連鎖は、ロード時に `binding count 51 > 32` で失敗する。Advisor が、テストを 8 葉に制限して隠していたのを見つけた。根本対処は #242。
 2. **bf16 / f16 を f32 に convert した畳み込みの 2 件**（項目 4・5、#203）。(a) 転置したカーネルを convert して畳み込むと、片方の operand の dtype が元に戻ってコンパイルエラー（lhs の勾配）。(b) O/G = 1 の depthwise で `tensor.collapse_shape` の型エラー。回避策は、f32 に直した 2 入力をまとめて `stablehlo.optimization_barrier` に通してから畳み込む。f32 の emit は変わらない。「今も落ちること」を `convolution/iree-bf16-convert-conv-bugs-still-reproduce` が守る。Advisor が bf16 / f16 の lhs の勾配が落ちる（14 件）ことを見つけた。
@@ -182,7 +182,7 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 - **#240: gather プリミティブが無く、embedding が one-hot + `dot`**（§3.6）。
 - **#241: Flax との差の残り**: `use_bias`、`broadcast_dropout` の既定、conv の入力 dilation と CIRCULAR / CAUSAL・`conv_transpose`、embedding の `attend`、layer-norm の `use_scale` など、バッチ正規化 / グループ正規化。
 - **#242: jit の入力が 161 個を超えるモデルは local-task で学習できない**（葉が約 50 個を超える Adam の学習ステップ）。dtype ごとに葉を連結する案。
-- **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
+- **#243: フェーズ4の IREE のバグ（項目 4〜7）と #226 の上流への報告**（下書き済み・未報告。起票はリポジトリのオーナー）。#73（フェーズ1）と #165（フェーズ3の while のバグ 2 件）が未報告のまま残っているので、まとめて進める。
 - **#244: チェックポイントは全体をメモリに読む**。測定と判断は [checkpoint-memory.md](checkpoint-memory.md)（load は約 2 倍、save は約 3 倍。フェーズ5には遅延読み込みも世代管理も要らない（測定・判断済み。遅延読み込みは 25M パラメータ超のモデルを扱う段階で #262、fsync は #263）。データパイプラインの状態は配列だけの `defmodule` で往復する）。
 - **#245: check-it の回帰 datum の文字列のバグ**。#236 が `check-it::datum` に足した防御のメソッドの扱い。
 - **`while-loop` の逆モード（`grad`）は引き続き対応しない**（フェーズ3から）。`vmap` / `grad` の「外側のトレーサを閉包で捕まえると `tracing-error`」も変わらない。

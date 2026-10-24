@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# docs/iree-repros/ の最小再現（IREE のコンパイラのバグ。docs/iree-upstream-bugs.md）を
-# 単体の iree-compile にかけ、バグが今も再現するかを報告する。IREE を上げたときに
+# docs/iree-repros/ の最小再現（IREE 3.11 のバグ 1〜8。docs/iree-upstream-bugs.md）を
+# 単体の iree-compile / iree-run-module にかけ、バグが今も再現するかを報告する。IREE を上げたときに
 # 回避策を外せるかの最初の確認に使う（手順は docs/iree-build.md）。
 #
 # 使い方:
-#   scripts/check-iree-repros.sh             # 各ファイルを 10 回ずつコンパイルする
+#   scripts/check-iree-repros.sh             # 各ファイルを 10 回ずつコンパイル（run-* は実行も）する
 #   scripts/check-iree-repros.sh --runs 30   # 回数を変える
 #   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 4000。1 回あたり 0.4〜2% でしか起きない（負荷のもとでの実測。docs/iree-upstream-bugs.md の 7））
 #   scripts/check-iree-repros.sh --candidates --race-runs 20000   # 追加で race-candidate（下）も実行する
@@ -12,6 +12,8 @@
 # 各行の判定:
 #   bug     ファイル: 1 回でもシグナル（終了コード 128 超）で落ちれば REPRODUCED
 #   control ファイル（回避策を入れた形）: 全回コンパイルできれば OK
+#   error-bug ファイル: クラッシュではなく通常のコンパイルエラー（診断を出して終了コード 1）で
+#           落ちるバグ。1 回でも終了コードが 0 でなければ REPRODUCED（対照は control）
 #   run-bug / run-control: コンパイルした vmfb を iree-run-module で local-task device で
 #           実行する版（コンパイルは通り、実行時に落ちるバグ。入力の個数ぶんの --input を
 #           自動で作る）。判定は bug / control と同じ
@@ -75,6 +77,10 @@ CASES=(
   "control while-constant-carry-barrier.mlir"
   "bug     while-i1-carry-returned.mlir"
   "control while-i1-carry-not-returned.mlir"
+  "error-bug    conv-convert-operand-type.mlir"
+  "control      conv-convert-operand-type-barrier.mlir"
+  "error-bug    conv-depthwise-collapse-shape.mlir"
+  "control      conv-depthwise-collapse-shape-barrier.mlir"
   "run-bug     local-task-162-inputs.mlir"
   "run-control local-task-161-inputs.mlir"
   "fail-bug     if-passthrough-operands.mlir"
@@ -189,6 +195,8 @@ for entry in "${CASES[@]}"; do
   done
   if [[ "${kind}" == bug || "${kind}" == run-bug ]]; then
     if ((crashes > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
+  elif [[ "${kind}" == error-bug ]]; then
+    if ((failures > 0)); then verdict="REPRODUCED"; else verdict="NOT-REPRODUCED"; status=1; fi
   else
     if ((failures == 0)); then verdict="OK"; else verdict="FAILED"; status=1; fi
   fi
