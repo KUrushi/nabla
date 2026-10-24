@@ -43,8 +43,12 @@
 
 (defun %batch-norm-axes (axis rank)
   "AXIS（整数かリスト）から (values 特徴の軸 統計を取る軸) を、それぞれ 0 以上の昇順のリストで返す。"
-  (let* ((feature-axes (%canonical-axes "batch-norm" "axis" (%normalize-axes "batch-norm" "axis" axis) rank))
+  (let* ((axes (%normalize-axes "batch-norm" "axis" axis))
+         (feature-axes (%canonical-axes "batch-norm" "axis" axes rank))
          (reduction-axes (loop for a below rank unless (member a feature-axes) collect a)))
+    ;; (1 -1) のように同じ軸を別の書き方で2回書くと、init の features の個数と食い違う
+    (unless (= (length feature-axes) (length axes))
+      (error "batch-norm: axis ~S に同じ軸が重複している（入力の rank ~D で ~S）" axis rank feature-axes))
     (unless reduction-axes
       (error "batch-norm: 統計を取る軸が残らない（入力の rank ~D、特徴の軸 ~S）" rank feature-axes))
     (values feature-axes reduction-axes)))
