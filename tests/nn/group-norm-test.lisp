@@ -46,7 +46,7 @@ E[x^2] - E[x]^2 は f32 の桁を 1 桁ほど失い、XLA と nabla の丸めの
 を返す。BACKEND を渡すと順伝播と grad をそれぞれ jit する（medium）。"
   (let* ((x (%fx-array case "x"))
          (ct (%fx-array case "ct"))
-         (forward (nabla:with-tracing (m x) (call m x)))
+         (forward *gn-forward*)
          (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (call m x) ct))))
          (grad (nabla:grad loss :argnums '(0 1)))
          (grads (funcall (if backend (nabla:jit grad :backend backend) grad) model x ct)))
@@ -250,7 +250,7 @@ bias 0 の出力にチャンネルごとに scale を掛けて bias を足した
 
 (test group-norm/invalid-arguments-signal-errors-naming-the-layer
   "チャンネル数が群の数・群の大きさで割り切れない、num-groups と group-size の両方・どちらも無し、正の整数でない
-群の指定、正でない epsilon、rank 0 の入力、scale / bias の形がチャンネル数と違う、T / NIL でない use-scale /
+群の指定、正でない epsilon（make-group-norm で作ったものは call で）、:f32 / :f64 でない dtype、rank 0 の入力、scale / bias の形がチャンネル数と違う、T / NIL でない use-scale /
 use-bias、use-scale と scale・use-bias と bias の食い違いは、メッセージに group-norm（と原因の名前）が入った error。"
   (%is-group-norm-error (init-group-norm (nabla:prng-key 0) 6 :num-groups 4))
   (%is-group-norm-error (init-group-norm (nabla:prng-key 0) 6 :num-groups nil :group-size 4))
@@ -261,6 +261,13 @@ use-bias、use-scale と scale・use-bias と bias の食い違いは、メッ�
   (%is-group-norm-error (init-group-norm (nabla:prng-key 0) 6 :num-groups 1.5))
   (%is-group-norm-error (init-group-norm (nabla:prng-key 0) 6 :num-groups 3 :epsilon 0))
   (%is-group-norm-error (init-group-norm (nabla:prng-key 0) 0 :num-groups 1))
+  ;; scale も bias も持たないときも dtype を確かめる。make-group-norm で直接作った epsilon 0 は call で
+  (%is-group-norm-error (init-group-norm (nabla:prng-key 0) 6 :num-groups 3 :dtype :bf16 :use-scale nil :use-bias nil)
+                        "dtype")
+  (%is-group-norm-error (call (make-group-norm :scale nil :bias nil :num-groups 3 :group-size nil :epsilon 0
+                                               :use-scale nil :use-bias nil)
+                              (%rand '(2 6) 1))
+                        "epsilon")
   (let ((norm (init-group-norm (nabla:prng-key 0) 6 :num-groups 3)))
     ;; 入力のチャンネル数 4 は scale の形 (6) とも num-groups 3 とも合わない。8 は群の数 2 では割り切れるが scale・bias と違う
     (%is-group-norm-error (call norm (%rand '(2 4) 1)))
