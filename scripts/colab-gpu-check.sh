@@ -103,6 +103,26 @@ with_timeout() {
   return "${status}"
 }
 
+# remote_py_retry <回数> <秒> <コード> <期待する語>: remote_py を、出力に
+# <期待する語> が出るまで最大 <回数> 回やり直す。間は 30 秒あける。
+# 何度実行してもよいコードにだけ使う。
+remote_py_retry() {
+  local tries="$1" timeout="$2" code="$3" expect="$4" i out
+  for (( i = 1; i <= tries; i++ )); do
+    if out="$(remote_py "${timeout}" "${code}")" && grep -q "${expect}" <<< "${out}"; then
+      echo "${out}"
+      return 0
+    fi
+    echo "${out}" | tail -n 3 >&2
+    if (( i < tries )); then
+      log "colab exec が失敗した（${i}/${tries} 回目）。30 秒後にやり直す"
+      sleep 30
+    fi
+  done
+  log "colab exec が ${tries} 回続けて失敗した"
+  return 1
+}
+
 cleanup() {
   rm -rf "${WORK}"
   if [[ "${KEEP}" -eq 0 ]]; then
@@ -142,16 +162,29 @@ log "リポジトリを送る"
 colab upload -s "${SESSION}" "${WORK}/nabla.tar.gz" /content/nabla.tar.gz
 
 log "VM 上で remote-gpu-check.sh を起動する"
-remote_py 120 "
-import subprocess
-subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'
-                ' && find /content/nabla -name \"._*\" -delete'], check=True)
-open('/content/nabla/.nabla-commit', 'w').write('${COMMIT}\\n')
-p = subprocess.Popen(['bash', '-c', 'NABLA_COLAB_BENCH=${BENCH} NABLA_COLAB_BENCH_ONLY=${BENCH_ONLY} NABLA_COLAB_PROFILE=${PROFILE} NABLA_COLAB_WITH_TESTS=${WITH_TESTS} bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
-                     start_new_session=True)
-open('/content/nabla-run.pid', 'w').write(str(p.pid))
-print('started', p.pid)
-"
+# 起動のコードは何度実行してもよいように書く（すでに動いていれば起動し直さない）。
+# 作りたてのセッションでは colab exec が VM のカーネルにつなぐ前に
+# "Connection was lost." で落ちることがあり、その後 CLI が終わらずに残るので、
+# 打ち切って間を置き、やり直す（remote_py_retry）。
+remote_py_retry 3 120 "
+import os, subprocess
+def alive():
+    try:
+        os.kill(int(open('/content/nabla-run.pid').read()), 0)
+        return True
+    except Exception:
+        return False
+if alive():
+    print('started', open('/content/nabla-run.pid').read(), '(already running)')
+else:
+    subprocess.run(['bash', '-c', 'rm -rf /content/nabla /content/nabla-out && tar -C /content -xzf /content/nabla.tar.gz'
+                    ' && find /content/nabla -name \"._*\" -delete'], check=True)
+    open('/content/nabla/.nabla-commit', 'w').write('${COMMIT}\\n')
+    p = subprocess.Popen(['bash', '-c', 'NABLA_COLAB_BENCH=${BENCH} NABLA_COLAB_BENCH_ONLY=${BENCH_ONLY} NABLA_COLAB_PROFILE=${PROFILE} NABLA_COLAB_WITH_TESTS=${WITH_TESTS} bash /content/nabla/scripts/colab/remote-gpu-check.sh > /content/nabla-run.log 2>&1'],
+                         start_new_session=True)
+    open('/content/nabla-run.pid', 'w').write(str(p.pid))
+    print('started', p.pid)
+" "^started"
 
 log "終わるまで待つ（${POLL_SECONDS} 秒おき、最大 $((MAX_WAIT_SECONDS / 60)) 分）"
 # 問い合わせの出力（colab の "[colab] ..." のメッセージは標準出力に出る）は
@@ -225,11 +258,11 @@ if progress.startswith('=== [') and '] ' in progress:
 done
 
 log "ログを持ち帰る"
-remote_py 120 "
+remote_py_retry 3 120 "
 import subprocess
 subprocess.run(['bash', '-c', 'cp /content/nabla-run.log /content/nabla-out/ 2>/dev/null; tar -C /content -czf /content/nabla-out.tar.gz nabla-out'], check=True)
 print('packed')
-"
+" "^packed"
 with_timeout 900 colab download -s "${SESSION}" /content/nabla-out.tar.gz "${OUT_DIR}/nabla-out.tar.gz"
 tar -C "${OUT_DIR}" -xzf "${OUT_DIR}/nabla-out.tar.gz"
 
