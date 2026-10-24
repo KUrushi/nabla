@@ -50,6 +50,31 @@ IREE は既定で f64 を f32 に落とす（--iree-input-demote-f64-to-f32）�
                   :regression-file (regression-path "iree-jit-dtype-f64" :package "NABLA.IREE.TESTS")))
     (gc-and-run-finalizers)))
 
+(define-iree-test jit-dtype/f64-expm1-log1p-sin-cos-match-eager
+    "f64 の expm1 / log1p / sin / cos を IREE 上で jit した結果（多値の4つすべて）は、eager 実装の結果と
+allclose :dtype :f64（rtol = atol = 1e-12）で一致する。exp / log / tanh と同じく llvm-cpu は f64 版を
+libm の呼び出しとして残すので、%needs-libm-p が見つけて system library を作らせる必要がある
+（issue #223。log1p の引数は定義域内（:positive）に限る）。"
+  (skip-unless-iree :library :both)
+  (let ((backend (nabla:find-backend :iree))
+        (*num-trials* 8)
+        (nb:*compile-cache-directory* nil))
+    (is (check-it (generator (tuple (array-spec :dtypes '(:f64) :max-rank 3 :max-dim 5)
+                                     (uniform-integer :lo 0 :hi (1- (expt 2 31)))))
+                  (lambda (args)
+                    (destructuring-bind (spec seed) args
+                      (let ((f (nb:with-tracing (a p) (values (nb:expm1 a) (nb:log1p p) (sin a) (cos a))))
+                            (a (make-random-array spec :seed seed))
+                            (p (make-random-array spec :seed (+ seed 1) :domain :positive)))
+                        (unwind-protect
+                             (every (lambda (actual expected) (allclose actual expected :dtype :f64))
+                                    (multiple-value-list (funcall (nb:jit f :backend backend) a p))
+                                    (multiple-value-list (funcall f a p)))
+                          (nb::%jit-cache-forget f)))))
+                  :regression-id jit-dtype/f64-expm1-log1p-sin-cos-match-eager
+                  :regression-file (regression-path "iree-jit-dtype-f64-expm1-log1p-sin-cos" :package "NABLA.IREE.TESTS")))
+    (gc-and-run-finalizers)))
+
 (define-iree-test jit-dtype/f64-transcendentals-match-eager
     "f64 の exp / log / tanh を IREE 上で jit した結果（多値の3つすべて）は、
 eager 実装の結果と allclose :dtype :f64（rtol = atol = 1e-12）で一致する。

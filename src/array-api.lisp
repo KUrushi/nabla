@@ -228,6 +228,22 @@ dtype は同じ真偽の rank 0 の PRED を渡したときと同じ）。PRED �
 WITH-TRACING は CL の sqrt と同じく、この関数の呼び出しも書き換える。"
   (%t-rsqrt x))
 
+;;; --- expm1 / log1p（issue #223） ---
+
+(defun expm1 (x)
+  "exp(X) - 1（要素ごと）。X が小さくても桁落ちしない。X は浮動小数点の配列・トレーサ・
+数値。配列には eager 実装、トレーサには expm1 の eqn、数値には（CL に expm1 が無いので）
+eager 実装と同じ計算を使う。数値の結果は X が double-float なら double-float、それ以外は
+single-float。WITH-TRACING は CL の exp と同じく、この関数の呼び出しも書き換える。"
+  (%t-expm1 x))
+
+(defun log1p (x)
+  "log(1 + X)（要素ごと）。X が小さくても桁落ちしない。X は浮動小数点の配列・トレーサ・
+数値。配列とトレーサでは、X < -1 は NaN、X = -1 は -無限大になる（数値も同じ）。
+配列には eager 実装、トレーサには log1p の eqn を使う。WITH-TRACING は CL の log と同じく、
+この関数の呼び出しも書き換える。"
+  (%t-log1p x))
+
 ;;; --- stop-gradient（issue #80） ---
 
 (defgeneric stop-gradient (x)

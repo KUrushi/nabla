@@ -99,6 +99,8 @@
    #:convert
    #:where
    #:rsqrt
+   #:expm1
+   #:log1p
    #:stop-gradient #:value-aval
    ;; StableHLO テキスト emitter（issue #33、wave 3 s1）
    #:emit-stablehlo
@@ -178,6 +180,7 @@
    #:tree-unflatten
    #:tree-leaves
    #:tree-structure
+   #:tree-children
    #:tree-map
    #:treedef
    #:treedef-num-leaves

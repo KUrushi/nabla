@@ -36,6 +36,14 @@
 
 JAX のフィクスチャがあれば、eager 実装の結果 = JAX の結果 も確かめる。
 
+要素ごとの単項プリミティブ（expm1 / log1p / sin / cos、issue #223）には、さらに次を書く。
+
+- 特殊値（NaN・±inf・±0）を全 dtype で。出力の特殊値は IEEE 754 どおり（`expm1(-inf) = -1`、`log1p(-1) = -inf`、`log1p(x<-1) = NaN`、`sin(±inf) = NaN`、`sin(-0) = -0`）。CL の `log` や `sin` が複素数・例外を返す箇所は、直接呼んで確かめる
+- 恒等式: `log1p(expm1(x)) = x`、`expm1(log1p(y)) = y`、`sin²x + cos²x = 1`、`sin(-x) = -sin(x)`、`cos(-x) = cos(x)`、`cos(x) = sin(x + π/2)`（f64）
+- 小さい x の相対精度: `exp(x) - 1` のような素朴な参照では見えないので、別に Taylor 級数（4 項）と相対誤差で比べる。x が極小（`1 + x` が 1 になる大きさ）なら `expm1(x) = log1p(x) = x` が厳密に成り立つ
+- 導関数: jvp が中心差分と一致し（f64）、接線について線形。係数は主値・出力だけから作る（`expm1' = out + 1`、`log1p' = t/(1+x)`、`sin' = cos`、`cos' = -sin`）
+- JAX のフィクスチャは、定義域を絞る理由をコメントに書く（sin / cos は XLA の範囲縮約が大きい |x| で粗いので |x| ≤ 100）
+
 ### 自動微分（jvp† / transpose† / vjp† / grad）
 
 - `grad f` の結果 = 中心差分†（f64 で計算）の結果
@@ -388,14 +396,18 @@ check-it は失敗例を見つけると、`:regression-file` に書き出すの�
 `datum` アクセサを持つ `REGRESSION-CASE` オブジェクトとして登録される。
 
 そのため、同じ SBCL プロセス（同じ Lisp イメージ）の中で、あるテストが
-新しい失敗例を見つけて保存した「あと」に、同じテストフォームをもう一度
-評価すると、2回目の実行は `(get regression-id 'regression-cases)` の中に
-`REGRESSION-CASE` オブジェクトと生の文字列が混在した状態で
-`(datum regression-case)` を呼ぶことになり、生の文字列に対しては
-`datum` の実装（メソッド）が無いため `NO-APPLICABLE-METHOD` で落ちる。
+新しい失敗例を見つけて保存した「あと」に、同じ `:regression-id` の
+`check-it` をもう一度評価すると、`(get regression-id 'regression-cases)` の
+中の生の文字列に対して `datum` を呼び、`NO-APPLICABLE-METHOD` で落ちる。
 これは check-it 側の実装の非対称性が原因で、nabla 側のコードの不具合
-ではない。`scripts/run-tests.sh` のように毎回新しい SBCL プロセスを
-起動する通常の実行では、プロセス起動時点でこの plist が空なので問題に
-ならない。SLIME / REPL などで同じイメージのまま同じテストを何度も
-`(fiveam:run! ...)` し直すときにだけ注意する（プロセスを再起動するか、
-`(remprop 'テスト名 'check-it::regression-cases)` で一旦クリアする）。
+ではない。REPL での再実行（`fiveam:run!` のやり直し）だけでなく、
+1つのテストの中で同じ `:regression-id` の `check-it` を dtype ごとに
+ループで呼ぶ形（`tests/iree/reduce-test.lisp`、
+`tests/vmap-elementwise-test.lisp`）も、新しいプロセスで 1 回走らせる
+`scripts/run-tests.sh` / CI で、失敗が出た時点で同じ状況になる。
+
+nabla では `tests/support/regression.lisp` の `check-it::datum` の文字列の
+メソッドで回避済み。詳細と上流報告の下書きは
+[`docs/check-it-upstream-bugs.md`](../../../../docs/check-it-upstream-bugs.md)。
+補足: そのメソッドが無い環境で REPL から再実行するときは、プロセスを再起動
+するか `(remprop 'テスト名 'check-it::regression-cases)` で一旦クリアする。
