@@ -216,3 +216,117 @@ iree-run-module）。jit が連結するのは入力だけでよい根拠（issu
     (return-from iree-test))
   (is (eql 0 (%run-generated-on-local-task 1 170)))
   (is (eql 0 (%run-generated-on-local-task 2 300))))
+
+;;; --- 中間の値を持つ形は入力 161 個で落ちる（PR #268 の観察。#242 で上限を見直す）---
+
+(defun %tree-mlir (inputs ops)
+  "INPUTS 個の tensor<3xf32> を、OPS（\"add\" / \"multiply\" のリスト）ごとに平衡二分木で畳んだ値を返す main。"
+  (let ((counter 0))
+    (with-output-to-string (s)
+      (format s "module {~%func.func @main(~{%a~D: tensor<3xf32>~^, ~}) -> (~{~*tensor<3xf32>~^, ~}) {~%"
+              (loop for i below inputs collect i) ops)
+      (let ((roots
+              (loop for op in ops
+                    collect (let ((level (loop for i below inputs collect (format nil "%a~D" i))))
+                              (loop while (cdr level)
+                                    do (setf level
+                                             (loop for (x y) on level by #'cddr
+                                                   collect (if y
+                                                               (let ((name (format nil "%t~D" (incf counter))))
+                                                                 (format s "  ~A = stablehlo.~A ~A, ~A : tensor<3xf32>~%"
+                                                                         name op x y)
+                                                                 name)
+                                                               x))))
+                              (first level)))))
+        (format s "  return ~{~A~^, ~} : ~{~*tensor<3xf32>~^, ~}~%}~%}~%" roots ops)))))
+
+(defun %run-mlir-on-local-task (text inputs)
+  "TEXT を iree-compile して、iree-run-module --device=local-task で（INPUTS 個の入力で）実行した終了コード。"
+  (let ((file (uiop:tmpize-pathname #p"/tmp/nabla-242-probe.mlir"))
+        (vmfb (namestring (uiop:tmpize-pathname #p"/tmp/nabla-242-probe.vmfb"))))
+    (with-open-file (s file :direction :output :if-exists :supersede)
+      (write-string text s))
+    (unwind-protect
+         (if (zerop (nth-value 2 (uiop:run-program
+                                  (list (%iree-bin "iree-compile")
+                                        "--iree-hal-target-device=local"
+                                        "--iree-hal-local-target-device-backends=llvm-cpu"
+                                        (namestring file) "-o" vmfb)
+                                  :ignore-error-status t :output nil :error-output nil)))
+             (nth-value 2 (uiop:run-program
+                           (append (list (%iree-bin "iree-run-module")
+                                         "--device=local-task" (format nil "--module=~A" vmfb)
+                                         "--function=main")
+                                   (loop repeat inputs collect "--input=3xf32=1,2,3"))
+                           :ignore-error-status t :output nil :error-output nil))
+             :compile-failed)
+      (ignore-errors (delete-file vmfb))
+      (ignore-errors (delete-file file)))))
+
+(define-iree-test input-limit/probe-242-intermediate-values
+    "調べ（#242、一時的）: 平衡二分木（中間の値を持つ形）の入力の個数と local-task の落ち方を記録する。"
+  (skip-unless-iree :library :both)
+  (unless (and (probe-file (%iree-bin "iree-run-module"))
+               (probe-file (%iree-bin "iree-compile")))
+    (skip "iree-compile / iree-run-module が無い")
+    (return-from iree-test))
+  (dolist (ops '(("add") ("add" "multiply")))
+    (dolist (n '(150 158 159 160 161 162))
+      (let ((codes (loop repeat 5 collect (%run-mlir-on-local-task (%tree-mlir n ops) n))))
+        (format t "~&PROBE-242B ops=~{~A~^+~} inputs=~D exits=~S~%" ops n codes)))))
+
+(defparameter *tree-sum-child-source*
+  "(require :asdf)
+(asdf:load-system \"nabla/iree\")
+(defparameter *add* (nabla:with-tracing (a b) (+ a b)))
+(defun tree-sum (xs)
+  (if (null (cdr xs))
+      (car xs)
+      (let ((h (floor (length xs) 2)))
+        (funcall *add* (tree-sum (subseq xs 0 h)) (tree-sum (nthcdr h xs))))))
+(let* ((n (parse-integer (car (last sb-ext:*posix-argv*))))
+       (nabla:*compile-cache-directory* nil)
+       (arrays (loop for i below n
+                     collect (make-array 3 :element-type 'single-float
+                                           :initial-contents (list (* 0.01 i) 1.0 (- (* 0.02 i))))))
+       (f (nabla:with-tracing (xs) (tree-sum xs)))
+       (backend (nabla:make-backend :iree :target :local))
+       (actual (funcall (nabla:jit f :backend backend) arrays))
+       (expected (funcall f arrays)))
+  (format t \"RESULT=~:[MISMATCH~;OK~]~%\"
+          (every (lambda (a e) (< (abs (- a e)) 1e-3)) actual expected)))
+"
+  "子プロセスで、N 個（コマンドラインの最後の引数）の葉を平衡二分木で足す関数を local-task で jit して
+eager と比べ、RESULT=OK / MISMATCH を出す。")
+
+(defun %run-tree-sum-in-child (n)
+  "*TREE-SUM-CHILD-SOURCE* を葉 N 個で子 SBCL に流す。(values 終了コード 標準出力 標準エラー出力)。"
+  (uiop:with-temporary-file (:pathname script :prefix "nabla-242-tree-" :type "lisp" :keep t)
+    (unwind-protect
+         (progn
+           (with-open-file (stream script :direction :output :if-exists :supersede)
+             (write-string *tree-sum-child-source* stream))
+           (let* ((output (make-string-output-stream))
+                  (error-output (make-string-output-stream))
+                  (process (sb-ext:run-program
+                            "timeout"
+                            (list (princ-to-string *child-sbcl-timeout-seconds*)
+                                  "sbcl" "--non-interactive" "--load" (namestring script)
+                                  "--end-toplevel-options" (princ-to-string n))
+                            :search t :environment (%child-sbcl-environment)
+                            :output output :error error-output)))
+             (values (sb-ext:process-exit-code process)
+                     (get-output-stream-string output)
+                     (get-output-stream-string error-output))))
+      (ignore-errors (delete-file script)))))
+
+(define-iree-test input-limit/jit-on-local-task-sums-a-tree-of-leaves-past-the-boundary
+    "葉 160・161・170 個を平衡二分木で足す関数（中間の値を持つ形。入力 161 個でも local-task が落ちる。
+PR #268 の観察）を local-task で jit すると、落ちずに eager と一致する。161 個を連結せずに渡すと
+プロセスが落ちるので、子プロセスで確かめる。"
+  (skip-unless-iree :library :both)
+  (dolist (n '(160 161 170))
+    (multiple-value-bind (code output error-output) (%run-tree-sum-in-child n)
+      (is (and (eql 0 code) (search "RESULT=OK" output))
+          "葉 ~D 個: 終了コード ~S~%stdout: ~A~%stderr: ~A" n code output
+          (subseq error-output (max 0 (- (length error-output) 2000)))))))
