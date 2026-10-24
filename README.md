@@ -329,6 +329,8 @@ loss[29] = 0.4449
 
 **vmfb ディスクキャッシュ**（`src/compile-cache.lisp`、issue #10）: `*compile-cache-directory*`
 
+**アトミックで永続的なファイルの書き込み**（`src/atomic-file.lisp`、issue #263）: `with-atomic-output-file`（`(with-atomic-output-file (stream path) body...)`。同じディレクトリの一時ファイルに書き、`finish-output` → 一時ファイルの `fsync` → rename → 親ディレクトリの `fsync` の順で置き換え、絶対化した `path` を返す。本体がエラーで抜けるか、一時ファイルの `fsync`・rename が失敗すれば、一時ファイルを消して既存のファイルを変えない（rename の後に親ディレクトリを開く・`fsync` するのに失敗すれば、置き換わった後でエラーになる。ディレクトリの `fsync` に対応しない（EINVAL）ファイルシステムでは飛ばす）。正常に戻った後は、プロセスの失敗に加えて OS のクラッシュ・電源断の後も `path` は完全な新しい中身になる。ただし macOS の `fsync` はドライブの書き込みキャッシュまでは書き出さないので、電源断まで守るには `*full-fsync*` を真にする（`fcntl(F_FULLFSYNC)`。遅いので既定は `nil`。macOS 以外では効果が無い）。`write-safetensors` / `save-checkpoint` と vmfb のディスクキャッシュが使う）, `*full-fsync*`
+
 **IR と defprimitive**（`src/primitive.lisp`、`src/ir.lisp`、issue #29）: `defprimitive`, `primitive-name`, `var-aval`, `eqn-prim`, `eqn-params`, `eqn-invars`, `eqn-outvars`, `graph-invars`, `graph-eqns`, `graph-outvars`, `graph-constants`, `unknown-primitive`, `unknown-primitive-name`, `primitive-error`
 
 **graph の印字**（`src/ir-print.lisp`、issue #29）: `print-graph`（graph を jaxpr 風のテキストに変換する。読み込み側の `read-graph` はテキスト形式をフェーズ1では公開契約にしないため export しない）
@@ -639,7 +641,7 @@ sbcl --non-interactive --load examples/transformer.lisp   # 100 ステップ。�
 
 | 関数 | 役割 |
 | --- | --- |
-| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。一時ファイルへの書き込み + rename で、プロセスの失敗に対しては既存のファイルが壊れない。`fsync` はしない（OS クラッシュ・電源断は対象外） |
+| `(write-safetensors path entries &key metadata)` | `entries` を `path` に書く。`with-atomic-output-file`（一時ファイル + `fsync` + rename + ディレクトリの `fsync`）で書くので、失敗しても既存のファイルは壊れず、戻った後は OS のクラッシュ・電源断の後も完全なファイルが残る（macOS ではドライブのキャッシュまで守るには `*full-fsync*` が要る） |
 | `(read-safetensors path)` | `(values entries metadata)` |
 | `(encode-safetensors entries &key metadata)` / `(decode-safetensors octets &key path)` | ファイルを介さないバイト列版 |
 | `safetensors-error` / `-path` / `-reason` / `-detail` | 壊れた入力・不正な引数のコンディション。`reason` は `:truncated` `:header-length` `:invalid-header` `:unknown-dtype` `:size-mismatch` `:bad-offsets` `:invalid-bool` `:invalid-entries`（意味は docstring） |

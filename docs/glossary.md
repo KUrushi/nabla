@@ -119,6 +119,9 @@ pretty form を出力する。
 **batch group（batch_group_count）**
 : 畳み込みの `batch_group_count`（B）。`feature_group_count`（入力チャネルを G 個に分ける）の対になるもので、lhs のバッチ軸を連続した B 個の塊に分け、出力チャネルの B 個の塊がそれぞれ1つのバッチの塊だけを読む（出力のバッチは N/B）。ユーザーが書く畳み込みには出てこず、グループ畳み込み・depthwise（G > 1）の rhs の転置（`grad` の rhs 側）が B = G の畳み込みになる（JAX の `_conv_general_dilated_transpose_rhs`）。nabla では `convolution` プリミティブの内部のパラメタ（issue #203）。
 
+**fsync / F_FULLFSYNC**
+: `write` で書いたデータは、まず OS のメモリ（ページキャッシュ）に溜まり、ディスクへは後でまとめて書かれる。プロセスが落ちても OS が書いてくれるが、OS のクラッシュや電源断ではその分が失われる。`fsync(2)` は「このファイルの中身をディスクに届けるまで待つ」システムコール。一時ファイルに書いて rename で置き換えるときは、rename の前にファイルを、後に親ディレクトリ（rename そのものの記録）を fsync しないと、電源断の後に空か壊れたファイルが残りうる（nabla の `with-atomic-output-file`、issue #263）。macOS の `fsync` はデータをドライブに渡すだけで、ドライブ内の書き込みキャッシュまでは書き出さない。そこまで待つのが `fcntl(F_FULLFSYNC)` で、ずっと遅い（nabla では `*full-fsync*` で選ぶ）。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**

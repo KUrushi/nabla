@@ -279,3 +279,18 @@ UIOP:WITH-CURRENT-DIRECTORY で元に戻す。"
             (sb-posix:unsetenv "NABLA_CACHE_DIR")))
       (is (= 1 (%module-file-count (merge-pathnames "relcache/vmfb/" dir)))
           "<作業ディレクトリ>/../relcache/vmfb/ に .module ファイルが1つできるはず"))))
+
+(test compile-cache/backend-compile/write-fsyncs-the-file-and-the-directory
+  "キャッシュの書き込みは rename の前に一時ファイルを、後にディレクトリを fsync する
+（#263）。fsync の呼び出しは内部のフック nabla::*fsync-function* で数える。"
+  (with-temporary-directory (dir)
+    (let ((backend (nb:make-backend :fake))
+          (kinds '()))
+      (let ((nb:*compile-cache-directory* dir)
+            (nabla::*fsync-function*
+              (lambda (fd)
+                (push (if (sb-posix:s-isdir (sb-posix:stat-mode (sb-posix:fstat fd))) :directory :file)
+                      kinds))))
+        (nb:backend-compile backend +add-text+))
+      (is (equal '(:file :directory) (reverse kinds)))
+      (is (= 1 (%module-file-count dir))))))
