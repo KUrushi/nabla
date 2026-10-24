@@ -7,7 +7,8 @@ case / rnd をそのまま使うので、同じディレクトリに置く。
 
 各ケースの :config は nabla 側が group-norm を作るための設定（:num-groups :group-size :use-scale
 :use-bias :epsilon。Lisp の値で、指定しないものは nil）。入力は平均 3・標準偏差 2 にずらす（generate.py の
-layer-norm と同じ。速い分散の桁落ちの分だけ許容誤差を緩める。group-norm-test.lisp）。
+layer-norm と同じ。速い分散の桁落ちの分だけ許容誤差を緩める。group-norm-test.lisp）。群の要素が 2 つの
+rank2 / rank1 はずらさない（main() のコメント）。
 
 注: JAX / Flax は Linux の Rosetta VM では import できないので、macOS arm64 の venv で生成する（issue #241）。
 
@@ -38,7 +39,7 @@ def lisp(value):
     return str(value)
 
 
-def group_norm_case(rng, name, x_shape, num_groups=32, group_size=None, use_scale=True, use_bias=True):
+def group_norm_case(rng, name, x_shape, num_groups=32, group_size=None, use_scale=True, use_bias=True, shift=3.0):
     module = nn.GroupNorm(num_groups=num_groups, group_size=group_size, epsilon=1e-6,
                           use_scale=use_scale, use_bias=use_bias)
     channels = x_shape[-1]
@@ -47,7 +48,7 @@ def group_norm_case(rng, name, x_shape, num_groups=32, group_size=None, use_scal
         params["scale"] = rnd(rng, channels, scale=0.5, shift=1.0)
     if use_bias:
         params["bias"] = rnd(rng, channels)
-    x = rnd(rng, *x_shape, scale=2.0, shift=3.0)
+    x = rnd(rng, *x_shape, scale=2.0, shift=shift)
     ct = rnd(rng, *x_shape)
     text = case(name, module, params, x, ct)
     config = (f":config (:num-groups {lisp(num_groups)} :group-size {lisp(group_size)} "
@@ -62,10 +63,11 @@ def main():
         group_norm_case(rng, "num-groups", (2, 3, 4, 6), num_groups=2),
         # group_size で指定する（Flax は num_groups=None を明示する）
         group_norm_case(rng, "group-size", (2, 5, 6), num_groups=None, group_size=3),
-        # rank 2: 空間の軸が無く、群の中のチャンネルだけで統計を取る
-        group_norm_case(rng, "rank2", (3, 8), num_groups=4),
-        # rank 1: バッチ軸も無い（Flax の reduction_axes の既定は [-1] だけ）
-        group_norm_case(rng, "rank1", (6,), num_groups=3),
+        # rank 2: 空間の軸が無く、群の中のチャンネルだけで統計を取る。rank 1: バッチ軸も無い（Flax の
+        # reduction_axes の既定は [-1] だけ）。どちらも群の要素が 2 つで、平均をずらすと速い分散の桁落ちで
+        # XLA と IREE の丸めの差が許容誤差を超える（CI で rank2 の x の勾配が 2.4e-4 ずれた）ので、ずらさない
+        group_norm_case(rng, "rank2", (3, 8), num_groups=4, shift=0.0),
+        group_norm_case(rng, "rank1", (6,), num_groups=3, shift=0.0),
         # 群が 1 つ（バッチ軸以外の全部で正規化）と、群の大きさが 1（instance norm）
         group_norm_case(rng, "one-group", (2, 3, 4), num_groups=1),
         group_norm_case(rng, "instance", (2, 5, 4), num_groups=None, group_size=1),

@@ -9,8 +9,10 @@
 ;;;;   ときに入力のチャンネル数から決める（make-group-norm で直接作ったモジュールも同じ検査を通る）。
 ;;;; - 統計を取る軸: Flax の既定（reduction_axes = None）と同じく、先頭の軸をバッチとみなし、それ以外の軸と
 ;;;;   群の中のチャンネルで平均と分散を取る（rank 1 の入力はバッチ軸が無く、群の中のチャンネルだけ）。入力を
-;;;;   [... 群の数 群の大きさ] に reshape して layer-norm と同じ統計（%layer-norm-statistics。速い分散
-;;;;   max(mean(x^2) - mean(x)^2, 0) と rsqrt(var + epsilon)）を取り、形を戻す（Flax の jnp.repeat と同じ）。
+;;;;   [バッチ 空間... 群の数 群の大きさ] に reshape し、[バッチ 群の数 群ごとの要素数] に並べ替えて最後の軸で
+;;;;   layer-norm と同じ統計（%layer-norm-statistics。速い分散 max(mean(x^2) - mean(x)^2, 0) と
+;;;;   rsqrt(var + epsilon)）を取り、逆の並べ替えで形を戻す（Flax の jnp.repeat と同じ）。最後の軸だけを縮約する
+;;;;   のは IREE 3.11 の回避策（%group-norm-statistics）。
 ;;;;   vmap の中では内側の入力の先頭の軸がバッチになる（Flax と同じ）。Flax の reduction_axes と mask は持たない。
 ;;;; - y = (x - mean) * (rsqrt(var + epsilon) * scale) + bias（Flax の _normalize と同じ順）。scale / bias の形は
 ;;;;   (チャンネル数)。use-scale / use-bias は layer-norm と同じ規則（偽なら対応するスロットは NIL）。
@@ -39,6 +41,40 @@
   "X（配列かトレーサ）を形 SHAPE に reshape する。"
   (funcall (load-time-value (nabla:with-tracing (x shape) (nabla:reshape x shape))) x shape))
 
+(defun %group-norm-transpose (x perm)
+  "X を PERM で並べ替える（rank 1・2 の入力では恒等の並べ替えになる）。"
+  (funcall (load-time-value (nabla:with-tracing (x perm) (nabla:transpose x perm))) x perm))
+
+(defun %group-norm-layout (shape groups)
+  "入力の形 SHAPE（rank 1 以上）を GROUPS 個の群に分けるときの、(values 群に分けた形 並べ替え 統計の形)。
+群に分けた形は [バッチ 空間... 群の数 群の大きさ]（rank 1 は [群の数 群の大きさ]）、並べ替えはそれを
+[バッチ 群の数 空間... 群の大きさ] にする perm、統計の形は [バッチ 群の数 群ごとの要素数]（rank 1 は
+[群の数 群の大きさ]）。"
+  (let* ((rank (length shape))
+         (group-shape (append (butlast shape) (list groups (floor (car (last shape)) groups))))
+         (perm (if (= rank 1)
+                   '(0 1)
+                   (append (list 0 (1- rank)) (loop for axis from 1 below (1- rank) collect axis) (list rank))))
+         (lead (if (= rank 1) (list groups) (list (first shape) groups))))
+    (values group-shape perm (append lead (list (floor (reduce #'* shape) (reduce #'* lead)))))))
+
+(defun %group-norm-statistics (x groups epsilon)
+  "X の群ごとの平均と 1/sqrt(速い分散 + EPSILON) を、X の形に戻した 2 つのリスト。
+群の要素を最後の 1 軸に並べ替えてから最後の軸だけを縮約する（layer-norm の既定と同じ形）。先頭のバッチ軸と群の
+軸の間に空間の軸を挟んだまま縮約すると、IREE 3.11 で grad の jit が vector.contract の large vector sizes で
+コンパイルに失敗することがある（docs/iree-upstream-bugs.md の 9）。"
+  (let ((shape (%shape x)))
+    (multiple-value-bind (group-shape perm flat-shape) (%group-norm-layout shape groups)
+      (let* ((transposed-shape (mapcar (lambda (axis) (nth axis group-shape)) perm))
+             (inverse (loop for axis below (length perm) collect (position axis perm)))
+             (lead-rank (1- (length flat-shape))))
+        (flet ((back (y)
+                 (%group-norm-reshape (%group-norm-transpose (%group-norm-reshape y transposed-shape) inverse) shape)))
+          (mapcar #'back
+                  (%layer-norm-statistics
+                   (%group-norm-reshape (%group-norm-transpose (%group-norm-reshape x group-shape) perm) flat-shape)
+                   epsilon (list lead-rank) (loop for axis below lead-rank collect axis) (car (last flat-shape)))))))))
+
 (defun %group-norm-apply (x scale bias num-groups group-size epsilon use-scale use-bias)
   "group-norm の call の本体。X を群ごとに正規化し、SCALE / BIAS（NIL ならかけない・足さない）を適用する。"
   (%check-optional-slot "group-norm" "use-scale" use-scale "scale" scale)
@@ -50,25 +86,16 @@
     (when (zerop rank)
       (error "group-norm: 入力は rank 1 以上（最後の軸がチャンネル）でなければならない: 形 ~S" shape))
     (let* ((channels (car (last shape)))
-           (groups (%group-norm-group-count num-groups group-size channels))
-           (size (floor channels groups))
-           ;; [... 群の数 群の大きさ] の軸で、先頭（バッチ）と群の軸を残し、残りを縮約する（rank 1 は群の軸だけ残す）
-           (group-shape (append (butlast shape) (list groups size)))
-           (kept-axes (if (= rank 1) '(0) (list 0 (1- rank))))
-           ;; group-shape は rank + 1 軸なので、軸の添字は 0 から rank まで
-           (reduce-axes (loop for axis to rank unless (member axis kept-axes) collect axis))
-           (count (reduce #'* (mapcar (lambda (axis) (nth axis group-shape)) reduce-axes))))
+           (groups (%group-norm-group-count num-groups group-size channels)))
       (dolist (parameter (list (cons "scale" scale) (cons "bias" bias)))
         (when (and (cdr parameter) (not (equal (list channels) (%shape (cdr parameter)))))
           (error "group-norm: ~A の形は入力のチャンネル数 (~D) でなければならない（~A の形 ~S、入力の形 ~S）"
                  (car parameter) channels (car parameter) (%shape (cdr parameter)) shape)))
-      (destructuring-bind (mean inverse-std)
-          (%layer-norm-statistics (%group-norm-reshape x group-shape) epsilon reduce-axes kept-axes count)
+      (destructuring-bind (mean inverse-std) (%group-norm-statistics x groups epsilon)
         (let* ((feature-axes (list (1- rank)))
                (centered (funcall (load-time-value
                                    (nabla:with-tracing (x mean multiplier) (* (- x mean) multiplier)))
-                                  x (%group-norm-reshape mean shape)
-                                  (%layer-norm-multiplier (%group-norm-reshape inverse-std shape) scale feature-axes))))
+                                  x mean (%layer-norm-multiplier inverse-std scale feature-axes))))
           (if bias
               (funcall (load-time-value
                         (nabla:with-tracing (centered bias feature-axes)
