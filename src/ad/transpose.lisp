@@ -104,7 +104,7 @@ var の eqn も飛ばす。使われない定数は持ち上げたあと DCE-GRA
                                 (instantiate-zero (gethash var cts (make-symbolic-zero (var-aval var)))))
                               linear-invars))))))))
 
-(defun vjp-graph (graph &key (nonzero nil nonzero-p))
+(defun vjp-graph (graph &key (nonzero nil nonzero-p) n-cotangents)
   "GRAPH の vjp（reverse モードの微分）を計算する新しい GRAPH を CHECK-GRAPH して返す。
 GRAPH 自体は書き換えない。LINEARIZE-GRAPH で jvp を主値と線形部分に分け、線形部分を
 TRANSPOSE-GRAPH で転置して、1つの graph にまとめる（出力に効かない eqn は DCE する）。
@@ -112,15 +112,32 @@ TRANSPOSE-GRAPH で転置して、1つの graph にまとめる（出力に効�
 新しい graph の入力は、GRAPH の入力の主値に続けて、GRAPH の出力ごとの余接線（出力と同じ aval）。
 出力は、GRAPH の出力の主値に続けて、入力ごとの余接線（入力と同じ aval）。余接線が返るのは
 NONZERO（JVP-GRAPH と同じ意味。既定は浮動小数点の入力だけ）が真の入力だけで、入力の順に並ぶ。
-:I1 など接線がゼロの出力の余接線は無視される。"
-  (let* ((lin (if nonzero-p (linearize-graph graph :nonzero nonzero) (linearize-graph graph)))
+:I1 など接線がゼロの出力の余接線は無視される。
+
+N-COTANGENTS（既定は出力の個数）を渡すと、余接線を受け取るのは先頭の N-COTANGENTS 個の出力だけに
+なり、残りの出力は主値だけを返す（微分しない。その接線の計算は DCE で消える）。GRAD の :HAS-AUX が
+aux の出力に使う。"
+  (let* ((m (length (graph-outvars graph)))
+         (k (let ((k (or n-cotangents m)))
+              (unless (and (integerp k) (<= 0 k m))
+                (error 'autodiff-error
+                       :format-control "N-COTANGENTS は 0 以上 ~D 以下の整数でなければならない: ~S"
+                       :format-arguments (list m n-cotangents)))
+              k))
+         (jvp (if nonzero-p (jvp-graph graph :nonzero nonzero) (jvp-graph graph)))
+         ;; jvp の出力は 主値 m 個 ++ 接線 m 個。微分しない出力の接線を外す
+         (jvp (if (= k m)
+                  jvp
+                  (make-graph (graph-invars jvp) (graph-eqns jvp)
+                              (subseq (graph-outvars jvp) 0 (+ m k))
+                              (graph-constants jvp))))
+         (lin (%linearize-jvp-graph jvp (length (graph-invars graph)) m))
          (transposed (transpose-graph (linearization-linear-graph lin) (linearization-n-residuals lin)))
-         (primal (linearization-primal-graph lin))
-         (m (linearization-n-outputs lin)))
+         (primal (linearization-primal-graph lin)))
     (dce-graph
      (%call-with-fresh-trace
       (append (mapcar #'var-aval (graph-invars graph))
-              (mapcar #'var-aval (graph-outvars graph)))
+              (mapcar #'var-aval (subseq (graph-outvars graph) 0 k)))
       (lambda (&rest tracers)
         (let* ((n (length (graph-invars graph)))
                (primal-results (inline-graph primal (subseq tracers 0 n)))
