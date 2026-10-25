@@ -223,7 +223,7 @@ x_max は最大値の集合 M（同点を含む）の平均 peak + sum_M(x - pea
   (%check-bias-slot "dense" use-bias bias)
   (%add-bias (funcall (load-time-value (nabla:with-tracing (x kernel) (nabla:dot x kernel))) x kernel) bias))
 
-(defmodule dense (kernel bias (use-bias :static))
+(defmodule dense (kernel bias (use-bias :static :default t))
   (:init (key in-features out-features &key (dtype :f32) (use-bias t))
    (%check-use-bias "dense" use-bias)
    (make-dense :kernel (%lecun-normal key in-features out-features dtype)
@@ -306,8 +306,8 @@ _canonicalize_axes）。範囲外は error。"
                      centered bias feature-axes)
             centered)))))
 
-(defmodule layer-norm (scale bias (epsilon :static) (use-scale :static) (use-bias :static)
-                             (reduction-axes :static) (feature-axes :static))
+(defmodule layer-norm (scale bias (epsilon :static) (use-scale :static :default t) (use-bias :static :default t)
+                             (reduction-axes :static :default (list -1)) (feature-axes :static :default (list -1)))
   (:init (key features &key (dtype :f32) (epsilon (if (eq dtype :f64) 1d-6 1f-6)) (use-scale t) (use-bias t)
                          (reduction-axes -1) (feature-axes -1))
    (declare (ignore key))
