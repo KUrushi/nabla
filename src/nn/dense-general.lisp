@@ -42,7 +42,7 @@
                 (and bias (nabla:reshape bias (list out-size))))
      (append batch features))))
 
-(defmodule dense-general (kernel bias (contract-axes :static) (use-bias :static))
+(defmodule dense-general (kernel bias (contract-axes :static) (use-bias :static :default t))
   (:init (key in-shape features &key (dtype :f32) (use-bias t))
    (%check-use-bias "dense-general" use-bias)
    (let ((in-shape (if (listp in-shape) in-shape (list in-shape)))

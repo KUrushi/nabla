@@ -365,6 +365,17 @@ differ: not restored to SBCL's own handler. output:~%~A"
     (is (equal (compile-flags :cuda :cuda-arch "sm_80")
                (compile-flags :cuda :cuda-arch "sm_80" :system-library t)))))
 
+(fiveam:test (compiler/compile-flags/both-targets-disable-multi-use-fusion :suite :nabla.small)
+  ":local と :cuda のどちらのフラグにも --iree-dispatch-creation-fuse-multi-use=false が入る
+（issue #264、docs/iree-upstream-bugs.md の 10。:local は binding の上限 32、:cuda は CUDA の dispatch の
+上限 16 に、要素ごとの連鎖の融合が当たるため）。"
+  (dolist (flags (list (compile-flags :local)
+                       (compile-flags :local :system-library t)
+                       (compile-flags :cuda)
+                       (compile-flags :cuda :cuda-arch "sm_75")))
+    (is (member "--iree-dispatch-creation-fuse-multi-use=false" flags :test #'string=)
+        "フラグが無い: ~S" flags)))
+
 (fiveam:test (compiler/needs-libm-p/only-f64-transcendentals :suite :nabla.small)
   "単項演算1つ（- / exp / log / tanh / expm1 / log1p / sin / cos）を浮動小数点の dtype でトレースした
 graph の emit-stablehlo の結果に %needs-libm-p が真を返すのは、dtype が

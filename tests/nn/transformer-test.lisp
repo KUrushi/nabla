@@ -7,7 +7,7 @@
 ;;;; 守らせる性質:
 ;;;; - small: モデル全体が因果的（位置 i のロジットは、位置 i より後のトークンを変えても変わらず、位置 i
 ;;;;   のトークンを変えると変わる）。パス名は Flax と同じ。データの部品（コピーの系列と、損失の印のついた
-;;;;   one-hot）。jit する学習ステップの入力の葉の数は IREE local-task の上限（161）に収まる。
+;;;;   one-hot）。jit する学習ステップの入力の葉の数は IREE local-task の上限（160）に収まる。
 ;;;; - medium（IREE local）: Flax + Optax と、損失（20 ステップ）、1 ステップ後・5 ステップ後のパラメータが
 ;;;;   f32 の許容誤差で一致する。損失が下がる（100 ステップで最初の 5% 未満）。同じ入力から同じ損失の
 ;;;;   列になる（決定的）。学習の途中で保存・復元（モデル + オプティマイザの状態を1つの木で1ファイル）
@@ -82,7 +82,7 @@
 
 (test (transformer/paths-match-flax-and-leaf-count-fits-iree :suite :nabla.small)
   "チェックポイントのパス名は Flax の flatten_dict と同じ（blocks_<i> は blocks.<i>）。学習ステップの
-jit の入力 = パラメータ + mu + nu + count + バッチは、IREE local-task の上限（161）に収まる。"
+jit の入力 = パラメータ + mu + nu + count + バッチは、IREE local-task の上限（160）に収まる。"
   (let* ((model (%tf "MAKE-EXAMPLE-TRANSFORMER"))
          (paths (tree-paths model))
          (optimizer (%tf "MAKE-OPTIMIZER"))
@@ -95,7 +95,7 @@ jit の入力 = パラメータ + mu + nu + count + バッチは、IREE local-ta
       ;; jit の入力の数 = モデルの葉 + 状態の葉 + バッチ（トークンと正解）
       (let ((inputs (length (nabla:tree-leaves (list model state tokens targets)))))
         (is (= (+ (length paths) (* 2 (length paths)) 1 2) inputs))
-        (is (< inputs 162) "jit の入力が ~D 個で、IREE local-task の上限（161）を超える" inputs)))))
+        (is (<= inputs 160) "jit の入力が ~D 個で、IREE local-task の上限（160）を超える" inputs)))))
 
 (test (transformer/copy-batch :suite :nabla.small)
   "コピーの系列は x1..xN SEP x1..xN で SEP は区切りだけに現れる。バッチのトークンは系列の先頭 2N 個、
@@ -319,3 +319,71 @@ Adam）は、Flax + Optax と 20 ステップの損失、1 ステップ後・5 �
                  (read-from-string text nil nil :start (+ final-at (length "final loss = "))))
                (let ((*read-default-float-format* 'single-float))
                  (read-from-string text nil nil :start (+ first-at (length "loss[0] = "))))))))))
+
+;;; --- 葉が local-task の入力の上限を超える深いモデル（issue #242）---
+
+(defparameter *deep-transformer-layers* 4
+  "ブロック 4 つで、パラメータの葉は 70 個。学習ステップの入力は 70 * 3 + 1 + 2 = 213 個で、IREE local-task の
+上限（160）を超える（jit が dtype ごとに連結して渡す）。")
+
+(defun %tf-step-function (optimizer)
+  "MAKE-TRAIN-STEP と同じ学習ステップの TRACEABLE-FUNCTION（jit しない。eager でも呼べる）。"
+  (let ((value-and-grad (nabla:value-and-grad
+                         (nabla:with-tracing (model tokens targets) (%tf "TRANSFORMER-LOSS" model tokens targets)))))
+    (nabla:with-tracing (model opt-state tokens targets)
+      (multiple-value-bind (loss grads) (funcall value-and-grad model tokens targets)
+        (multiple-value-bind (updates new-state) (optimizer-update optimizer grads opt-state model)
+          (values loss (apply-updates model updates) new-state))))))
+
+(test (transformer/deep-model-exceeds-the-local-task-input-limit :suite :nabla.small)
+  "深いモデル（ブロック 4 つ）の学習ステップの入力の葉は 161 個以上（medium のテストが上限を超える形を確かめるための前提）。"
+  (let* ((optimizer (%tf "MAKE-OPTIMIZER"))
+         (model (%tf "MAKE-EXAMPLE-TRANSFORMER" :num-layers *deep-transformer-layers*)))
+    (multiple-value-bind (tokens targets) (%tf "SEQUENCES->BATCH" (%tf-training-sequences 0))
+      (is (> (length (nabla:tree-leaves (list model (optimizer-init optimizer model) tokens targets))) 160)))))
+
+(test (transformer/deep-model-past-the-input-limit-trains-on-iree-local-task :suite :nabla.medium)
+  "入力の葉が 213 個の学習ステップを IREE の local-task で jit すると（葉は dtype ごとに連結される）、2 ステップの
+損失とパラメータが eager と一致する（rtol 1e-4 / atol 1e-5。attn.key.bias は勾配が数学的に 0 なので、Flax との比較と
+同じく |差| <= 2 * 学習率 * ステップ数 で見る）。続けて 30 ステップで損失が下がる（最後 < 最初）。ステップ時間は local-sync
+（連結しない）と並べて出力に書く（目安。値は検査しない。docs/jit-input-packing.md）。"
+  (when (%layers-require-iree-or-skip)
+    (let* ((nabla:*compile-cache-directory* nil)
+           (learning-rate 1d-2)
+           (optimizer (%tf "MAKE-OPTIMIZER" :learning-rate learning-rate))
+           (step-fn (%tf-step-function optimizer))
+           (backend (nabla:make-backend :iree :target :local))
+           (step (nabla:jit step-fn :backend backend))
+           (model (%tf "MAKE-EXAMPLE-TRANSFORMER" :num-layers *deep-transformer-layers*))
+           (state (optimizer-init optimizer model)))
+      (is (eql 160 (nabla:backend-max-inputs backend)))
+      (multiple-value-bind (jit-losses jit-model) (%tf-run-steps step model state #'%tf-training-sequences 0 2)
+        (multiple-value-bind (eager-losses eager-model)
+            (%tf-run-steps step-fn model state #'%tf-training-sequences 0 2)
+          (loop for a across jit-losses for b across eager-losses for k from 0
+                do (is (allclose (%scalar a) (%scalar b) :dtype :f32 :rtol 1d-4 :atol 1d-5)
+                       "ステップ ~D の損失が eager と一致しない: ~S と ~S" k a b))
+          (multiple-value-bind (ok worst worst-key-bias) (%compare-params jit-model eager-model)
+            (format t "~&deep transformer: 2 ステップ後のパラメータの eager との最大の差 ~,3E、attn.key.bias は ~,3E~%"
+                    worst worst-key-bias)
+            (is (not (null ok)) "パラメータ（key.bias 以外）が eager と一致しない（最大の差 ~,3E）" worst)
+            (is (<= worst-key-bias (* 2 learning-rate 2))))))
+      (let* ((start (get-internal-real-time))
+             (losses (%tf-run-steps step model state #'%tf-training-sequences 0 30))
+             (packed-ms (* 1000 (/ (%seconds-since start) 30)))
+             (sync-step (nabla:jit step-fn :backend (nabla:make-backend :iree :target :local :driver :local-sync))))
+        (is (< (aref losses 29) (aref losses 0)) "損失が下がらない: ~S → ~S" (aref losses 0) (aref losses 29))
+        ;; ホストでの連結だけの時間（1 ステップの入力 213 個を dtype ごとに 1 本にする）
+        (multiple-value-bind (tokens targets) (%tf "SEQUENCES->BATCH" (%tf-training-sequences 0))
+          (let* ((leaves (nabla:tree-leaves (list model state tokens targets)))
+                 (avals (mapcar #'nabla:value-aval leaves))
+                 (plan (nabla::%jit-pack-plan avals 160))
+                 (start (get-internal-real-time)))
+            (dotimes (i 100) (nabla::%jit-pack-leaves plan leaves (nabla::%jit-packed-avals plan avals)))
+            (format t "~&deep transformer: ホストでの連結 ~,3F ms/ステップ（入力 ~D 個 → ~D 個）~%"
+                    (* 1000 (/ (%seconds-since start) 100)) (length leaves) (length plan))))
+        (%tf-run-steps sync-step model state #'%tf-training-sequences 0 1) ; コンパイル
+        (let ((start (get-internal-real-time)))
+          (%tf-run-steps sync-step model state #'%tf-training-sequences 0 30)
+          (format t "~&deep transformer: local-task（連結）~,1F ms/ステップ、local-sync（連結しない）~,1F ms/ステップ~%"
+                  packed-ms (* 1000 (/ (%seconds-since start) 30))))))))

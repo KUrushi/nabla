@@ -110,7 +110,7 @@
 ;;; --- モジュール ---
 
 (defmodule conv (kernel bias (strides :static) (padding :static) (kernel-dilation :static)
-                          (feature-group-count :static) (use-bias :static))
+                          (feature-group-count :static) (use-bias :static :default t))
   (:init (key in-features out-features kernel-size
           &key (strides 1) (padding :same) (kernel-dilation 1) (feature-group-count 1) (dtype :f32)
             (use-bias t))
