@@ -623,6 +623,8 @@
                ;; オプティマイザ（Optax 相当、issue #205）
                (:file "tests/nn/optimizer-test")
                (:file "tests/nn/optimizer-train-test")
+               ;; apply-updates は :state を素通しする（issue #260）
+               (:file "tests/nn/optimizer-state-test")
                ;; defmodule のモジュールを scan の carry・ys にする（issue #201）
                (:file "tests/nn/module-control-test")
                ;; dense-general と attention のマスクの部品（issue #208）

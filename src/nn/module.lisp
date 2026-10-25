@@ -60,11 +60,25 @@
                           (declare (ignore name))
                           (if (eq kind :static) (pop aux) (pop children)))))
 
+(defun %map-registered-children (function tree &rest more-trees)
+  "TREE が defmodule でない defpytree の節なら、直下の子（と MORE-TREES の同じ位置の子）に FUNCTION をかけた
+子で組み立て直した同じ形の節を返す（補助データはそのまま）。葉なら TREE そのもの。MAP-STATE と
+APPLY-UPDATES が、自前の構造体で包んだモデルの中の :state まで歩くのに使う。"
+  (multiple-value-bind (children aux node-p) (nabla:tree-children tree)
+    (declare (ignore aux))
+    (if node-p
+        (let ((new-children (apply #'mapcar function children
+                                   (mapcar (lambda (other) (nth-value 0 (nabla:tree-children other))) more-trees))))
+          ;; 子の形は変わらないので、元の treedef に新しい子の葉を並べて戻す
+          (nabla:tree-unflatten (nabla:tree-structure tree) (mapcan #'nabla:tree-leaves new-children)))
+        tree)))
+
 (defun map-state (function tree)
   "TREE（モジュールを入れ子にしたリスト・ベクタ・モジュール）の :state のスロットの葉すべてに
-FUNCTION をかけた同じ形の木を返す。たどるのはリスト・simple-vector・defmodule のモジュール
-だけで（defpytree で登録した別の節の中は見ない）、:param と :static のスロットは（サブモジュールの
-中の :state を除いて）そのまま共有する。学習しない状態を grad から外すのに使う:
+FUNCTION をかけた同じ形の木を返す。リスト・simple-vector・defmodule のモジュールに加えて、defpytree で
+登録した別の節（モデルを包む自前の構造体など）の子もたどる（issue #260）。:param と :static のスロットは
+（サブモジュールの中の :state を除いて）そのまま共有する。FUNCTION は葉を葉に写す（形を変える関数は
+登録した節の中では組み立て直せない）。学習しない状態を grad から外すのに使う:
 \(map-state #'nabla:stop-gradient model)。"
   (cond ((listp tree) (mapcar (lambda (child) (map-state function child)) tree))
         ((simple-vector-p tree)
@@ -77,7 +91,7 @@ FUNCTION をかけた同じ形の木を返す。たどるのはリスト・simpl
                                 (:state (nabla:tree-map function value))
                                 (:param (map-state function value))
                                 (t value))))))
-        (t tree)))
+        (t (%map-registered-children (lambda (child) (map-state function child)) tree))))
 
 (defgeneric call (module &rest arguments)
   (:documentation "MODULE を ARGUMENTS に適用する。defmodule の (:call (self ...) body) が
