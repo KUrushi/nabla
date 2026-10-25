@@ -73,6 +73,10 @@
    #:conv-kernel-dilation #:conv-feature-group-count #:conv-use-bias
    ;; #260 group-norm
    #:group-norm #:make-group-norm #:init-group-norm #:group-norm-scale #:group-norm-bias
-   #:group-norm-num-groups #:group-norm-group-size #:group-norm-epsilon #:group-norm-use-scale #:group-norm-use-bias)
+   #:group-norm-num-groups #:group-norm-group-size #:group-norm-epsilon #:group-norm-use-scale #:group-norm-use-bias
+   ;; #260 batch-norm（call は (values 出力 新しいモジュール) を返す）
+   #:batch-norm #:make-batch-norm #:init-batch-norm #:batch-norm-scale #:batch-norm-bias
+   #:batch-norm-mean #:batch-norm-var #:batch-norm-momentum #:batch-norm-epsilon #:batch-norm-axis
+   #:batch-norm-use-scale #:batch-norm-use-bias)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv、group-norm。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv、group-norm、batch-norm。"))
