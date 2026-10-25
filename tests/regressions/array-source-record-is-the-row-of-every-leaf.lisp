@@ -1,0 +1,3 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME ARRAY-SOURCE/RECORD-IS-THE-ROW-OF-EVERY-LEAF :DATUM
+                 "(421973 0)" :TIMESTAMP 4001840576)

@@ -1,0 +1,3 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME ARRAY-SOURCE/INDEX-OUT-OF-RANGE-IS-REPORTED :DATUM
+                 "(0 0)" :TIMESTAMP 4001840576)
