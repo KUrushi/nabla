@@ -98,6 +98,10 @@ STATIC-ARGS は FN の仮引数リストへの0始まりの位置のリスト。
 aval と動的引数の treedef が入る（木の形が違えば別のコンパイル）。戻り値は FN の戻り値と
 同じ形（多値は多値、木は同じ形の木）で、葉は host 配列。
 
+葉の個数が実行系の入力の上限（BACKEND-MAX-INPUTS）を超えるときだけ、同じ dtype の葉を
+ホストで 1 本の 1 次元配列に連結して渡し、コンパイルする関数の先頭で葉に戻す（issue #242。
+device array の葉はいったん TO-HOST する）。上限の内側では連結しない。
+
 BACKEND は NIL（呼び出し時に *DEFAULT-BACKEND* を使う）・BACKEND の
 KIND（keyword）・BACKEND のインスタンスのいずれか。
 
@@ -132,11 +136,14 @@ FN が TRACEABLE-FUNCTION でない、STATIC-ARGS が不正（整数でない・
         (setf (aref result position) (pop dynamic-values))))
     (coerce result 'list)))
 
-(defun %jit-trace (fn avals static-positions static-values in-treedef)
+(defun %jit-trace (fn avals static-positions static-values in-treedef &optional plan)
   "FN（TRACEABLE-FUNCTION）を、STATIC-POSITIONS の引数を STATIC-VALUES に
 固定した上で、残りの動的引数の木（IN-TREEDEF は動的引数の木のリストの treedef）の
 葉を AVALS（葉の個数だけの長さ）でトレースし、(VALUES GRAPH 戻り値の treedef) を返す。
 戻り値の treedef は FN の戻り値（多値）をリストにした形で、%UNFLATTEN-RESULTS が使う。
+
+PLAN（%JIT-PACK-PLAN）を渡すと、GRAPH の入力は葉ではなく dtype ごとに連結したバッファ
+（%JIT-PACKED-AVALS）になり、本体の先頭で葉を切り出す（issue #242）。
 
 STATIC-POSITIONS の引数はトレース対象の本体には普通の Lisp の値として
 渡る（クロージャに閉じ込める。トレーサにはしない）ので、本体の中で
@@ -146,11 +153,84 @@ STATIC-POSITIONS の引数はトレース対象の本体には普通の Lisp の
                    (apply (%traceable-function-function fn)
                           (%jit-merge-args arity static-positions static-values dynamic-args)))))
     (multiple-value-bind (flat out-treedef) (%flatten-function merged in-treedef)
-      (let ((graph (trace-to-graph
-                    (%make-traceable-function (loop repeat (length avals) collect (gensym "LEAF"))
-                                              flat)
-                    avals)))
+      (let* ((traced-avals (if plan (%jit-packed-avals plan avals) avals))
+             (graph (trace-to-graph
+                     (%make-traceable-function
+                      (loop repeat (length traced-avals) collect (gensym "LEAF"))
+                      (if plan
+                          (lambda (&rest buffers) (apply flat (%jit-unpack-leaves plan avals buffers)))
+                          flat))
+                     traced-avals)))
         (values graph (funcall out-treedef))))))
+
+;;; --- 入力の連結（issue #242） ---
+;;;
+;;; 葉の個数が BACKEND-MAX-INPUTS を超えるときだけ、同じ dtype の葉を row-major の順に
+;;; 1 本の 1 次元バッファへ連結して渡し、graph の先頭の slice と reshape で葉に戻す。
+;;; 常に連結しないのは、上限の内側の関数の StableHLO（とディスクキャッシュ）を変えないため。
+
+(defun %jit-pack-plan (avals limit)
+  "葉の個数（AVALS の長さ）が LIMIT（BACKEND-MAX-INPUTS。NIL は上限なし）を超えるときだけ、
+連結の計画を返す。計画は、dtype の初出順に並べた (DTYPE . その dtype の葉の位置の昇順のリスト)
+のリスト。超えなければ NIL。dtype の種類の数がそれでも LIMIT を超えるなら JIT-ERROR。"
+  (when (and limit (> (length avals) limit))
+    (let ((groups nil))
+      (loop for aval in avals
+            for position from 0
+            for group = (assoc (aval-dtype aval) groups)
+            do (if group
+                   (push position (cdr group))
+                   (push (list (aval-dtype aval) position) groups)))
+      (when (> (length groups) limit)
+        (%jit-error "葉の dtype の種類 ~D が実行系の入力の上限 ~D を超えるので、連結しても呼べない"
+                    (length groups) limit))
+      (nreverse (mapcar (lambda (group) (cons (car group) (reverse (cdr group)))) groups)))))
+
+(defun %jit-packed-avals (plan avals)
+  "PLAN の各 dtype のバッファの aval（1 次元。長さはその dtype の葉の要素数の和）のリスト。"
+  (let ((avals (coerce avals 'vector)))
+    (mapcar (lambda (group)
+              (make-aval (list (reduce #'+ (cdr group) :key (lambda (i) (aval-size (aref avals i)))))
+                         (car group)))
+            plan)))
+
+(defun %jit-pack-leaves (plan leaves buffer-avals)
+  "LEAVES（配列または device array）を PLAN どおりに連結した、dtype ごとのホストの 1 次元配列の
+リストを返す。BUFFER-AVALS は %JIT-PACKED-AVALS。device array は TO-HOST してから連結する
+（連結はホストで行う）。"
+  (let ((leaves (coerce leaves 'vector)))
+    (loop for group in plan
+          for buffer-aval in buffer-avals
+          collect (let ((buffer (make-array (aval-shape buffer-aval)
+                                            :element-type (dtype-element-type (car group))))
+                        (offset 0))
+                    (dolist (position (cdr group) buffer)
+                      (let ((leaf (aref leaves position)))
+                        (let ((host (if (arrayp leaf) leaf (to-host leaf))))
+                          (if (typep host 'simple-array)
+                              (replace buffer (sb-ext:array-storage-vector host) :start1 offset)
+                              (dotimes (i (array-total-size host))
+                                (setf (aref buffer (+ offset i)) (row-major-aref host i))))
+                          (incf offset (array-total-size host)))))))))
+
+(defun %jit-unpack-leaves (plan avals buffers)
+  "トレース中に、PLAN どおりに連結した BUFFERS（トレーサ）から葉を slice と reshape で切り出し、
+元の順の葉（AVALS の形）のリストにして返す。%JIT-PACK-LEAVES の逆。"
+  (let ((avals (coerce avals 'vector))
+        (leaves (make-array (length avals))))
+    (loop for group in plan
+          for buffer in buffers
+          do (let ((offset 0))
+               (dolist (position (cdr group))
+                 (let* ((aval (aref avals position))
+                        (end (+ offset (aval-size aval))))
+                   (setf (aref leaves position)
+                         (%trace-eqn :reshape
+                                     (list (%trace-eqn :slice (list buffer)
+                                                       :start (list offset) :limit (list end)))
+                                     :shape (aval-shape aval)))
+                   (setf offset end)))))
+    (coerce leaves 'list)))
 
 ;;; --- 引数から aval を求める ---
 
@@ -247,7 +327,7 @@ FN への参照は持たない（FN の finalizer がこの構造体を捕まえ
   (entries (make-hash-table :test 'equal))
   (pending (make-hash-table :test 'equal)))
 
-(defun %jit-cache-key (backend avals static-values treedef)
+(defun %jit-cache-key (backend avals static-values treedef &optional max-inputs)
   "%JIT-FUNCTION-CACHE の ENTRIES（EQUAL）に使うキーを返す。AVALS は動的引数の
 葉の AVAL のリスト（構造体は EQUAL が EQ 相当になってしまうため、(shape dtype) の
 リストに正規化する）、TREEDEF は動的引数の木のリストの treedef（#199。同じ aval の
@@ -255,12 +335,16 @@ FN への参照は持たない（FN の finalizer がこの構造体を捕まえ
 BACKEND インスタンス自体は EQUAL の中で EQ 比較される。
 BACKEND-FINGERPRINT も含めるのは、同じ BACKEND インスタンスでもコンパイル
 フラグ等が呼び出しごとに変わりうるため（design tab の「ターゲット（GPU
-世代を含む）」の文言）。"
+世代を含む）」の文言）。
+MAX-INPUTS は BACKEND-MAX-INPUTS の値。入力の連結の計画（%JIT-PACK-PLAN）は AVALS とこれだけで
+決まるので、これをキーに入れれば、BACKEND-MAX-INPUTS が BACKEND の状態で変わる実装でも
+連結の有無の違う graph を取り違えない（issue #242）。"
   (list backend
         (backend-fingerprint backend)
         (mapcar (lambda (aval) (list (aval-shape aval) (aval-dtype aval))) avals)
         (treedef-spec treedef)
-        static-values))
+        static-values
+        max-inputs))
 
 (defun %jit-unload-entries (cache)
   "CACHE（%JIT-FUNCTION-CACHE）の全エントリの MODULE を、キーに含まれる
@@ -411,7 +495,8 @@ JIT-COMPILE-ERROR などで非局所脱出しても、UNWIND-PROTECT が KEY の
           entry))))
 
 (defun %jit-eager-fallback (graph leaves out-treedef)
-  "GRAPH を LEAVES（動的引数の葉。配列または device array のリスト）に対して
+  "GRAPH を LEAVES（GRAPH の入力。動的引数の葉、連結したときは dtype ごとのバッファ（issue #242）。
+配列または device array のリスト）に対して
 EVAL-GRAPH で評価し、OUT-TREEDEF の形の戻り値（多値）にして返す（USE-EAGER リスタートの
 本体。device array は先に TO-HOST してから渡す）。"
   (%unflatten-results
@@ -466,14 +551,19 @@ EVAL-GRAPH で読み替えたり、実行をやり直したりする意味が無
         (let* ((backend (%jit-resolve-backend jitted))
                (leaves (mapcar #'%jit-leaf-array leaves))
                (avals (mapcar #'%jit-argument-aval leaves))
-               (key (%jit-cache-key backend avals static-values in-treedef))
+               (max-inputs (backend-max-inputs backend))
+               (plan (%jit-pack-plan avals max-inputs))
+               (key (%jit-cache-key backend avals static-values in-treedef max-inputs))
+               ;; 実行系に渡す入力。連結するなら dtype ごとのバッファ（issue #242）
+               (input-avals (if plan (%jit-packed-avals plan avals) avals))
+               (inputs (if plan (%jit-pack-leaves plan leaves input-avals) leaves))
                ;; 最後にトレースした graph と戻り値の treedef。コンパイルに失敗したら、
                ;; それが USE-EAGER で評価する graph になる（トレースし直さない）。
                (traced-graph nil)
                (traced-out-treedef nil)
                (graph-thunk (lambda ()
                               (multiple-value-bind (graph out-treedef)
-                                  (%jit-trace fn avals static-positions static-values in-treedef)
+                                  (%jit-trace fn avals static-positions static-values in-treedef plan)
                                 (setf traced-graph graph
                                       traced-out-treedef out-treedef)
                                 (values graph out-treedef))))
@@ -485,14 +575,14 @@ EVAL-GRAPH で読み替えたり、実行をやり直したりする意味が無
                             (return-from %jit-call
                               (progn
                                 (unless traced-graph (funcall graph-thunk))
-                                (%jit-eager-fallback traced-graph leaves traced-out-treedef))))
+                                (%jit-eager-fallback traced-graph inputs traced-out-treedef))))
                           (recompile ()
                             :report "もう一度コンパイルする"
                             nil)))))
           ;; 実行が終わるまで FN を生かしておく（FN が GC されると、その
           ;; finalizer が実行中の module を BACKEND-UNLOAD してしまう）。
           (sb-sys:with-pinned-objects (fn)
-            (%jit-execute backend (%jit-entry-module entry) leaves avals
+            (%jit-execute backend (%jit-entry-module entry) inputs input-avals
                           (%jit-entry-out-treedef entry))))))))
 
 ;;; --- defjit（issue #34、wave 4 j2） ---
