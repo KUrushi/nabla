@@ -1,0 +1,3 @@
+(in-package #:nabla.tests)
+(REGRESSION-CASE :NAME GATHER/VJP-IS-SCATTER-ADD-AND-BACK :DATUM "0" :TIMESTAMP
+                 4001824792)

@@ -83,26 +83,60 @@ FUNCTION をかけた同じ形の木を返す。たどるのはリスト・simpl
   (:documentation "MODULE を ARGUMENTS に適用する。defmodule の (:call (self ...) body) が
 メソッドを定義する。モジュールは自分のパラメータを持つ純粋関数で、状態を書き換えない。"))
 
+(defun %parse-slot-spec (name spec)
+  "SLOT-SPEC 1つを (values スロット名 種類 既定値のフォームのリスト) にする。既定値のリストは
+:default が無ければ NIL、あれば (フォーム)。:default は :static のスロットにだけ書ける（issue #261）。"
+  (let ((spec (if (consp spec) spec (list spec))))
+    (destructuring-bind (slot &optional (kind :param) &rest options) spec
+      (unless (and (symbolp slot) slot (member kind '(:param :state :static))
+                   (or (null options) (and (eq (first options) :default) (= (length options) 2))))
+        (error "defmodule ~S: スロットは 名前 か (名前 [:param|:state|:static]) か (名前 :static :default フォーム): ~S"
+               name spec))
+      (when (and options (not (eq kind :static)))
+        (error "defmodule ~S: :default は :static のスロットにだけ書ける（:param / :state の葉は形が決まらない）: ~S"
+               name spec))
+      (values slot kind (rest options)))))
+
 (defun %parse-module-slots (name slot-specs)
+  "SLOT-SPECS を宣言順の ((スロット名 . 種類) ...) にする。"
   (let ((slots (loop for spec in slot-specs
-                     for (slot kind) = (let ((spec (if (consp spec) spec (list spec))))
-                                         (if (cdr spec) spec (list (first spec) :param)))
-                     do (unless (and (symbolp slot) slot (member kind '(:param :state :static))
-                                     (or (atom spec) (<= (length spec) 2)))
-                          (error "defmodule ~S: スロットは 名前 か (名前 [:param|:state|:static]): ~S" name spec))
-                     collect (cons slot kind))))
+                     collect (multiple-value-bind (slot kind) (%parse-slot-spec name spec)
+                               (cons slot kind)))))
     (let ((names (mapcar #'car slots)))
       (unless (= (length names) (length (remove-duplicates names)))
         (error "defmodule ~S: スロット名が重複している: ~S" name names)))
     slots))
+
+(defun %module-slot-defaults (name slot-specs)
+  "SLOT-SPECS のうち :default のあるスロットの ((スロット名 . 既定値のフォーム) ...)。"
+  (loop for spec in slot-specs
+        nconc (multiple-value-bind (slot kind default) (%parse-slot-spec name spec)
+                (declare (ignore kind))
+                (and default (list (cons slot (first default)))))))
+
+(defun %constructor-key-specs (constructor slots defaults)
+  "コンストラクタ CONSTRUCTOR の &key の指定を作る。DEFAULTS にあるスロットは既定値のフォーム、
+無いスロットは省略したら error にするフォームを初期値にする。"
+  (loop for (slot) in slots
+        for default = (assoc slot defaults)
+        collect `(,slot ,(if default
+                             (cdr default)
+                             `(error "~S: ~S は必須" ',constructor ',slot)))))
 
 (defmacro defmodule (name slot-specs &rest clauses)
   "モジュール NAME を定義する。SLOT-SPECS は (スロット名 種類) のリスト（種類は :param
 \(学習するパラメータ・サブモジュール・そのリスト。省略可。`(w)` も同じ)、:state（学習しない状態）、
 :static（層の幅などのハイパーパラメータ。EQUAL で比べられる値に限り、treedef の補助データに入る））。
 
+:static のスロットにだけ既定値を書ける: (名前 :static :default フォーム)（issue #261）。既定値のある
+スロットは MAKE-NAME で省略でき、省略したときはフォームの値が入る（treedef の補助データにも入るので、
+明示したときと同じ treedef になる）。フォームは MAKE-NAME を呼ぶたびに、省略されたときだけ評価する
+\(defstruct の初期値フォームと同じ。定義時に1回ではない)。フォームから他のスロットの値を参照しない（defstruct の
+&key の環境で評価されるので先に宣言したスロット名が見えるが、それに依存しないこと）。NIL を明示したときは NIL が入り、省略とは区別する。
+:param / :state に :default を書くと展開時にエラー（葉の形が決まらないため）。
+
 生成するもの:
-- 構造体 NAME とコンストラクタ MAKE-NAME（スロットのキーワード引数、すべて必須）、
+- 構造体 NAME とコンストラクタ MAKE-NAME（スロットのキーワード引数。既定値の無いスロットは必須）、
   アクセサ NAME-<slot>。構造体は定義した時点で PyTree に登録される。葉は :param / :state の
   スロットの宣言順で、サブモジュールは入れ子の節になる。
 - (:init (key . lambda-list) body...) があれば関数 INIT-NAME。先頭の引数は PRNG キーで、本体は
@@ -119,6 +153,7 @@ FUNCTION をかけた同じ形の木を返す。たどるのはリスト・simpl
 
 この形以外の節は展開時にエラーにする。"
   (let ((slots (%parse-module-slots name slot-specs))
+        (defaults (%module-slot-defaults name slot-specs))
         (constructor (intern (concatenate 'string "MAKE-" (symbol-name name)) *package*))
         (init-name (intern (concatenate 'string "INIT-" (symbol-name name)) *package*)))
     (let ((heads (mapcar #'first clauses)))
@@ -126,8 +161,7 @@ FUNCTION をかけた同じ形の木を返す。たどるのはリスト・simpl
         (error "defmodule ~S: (:init ...) と (:call ...) の節はそれぞれ1つまで: ~S" name heads)))
     `(progn
        (defstruct (,name (:constructor ,constructor
-                             (&key ,@(loop for (slot) in slots
-                                           collect `(,slot (error "~S: ~S は必須" ',constructor ',slot)))))
+                             (&key ,@(%constructor-key-specs constructor slots defaults)))
                          (:copier nil) (:predicate nil))
          ,@(mapcar #'car slots))
        (setf (gethash ',name *defined-modules*) (cons ',slots #',constructor))

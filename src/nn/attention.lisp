@@ -131,7 +131,8 @@
                                       (%range (- (length (%shape masked)) 2))))))
       (call (multi-head-attention-out model) (%attention-context weights v batch-rank)))))
 
-(defmodule multi-head-attention (query key value out (dropout-rate :static) (broadcast-dropout :static))
+(defmodule multi-head-attention (query key value out (dropout-rate :static)
+                                 (broadcast-dropout :static :default t))
   (:init (key num-heads in-features &key qkv-features kv-features out-features (dtype :f32) (dropout-rate 0)
                                       (use-bias t) (broadcast-dropout t))
    (%check-use-bias "multi-head-attention" use-bias)

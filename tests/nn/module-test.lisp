@@ -167,7 +167,8 @@
     (is (mentions-p "INIT-DEMO-M" expansion))))
 
 (test (module/accepts-every-slot-kind-and-bare-symbols :suite :nabla.small)
-  (dolist (spec '(((a)) ((a :param)) ((a :state)) ((a :static)) (a) ((a :param) b)))
+  (dolist (spec '(((a)) ((a :param)) ((a :state)) ((a :static)) (a) ((a :param) b)
+                  ((a :static :default 1)) ((a :static :default nil) (b :param))))
     (is (consp (macroexpand-1 `(defmodule slot-kind-demo ,spec))))))
 
 (defun run-module-tests ()
@@ -264,3 +265,103 @@
   (is (consp (macroexpand-1 '(defmodule pm ((p :param) (q :static))))))
   (is (null (fboundp 'pm-p)))
   (is (null (fboundp 'tm-net-p))))
+
+;;; --- :static の既定値（issue #261） ---
+;;;
+;;; 守らせる性質:
+;;; - 既定値のある :static を make-* で省略したモジュールと、既定値を明示したモジュールは treedef= で、
+;;;   スロットの値も EQUAL。省略は nil の明示と区別される（:default t のスロットに nil を渡せば nil）。
+;;; - 既定値のフォームは make-* を呼ぶたびに評価される（定義時に1回ではない）。
+;;; - 既定値の無い :static・:param・:state は今までどおり必須。
+;;; - :param / :state の :default、形の崩れた :default は展開時（定義時）の error。
+;;; - #241 で必須になったレイヤーのスロットは init-* と同じ既定値を持ち、省略して作った
+;;;   モジュールは init-* が作るモジュールと treedef= で、チェックポイントを往復できる。
+
+(defmodule tm-defaults ((w :param) (flag :static :default t) (axes :static :default (list -1))
+                        (width :static)))
+
+(def-module-property module/omitted-static-default-equals-explicit
+  "既定値のある :static を省略したモジュールは、既定値を明示したモジュールと treedef= で値も同じ。
+nil を明示すると既定値（t）ではなく nil が入り、treedef= でなくなる。"
+  (seed n depth)
+  (declare (ignore depth))
+  (let* ((w (nabla:normal (nabla:prng-key seed) (list n)))
+         (omitted (make-tm-defaults :w w :width n))
+         (explicit (make-tm-defaults :w w :width n :flag t :axes (list -1)))
+         (with-nil (make-tm-defaults :w w :width n :flag nil)))
+    (and (eq t (tm-defaults-flag omitted))
+         (equal '(-1) (tm-defaults-axes omitted))
+         (nabla:treedef= (nabla:tree-structure omitted) (nabla:tree-structure explicit))
+         (null (tm-defaults-flag with-nil))
+         (not (nabla:treedef= (nabla:tree-structure omitted) (nabla:tree-structure with-nil))))))
+
+(test (module/static-default-is-evaluated-per-call :suite :nabla.small)
+  (let ((a (make-tm-defaults :w (vector) :width 1))
+        (b (make-tm-defaults :w (vector) :width 1)))
+    (is (equal (tm-defaults-axes a) (tm-defaults-axes b)))
+    (is (not (eq (tm-defaults-axes a) (tm-defaults-axes b)))
+        "既定値のフォームが呼び出しごとに評価されていない")))
+
+(declaim (notinline construct))
+(defun construct (constructor &rest arguments)
+  "CONSTRUCTOR を ARGUMENTS で呼ぶ。必須のスロットを省いた呼び出しを、SBCL のコンパイル時の
+「スロットの既定値が無い」警告を出さずに書くため。"
+  (apply constructor arguments))
+
+(test (module/slots-without-default-stay-required :suite :nabla.small)
+  (signals error (construct 'make-tm-defaults :w (vector)))
+  (signals error (construct 'make-tm-defaults :width 1))
+  (signals error (construct 'make-tm-dense :w (vector) :b (vector))))
+
+(test (module/default-is-only-for-static-slots :suite :nabla.small)
+  (signals error (macroexpand-1 '(defmodule bad-param-default ((w :param :default 0)))))
+  (signals error (macroexpand-1 '(defmodule bad-state-default ((s :state :default 0)))))
+  (signals error (macroexpand-1 '(defmodule bad-no-kind-default ((s :default 0)))))
+  (signals error (macroexpand-1 '(defmodule bad-missing-default ((s :static :default)))))
+  (signals error (macroexpand-1 '(defmodule bad-extra-default ((s :static :default 0 1)))))
+  (signals error (macroexpand-1 '(defmodule bad-default-key ((s :static :initform 0))))))
+
+(test (module/default-does-not-change-module-slots :suite :nabla.small)
+  (is (equal '((w . :param) (flag . :static) (axes . :static) (width . :static))
+             (module-slots 'tm-defaults))))
+
+(defun tm-layer-pairs (seed)
+  "(#241 のスロットを省略して make-* で作ったモジュール . init-* で作ったモジュール) のリスト。"
+  (let* ((key (nabla:prng-key seed))
+         (dense (init-dense key 3 2))
+         (general (init-dense-general key '(3) '(2 2)))
+         (conv (init-conv key 2 3 '(3 3)))
+         (norm (init-layer-norm key 4))
+         (attention (init-multi-head-attention key 2 4)))
+    (list (cons (make-dense :kernel (dense-kernel dense) :bias (dense-bias dense)) dense)
+          (cons (make-dense-general :kernel (dense-general-kernel general) :bias (dense-general-bias general)
+                                    :contract-axes (dense-general-contract-axes general))
+                general)
+          (cons (make-conv :kernel (conv-kernel conv) :bias (conv-bias conv) :strides (conv-strides conv)
+                           :padding (conv-padding conv) :kernel-dilation (conv-kernel-dilation conv)
+                           :feature-group-count (conv-feature-group-count conv))
+                conv)
+          (cons (make-layer-norm :scale (layer-norm-scale norm) :bias (layer-norm-bias norm)
+                                 :epsilon (layer-norm-epsilon norm))
+                norm)
+          (cons (make-multi-head-attention :query (multi-head-attention-query attention)
+                                           :key (multi-head-attention-key attention)
+                                           :value (multi-head-attention-value attention)
+                                           :out (multi-head-attention-out attention)
+                                           :dropout-rate (multi-head-attention-dropout-rate attention))
+                attention))))
+
+(test (module/layer-slots-from-241-default-like-init :suite :nabla.small)
+  (dolist (pair (tm-layer-pairs 5))
+    (is (nabla:treedef= (nabla:tree-structure (car pair)) (nabla:tree-structure (cdr pair)))
+        "~S を省略して作ったモジュールの treedef が init のものと違う" (type-of (car pair)))))
+
+(test (module/omitted-static-defaults-roundtrip-checkpoints :suite :nabla.medium)
+  (with-temporary-directory (dir)
+    (let ((path (merge-pathnames "ckpt.safetensors" dir))
+          (made (mapcar #'car (tm-layer-pairs 7)))
+          (template (mapcar #'cdr (tm-layer-pairs 8))))
+      (save-checkpoint path made)
+      (let ((back (load-checkpoint path template)))
+        (is (nabla:treedef= (nabla:tree-structure made) (nabla:tree-structure back)))
+        (is (every #'equalp (nabla:tree-leaves made) (nabla:tree-leaves back)))))))

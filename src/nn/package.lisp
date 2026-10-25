@@ -70,6 +70,9 @@
    #:multi-head-attention-out #:multi-head-attention-dropout-rate #:multi-head-attention-broadcast-dropout
    ;; conv（issue #207）
    #:conv #:make-conv #:init-conv #:conv-kernel #:conv-bias #:conv-strides #:conv-padding
-   #:conv-kernel-dilation #:conv-feature-group-count #:conv-use-bias)
+   #:conv-kernel-dilation #:conv-feature-group-count #:conv-use-bias
+   ;; #260 group-norm
+   #:group-norm #:make-group-norm #:init-group-norm #:group-norm-scale #:group-norm-bias
+   #:group-norm-num-groups #:group-norm-group-size #:group-norm-epsilon #:group-norm-use-scale #:group-norm-use-bias)
   (:documentation
-   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv。"))
+   "nabla/nn: モデル記述の層。safetensors の読み書き、defmodule、PyTree のチェックポイント、基本レイヤー、オプティマイザ、dense-general、multi-head attention、conv、group-norm。"))

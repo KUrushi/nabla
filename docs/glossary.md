@@ -7,6 +7,9 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 **IR（中間表現, Intermediate Representation）**
 : ソースコードと機械語の間に置く、プログラムの別の書き方。変換や最適化をしやすい形にしてある。nabla では JAX の jaxpr にならった小さな IR（`aval` / `var` / `eqn` / `graph`）を持つ。
 
+**入力の連結（input packing、jit）**
+: jit した関数の入力（引数の木の葉）が実行系の入力の上限（`backend-max-inputs`）を超えるときだけ、同じ dtype の葉をホストで 1 本の 1 次元の配列につなげて渡し、コンパイルする関数の先頭で `slice` と `reshape` を使って元の葉に切り分けること（issue #242）。IREE 3.11 の local-task が入力 162 個以上の関数で落ちるのを避ける。入力の個数は dtype の種類の数になる。上限の内側では何もしないので、StableHLO もディスクキャッシュも変わらない。
+
 **aval（抽象値, abstract value）**
 : 配列の「中身」を持たず、「形状と dtype」だけを持つ値。トレース中は実際の数値が分からないので、aval だけを追って出力の形を決める。
 
@@ -18,6 +21,12 @@ CLAUDE.md や設計書に出てくる専門用語のうち、大学の学部や�
 
 **reduction / 初期値（init value）**
 : 配列のいくつかの次元を、要素同士を1つずつ組み合わせる二項演算（総和・最大値など）で潰して次元を減らすこと。StableHLO の `stablehlo.reduce`（nabla の `reduce-sum` / `reduce-max` プリミティブ）は、潰す次元ごとに空でないスライスを1つの値にまとめる。init value（初期値）は、その組み合わせを始める前に置いておく値で、演算の単位元（総和なら 0、最大値なら -∞）を使う。潰す次元のサイズが0（スライスが空）のときは、この初期値がそのまま出力になる。
+
+**gather / scatter-add（ギャザー・スキャッター加算）**
+: gather は配列の行を添字の配列で引き集める演算（nabla の `gather` は先頭の軸を引く形だけで、JAX の `jnp.take(x, i, axis=0)` に当たる）。scatter-add はその逆向きで、値を添字の行へ足し込む（同じ添字が何度も出れば足し合わさる）。gather の転置（勾配）が scatter-add になる。embedding の引きと、その勾配に使う。
+
+**FILL_OR_DROP（範囲外の添字の扱い）**
+: JAX の gather / scatter の範囲外の添字の扱いの1つ（`jnp.take` の既定）。gather では範囲外の添字の結果を決まった値で埋め（fill）、scatter ではその更新を捨てる（drop）。埋めた結果の勾配が捨てた更新と対応するので、転置として整合する。nabla の `gather` はこの構造で、埋める値は JAX の NaN でなく 0。
 
 **形状推論（abstract-eval）**
 : 入力の `aval`（形状と dtype）とパラメタから、実際の数値を計算せずに出力の `aval` を決めること。プリミティブごとに `defprimitive` の `:abstract-eval` として書く。トレース中は実データが無いので、この計算だけで IR の各 `var` の形状・dtype を決められる。
@@ -119,6 +128,12 @@ pretty form を出力する。
 **batch group（batch_group_count）**
 : 畳み込みの `batch_group_count`（B）。`feature_group_count`（入力チャネルを G 個に分ける）の対になるもので、lhs のバッチ軸を連続した B 個の塊に分け、出力チャネルの B 個の塊がそれぞれ1つのバッチの塊だけを読む（出力のバッチは N/B）。ユーザーが書く畳み込みには出てこず、グループ畳み込み・depthwise（G > 1）の rhs の転置（`grad` の rhs 側）が B = G の畳み込みになる（JAX の `_conv_general_dilated_transpose_rhs`）。nabla では `convolution` プリミティブの内部のパラメタ（issue #203）。
 
+**dispatch / binding（IREE）**
+: IREE がプログラムを分けた、デバイスで 1 回に起動する計算の単位が dispatch（GPU のカーネル 1 つに当たる）。IREE のコンパイラは要素ごとの演算などを融合（fusion）して 1 つの dispatch にまとめる。binding は 1 つの dispatch が読み書きするバッファの 1 つ 1 つで、ふつうは「その dispatch に入る別々のテンソル（関数の入力や、他の dispatch の結果）+ 結果」の数になる。IREE 3.11 のランタイムは 1 つの dispatch の binding を 32 個までしか受け付けない（`docs/iree-upstream-bugs.md` の 10、issue #264）。
+
+**fsync / F_FULLFSYNC**
+: `write` で書いたデータは、まず OS のメモリ（ページキャッシュ）に溜まり、ディスクへは後でまとめて書かれる。プロセスが落ちても OS が書いてくれるが、OS のクラッシュや電源断ではその分が失われる。`fsync(2)` は「このファイルの中身をディスクに届けるまで待つ」システムコール。一時ファイルに書いて rename で置き換えるときは、rename の前にファイルを、後に親ディレクトリ（rename そのものの記録）を fsync しないと、電源断の後に空か壊れたファイルが残りうる（nabla の `with-atomic-output-file`、issue #263）。macOS の `fsync` はデータをドライブに渡すだけで、ドライブ内の書き込みキャッシュまでは書き出さない。そこまで待つのが `fcntl(F_FULLFSYNC)` で、ずっと遅い（nabla では `*full-fsync*` で選ぶ）。
+
 ## 自動微分と変換
 
 **自動微分（automatic differentiation, AD）**
@@ -159,6 +174,9 @@ pretty form を出力する。
 
 **lecun_normal / 切断正規分布（truncated normal）**
 : Flax の `nn.Dense` の kernel の既定の初期化。分散 1/fan_in（fan_in は入力の幅）の正規分布のうち、平均から標準偏差の2倍より外を取り除いた（[-2, 2] で切った）もの。切ると標準偏差が 0.8796 倍に縮むので、1/0.8796 を前もってかけて、結果の標準偏差を sqrt(1/fan_in) に合わせる。nabla では `nabla:truncated-normal`（CDF の区間の一様乱数に erf の逆関数をかける、JAX と同じ方式）に `init-dense` が標準偏差をかけて作る。
+
+**GroupNorm（グループ正規化）**
+: チャンネル（最後の軸）を同じ大きさの群に分け、サンプルごと・群ごとに平均 0・分散 1 に正規化する層（Wu と He、2018）。BatchNorm と違いバッチの統計を使わないので、バッチが小さくても学習時と推論時で同じ計算になり、状態（移動平均）も持たない。群が 1 つなら（バッチ軸以外の全部での）LayerNorm、群の大きさが 1 なら InstanceNorm と同じ。nabla の `group-norm`（issue #260）は Flax の `nn.GroupNorm` に合わせ、分散は LayerNorm と同じ「速い分散」
 
 **LayerNorm の「速い分散」**
 : 分散を `E[x^2] - E[x]^2` で求める方式（Flax の `use_fast_variance` の既定）。データを1回なぞれば済むが、平均が標準偏差よりずっと大きいと桁落ちする（f32 で平均 3・標準偏差 2 の入力なら 1 桁ほど失う）。nabla の `layer-norm` は Flax と数値で一致させるため同じ式を使う。。平均が標準偏差よりずっと大きい行では分散が 0 に潰れ、出力が `(x - mean) / sqrt(epsilon)` に発散する（たとえば f32 の行 `[1e4, 1e4+1, 1e4+2, 1e4+3]` は E[x^2] と E[x]^2 が同じ値に丸まって分散が 0 になり、出力は ±1500 程度になる。Flax も同じ結果）
