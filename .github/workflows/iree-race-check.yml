@@ -1,0 +1,261 @@
+name: IREE race check
+
+# IREE 3.11 の local-task の競合（docs/iree-upstream-bugs.md の 7）と、scan の ys の
+# コピーを消す emit の候補（race-candidate、issue #233）を、x86 ネイティブのランナーで
+# scripts/check-iree-repros.sh にかける。Rosetta の VM では競合がほとんど再現しないため。
+# docs の「x86 ネイティブで確かめる手順」の 1（race-bug が再現するか）と 2（候補が
+# 0 回か）を、ケース（と回数の分割）ごとのジョブに分けて並列に走らせ、最後の report が
+# 不一致の回数を足し合わせてサマリに出す。既定のテストと関係がなく回数も多いので、ci.yml とは別にし、手で起動する。
+#
+# 起動のしかた:
+#   - workflow_dispatch（Actions の画面、または `gh workflow run iree-race-check.yml
+#     -f race-runs=20000`）。workflow_dispatch はこのファイルが既定ブランチに
+#     あるときだけ使える
+#   - `ci/iree-race-check/runs-<N>` か `ci/iree-race-check/runs-<N>-parts-<P>` という名前の
+#     ブランチへの push（既定ブランチに入る前の確認用。例:
+#     `git push origin HEAD:ci/iree-race-check/runs-200`）。候補は N 回、race-bug /
+#     race-control は min(N, 4000) 回走らせる。名前が形に合わなければ既定（20000 回、
+#     4000 回、分割 1）
+#
+# 判定はしない（候補の不一致は記録で、ジョブは失敗させない）。結果の読み方は
+# docs/iree-upstream-bugs.md の 7。
+
+on:
+  workflow_dispatch:
+    inputs:
+      race-runs:
+        description: race-candidate（候補）の行ごとの local-task の実行回数（手順 2）
+        default: "20000"
+      reproduce-runs:
+        description: race-bug / race-control の行ごとの実行回数（手順 1）
+        default: "4000"
+      parts:
+        description: 1 つの行の回数を何個のジョブに分けるか（ジョブの 6 時間の上限に収めるため）
+        default: "1"
+      cases:
+        description: 走らせるファイル名（空白区切り。空なら race の全部の行）
+        default: ""
+  push:
+    branches: ["ci/iree-race-check/**"]
+
+# concurrency は付けない（同じブランチで続けて起動した長い run を取り消さないため）
+
+permissions:
+  contents: read
+
+env:
+  NABLA_IREE_HOME: ${{ github.workspace }}/.nabla-iree-home
+  NABLA_IREE_SRC: ${{ github.workspace }}/../iree-src
+  NABLA_IREE_BUILD: ${{ github.workspace }}/../iree-build-runtime
+  NABLA_IREE_WHEEL_DIR: ${{ github.workspace }}/../iree-wheel
+
+jobs:
+  # ci.yml の prepare と同じキーで IREE のキャッシュを確かめ、外れたときだけビルドして保存する
+  # （main の CI が保存したキャッシュは、ほかのブランチからも当たる）
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Look up IREE cache
+        id: cache-iree
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.NABLA_IREE_HOME }}
+          key: iree-${{ runner.os }}-${{ hashFiles('third_party/iree.lock', 'scripts/build-iree.sh') }}
+          lookup-only: true
+
+      - name: Install IREE build toolchain
+        if: steps.cache-iree.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld cmake ninja-build python3-pip
+
+      - name: Build IREE (compiler wheel + runtime from source)
+        if: steps.cache-iree.outputs.cache-hit != 'true'
+        run: scripts/build-iree.sh --compiler=wheel
+
+      - name: Verify IREE (CPU only)
+        if: steps.cache-iree.outputs.cache-hit != 'true'
+        run: scripts/verify-iree.sh
+
+      - name: Save IREE cache
+        if: steps.cache-iree.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.NABLA_IREE_HOME }}
+          key: ${{ steps.cache-iree.outputs.cache-primary-key }}
+
+  # 起動のしかた（入力かブランチ名）から回数を決め、race の行 × 分割の matrix を作る。
+  # 行の一覧は check-iree-repros.sh の CASES / CANDIDATE_CASES から取る（候補を足すときに
+  # このファイルを直さなくてよいように）
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Plan the race jobs
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_RACE_RUNS: ${{ inputs.race-runs }}
+          IN_REPRODUCE_RUNS: ${{ inputs.reproduce-runs }}
+          IN_PARTS: ${{ inputs.parts }}
+          IN_CASES: ${{ inputs.cases }}
+        run: |
+          race_runs=20000; reproduce_runs=4000; parts=1; cases=""
+          if [[ "${EVENT}" == workflow_dispatch ]]; then
+            race_runs="${IN_RACE_RUNS}"; reproduce_runs="${IN_REPRODUCE_RUNS}"
+            parts="${IN_PARTS}"; cases="${IN_CASES}"
+          elif [[ "${REF_NAME}" =~ ^ci/iree-race-check/runs-([1-9][0-9]*)(-parts-([1-9][0-9]*))?$ ]]; then
+            race_runs="${BASH_REMATCH[1]}"; parts="${BASH_REMATCH[3]:-1}"
+            reproduce_runs=$((race_runs < 4000 ? race_runs : 4000))
+          fi
+          for v in "${race_runs}" "${reproduce_runs}" "${parts}"; do
+            [[ "${v}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a positive integer: ${v}"; exit 1; }
+          done
+          # "race-bug     nested-scan-ys-barrier-race.mlir" の形の行を (kind, file) にする
+          rows=$(grep -oE '"race-(bug|control|candidate) +[^ "]+' scripts/check-iree-repros.sh | tr -d '"')
+          [[ -n "${rows}" ]] || { echo "::error::no race cases found in scripts/check-iree-repros.sh"; exit 1; }
+          cases=$(tr -s '[:space:]' ' ' <<<"${cases}" | sed 's/^ //; s/ $//')
+          if [[ -n "${cases}" ]]; then
+            files=" $(awk '{ print $2 }' <<<"${rows}" | tr '\n' ' ')"
+            for name in ${cases}; do
+              [[ "${files}" == *" ${name} "* ]] || { echo "::error::no such race case: ${name}"; exit 1; }
+            done
+            # 行の順に、名前を挙げた行を 1 回ずつ残す（同じ名前を 2 回挙げても 1 行）
+            rows=$(while read -r kind file; do
+                     if [[ " ${cases} " == *" ${file} "* ]]; then echo "${kind} ${file}"; fi
+                   done <<<"${rows}")
+          fi
+          matrix=$(while read -r kind file; do
+                     if [[ "${kind}" == race-candidate ]]; then total="${race_runs}"; else total="${reproduce_runs}"; fi
+                     per=$(( (total + parts - 1) / parts ))
+                     for ((p = 1; p <= parts; p++)); do
+                       jq -nc --arg kind "${kind}" --arg file "${file}" --argjson runs "${per}" --argjson part "${p}" \
+                         '{kind: $kind, file: $file, runs: $runs, part: $part}'
+                     done
+                   done <<<"${rows}" | jq -sc '{include: .}')
+          # matrix のジョブの数の上限は 256
+          jobs=$(jq '.include | length' <<<"${matrix}")
+          ((jobs <= 256)) || { echo "::error::${jobs} jobs exceed the matrix limit of 256; lower parts"; exit 1; }
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "race-candidate: ${race_runs} 回、race-bug / race-control: ${reproduce_runs} 回、分割 ${parts}"
+            echo
+            echo '```'
+            echo "${rows}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  race:
+    needs: [prepare, plan]
+    runs-on: ubuntu-24.04
+    # ジョブの上限は 6 時間。足りなければ parts を増やす
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: race (${{ matrix.file }} ${{ matrix.part }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Restore IREE
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ env.NABLA_IREE_HOME }}
+          key: iree-${{ runner.os }}-${{ hashFiles('third_party/iree.lock', 'scripts/build-iree.sh') }}
+          fail-on-cache-miss: true
+
+      # check-iree-repros.sh の終了コード 1（race-bug が再現しない、race-control に不一致）は
+      # 結果として report に回し、ジョブは失敗させない。2（コンパイルできない・引数の誤り）は失敗
+      - name: Run ${{ matrix.kind }} ${{ matrix.file }} (${{ matrix.runs }} runs)
+        env:
+          KIND: ${{ matrix.kind }}
+          FILE: ${{ matrix.file }}
+          RUNS: ${{ matrix.runs }}
+          PART: ${{ matrix.part }}
+        run: |
+          echo "nproc: $(nproc)"; lscpu | grep -E '^(Model name|Architecture)' || true
+          SECONDS=0
+          status=0
+          scripts/check-iree-repros.sh --runs 1 --race-runs "${RUNS}" --case "${FILE}" | tee out.txt || status=$?
+          if ((status > 1)); then exit "${status}"; fi
+          line=$(grep -E "^${KIND} +${FILE} " out.txt)
+          mismatches=$(sed -E 's/.*mismatches=([0-9]+)\/.*/\1/' <<<"${line}")
+          cpu=$(lscpu | sed -nE 's/^Model name: *//p' | head -1)
+          mkdir -p result
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${KIND}" "${FILE}" "${PART}" "${mismatches}" "${RUNS}" \
+            "$(nproc)" "${cpu}" "${SECONDS}" > "result/${FILE}.${PART}.tsv"
+          {
+            echo "| 種別 | ファイル | 分割 | 不一致 | CPU | 秒 |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+            echo "| ${KIND} | ${FILE} | ${PART} | ${mismatches}/${RUNS} | $(nproc) × ${cpu} | ${SECONDS} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: race-result-${{ matrix.file }}-${{ matrix.part }}
+          path: result/
+          retention-days: 30
+
+  # 分割を足し合わせ、ファイルごとの不一致の回数を 1 つの表にする
+  report:
+    needs: race
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: race-result-*
+          path: result
+          merge-multiple: true
+
+      - name: Summarize
+        env:
+          RACE_RESULT: ${{ needs.race.result }}
+        run: |
+          shopt -s nullglob
+          files=(result/*.tsv)
+          {
+            echo "## IREE race check（docs/iree-upstream-bugs.md の 7、issue #233）"
+            echo
+            if [[ "${RACE_RESULT}" != success ]]; then
+              echo "**race のジョブのうち成功しなかったものがある（${RACE_RESULT}）。下の表はそろった結果だけを足している。**"
+              echo
+            fi
+            if ((${#files[@]} == 0)); then echo "結果が 1 つも無い。"; exit 0; fi
+            # 0 回の行の「95% 上限」は 3 の法則（n 回で 0 回なら、1 回の失敗確率は 95% の信頼で 3/n 未満）
+            echo "| 種別 | ファイル | 不一致 | 割合 | 0 回のときの 95% 上限 | 分割 | CPU | 最長のジョブ（秒） |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+            cat "${files[@]}" | awk -F'\t' '
+              { k = $1 "\t" $2; mis[k] += $4; runs[k] += $5; parts[k]++
+                cpu[k] = $6 " × " $7; if ($8 > sec[k]) sec[k] = $8 }
+              END { for (k in mis) { split(k, a, "\t")
+                      bound = mis[k] == 0 ? sprintf("%.3f%%", 300 / runs[k]) : "-"
+                      printf "| %s | %s | %d/%d | %.3f%% | %s | %d | %s | %d |\n",
+                        a[1], a[2], mis[k], runs[k], 100 * mis[k] / runs[k], bound, parts[k], cpu[k], sec[k] } }' \
+              | sort
+            echo
+            bug=$(cat "${files[@]}" | awk -F'\t' '$1 == "race-bug" { m += $4; r += $5 } END { printf "%d %d", m, r }')
+            read -r bug_mis bug_runs <<<"${bug}"
+            if ((bug_runs == 0)); then
+              echo "race-bug を走らせていない。候補の 0 回は、この環境で競合が起きることを確かめるまで根拠にならない。"
+            elif ((bug_mis > 0)); then
+              echo "race-bug はこの環境で再現した（${bug_mis}/${bug_runs}）。候補の行が 0 回なら、表の「95% 上限」までの根拠になる（ジョブごとに CPU が違いうる）。"
+            else
+              echo "**race-bug はこの環境で再現しなかった（0/${bug_runs}）。候補の 0 回は競合が起きないことの根拠にならない。**"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+          cat "${GITHUB_STEP_SUMMARY}"
