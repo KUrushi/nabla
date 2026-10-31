@@ -39,7 +39,17 @@
    #:batch-records
    #:batch-error
    #:batch-error-reason
-   #:batch-error-detail)
+   #:batch-error-detail
+   ;; ローダとイテレータ（issue #285）
+   #:data-loader
+   #:data-loader-error
+   #:data-loader-error-reason
+   #:data-loader-error-detail
+   #:data-iterator
+   #:make-data-iterator
+   #:next-batch
+   #:epoch)
   (:documentation
    "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source、
-index-sampler（位置からレコードのインデックスを決めるサンプラー）。"))
+index-sampler（位置からレコードのインデックスを決めるサンプラー）、map / filter の変換、
+data-loader（バッチを作るローダ）と data-iterator。"))

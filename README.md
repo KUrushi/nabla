@@ -697,7 +697,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 
 #### data-source（`nabla/data`、issue #279）
 
-`nabla/data`（パッケージ `nabla.data`）はデータ供給の層（フェーズ5、Grain 相当）で、`(asdf:load-system "nabla/data")` で使う。nabla のシステムのうち core（`nabla`）にだけ依存し、`nabla/nn`・`nabla/iree`・`nabla/pjrt` を知らない（FFI を呼ばない純 Lisp の層。レコードとバッチは jit に渡す PyTree そのものなので、木の扱いは core の `tree-flatten` / `defpytree` を使う）。最初の部品は data-source（Grain の `RandomAccessDataSource`。長さがあり、添字でレコードを取れるデータ）。サンプラー・変換・ローダは後続の issue（#278 の表）で足す。
+`nabla/data`（パッケージ `nabla.data`）はデータ供給の層（フェーズ5、Grain 相当）で、`(asdf:load-system "nabla/data")` で使う。nabla のシステムのうち core（`nabla`）にだけ依存し、`nabla/nn`・`nabla/iree`・`nabla/pjrt` を知らない（FFI を呼ばない純 Lisp の層。レコードとバッチは jit に渡す PyTree そのものなので、木の扱いは core の `tree-flatten` / `defpytree` を使う）。最初の部品は data-source（Grain の `RandomAccessDataSource`。長さがあり、添字でレコードを取れるデータ）で、サンプラー（#280）・変換（#281）・ローダ（#285）が続く。
 
 | 関数・クラス | 役割 |
 | --- | --- |
@@ -747,6 +747,22 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 
 - レコードはどれも最初のレコードと同じ treedef で、同じ位置の葉が同じ形・同じ element-type の配列でなければならない。`(unsigned-byte 16)` の葉（bf16 / f16）は element-type の一致だけを見る（dtype は data 層では決めない）
 - 端数のバッチを捨てるか（drop-remainder）はローダが決める。`batch-records` は任意の個数を積む。端数を詰める pad は持たない（`jit` はバッチの形ごとにコンパイルするので、形は揃える）
+
+#### data-loader とイテレータ（`nabla/data`、issue #285）
+
+ローダ（Grain の `DataLoader`）はデータソース・サンプラー・変換・バッチの大きさを束ね、イテレータ（`DataLoaderIterator`）がバッチを 1 つずつ返す。いまは逐次の実装（並列化は #286）。
+
+| 関数・コンディション | 役割 |
+| --- | --- |
+| `(data-loader source &key batch-size shuffle seed num-epochs transforms (drop-remainder t))` | ローダを作る。サンプラー（`make-index-sampler` に `shuffle` `seed` `num-epochs` を渡したもの）の位置の順にレコードを `source-item` で引き、`transforms`（map / filter の変換のリスト）をかけ、残ったレコードを `batch-size`（正の整数。必須）個ずつ `batch-records` で積む |
+| `(make-data-iterator loader)` | 列の先頭（エポック 0 の最初）から始まるイテレータ（`data-iterator`） |
+| `(next-batch iterator)` | 次のバッチを `(values バッチ t)` で返して進める。列が終わっていれば `(values nil nil)`（何度呼んでも同じ） |
+| `(epoch loader e)` | エポック `e`（0 から数える）のバッチのリスト。エポックを順につなぐとイテレータの列になる。1 エポック分をメモリに持つ |
+| `data-loader-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-batch-size` `:bad-transform` `:bad-epoch` `:empty-epoch` |
+
+- バッチはエポックをまたがない。エポック末の端数は `drop-remainder` が真（既定）なら捨て、nil なら短いバッチにする（pad はしない）。filter が無ければ、1 エポックで各レコードがちょうど 1 回ずつ出る（捨てた端数を除く）
+- `num-epochs` が nil（既定）なら列は終わらない。1 エポックの全位置を調べてもバッチが 1 つも作れない（filter が全部落とす、`batch-size` がレコードの個数より大きくて端数を捨てる、レコードが 0 個）ときは、戻らなくなる代わりに `:empty-epoch`
+- 位置ごとの処理（`source-item` と変換）は位置だけで決まり、イテレータは「次に調べるサンプラーの位置」だけを持つ（入力側の位置。filter をはさんでも決定的に再開できる）
 
 #### with-tracing の do ループ（issue #137）
 

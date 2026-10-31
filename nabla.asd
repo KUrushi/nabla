@@ -652,13 +652,14 @@
 ;; nabla/data: データ供給の層（フェーズ5、issue #278）。最初の部品は data-source（issue #279）。
 ;; nabla のシステムのうち core にだけ依存する（nabla/nn・nabla/iree・nabla/pjrt を知らない）。
 (defsystem "nabla/data"
-  :description "データ供給の層（data-source と index-sampler。変換・ローダは後続）"
+  :description "データ供給の層（data-source・index-sampler・変換・data-loader）"
   :depends-on ("nabla")
   :components ((:file "src/data/package")
                (:file "src/data/source")
                (:file "src/data/sampler")
                (:file "src/data/transform")
-               (:file "src/data/batch")))
+               (:file "src/data/batch")
+               (:file "src/data/loader")))
 
 ;; nabla/data/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/data/tests"
@@ -668,4 +669,5 @@
                (:file "tests/data/source-test")
                (:file "tests/data/sampler-test")
                (:file "tests/data/transform-test")
-               (:file "tests/data/batch-test")))
+               (:file "tests/data/batch-test")
+               (:file "tests/data/loader-test")))
