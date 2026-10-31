@@ -39,7 +39,9 @@
   (:documentation
    "長さがあり、添字でレコードを取れるデータの抽象（Grain の RandomAccessDataSource）。
 サブクラスは SOURCE-LENGTH と SOURCE-ITEM のメソッドを定義する。レコードは PyTree で、
-同じ添字には常に同じレコードを返す（決定的な再開の前提）。"))
+同じ添字には常に同じレコードを返す（決定的な再開の前提）。並列ローダ（MAKE-DATA-ITERATOR の
+:NUM-WORKERS）は SOURCE-ITEM をワーカーのスレッドから同時に呼ぶので、SOURCE-ITEM はスレッド
+安全にする（共有する状態を書き換えない。ARRAY-SOURCE は読むだけなので安全）。"))
 
 (defgeneric source-length (source)
   (:documentation

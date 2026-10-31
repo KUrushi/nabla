@@ -31,7 +31,9 @@
   :version-mismatch  状態のシャッフルの算法の版がこのサンプラーの版と違う
   :key-mismatch    状態のキーがローダのシード（無ければ 0）と違う
   :state-out-of-range  状態のエポック・位置がローダの範囲の外か、ITERATOR-STATE で :i32 に
-                   収まらない"))
+                   収まらない
+  :bad-num-workers NUM-WORKERS が 0 以上の整数でない
+  :closed          CLOSE-ITERATOR で閉じたイテレータから NEXT-BATCH した"))
 
 (defun %data-loader-error (reason control &rest arguments)
   (error 'data-loader-error :reason reason :detail (apply #'format nil control arguments)))
@@ -133,27 +135,34 @@ FETCH は (FETCH start end) → %RANGE-RECORDS と同じ結果を返す関数で
 
 ;;; --- イテレータ ---
 
-(defstruct (data-iterator (:constructor %make-data-iterator (loader position))
+(defstruct (data-iterator (:constructor %make-data-iterator (loader position pool))
                           (:copier nil) (:predicate nil))
   "LOADER のバッチを 1 つずつ返すカーソル。MAKE-DATA-ITERATOR で作り、NEXT-BATCH で進める。"
   (loader nil :read-only t)
-  (position 0 :type (integer 0)))
+  (position 0 :type (integer 0))
+  ;; ワーカーの組（#286、src/data/parallel.lisp）。逐次でも閉じたかどうかを持つ。
+  (pool nil :read-only t))
 
 (defun %range-fetcher (loader)
   (lambda (start end) (%range-records loader start end)))
 
-(defun make-data-iterator (loader)
+(defun make-data-iterator (loader &key (num-workers 0))
   "LOADER のバッチの列を先頭（エポック 0 の最初）から返すイテレータを作る
-（Grain の DataLoaderIterator）。NEXT-BATCH で 1 つずつ取り出す。"
-  (%make-data-iterator loader 0))
+（Grain の DataLoaderIterator）。NEXT-BATCH で 1 つずつ取り出す。NUM-WORKERS（0 以上の整数、
+既定 0 = 逐次）が正なら、そのイテレータだけのワーカーのスレッドでレコードを並列に読む
+（バッチの列はワーカー数に依らない）。使い終わったら CLOSE-ITERATOR で閉じる
+（WITH-DATA-ITERATOR なら自動で閉じる）。"
+  (%make-data-iterator loader 0 (%open-worker-pool num-workers)))
 
 (defun next-batch (iterator)
   "ITERATOR の次のバッチを (values バッチ t) で返して進める。バッチはレコードの木の各葉を
 新しい先頭の軸で積んだ木（BATCH-RECORDS）。列が終わっていれば (values nil nil) を返し、
-何度呼んでも同じ。エポックからバッチが作れなければ :empty-epoch の DATA-LOADER-ERROR。"
+何度呼んでも同じ。エポックからバッチが作れなければ :empty-epoch、閉じたイテレータなら :closed の
+DATA-LOADER-ERROR。ワーカーの中の error（SOURCE-ITEM や変換の中）は元のコンディションのまま
+届き、位置は進まない（もう一度呼ぶと同じ位置から読み直す）。"
   (let ((loader (data-iterator-loader iterator)))
     (multiple-value-bind (records next)
-        (%assemble-batch loader (data-iterator-position iterator) (%range-fetcher loader))
+        (%assemble-batch loader (data-iterator-position iterator) (%iterator-fetcher iterator))
       (cond (records
              (setf (data-iterator-position iterator) next)
              (values (batch-records records) t))

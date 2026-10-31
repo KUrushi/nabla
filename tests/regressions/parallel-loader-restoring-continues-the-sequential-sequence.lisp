@@ -1,0 +1,4 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME
+                 PARALLEL-LOADER/RESTORING-CONTINUES-THE-SEQUENTIAL-SEQUENCE
+                 :DATUM "(5068 0 1 1)" :TIMESTAMP 4002440474)

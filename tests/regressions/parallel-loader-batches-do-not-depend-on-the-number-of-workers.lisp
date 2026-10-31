@@ -1,0 +1,4 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME
+                 PARALLEL-LOADER/BATCHES-DO-NOT-DEPEND-ON-THE-NUMBER-OF-WORKERS
+                 :DATUM "(98191 2)" :TIMESTAMP 4002440474)
