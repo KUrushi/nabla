@@ -1,0 +1,3 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME INDEX-SAMPLER/A-FAR-EPOCH-IS-A-PERMUTATION :DATUM
+                 "(0 0 0 0)" :TIMESTAMP 4002430917)

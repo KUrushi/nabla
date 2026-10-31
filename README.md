@@ -711,6 +711,22 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - `make-array-source` の木の葉は、どれも rank 1 以上の配列で、先頭の軸の長さが揃っている必要がある（長さ 0 もよい）。element-type は問わない（`(unsigned-byte 8)` の画素のように nabla の dtype に無いものも、変換で直してから jit に渡せばよい）。配列はコピーせずに持つので、作った後で書き換えない
 - 例: `(make-array-source (list images labels))` は、`images` が `(60000 28 28)`、`labels` が `(60000)` なら、`(source-item s 0)` が `(28 28)` の画像と rank 0 のラベルのリストになる
 
+#### index-sampler（`nabla/data`、issue #280）
+
+サンプラー（Grain の `IndexSampler`）は、通し番号の位置 k（0 から数える）から「(エポック, レコードのインデックス)」を決める純粋関数。位置から直接計算するので、再開状態は位置だけで済む。
+
+| 関数・クラス | 役割 |
+| --- | --- |
+| `(make-index-sampler n &key shuffle seed num-epochs)` | `n` 個のレコードのサンプラー（`index-sampler`）を作る。`shuffle` が真なら `seed`（`nabla:prng-key` が作る `:u32` の `(2)` の配列。必須）とエポックで決まる順、nil なら 0, 1, ..., n-1 の順。`num-epochs` が nil（既定）なら列は終わらない |
+| `(sampler-index sampler k)` | 位置 `k` の `(values epoch index)`。`epoch` は floor(k / n)、`index` はそのエポックの順序の k mod n 番目 |
+| `sampler-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-length` `:bad-num-epochs` `:bad-seed` `:position-out-of-range`（意味は docstring） |
+
+- シャッフルはエポックごとの置換を作って持たず、シードとエポックから SplitMix64 で作った鍵の Feistel 置換で位置ごとに計算する（Feistel の偏り（偶置換しか作らない）は、鍵で決まる互換を最後にかけてならす。nabla の PRNG は使わない。JAX / Grain とはビット単位で一致しない）。同じシード・エポックからは常に同じ順で、決まったシードの順序はテストで固定している（版をまたいで同じ位置から再開しても列が変わらない）
+- 範囲外の位置（負、整数でない、`n × num-epochs` 以上。`n` が 0 なら全部）は `:position-out-of-range`
+- シード（`seed`）は作るときに読み、配列は持たない（後で書き換えても順序は変わらない）。`shuffle` が nil でも渡せば形を検査するが、順序には効かない。ホストの配列だけを受け、`device-array` のキーは `to-host` してから渡す
+- 同じシード・エポック・位置からの順序は版をまたいで変えない（変えるときは破壊的変更として算法の版 `+index-sampler-algorithm-version+` を上げ、ローダの再開状態の版の検査で検出する）
+- 複数プロセスでの分割（シャード）は持たない。位置 → インデックスの関数なので、後から「プロセス i は位置 i, i + P, ... を引く」形で足せる
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。

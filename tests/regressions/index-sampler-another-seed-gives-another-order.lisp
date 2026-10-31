@@ -1,0 +1,3 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME INDEX-SAMPLER/ANOTHER-SEED-GIVES-ANOTHER-ORDER :DATUM
+                 "(0 0 0 0)" :TIMESTAMP 4002430917)
