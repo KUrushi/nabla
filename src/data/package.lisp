@@ -60,7 +60,10 @@
    #:random-map-transform
    #:transform-error
    #:transform-error-reason
-   #:transform-error-detail)
+   #:transform-error-detail
+   ;; 並列ローダ（issue #286）
+   #:close-iterator
+   #:with-data-iterator)
   (:documentation
    "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source、
 index-sampler（位置からレコードのインデックスを決めるサンプラー）、map / filter の変換、

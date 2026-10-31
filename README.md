@@ -701,7 +701,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 
 | 関数・クラス | 役割 |
 | --- | --- |
-| `data-source` | データソースの抽象クラス。サブクラスは `source-length` と `source-item` のメソッドを定義する。同じ添字には常に同じレコードを返す（決定的な再開の前提） |
+| `data-source` | データソースの抽象クラス。サブクラスは `source-length` と `source-item` のメソッドを定義する。同じ添字には常に同じレコードを返す（決定的な再開の前提）。`source-item` は並列ローダのワーカーから同時に呼ばれるので、スレッド安全にする（#286） |
 | `(source-length source)` | レコードの個数（0 以上の整数） |
 | `(source-item source index)` | `index` 番目（0 始まり）のレコード（PyTree）。`index` が 0 以上 `source-length` 未満の整数でなければ `:index-out-of-range` |
 | `(make-array-source tree)` | メモリ上の配列の木から `array-source` を作る。葉の先頭の軸がレコードの軸で、`index` 番目のレコードは、各葉をその軸の `index` 番目の行（同じ element-type の新しい配列。1 次元の葉なら rank 0 の配列）に置き換えた同じ形の木 |
@@ -750,7 +750,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 
 #### data-loader とイテレータ（`nabla/data`、issue #285）
 
-ローダ（Grain の `DataLoader`）はデータソース・サンプラー・変換・バッチの大きさを束ね、イテレータ（`DataLoaderIterator`）がバッチを 1 つずつ返す。いまは逐次の実装（並列化は #286）。
+ローダ（Grain の `DataLoader`）はデータソース・サンプラー・変換・バッチの大きさを束ね、イテレータ（`DataLoaderIterator`）がバッチを 1 つずつ返す。並列に読むイテレータは次の小節（#286）。
 
 | 関数・コンディション | 役割 |
 | --- | --- |
@@ -794,6 +794,25 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 ;; flip-left-right: W の軸を反転した新しい配列。crop-padded: 周りに 0 を padding 個ずつ足した画像の
 ;; (dy, dx) を左上とする (H W C) の窓
 ```
+
+#### 並列ローダ（`nabla/data`、issue #286）
+
+イテレータは、`:num-workers` に正の整数を渡すと、そのイテレータだけの lparallel のワーカーのスレッドでレコードを並列に読む（利用者の `lparallel:*kernel*` とは共有しない）。バッチの列はワーカー数に依らず、逐次（`:num-workers 0`、既定）とビット単位で同じ。
+
+| 関数・マクロ | 役割 |
+| --- | --- |
+| `(make-data-iterator loader &key (num-workers 0))` | `num-workers`（0 以上の整数）のワーカーで読むイテレータ。0 なら逐次でスレッドを作らない |
+| `(restore-iterator loader state &key (num-workers 0))` | 同じく。ワーカー数は状態を取ったイテレータと違ってよい |
+| `(close-iterator iterator)` | ワーカーを止めて片付ける（投げてある区間が終わるのを待つ）。何度呼んでもよい。閉じた後の `next-batch` は `:closed`、`iterator-state` は取れる |
+| `(with-data-iterator (it loader &key state num-workers) body...)` | `it` にイテレータを束縛して `body` を実行し、抜けるとき（非局所脱出でも）閉じる。`state` が nil でなければ `restore-iterator` で再開する |
+
+- ワーカーには、バッチに要るサンプラーの位置の区間を、ワーカー数個の連続区間に分けて `lparallel:future` で投げ、future を作った順に受けて位置の順につなぐ。組み立て（バッチの切り方・エポックの境界・端数）は逐次と同じコードを通る
+- ワーカーが作るのはホストの Lisp 配列のレコードだけで、`device-array` は作らない（デバイスへの転送は呼び出し側のスレッドで行う）
+- `source-item` と変換はワーカーから同時に呼ばれるので、純粋（スレッド安全）にする。どのワーカーもまだ始めていない区間は呼び出し側のスレッドが自分で読む（lparallel の future）ので、区間を読むスレッドは実行のたびに変わる。ワーカーのスレッドは呼び出し側の動的束縛（`let` した special 変数）を引き継がないので、変換が special 変数を読むと結果が読むスレッドで変わる（読まない）
+- イテレータそのものはスレッド安全でない。`next-batch` と `close-iterator` は 1 つのスレッドから呼ぶ
+- ワーカーの中の error（`source-item` や変換の中。error でない `serious-condition` も）は、元のコンディションのまま `next-batch` の呼び出し側に届く（読んだスレッドのスタックは巻き戻した後なので、`source-item` の中の restart は使えない）。位置は進まず、もう一度 `next-batch` すると同じ位置から読み直す。ワーカーのスレッドは閉じるまで残る（イテレータを捨てても GC では止まらない）ので、`with-data-iterator` か `close-iterator` で必ず閉じる
+- 再開状態は返したバッチの位置なので、ワーカー数に依らない
+- `data-loader-error` の `reason` に `:bad-num-workers`（0 以上の整数でない）と `:closed` が加わる
 
 #### with-tracing の do ループ（issue #137）
 

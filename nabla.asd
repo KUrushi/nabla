@@ -655,14 +655,16 @@
 ;; nabla のシステムのうち core にだけ依存する（nabla/nn・nabla/iree・nabla/pjrt を知らない）。
 (defsystem "nabla/data"
   :description "データ供給の層（data-source・index-sampler・変換・data-loader と再開状態）"
-  :depends-on ("nabla")
+  :depends-on ("nabla" "lparallel")
   :components ((:file "src/data/package")
                (:file "src/data/source")
                (:file "src/data/sampler")
                (:file "src/data/transform")
                (:file "src/data/batch")
                (:file "src/data/loader")
-               (:file "src/data/iterator-state")))
+               (:file "src/data/iterator-state")
+               ;; 並列ローダ（lparallel のワーカー、issue #286）
+               (:file "src/data/parallel")))
 
 ;; nabla/data/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/data/tests"
@@ -674,4 +676,5 @@
                (:file "tests/data/transform-test")
                (:file "tests/data/batch-test")
                (:file "tests/data/loader-test")
-               (:file "tests/data/random-transform-test")))
+               (:file "tests/data/random-transform-test")
+               (:file "tests/data/parallel-test")))
