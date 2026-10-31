@@ -63,7 +63,15 @@
    #:transform-error-detail
    ;; 並列ローダ（issue #286）
    #:close-iterator
-   #:with-data-iterator)
+   #:with-data-iterator
+   ;; .npy の読み書きと npy-source（issue #282）
+   #:npy-error
+   #:npy-error-path
+   #:npy-error-reason
+   #:npy-error-detail
+   #:read-npy
+   #:write-npy
+   #:npy-source)
   (:documentation
    "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source、
 index-sampler（位置からレコードのインデックスを決めるサンプラー）、map / filter の変換、

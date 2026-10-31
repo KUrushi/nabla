@@ -664,7 +664,9 @@
                (:file "src/data/loader")
                (:file "src/data/iterator-state")
                ;; 並列ローダ（lparallel のワーカー、issue #286）
-               (:file "src/data/parallel")))
+               (:file "src/data/parallel")
+               ;; .npy の読み書きと npy-source（issue #282）
+               (:file "src/data/npy")))
 
 ;; nabla/data/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/data/tests"
@@ -677,4 +679,5 @@
                (:file "tests/data/batch-test")
                (:file "tests/data/loader-test")
                (:file "tests/data/random-transform-test")
-               (:file "tests/data/parallel-test")))
+               (:file "tests/data/parallel-test")
+               (:file "tests/data/npy-test")))
