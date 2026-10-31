@@ -91,6 +91,12 @@ autodiff-error）を、name つきで signal する。ルールがあればそ�
       (nb:no-transpose-rule (c)
         (is (typep c 'nb:autodiff-error))
         (is (eq :%test-ad-bare (nb:no-transpose-rule-name c))))))
+  ;; ルールのあるプリミティブはこのテストの中で定義する（ad-rules/defprimitive-accepts-rule-keys
+  ;; が定義したものに頼ると、そのテストが先に走らないとき（CI のシャード）に NIL になる）。
+  (nb:defprimitive %test-ad-with-rules ()
+    :abstract-eval #'%test-ad-same-aval
+    :jvp (lambda (primals out tangents) (declare (ignore primals out tangents)) :j)
+    :transpose (lambda (ct invars) (declare (ignore ct invars)) :t))
   (let ((prim (nb::find-primitive :%test-ad-with-rules)))
     (is (eq (nb::primitive-jvp prim) (nb::require-jvp-rule prim)))
     (is (eq (nb::primitive-transpose prim) (nb::require-transpose-rule prim)))))

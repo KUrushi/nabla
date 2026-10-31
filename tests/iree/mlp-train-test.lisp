@@ -86,9 +86,11 @@
 *jit-miss-count* が増えない。seed 1349 は K=80 で比が 0.5004 になった回帰例
 （seed 0..2999 の最悪比は K=160 で 0.11）。"
   (skip-unless-iree :library :both)
+  ;; BEFORE は examples/mlp.lisp を load した後で読む（初回の load は jit を1回
+  ;; 走らせるので、先に読むと、ほかのテストが先に load したかどうかで数が変わる）。
   (let* ((nb:*compile-cache-directory* nil)
-         (before nb::*jit-miss-count*)
-         (step (funcall (%mlp-example-fn "MAKE-MLP-TRAIN-STEP"))))
+         (step (funcall (%mlp-example-fn "MAKE-MLP-TRAIN-STEP")))
+         (before nb::*jit-miss-count*))
     (is (%mlp-loss-halves-p step 1349) "seed 1349 の損失が半分未満にならなかった")
     (is (= (1+ before) nb::*jit-miss-count*))
     (is (check-it (generator (integer 0 100000))
