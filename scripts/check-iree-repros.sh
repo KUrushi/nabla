@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docs/iree-repros/ の最小再現（IREE 3.11 のバグ 1〜8 と制限 10。docs/iree-upstream-bugs.md）を
+# docs/iree-repros/ の最小再現（IREE 3.11 のバグ 1〜9 と制限 10。docs/iree-upstream-bugs.md）を
 # 単体の iree-compile / iree-run-module にかけ、バグが今も再現するかを報告する。IREE を上げたときに
 # 回避策を外せるかの最初の確認に使う（手順は docs/iree-build.md）。
 #
@@ -13,7 +13,8 @@
 #   bug     ファイル: 1 回でもシグナル（終了コード 128 超）で落ちれば REPRODUCED
 #   control ファイル（回避策を入れた形）: 全回コンパイルできれば OK
 #   error-bug ファイル: クラッシュではなく通常のコンパイルエラー（診断を出して終了コード 1）で
-#           落ちるバグ。1 回でも終了コードが 0 でなければ REPRODUCED（対照は control）
+#           落ちるバグ。1 回でも終了コードが 0 でなければ REPRODUCED（対照は control）。
+#           group-norm-grad-multiplier.mlir は 1 回あたり約 17% でしか落ちないので、--runs 20 以上で見る
 #   run-bug / run-control: コンパイルした vmfb を iree-run-module で local-task device で
 #           実行する版（コンパイルは通り、実行時に落ちるバグ。入力の個数ぶんの --input を
 #           自動で作る）。判定は bug / control と同じ
@@ -86,6 +87,8 @@ CASES=(
   "control      conv-convert-operand-type-barrier.mlir"
   "error-bug    conv-depthwise-collapse-shape.mlir"
   "control      conv-depthwise-collapse-shape-barrier.mlir"
+  "error-bug    group-norm-grad-multiplier.mlir"
+  "control      group-norm-grad-normalize-first.mlir"
   "run-bug     local-task-162-inputs.mlir"
   "run-control local-task-161-inputs.mlir"
   "fail-bug     if-passthrough-operands.mlir"

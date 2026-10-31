@@ -445,6 +445,8 @@ limit-control elementwise-chain-31-inputs.mlir         OK              failing-r
 
 `error-bug` の行（`conv-convert-operand-type.mlir` と `conv-depthwise-collapse-shape.mlir`。`docs/iree-upstream-bugs.md` の 4・5、#203）は、クラッシュではなく通常のコンパイルエラー（終了コード 1）で落ちるバグの確認で、`iree-compile` の終了コードが 0 でない実行が 1 回でもあれば `REPRODUCED`。対の `control`（2つの f32 を `optimization_barrier` に通した形）は全回コンパイルできれば `OK`。`error-bug` が `NOT-REPRODUCED` になったら、`src/primitives/conv.lisp` の `%conv-emit-lines` が bf16 / f16 の畳み込みの operand を `stablehlo.optimization_barrier` に通す処理と、`tests/iree/conv-grad-test.lisp` の `convolution/iree-bf16-convert-conv-bugs-still-reproduce` を外せるか判断する（外した形で bf16 / f16 の畳み込みのテスト、depthwise を含めて通ることを確かめる）。
 
+`group-norm-grad-*.mlir` の `error-bug` / `control` の行（`docs/iree-upstream-bugs.md` の 9）は、group-norm の grad のコンパイルが `large vector sizes` で確率的に（1 回あたり約 17%）落ちるバグの確認なので、`--runs 20` 以上で見る（`--runs 10` だと 15% ほどの確率で 1 回も落ちず `NOT-REPRODUCED` になる）。`NOT-REPRODUCED` を「直った」と判断するのは `--runs 100` で 1 回も落ちなかったときにする。直っても nabla の回避策（`src/nn/normalization.lisp` で正規化してから scale をかける順）は Flax と積の順序が違うだけで害は無いので、消すのは再現のファイル 2 つと `CASES` の行、docs の記述でよい。
+
 `fail-bug` / `fail-control` の行（`if-passthrough-operands*.mlir`。`docs/iree-upstream-bugs.md` の 8、#226）は、コンパイルは通り実行時に `ref is null` で失敗するバグの確認で、vmfb を local-task と local-sync の両方で `iree-run-module` に流す。`fail-bug` は pred = 1.0（else の枝）で終了コードが 0 でない実行が 1 回でもあれば `REPRODUCED`、`fail-control` は pred = 0.0 と 1.0 の全ての実行が 0 なら `OK`。`fail-bug` が `NOT-REPRODUCED` になったら、`src/primitives/cond.lisp` の `%cond-emit` が素通しの出力を `stablehlo.select` に書き換える処理（と `cond-passthrough/iree-known-bug-*` のテスト）を外せるか判断する。外すと `stablehlo.if` が素通しの結果をそのまま返す元の形に戻り、`cond/emit-*` の small テストも消す。
 
 `race-bug` / `race-control` の行（`nested-scan-ys-*.mlir`。`docs/iree-upstream-bugs.md` の 7、#220）は、実行時にまれに結果が壊れるバグの確認で、スクリプトが CPU の数だけ負荷をかけながら local-task と local-sync の出力を `--race-runs` 回（既定 4000）比べる。`race-bug` が `NOT-REPRODUCED` になったら、`--race-runs` を増やして（起きる確率は 0.05〜2%）もう一度確かめてから、`src/scan.lisp` の「ys の barrier を付けない」条件（本体の中の制御構造）を外せるか判断する。
@@ -471,6 +473,7 @@ NABLA_IREE_HOME=<新しい版> NABLA_REQUIRE_IREE=1 scripts/run-tests.sh
 | 4・5. bf16 / f16 を convert した畳み込み（#203） | `conv-grad-test.lisp` の `convolution/iree-bf16-convert-conv-bugs-still-reproduce` | 失敗する |
 | 6. local-task の入力 162 個以上（実行時） | `input-limit-test.lisp` の `input-limit/iree-known-bug-local-task-162-inputs-crashes`（`iree-run-module` を子プロセスで実行し、162 個で落ちること） | 失敗する |
 | 7. 制御構造をはさんだ ys の barrier の race | ガードテストは無い（まれにしか起きない）。手順 1 の `race-bug` で判断する | 失敗しない |
+| 9. 正規化の grad の large vector sizes | ガードテストは無い（確率的にしか起きない）。手順 1 の `group-norm-grad-multiplier.mlir`（`--runs 20` 以上）で判断する | 失敗しない |
 | 8. `stablehlo.if` の素通し（#226） | `cond-passthrough-test.lisp` の `cond-passthrough/iree-known-bug-passthrough-operands-fail-at-run-time`（子プロセスで実行して失敗すること） | 失敗する |
 | 10. 要素ごとの連鎖の binding の上限（#264） | `binding-limit-test.lisp` の `binding-limit/iree-known-limit-32-input-chain-fails-at-load`（子プロセスで、フラグなしの 32 個の連鎖が `binding count 33 > 32` で失敗し、31 個とフラグ付きの 32 個が通ること） | 失敗する |
 

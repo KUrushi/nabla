@@ -41,15 +41,15 @@ E[x^2] - E[x]^2 は f32 の桁を 1 桁ほど失い、XLA と nabla の丸めの
 
 (defparameter *gn-forward* (nabla:with-tracing (m x) (call m x)))
 
-(defun %gn-flax-results (case model &key backend (jit-grad t))
+(defun %gn-flax-results (case model &key backend)
   "CASE の x と ct で loss = sum(call(model, x) * ct) を作り、(values 出力 勾配のリスト（パラメータの葉 ++ x）)
-を返す。BACKEND を渡すと順伝播と grad（JIT-GRAD が偽なら順伝播だけ）を jit する（medium）。"
+を返す。BACKEND を渡すと順伝播と grad を jit する（medium）。"
   (let* ((x (%fx-array case "x"))
          (ct (%fx-array case "ct"))
          (forward *gn-forward*)
          (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (call m x) ct))))
          (grad (nabla:grad loss :argnums '(0 1)))
-         (grads (funcall (if (and backend jit-grad) (nabla:jit grad :backend backend) grad) model x ct)))
+         (grads (funcall (if backend (nabla:jit grad :backend backend) grad) model x ct)))
     (values (funcall (if backend (nabla:jit forward :backend backend) forward) model x)
             (append (nabla:tree-leaves (first grads)) (last grads)))))
 
