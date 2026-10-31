@@ -815,6 +815,20 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - `data-loader-error` の `reason` に `:bad-num-workers` / `:bad-prefetch`（0 以上の整数でない）と `:closed` が加わる
 - 速さ（重い変換で逐次とワーカー 1〜8、先読みの有無）は [`docs/data-loader-parallel.md`](docs/data-loader-parallel.md)（`scripts/bench-data-loader.sh`）
 
+#### .npy（`nabla/data`、issue #282）
+
+テンソル化済みのデータセットを numpy の `.npy` から読む。ファイル全体を配列に読む（遅延読み込みはしない）。
+
+| 関数・クラス | 役割 |
+| --- | --- |
+| `(read-npy path)` | `.npy` を読んで配列を返す。ヘッダの版 1.0 / 2.0 / 3.0、C 順、リトルエンディアンの `<f4` `<f8` `\|i1` `<i4` `<i8` `\|u1` `<u4` `<u8` `\|b1` に対応し、要素型は `single-float` / `double-float` / `(signed-byte 8 / 32 / 64)` / `(unsigned-byte 8 / 32 / 64)`。bool（`\|b1`）は bit 配列でなく `(unsigned-byte 8)` の 0 / 1。rank 0 も読める |
+| `(write-npy path array)` | `array` を版 1.0 の `.npy` に書き、パス名を返す。要素型は `read-npy` が返すものと、bool として書く `bit`。ヘッダは numpy と同じく 64 バイト境界まで詰める。`with-atomic-output-file` で書く |
+| `(npy-source paths)` | 葉が `.npy` のパス名（文字列か pathname）の PyTree から、各ファイルを読んだ配列の木の `array-source` を作る。例: `(npy-source (list "x.npy" "y.npy"))` のレコードは `(x の行 y の行)`。rank 0・先頭の軸の長さの食い違いは `make-array-source` と同じ `data-source-error`、パス名でない葉は `:bad-leaf` |
+| `npy-error` / `-path` / `-reason` / `-detail` | `data-error` の子。`reason` は `:invalid-header` `:unsupported-version` `:fortran-order` `:big-endian` `:unsupported-dtype` `:size-mismatch` `:invalid-bool`（意味は docstring） |
+
+- u8・i8・i64・bool の配列は nabla の dtype に無い（`array-dtype` が `dtype-mismatch`）ので、`jit` や `to-device` に渡す前に、ローダの変換（map）で f32 / i32 などに直す
+- Fortran 順（1 を超える軸が 2 つ以上のとき。それ以外はバイト列が C 順と同じなので読む）・ビッグエンディアン・object・complex・構造化 dtype・f16 は読まない。1 バイトの dtype はバイト順の記号（`<u1` など）を問わない。numpy との一致は `tests/fixtures/npy/`（`generate.py` が numpy で書いたファイルと期待値）で確かめる
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
@@ -876,7 +890,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
 src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、オプティマイザ、チェックポイント、レイヤー、multi-head attention
-src/data/            nabla.data パッケージ: データ供給の層（data-source、array-source）
+src/data/            nabla.data パッケージ: データ供給の層（data-source、array-source、.npy）
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト
