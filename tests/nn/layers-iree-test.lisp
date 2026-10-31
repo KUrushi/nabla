@@ -16,12 +16,10 @@
                  (skip "IREE が見つからない"))
              nil)))
 
-;; 非最終軸で正規化する layer-norm の jit した grad は、IREE 3.11 のコンパイルが約 3 割の確率で失敗する
-;; （"large vector sizes (8192 bytes)"。x86 の VM（Rosetta）で 10 回中 2〜4 回。最終軸で正規化する場合は 0 / 30）。
-;; docs/iree-upstream-bugs.md の 9（最小 MLIR 未作成・未報告）。順伝播の jit は毎回通るので、この 2 ケースは grad の jit だけ
-;; 飛ばす。Rosetta の VM での観測なので、x86 ネイティブ（CI）でこの 2 ケースの grad の jit を 30 回以上繰り返して
-;; 一度も失敗しなければ、この除外（と docs の項目 9）を外す。
-(defparameter *layers-iree-flaky-grad-cases* '("layer-norm-reduction-axes" "layer-norm-reduction-middle-axis"))
+;; 非最終軸で正規化する layer-norm（layer-norm-reduction-axes / layer-norm-reduction-middle-axis）の jit した grad は、
+;; 順伝播で倍率 rsqrt(var + epsilon) * scale を先に作る形だと IREE 3.11 のコンパイルが "large vector sizes" で確率的に
+;; 失敗していた（iree-compile 単体の znver4 で 17/100・16/100）。正規化してから scale をかける形（src/nn/layers.lisp の
+;; %layer-norm-output）で 0 回になったので、全ケースで grad も jit する（docs/iree-upstream-bugs.md の 9）。
 
 (test layers/jit-forward-and-grads-match-flax-on-iree-local
   "layers-test.lisp のフィクスチャの全ケース（issue #241 の追加分を含む）で、IREE の local で jit した順伝播と jit した grad が
@@ -39,18 +37,14 @@ Flax の出力・勾配と一致する（許容誤差は eager と同じ）。"
                  (loss (nabla:with-tracing (m x ct) (nabla:reduce-sum (* (funcall forward m x) ct))))
                  (argnums (append (when model '(0)) (when x-grad-p '(1))))
                  (jf (nabla:jit forward :backend backend))
-                 (jg (unless (member name *layers-iree-flaky-grad-cases* :test #'string=)
-                       (nabla:jit (nabla:grad loss :argnums argnums) :backend backend))))
+                 (jg (nabla:jit (nabla:grad loss :argnums argnums) :backend backend)))
             (unwind-protect
-                 (let ((grads (if jg
-                                  (funcall jg model x ct)
-                                  (funcall (nabla:grad loss :argnums argnums) model x ct)))
+                 (let ((grads (funcall jg model x ct))
                        (expected (append (mapcar (lambda (p) (%fx-array case (concatenate 'string "grad." p)))
                                                  (%fx-param-names case))
                                          (when x-grad-p (list (%fx-array case "grad.x"))))))
                    (is (apply #'%close-f32 (funcall jf model x) (%fx-array case "out") (%case-tolerance name))
                        "~A: jit した順伝播が Flax と一致しない" name)
-                   ;; jg が NIL のケースの grads は eager（上の注意）
                    (let ((actual (append (when model (nabla:tree-leaves (first grads)))
                                          (when x-grad-p (last grads)))))
                      (is (= (length expected) (length actual)) "~A: 勾配の個数" name)
