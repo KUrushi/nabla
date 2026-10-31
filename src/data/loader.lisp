@@ -33,6 +33,7 @@
   :state-out-of-range  状態のエポック・位置がローダの範囲の外か、ITERATOR-STATE で :i32 に
                    収まらない
   :bad-num-workers NUM-WORKERS が 0 以上の整数でない
+  :bad-prefetch    PREFETCH が 0 以上の整数でない
   :closed          CLOSE-ITERATOR で閉じたイテレータから NEXT-BATCH した"))
 
 (defun %data-loader-error (reason control &rest arguments)
@@ -146,13 +147,14 @@ FETCH は (FETCH start end) → %RANGE-RECORDS と同じ結果を返す関数で
 (defun %range-fetcher (loader)
   (lambda (start end) (%range-records loader start end)))
 
-(defun make-data-iterator (loader &key (num-workers 0))
+(defun make-data-iterator (loader &key (num-workers 0) (prefetch 2))
   "LOADER のバッチの列を先頭（エポック 0 の最初）から返すイテレータを作る
 （Grain の DataLoaderIterator）。NEXT-BATCH で 1 つずつ取り出す。NUM-WORKERS（0 以上の整数、
 既定 0 = 逐次）が正なら、そのイテレータだけのワーカーのスレッドでレコードを並列に読む
-（バッチの列はワーカー数に依らない）。使い終わったら CLOSE-ITERATOR で閉じる
-（WITH-DATA-ITERATOR なら自動で閉じる）。"
-  (%make-data-iterator loader 0 (%open-worker-pool num-workers)))
+（バッチの列はワーカー数に依らない）。ワーカーは、返したバッチの先 PREFETCH（0 以上の整数、
+既定 2）個ぶんのバッチの位置も先に読んでおく（呼び出し側がバッチを使う間に読む。ワーカー数 0 では
+効かない）。使い終わったら CLOSE-ITERATOR で閉じる（WITH-DATA-ITERATOR なら自動で閉じる）。"
+  (%make-data-iterator loader 0 (%open-worker-pool num-workers prefetch)))
 
 (defun next-batch (iterator)
   "ITERATOR の次のバッチを (values バッチ t) で返して進める。バッチはレコードの木の各葉を

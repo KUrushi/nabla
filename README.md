@@ -801,18 +801,19 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 
 | 関数・マクロ | 役割 |
 | --- | --- |
-| `(make-data-iterator loader &key (num-workers 0))` | `num-workers`（0 以上の整数）のワーカーで読むイテレータ。0 なら逐次でスレッドを作らない |
-| `(restore-iterator loader state &key (num-workers 0))` | 同じく。ワーカー数は状態を取ったイテレータと違ってよい |
-| `(close-iterator iterator)` | ワーカーを止めて片付ける（投げてある区間が終わるのを待つ）。何度呼んでもよい。閉じた後の `next-batch` は `:closed`、`iterator-state` は取れる |
-| `(with-data-iterator (it loader &key state num-workers) body...)` | `it` にイテレータを束縛して `body` を実行し、抜けるとき（非局所脱出でも）閉じる。`state` が nil でなければ `restore-iterator` で再開する |
+| `(make-data-iterator loader &key (num-workers 0) (prefetch 2))` | `num-workers`（0 以上の整数）のワーカーで読むイテレータ。0 なら逐次でスレッドを作らない。ワーカーは返したバッチの先 `prefetch`（0 以上の整数）個ぶんのバッチの位置も先に読む（ワーカー数 0 では効かない） |
+| `(restore-iterator loader state &key (num-workers 0) (prefetch 2))` | 同じく。ワーカー数・先読みは状態を取ったイテレータと違ってよい |
+| `(close-iterator iterator)` | ワーカーを止めて片付ける（先読みを含め、投げてある区間が終わるのを待つ）。何度呼んでもよい。閉じた後の `next-batch` は `:closed`、`iterator-state` は取れる |
+| `(with-data-iterator (it loader &key state num-workers prefetch) body...)` | `it` にイテレータを束縛して `body` を実行し、抜けるとき（非局所脱出でも）閉じる。`state` が nil でなければ `restore-iterator` で再開する |
 
-- ワーカーには、バッチに要るサンプラーの位置の区間を、ワーカー数個の連続区間に分けて `lparallel:future` で投げ、future を作った順に受けて位置の順につなぐ。組み立て（バッチの切り方・エポックの境界・端数）は逐次と同じコードを通る
-- ワーカーが作るのはホストの Lisp 配列のレコードだけで、`device-array` は作らない（デバイスへの転送は呼び出し側のスレッドで行う）
+- ワーカーには、バッチに要るサンプラーの位置と、その先の `prefetch` 個ぶんのバッチの位置を、1 バッチの位置をワーカー数個に分けた大きさの連続区間ごとに `lparallel:future` で投げ、future を作った順に受けて位置の順につなぐ。`next-batch` が返った後、呼び出し側がバッチを使う（デバイスへ送り、学習ステップを走らせる）間に、ワーカーが次のバッチを読む。組み立て（バッチの切り方・エポックの境界・端数）は逐次と同じコードを通る
+- ワーカーが作るのはホストの Lisp 配列のレコードだけで、`device-array` は作らない。ローダはデバイスへの転送を持たない（`next-batch` はホストの配列の木を返し、`jit` した関数にそのまま渡すか、呼び出し側のスレッドで `nabla:to-device` する。backend の転送は呼び出し側で同期して走るので、ローダの中で転送しても重ならない。重なるのはワーカーの読み込みと、呼び出し側の転送・学習ステップ）
 - `source-item` と変換はワーカーから同時に呼ばれるので、純粋（スレッド安全）にする。どのワーカーもまだ始めていない区間は呼び出し側のスレッドが自分で読む（lparallel の future）ので、区間を読むスレッドは実行のたびに変わる。ワーカーのスレッドは呼び出し側の動的束縛（`let` した special 変数）を引き継がないので、変換が special 変数を読むと結果が読むスレッドで変わる（読まない）
 - イテレータそのものはスレッド安全でない。`next-batch` と `close-iterator` は 1 つのスレッドから呼ぶ
 - ワーカーの中の error（`source-item` や変換の中。error でない `serious-condition` も）は、元のコンディションのまま `next-batch` の呼び出し側に届く（読んだスレッドのスタックは巻き戻した後なので、`source-item` の中の restart は使えない）。位置は進まず、もう一度 `next-batch` すると同じ位置から読み直す。ワーカーのスレッドは閉じるまで残る（イテレータを捨てても GC では止まらない）ので、`with-data-iterator` か `close-iterator` で必ず閉じる
-- 再開状態は返したバッチの位置なので、ワーカー数に依らない
-- `data-loader-error` の `reason` に `:bad-num-workers`（0 以上の整数でない）と `:closed` が加わる
+- 再開状態は返したバッチの位置なので、ワーカー数にも先読みにも依らない（`restore-iterator` は先読みを持たない新しいイテレータを作る）
+- `data-loader-error` の `reason` に `:bad-num-workers` / `:bad-prefetch`（0 以上の整数でない）と `:closed` が加わる
+- 速さ（重い変換で逐次とワーカー 1〜8、先読みの有無）は [`docs/data-loader-parallel.md`](docs/data-loader-parallel.md)（`scripts/bench-data-loader.sh`）
 
 #### with-tracing の do ループ（issue #137）
 
