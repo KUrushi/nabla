@@ -1,0 +1,47 @@
+// 候補 (b) を一般化した「連鎖の形」の形 (c): ys が 2 つ（issue #233）。stablehlo.if の直後に、その全出力と
+// 2 つの ys のバッファを 1 つの barrier に通す。y0_t は if の結果、y1_t はその派生値（negate）。main は ys を 2 つ返す。
+// race 用の形は docs/iree-repros/nested-scan-ys-if-joint-barrier-two-ys-race.mlir。コピーの個数を見るためのもの。
+module {
+  func.func @main(%h: tensor<@W@xf32>) -> (tensor<@W@xf32>, tensor<@L@x@W@xf32>, tensor<@L@x@W@xf32>) {
+    %i0c = stablehlo.constant dense<0> : tensor<i32>
+    %z0 = stablehlo.constant dense<0.0> : tensor<f32>
+    %z1 = stablehlo.constant dense<0.0> : tensor<f32>
+    %salt = stablehlo.constant dense<@L@> : tensor<i32>
+    %i0, %zs0, %zs1, %u = stablehlo.optimization_barrier %i0c, %z0, %z1, %salt : tensor<i32>, tensor<f32>, tensor<f32>, tensor<i32>
+    %yb0 = stablehlo.broadcast_in_dim %zs0, dims = [] : (tensor<f32>) -> tensor<@L@x@W@xf32>
+    %y00 = stablehlo.optimization_barrier %yb0 : tensor<@L@x@W@xf32>
+    %yb1 = stablehlo.broadcast_in_dim %zs1, dims = [] : (tensor<f32>) -> tensor<@L@x@W@xf32>
+    %y10 = stablehlo.optimization_barrier %yb1 : tensor<@L@x@W@xf32>
+    %n, %c, %ys0, %ys1 = "stablehlo.while"(%i0, %h, %y00, %y10) ({
+    ^bb0(%ci: tensor<i32>, %cc: tensor<@W@xf32>, %cy0: tensor<@L@x@W@xf32>, %cy1: tensor<@L@x@W@xf32>):
+      %len = stablehlo.constant dense<@L@> : tensor<i32>
+      %lt = stablehlo.compare LT, %ci, %len : (tensor<i32>, tensor<i32>) -> tensor<i1>
+      stablehlo.return %lt : tensor<i1>
+    }, {
+    ^bb0(%bi: tensor<i32>, %bc: tensor<@W@xf32>, %by0: tensor<@L@x@W@xf32>, %by1: tensor<@L@x@W@xf32>):
+      %zi = stablehlo.constant dense<0> : tensor<i32>
+      %half = stablehlo.constant dense<0.5> : tensor<f32>
+      %init = stablehlo.constant dense<0.0> : tensor<f32>
+      %sum = stablehlo.reduce(%bc init: %init) applies stablehlo.add across dimensions = [0] : (tensor<@W@xf32>, tensor<f32>) -> tensor<f32>
+      %pr = stablehlo.compare LT, %sum, %half : (tensor<f32>, tensor<f32>) -> tensor<i1>
+      %ic = "stablehlo.if"(%pr) ({
+        %t = stablehlo.tanh %bc : tensor<@W@xf32>
+        stablehlo.return %t : tensor<@W@xf32>
+      }, {
+        %t2 = stablehlo.tanh %bc : tensor<@W@xf32>
+        %t3 = stablehlo.tanh %t2 : tensor<@W@xf32>
+        stablehlo.return %t3 : tensor<@W@xf32>
+      }) : (tensor<i1>) -> tensor<@W@xf32>
+      %icb, %by0b, %by1b = stablehlo.optimization_barrier %ic, %by0, %by1 : tensor<@W@xf32>, tensor<@L@x@W@xf32>, tensor<@L@x@W@xf32>
+      %y1t = stablehlo.negate %icb : tensor<@W@xf32>
+      %u0 = stablehlo.reshape %icb : (tensor<@W@xf32>) -> tensor<1x@W@xf32>
+      %w0 = stablehlo.dynamic_update_slice %by0b, %u0, %bi, %zi : (tensor<@L@x@W@xf32>, tensor<1x@W@xf32>, tensor<i32>, tensor<i32>) -> tensor<@L@x@W@xf32>
+      %u1 = stablehlo.reshape %y1t : (tensor<@W@xf32>) -> tensor<1x@W@xf32>
+      %w1 = stablehlo.dynamic_update_slice %by1b, %u1, %bi, %zi : (tensor<@L@x@W@xf32>, tensor<1x@W@xf32>, tensor<i32>, tensor<i32>) -> tensor<@L@x@W@xf32>
+      %one = stablehlo.constant dense<1> : tensor<i32>
+      %next = stablehlo.add %bi, %one : tensor<i32>
+      stablehlo.return %next, %icb, %w0, %w1 : tensor<i32>, tensor<@W@xf32>, tensor<@L@x@W@xf32>, tensor<@L@x@W@xf32>
+    }) : (tensor<i32>, tensor<@W@xf32>, tensor<@L@x@W@xf32>, tensor<@L@x@W@xf32>) -> (tensor<i32>, tensor<@W@xf32>, tensor<@L@x@W@xf32>, tensor<@L@x@W@xf32>)
+    func.return %c, %ys0, %ys1 : tensor<@W@xf32>, tensor<@L@x@W@xf32>, tensor<@L@x@W@xf32>
+  }
+}

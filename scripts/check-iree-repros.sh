@@ -116,6 +116,16 @@ CANDIDATE_CASES=(
   "race-candidate nested-scan-ys-joint-barrier-race.mlir"
   "race-candidate nested-scan-ys-if-index-barrier-race.mlir"
   "race-candidate nested-scan-ys-if-joint-barrier-race.mlir"
+  # 候補 (b) を一般化した「連鎖の形」で、上の 2 本が覆わない形（y_t が派生値・制御構造が 2 つ・
+  # ys が 2 つ・入れ子の scan）。while 版と if 版
+  "race-candidate nested-scan-ys-joint-barrier-derived-y-race.mlir"
+  "race-candidate nested-scan-ys-if-joint-barrier-derived-y-race.mlir"
+  "race-candidate nested-scan-ys-joint-barrier-two-controls-race.mlir"
+  "race-candidate nested-scan-ys-if-joint-barrier-two-controls-race.mlir"
+  "race-candidate nested-scan-ys-joint-barrier-two-ys-race.mlir"
+  "race-candidate nested-scan-ys-if-joint-barrier-two-ys-race.mlir"
+  "race-candidate nested-scan-ys-joint-barrier-nested-race.mlir"
+  "race-candidate nested-scan-ys-if-joint-barrier-nested-race.mlir"
 )
 if ((CANDIDATES)); then CASES+=("${CANDIDATE_CASES[@]}"); fi
 
