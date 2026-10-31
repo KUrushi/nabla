@@ -1,0 +1,3 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME BATCH-RECORDS/ROW-J-IS-THE-J-TH-RECORD :DATUM
+                 "(35548 (0))" :TIMESTAMP 4002430995)

@@ -657,7 +657,8 @@
   :components ((:file "src/data/package")
                (:file "src/data/source")
                (:file "src/data/sampler")
-               (:file "src/data/transform")))
+               (:file "src/data/transform")
+               (:file "src/data/batch")))
 
 ;; nabla/data/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/data/tests"
@@ -666,4 +667,5 @@
   :components ((:file "tests/data/package")
                (:file "tests/data/source-test")
                (:file "tests/data/sampler-test")
-               (:file "tests/data/transform-test")))
+               (:file "tests/data/transform-test")
+               (:file "tests/data/batch-test")))

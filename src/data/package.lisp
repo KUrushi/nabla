@@ -34,7 +34,12 @@
    ;; map / filter の変換（issue #281）
    #:map-transform
    #:filter-transform
-   #:apply-transforms)
+   #:apply-transforms
+   ;; レコードをバッチに積む（issue #281）
+   #:batch-records
+   #:batch-error
+   #:batch-error-reason
+   #:batch-error-detail)
   (:documentation
    "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source、
 index-sampler（位置からレコードのインデックスを決めるサンプラー）。"))
