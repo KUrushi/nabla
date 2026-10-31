@@ -24,6 +24,7 @@ scripts/setup-lisp-deps.sh
 # テスト（既定は small + medium。CPU だけで動き、GPU は不要）
 scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
 NABLA_TEST_SIZES=large scripts/run-tests.sh
+NABLA_TEST_SHARD=2/8 scripts/run-tests.sh   # 各スイートの直下のテストを 8 つに分けた 2 番目だけ（CI の並列実行用）
 # GPU で local/cuda の一致を確かめる（issue #12）。GPU が無ければ
 # skip-unless-cuda がスキップする。NABLA_REQUIRE_CUDA=1 を立てると
 # （GPU が要る環境で）スキップの代わりに失敗させる
@@ -102,17 +103,23 @@ mutation testing の詳しいオプションは [`tools/mutate/README.md`](tools
 ## CI
 
 `.github/workflows/ci.yml` が PR（stacked PR のため base ブランチは問わない）と
-`main` への push で動く。実行順: apt で SBCL と IREE のビルド道具（clang / lld /
-cmake / ninja / python3-pip）を入れる → `scripts/setup-lisp-deps.sh`（apt の
-Lisp パッケージ + check-it / optima の git clone。`$NABLA_LISP_DEPS` を
-`hashFiles('scripts/setup-lisp-deps.sh')` でキャッシュ）→ IREE
-（`third_party/iree.lock` と `scripts/build-iree.sh` のハッシュをキーに
-`$NABLA_IREE_HOME` をキャッシュし、当たればビルドをスキップ、外れれば
-`scripts/build-iree.sh --compiler=wheel` を実行）→ `scripts/verify-iree.sh`
-→ PJRT CPU プラグイン（`third_party/pjrt.lock` と `scripts/fetch-pjrt.sh` の
-ハッシュをキーに `$NABLA_PJRT_HOME` をキャッシュし、外れれば
-`scripts/fetch-pjrt.sh`）→ `NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_PJRT=1
-scripts/run-tests.sh`（IREE / PJRT 未検出によるスキップを失敗にする）→ `nabla-mutate` 自身のテスト（`tools/mutate/README.md` のコマンド）。
+`main` への push で動く。2段のジョブからなる。
+
+1. `prepare`: IREE（`third_party/iree.lock` と `scripts/build-iree.sh` のハッシュが
+   キー）と PJRT CPU プラグイン（`third_party/pjrt.lock` と `scripts/fetch-pjrt.sh`）の
+   キャッシュを `lookup-only` で確かめ、外れたときだけ IREE のビルド道具（clang / lld /
+   cmake / ninja / python3-pip）を入れて `scripts/build-iree.sh --compiler=wheel` →
+   `scripts/verify-iree.sh` → 保存、`scripts/fetch-pjrt.sh` → 保存をする。当たれば数秒で終わる
+2. `test`（`prepare` の後、matrix で 8 シャードを並列）: `scripts/setup-lisp-deps.sh`
+   と apt の SBCL → IREE / PJRT をキャッシュから復元（外れたら失敗）→
+   `NABLA_TEST_SHARD=<i>/8 NABLA_REQUIRE_IREE=1 NABLA_REQUIRE_PJRT=1 scripts/run-tests.sh`。
+   シャードは各スイートの直下のテストを名前順に並べて 8 個おきに配る（`tests/support/run-tests.lisp`
+   の `%select-shard`）。依存の fasl（`~/.cache/common-lisp`。ironclad のコンパイルだけで約40秒）は
+   `setup-lisp-deps.sh` のハッシュをキーにキャッシュする（ASDF はソースより新しい fasl だけを使うので、
+   checkout した nabla 自身は毎回コンパイルし直される）。シャード 1 だけが `nabla-mutate` 自身の
+   テスト（`tools/mutate/README.md` のコマンド）と fasl キャッシュの保存をする。シャードの数を変えるときは
+   matrix と `NABLA_TEST_SHARD` の分母を一緒に変える
+
 GPU を使う large テストは CI では動かさない。
 
 `.github/workflows/pr-title.yml` が PR タイトルを Conventional Commits の

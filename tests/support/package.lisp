@@ -18,6 +18,7 @@
    ;; スイート実行
    #:run-tests
    #:sizes-from-env
+   #:shard-from-env
    ;; dtype と許容誤差
    #:*dtypes*
    #:*integer-dtypes*

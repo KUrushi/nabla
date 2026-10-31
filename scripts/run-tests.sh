@@ -3,6 +3,7 @@
 #
 #   scripts/run-tests.sh
 #   NABLA_TEST_SIZES=large scripts/run-tests.sh
+#   NABLA_TEST_SHARD=2/8 scripts/run-tests.sh   # 各スイートを 8 つに分けた 2 番目だけ（CI の並列実行用）
 #
 # ql:quickload は使わない。CL_SOURCE_REGISTRY でリポジトリと
 # $NABLA_LISP_DEPS を ASDF に見せ、asdf:load-system で読み込む。

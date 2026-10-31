@@ -106,6 +106,7 @@ scripts/setup-lisp-deps.sh
 # テスト（既定は small + medium。CPU だけで動き、GPU は不要）
 scripts/run-tests.sh                      # NABLA_TEST_SIZES=small,medium が既定
 NABLA_TEST_SIZES=large scripts/run-tests.sh
+NABLA_TEST_SHARD=2/8 scripts/run-tests.sh  # 各スイートを 8 つに分けた 2 番目だけ（CI が並列に使う）
 
 # mutation testing（既定は main から HEAD までの git diff で変わった行が対象）
 tools/mutate/run.sh
