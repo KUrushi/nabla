@@ -33,4 +33,5 @@ exec sbcl --non-interactive \
   --eval '(asdf:load-system "nabla/pjrt/tests")' \
   --eval '(asdf:load-system "nabla/nn/tests")' \
   --eval '(asdf:load-system "nabla/data/tests")' \
+  --eval '(asdf:load-system "nabla/data/image/tests")' \
   --eval '(uiop:quit (if (nabla.tests.support:run-tests) 0 1))'
