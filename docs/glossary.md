@@ -195,6 +195,9 @@ pretty form を出力する。
 **オプティマイザ（optimizer）/ 勾配変換（gradient transformation）**
 : 勾配から更新量を作る `init`（パラメータ → 状態）と `update`（勾配・状態・パラメータ → 更新量・新しい状態）の組。Optax の `GradientTransformation` と同じで、`sgd` や `adam` だけでなく、勾配のクリップや学習率の掛け算のような小さな変換も同じ型なので、`chain` で順に合成できる（nabla では `nabla.nn:chain`、`defoptimizer`）。状態はパラメータと同じ構造の木（`mu`・`nu` など）とステップ数 `count` を持つ PyTree で、`update` は純粋関数なので、学習ステップ全体を `jit` できる。
 
+**データソース（data source）**
+: インデックスでレコードを取れるデータの抽象。長さ（レコードの個数）と「i 番目のレコード」だけを持ち、同じ i には常に同じレコードを返す。Grain の `RandomAccessDataSource` に当たり、サンプラーが決めた添字の列をローダがここで引くので、添字の列さえ再現できればデータの供給を途中から再開できる。nabla では `nabla.data:data-source`（`source-length` / `source-item`）で、メモリ上の配列の木から作る `array-source` がある（issue #279）。
+
 **pre-LN / decoder-only**
 : Transformer のブロックの書き方。pre-LN は layer-norm を attention や MLP の「前」に置き、`x = x + attn(ln(x))` のように残差の足し算の外側に出さない形（学習が安定しやすい）。decoder-only は因果マスクをかけた自己 attention だけを積んだ形で、位置 i が i より後を見ないので、次のトークンを当てる言語モデルに使う（`examples/transformer.lisp`）。
 

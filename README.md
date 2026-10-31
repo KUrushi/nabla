@@ -13,7 +13,7 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 - フェーズ2（grad。2層 MLP の学習、PJRT バックエンドと IREE の比較。親 issue #90）: 知見は [docs/phase2-report.md](docs/phase2-report.md)
 - フェーズ3（vmap・制御構造 `cond*` / `while-loop` / `scan`・PRNG。親 issue #124）: 知見は [docs/phase3-report.md](docs/phase3-report.md)
 - フェーズ4（Flax 相当。PyTree と `defmodule`・レイヤー・オプティマイザ・チェックポイント・小さな Transformer の学習。親 issue #194）: 知見は [docs/phase4-report.md](docs/phase4-report.md)
-- フェーズ5（Grain 相当。データ供給）: 着手する（`nabla/data` はまだ無い）
+- フェーズ5（Grain 相当。データ供給。親 issue #278）: 着手した。`nabla/data` の最初の部品として data-source と array-source がある（#279）
 
 ロードマップ（計画タブより）:
 
@@ -695,6 +695,22 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
 
+#### data-source（`nabla/data`、issue #279）
+
+`nabla/data`（パッケージ `nabla.data`）はデータ供給の層（フェーズ5、Grain 相当）で、`(asdf:load-system "nabla/data")` で使う。nabla のシステムのうち core（`nabla`）にだけ依存し、`nabla/nn`・`nabla/iree`・`nabla/pjrt` を知らない（FFI を呼ばない純 Lisp の層。レコードとバッチは jit に渡す PyTree そのものなので、木の扱いは core の `tree-flatten` / `defpytree` を使う）。最初の部品は data-source（Grain の `RandomAccessDataSource`。長さがあり、添字でレコードを取れるデータ）。サンプラー・変換・ローダは後続の issue（#278 の表）で足す。
+
+| 関数・クラス | 役割 |
+| --- | --- |
+| `data-source` | データソースの抽象クラス。サブクラスは `source-length` と `source-item` のメソッドを定義する。同じ添字には常に同じレコードを返す（決定的な再開の前提） |
+| `(source-length source)` | レコードの個数（0 以上の整数） |
+| `(source-item source index)` | `index` 番目（0 始まり）のレコード（PyTree）。`index` が 0 以上 `source-length` 未満の整数でなければ `:index-out-of-range` |
+| `(make-array-source tree)` | メモリ上の配列の木から `array-source` を作る。葉の先頭の軸がレコードの軸で、`index` 番目のレコードは、各葉をその軸の `index` 番目の行（同じ element-type の新しい配列。1 次元の葉なら rank 0 の配列）に置き換えた同じ形の木 |
+| `data-error` | `nabla/data` のコンディションの親 |
+| `data-source-error` / `-reason` / `-detail` | `reason` は `:no-leaves` `:bad-leaf` `:rank-zero-leaf` `:length-mismatch` `:index-out-of-range`（意味は docstring） |
+
+- `make-array-source` の木の葉は、どれも rank 1 以上の配列で、先頭の軸の長さが揃っている必要がある（長さ 0 もよい）。element-type は問わない（`(unsigned-byte 8)` の画素のように nabla の dtype に無いものも、変換で直してから jit に渡せばよい）。配列はコピーせずに持つので、作った後で書き換えない
+- 例: `(make-array-source (list images labels))` は、`images` が `(60000 28 28)`、`labels` が `(60000)` なら、`(source-item s 0)` が `(28 28)` の画像と rank 0 のラベルのリストになる
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
@@ -756,10 +772,12 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
 src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、オプティマイザ、チェックポイント、レイヤー、multi-head attention
+src/data/            nabla.data パッケージ: データ供給の層（data-source、array-source）
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト
 tests/nn/            nabla/nn/tests のテスト
+tests/data/          nabla/data/tests のテスト
 tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
@@ -770,7 +788,7 @@ third_party/         iree.lock（固定した IREE のコミットとホイー�
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
 
-ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き #198、defmodule #202、PyTree のチェックポイント #206）、`nabla/nn/tests` の11個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
+ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き #198、defmodule #202、PyTree のチェックポイント #206）、`nabla/nn/tests`、`nabla/data`（データ供給の層。data-source #279）、`nabla/data/tests` の13個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
 
 ## 開発の進め方
 

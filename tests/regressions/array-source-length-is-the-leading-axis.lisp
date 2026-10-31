@@ -1,0 +1,3 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME ARRAY-SOURCE/LENGTH-IS-THE-LEADING-AXIS :DATUM "(0)"
+                 :TIMESTAMP 4001840576)

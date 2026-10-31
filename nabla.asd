@@ -4,7 +4,7 @@
 ;;;;
 ;;;; システムは nabla / nabla/test-support / nabla/tests / nabla/ffi-support /
 ;;;; nabla/ffi-support/tests / nabla/iree / nabla/iree/tests / nabla/pjrt /
-;;;; nabla/pjrt/tests / nabla/nn / nabla/nn/tests（と nabla/data の予定）。nabla/ffi-support は IREE と PJRT が
+;;;; nabla/pjrt/tests / nabla/nn / nabla/nn/tests / nabla/data / nabla/data/tests。nabla/ffi-support は IREE と PJRT が
 ;;;; 共有する FFI 保護（issue #79）で、nabla/iree 無しでロードできる。
 ;;;;
 ;;;; 1つの defsystem に1つの :components エントリを1行、で揃えている。
@@ -648,3 +648,18 @@
                (:file "tests/nn/batch-norm-iree-test")
                ;; README のチュートリアル（issue #210。examples/tutorial.lisp を load し、README のコードブロックと突き合わせる）
                (:file "tests/nn/tutorial-test")))
+
+;; nabla/data: データ供給の層（フェーズ5、issue #278）。最初の部品は data-source（issue #279）。
+;; nabla のシステムのうち core にだけ依存する（nabla/nn・nabla/iree・nabla/pjrt を知らない）。
+(defsystem "nabla/data"
+  :description "データ供給の層（data-source。サンプラー・変換・ローダは後続）"
+  :depends-on ("nabla")
+  :components ((:file "src/data/package")
+               (:file "src/data/source")))
+
+;; nabla/data/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
+(defsystem "nabla/data/tests"
+  :description "nabla/data のテスト"
+  :depends-on ("nabla/data" "nabla/test-support")
+  :components ((:file "tests/data/package")
+               (:file "tests/data/source-test")))
