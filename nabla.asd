@@ -649,7 +649,9 @@
                (:file "tests/nn/batch-norm-test")
                (:file "tests/nn/batch-norm-iree-test")
                ;; README のチュートリアル（issue #210。examples/tutorial.lisp を load し、README のコードブロックと突き合わせる）
-               (:file "tests/nn/tutorial-test")))
+               (:file "tests/nn/tutorial-test")
+               ;; 画像分類の学習（フェーズ5の受け入れテスト、issue #287）
+               (:file "tests/nn/image-classification-test")))
 
 ;; nabla/data: データ供給の層（フェーズ5、issue #278）。最初の部品は data-source（issue #279）。
 ;; nabla のシステムのうち core にだけ依存する（nabla/nn・nabla/iree・nabla/pjrt を知らない）。

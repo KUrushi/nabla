@@ -829,6 +829,18 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - u8・i8・i64・bool の配列は nabla の dtype に無い（`array-dtype` が `dtype-mismatch`）ので、`jit` や `to-device` に渡す前に、ローダの変換（map）で f32 / i32 などに直す
 - Fortran 順（1 を超える軸が 2 つ以上のとき。それ以外はバイト列が C 順と同じなので読む）・ビッグエンディアン・object・complex・構造化 dtype・f16 は読まない。1 バイトの dtype はバイト順の記号（`<u1` など）を問わない。numpy との一致は `tests/fixtures/npy/`（`generate.py` が numpy で書いたファイルと期待値）で確かめる
 
+#### 画像分類を学習する例（`examples/image-classification.lisp`、issue #287）
+
+フェーズ5の完了条件。合成画像（16x16 のグレースケール、4 クラス: 縦線・横線・斜線・十字 + 雑音。ネットワークに頼らないよう実行時に決定的に作る）を `write-npy` で一時ディレクトリに書き、`npy-source` → `data-loader`（シャッフル、u8 を f32 に直して正解を one-hot にする `map-transform`、左右反転とパディング付きの切り抜きの `random-map-transform`）のバッチで、小さな CNN（`conv` 3x3 stride 2 を 2 段 + relu、空間の平均、`dense`）を `jit` した学習ステップ（softmax 交差エントロピー + `adam 0.03`）で学習する。
+
+```sh
+sbcl --non-interactive --load examples/image-classification.lisp   # 64 ステップ。損失 1.38 → 0.4、正解率 25% → 78% くらい
+```
+
+- 学習の途中で「モデル + オプティマイザの状態 + ローダの状態（`iterator-state`）」を 1 つの木 `(list model opt-state loader-state)` として 1 つの safetensors に保存し、復元して続ける（`save-training` / `load-training`。ローダの状態のひな形は先頭の状態）。続きは中断しなかった学習とビット単位で同じになり、ワーカー数（`:num-workers`）を変えても同じ（バッチの列はローダのシードと位置だけで決まる）
+- jit する学習ステップの入力は パラメータ 6 + `mu` 6 + `nu` 6 + `count` 1 + バッチ 2 = 21 個
+- テスト: `tests/nn/image-classification-test.lisp`（small: データセットの決定性とクラスの形、拡張の後もクラスの形が残ること、入力の葉の数。medium: eager の学習でワーカー数 0 と 2・保存と復元をはさんだ学習がビット単位で同じ。IREE local で例の `main` が動き、損失が下がり、正解率が 50% を超え、中断しない学習とビット単位で同じ）
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
@@ -901,7 +913,7 @@ tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
 docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase4-report.md
-examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp, transformer.lisp, tutorial.lisp（この README の使用例）
+examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp, transformer.lisp, tutorial.lisp, image-classification.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
