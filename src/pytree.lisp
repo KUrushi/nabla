@@ -19,6 +19,12 @@
 ;;;; PyTree の構造を内部表現を知らずに歩きたい nabla/nn のチェックポイント用）が共有する
 ;;;; （vmap の軸の木は NIL を葉とする別の規則で、これは使わない）。
 ;;;;
+;;;; 登録した型の FLATTEN は、3つ目の値として子の名前（文字列のリスト）を返せる（#285 の前提）。
+;;;; 名前は TREE-CHILDREN の4つ目の値で外に見せるだけで、spec（treedef）には入れない（jit の
+;;;; キャッシュのキーも変わらない）。nabla/nn のチェックポイントが添字の代わりにパス名に使う
+;;;; ので、nabla/data のように defmodule（nn）を使えない層でも、子の並びに依らないパス名を
+;;;; 持てる。名前の誤りは定義の誤りとして、使うかどうかに依らず TREE-FLATTEN でも PYTREE-ERROR。
+;;;;
 ;;;; spec の形（内部。export しない）:
 ;;;;   :leaf                       葉
 ;;;;   (:list child...)            リスト（NIL は (:list)）
@@ -131,6 +137,12 @@ FLATTEN は (lambda (object) ...) で、子のリストと補助データの2値
 順に葉が並ぶ部分木。補助データは treedef に入る静的な値で、EQUAL で比べられるもの
 （数値・文字・シンボル・文字列・パス名と、それらのコンス）でなければならない（そうで
 なければ TREE-FLATTEN が PYTREE-ERROR）。
+FLATTEN は3つ目の値として子の名前のリストを返してもよい（返さないか NIL なら名前なし）。
+名前は子と同じ個数の、空でなく \".\" を含まない、互いに異なる文字列でなければならず、
+そうでなければ TREE-FLATTEN / TREE-CHILDREN が PYTREE-ERROR。名前は TREE-CHILDREN の
+4つ目の値になり（nabla/nn のチェックポイントは添字の代わりにこれをパス名に使う）、treedef には
+入らない（名前だけが違っても同じ形）。そのため名前は型と補助データだけで決まらなければならない
+（UNFLATTEN で作り直した節も同じ名前を返す。フィールド名の定数のリストにする）。
 UNFLATTEN は (lambda (aux children) ...) で、補助データと子のリストから TYPE の
 オブジェクトを作る。
 
@@ -148,10 +160,27 @@ FLATTEN が真リストでない子を返したときも PYTREE-ERROR。"
   "OBJECT が真リスト（NIL で終わり、循環しない）なら真。"
   (and (listp object) (handler-case (list-length object) (type-error () nil)) t))
 
+(defun %check-child-names (type names children)
+  "登録した型 TYPE の FLATTEN が返した子の名前 NAMES を検査する（NIL は名前なしで常によい）。"
+  (when names
+    (unless (%proper-list-p names)
+      ;; 名前そのものは印字しない（循環リストの印字は終わらない）
+      (%pytree-error "~S の FLATTEN が返した子の名前は真リストでなければならない" type))
+    (unless (= (length names) (length children))
+      (%pytree-error "~S の FLATTEN が返した子の名前 ~S は、子（~D 個）と同じ個数でなければならない"
+                     type names (length children)))
+    (loop for (name . rest) on names
+          do (unless (and (stringp name) (plusp (length name)) (not (find #\. name)))
+               (%pytree-error "~S の子の名前 ~S は、空でなく \".\" を含まない文字列でなければならない"
+                              type name))
+             (when (member name rest :test #'equal)
+               (%pytree-error "~S の子の名前 ~S が重複している" type name)))))
+
 (defun %node-parts (tree)
-  "TREE が節なら (VALUES 子のリスト 補助データ 真 種類)、葉なら (VALUES NIL NIL NIL NIL)。
-種類は :LIST・:VECTOR・登録した型名。TREE-FLATTEN と TREE-CHILDREN が共有する節の判定
-（vmap の軸の木は NIL を葉とする別の規則）。真リストでないコンスと、不正な FLATTEN の結果は PYTREE-ERROR。"
+  "TREE が節なら (VALUES 子のリスト 補助データ 真 種類 子の名前)、葉なら (VALUES NIL NIL NIL NIL NIL)。
+種類は :LIST・:VECTOR・登録した型名。子の名前は登録した型の FLATTEN の3つ目の値（無ければ NIL）。
+TREE-FLATTEN と TREE-CHILDREN が共有する節の判定（vmap の軸の木は NIL を葉とする別の規則）。
+真リストでないコンスと、不正な FLATTEN の結果（子の名前を含む）は PYTREE-ERROR。"
   (cond
     ((listp tree)
      (unless (%proper-list-p tree)
@@ -163,27 +192,31 @@ FLATTEN が真リストでない子を返したときも PYTREE-ERROR。"
     (t
      (let ((entry (%pytree-node-entry tree)))
        (if (null entry)
-           (values nil nil nil nil)
-           (multiple-value-bind (children aux) (funcall (car entry) tree)
-             (unless (%proper-list-p children)
-               (%pytree-error "~S の FLATTEN が子のリストを返さなかった: ~S"
-                              (class-name (class-of tree)) children))
-             (unless (%equal-comparable-p aux)
-               (%pytree-error "~S の補助データは EQUAL で比べられる値でなければならない: ~S"
-                              (class-name (class-of tree)) aux))
-             (values children aux t (class-name (class-of tree)))))))))
+           (values nil nil nil nil nil)
+           (multiple-value-bind (children aux names) (funcall (car entry) tree)
+             (let ((type (class-name (class-of tree))))
+               (unless (%proper-list-p children)
+                 (%pytree-error "~S の FLATTEN が子のリストを返さなかった: ~S" type children))
+               (unless (%equal-comparable-p aux)
+                 (%pytree-error "~S の補助データは EQUAL で比べられる値でなければならない: ~S"
+                                type aux))
+               (%check-child-names type names children)
+               (values children aux t type names))))))))
 
 (defun tree-children (object)
-  "OBJECT が PyTree の節なら (VALUES 子のリスト 補助データ T)、葉なら (VALUES NIL NIL NIL)。
+  "OBJECT が PyTree の節なら (VALUES 子のリスト 補助データ T 子の名前)、葉なら (VALUES NIL NIL NIL NIL)。
 節の判定は TREE-FLATTEN と完全に同じ（リスト・SIMPLE-VECTOR・DEFPYTREE で登録した型が節、
 それ以外は葉）。子は TREE-FLATTEN が葉を集める順の直下の要素で、これを再帰でたどった葉の
 列は TREE-LEAVES と一致する。補助データは treedef に入る静的な値（DEFPYTREE の FLATTEN の2つ目の
 値。リストと SIMPLE-VECTOR は NIL）。子が0個の節（空のベクタ・子を返さない登録型）と葉は、
 3つ目の値で区別する。NIL は TREE-FLATTEN と同じく子の無いリストの節（空の部分木）なので
-(VALUES NIL NIL T)。真リストでないコンスや不正な FLATTEN は TREE-FLATTEN と同じく
-PYTREE-ERROR。木の中身（型ごとの内部表現）を知らずに木の構造を歩くための公開 API。"
-  (multiple-value-bind (children aux node-p) (%node-parts object)
-    (values children aux node-p)))
+(VALUES NIL NIL T NIL)。子の名前は DEFPYTREE の FLATTEN が3つ目の値で返した文字列のリスト
+（子と同じ順。チェックポイントのパス名用で、treedef には入らない。FLATTEN の定数のリストそのもの
+でありうるので、破壊的に変更しない）で、名前を返さない登録型とリスト・SIMPLE-VECTOR は NIL。
+真リストでないコンスや不正な FLATTEN（不正な子の名前を含む）は TREE-FLATTEN と同じく PYTREE-ERROR。木の中身（型ごとの内部表現）を知らずに木の構造を歩くための公開 API。"
+  (multiple-value-bind (children aux node-p kind names) (%node-parts object)
+    (declare (ignore kind))
+    (values children aux node-p names)))
 
 (defun %flatten-into (tree collect)
   "TREE の spec を返す。葉は左から順に COLLECT（1引数の関数）に渡す。"

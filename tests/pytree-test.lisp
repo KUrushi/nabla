@@ -10,7 +10,9 @@
 ;;;; - treedef=: 葉だけを変えた木とは等しく、形を変えた木とは等しくない。
 ;;;; - 葉: 型特化した配列・文字列・登録の無い構造体は、そのまま（EQ で）葉になる。
 ;;;; - 不正な入力（真リストでないコンス、葉の個数違い、組み込みの型の登録、EQUAL で比べ
-;;;;   られない補助データ）は PYTREE-ERROR。
+;;;;   られない補助データ、不正な子の名前）は PYTREE-ERROR。
+;;;; - 子の名前（#285 の前提）: FLATTEN の3つ目の値は TREE-CHILDREN の4つ目の値になり、
+;;;;   treedef には入らない（名前だけが違う木の treedef は等しい）。
 
 (in-package #:nabla.tests)
 
@@ -236,24 +238,71 @@
       (agrees tree))))
 
 (def-pytree-property pytree/children-are-the-direct-children
-  "リスト・ベクタ・登録した型の子は、構成した順の直下の要素で、aux は登録した型の補助データ。"
+  "リスト・ベクタ・登録した型の子は、構成した順の直下の要素で、aux は登録した型の補助データ。
+名前を返さない節の4つ目の値（子の名前）は NIL。"
   (a b tag) (generator (tuple (pytree-spec) (pytree-spec) (uniform-integer :lo 0 :hi 2)))
-  (and (equal (multiple-value-list (nb:tree-children (list a b))) (list (list a b) nil t))
-       (equal (multiple-value-list (nb:tree-children (vector a b))) (list (list a b) nil t))
+  (and (equal (multiple-value-list (nb:tree-children (list a b))) (list (list a b) nil t nil))
+       (equal (multiple-value-list (nb:tree-children (vector a b))) (list (list a b) nil t nil))
        (equal (multiple-value-list (nb:tree-children (make-pytree-test-pair a b tag)))
-              (list (list a b) tag t))))
+              (list (list a b) tag t nil))))
 
 (test pytree/children-of-empty-nodes-and-leaves
-  "子が0個の節（NIL・空ベクタ・空の登録型）は node-p が真、葉は3値とも NIL で区別できる。
+  "子が0個の節（NIL・空ベクタ・空の登録型）は node-p が真、葉は4値とも NIL で区別できる。
 NIL は tree-flatten と同じく空のリスト節。"
-  (is (equal '(nil nil t) (multiple-value-list (nb:tree-children nil))))
-  (is (equal '(nil nil t) (multiple-value-list (nb:tree-children (vector)))))
-  (is (equal '(nil :empty-aux t)
+  (is (equal '(nil nil t nil) (multiple-value-list (nb:tree-children nil))))
+  (is (equal '(nil nil t nil) (multiple-value-list (nb:tree-children (vector)))))
+  (is (equal '(nil :empty-aux t nil)
              (multiple-value-list (nb:tree-children (make-pytree-test-empty)))))
   (dolist (leaf (list 3 "str" :key 'sym 1.5d0 (make-array 3 :element-type 'single-float)))
-    (is (equal '(nil nil nil) (multiple-value-list (nb:tree-children leaf))))))
+    (is (equal '(nil nil nil nil) (multiple-value-list (nb:tree-children leaf))))))
 
 (test pytree/children-rejects-improper-lists
   "真リストでないコンスは tree-flatten と同じく PYTREE-ERROR。"
   (signals nb:pytree-error (nb:tree-children (cons 1 2)))
   (signals nb:pytree-error (nb:tree-children (list* 1 2 3))))
+
+;;; --- 子の名前（チェックポイントのパス名用。#285 の前提） ---
+
+(defstruct (pytree-test-labeled (:constructor make-pytree-test-labeled (children names)))
+  "FLATTEN が3つ目の値で NAMES を子の名前として返す、DEFPYTREE で登録した節。NAMES には
+不正な値も入れられる。検査のためにインスタンスごとに名前を持つが、本来の名前は型と補助データ
+だけで決まる（ここでは UNFLATTEN が名前を NIL にし、往復では名前を保たない）。"
+  children
+  names)
+
+(nb:defpytree pytree-test-labeled
+  :flatten (lambda (node)
+             (values (pytree-test-labeled-children node) :labeled (pytree-test-labeled-names node)))
+  :unflatten (lambda (aux children) (declare (ignore aux)) (make-pytree-test-labeled children nil)))
+
+(defparameter *pytree-test-names* '("key" "epoch" "position" "Dense_0" "key" "epoch" "position")
+  "子の名前の候補（先頭から SHIFT 個ずらした並びの先頭 3 個までを使うので、どこを取っても重複しない）。")
+
+(def-pytree-property pytree/children-names-are-the-flatten-names
+  "FLATTEN が3つ目の値で返した子の名前は、TREE-CHILDREN の4つ目の値にそのまま（大文字も保って）なる。"
+  (children shift) (generator (tuple (list (pytree-spec) :max-length 3) (uniform-integer :lo 0 :hi 3)))
+  (let ((names (subseq (nthcdr shift *pytree-test-names*) 0 (length children))))
+    (equal (multiple-value-list (nb:tree-children (make-pytree-test-labeled children names)))
+           (list children :labeled t names))))
+
+(def-pytree-property pytree/child-names-do-not-enter-the-treedef
+  "子の名前は treedef に入らない（名前だけが違う木の treedef は等しいので、jit のキャッシュの
+キーも変わらない）。葉の順も名前に依らない。"
+  (children shift) (generator (tuple (list (pytree-spec) :max-length 3) (uniform-integer :lo 0 :hi 3)))
+  (let ((named (make-pytree-test-labeled
+                children (subseq (nthcdr shift *pytree-test-names*) 0 (length children))))
+        (unnamed (make-pytree-test-labeled children nil)))
+    (and (nb:treedef= (nb:tree-structure named) (nb:tree-structure unnamed))
+         (equal (nb:tree-leaves named) (nb:tree-leaves children)))))
+
+(test pytree/invalid-child-names-are-pytree-errors
+  "子の名前は、子と同じ個数の、空でなく \".\" を含まない、重複しない文字列の真リストでなければ
+ならない。そうでない名前を返す FLATTEN は定義の誤りで、TREE-CHILDREN も TREE-FLATTEN も
+PYTREE-ERROR（印字できる）。"
+  (dolist (names '(("a") ("a" "b" "c") ("a" :b) ("a" 1) ("a" "a") ("a" "b.c") ("" "b")
+                   ("a" . "b") #1=("a" "b" . #1#) #("a" "b") "ab"))
+    (let ((node (make-pytree-test-labeled (list 1 2) names)))
+      (signals nb:pytree-error (nb:tree-children node))
+      (signals nb:pytree-error (nb:tree-flatten (list 0 node)))
+      (is (plusp (length (handler-case (progn (nb:tree-children node) "")
+                           (nb:pytree-error (condition) (princ-to-string condition)))))))))

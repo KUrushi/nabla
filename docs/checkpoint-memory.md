@@ -7,7 +7,7 @@
 - **ピークは、読み込みも保存もファイルの約 1 倍（木の分を含む）**（#262 から。それより前は読み込みで約 2 倍、保存で約 3 倍）。`read-safetensors` はヘッダを読んでからテンソルごとに配列へ読み、`write-safetensors` はヘッダを書いてから葉を 1 つずつ書く。どちらも上乗せするのはヘッダと 64 KiB の作業用バッファだけ。ヒープが 1 GiB のとき（この測定環境の既定。`(sb-ext:dynamic-space-size)` で確認）、同じ大きさの葉 4 枚（`few`）なら読み込みも保存も 896 MiB まで通る（1024 MiB は木そのものがヒープに入らない）。小さな葉 4096 枚を含む `mixed` では、読み込みが 768 MiB まで、保存が 512 MiB まで通る（保存の 640 MiB は、保存の前に木を作って GC するだけで枯渇する。上限を決めているのは木そのもの）。#244 の時点の境界は、読み込みが 448 MiB が通り 512 MiB で枯渇、保存が 256 MiB が通り 320 MiB で枯渇だった。
 - **葉ごとの遅延読み込み（必要な葉だけ読む）は作らない**。ピークが約 1 倍になったので、残る上限は結果の木そのもの。フェーズ5の状態（データパイプラインの位置・PRNG キー・小さな配列）は KB 級で、フェーズ4のモデルも MB 級（§4）。
 - **世代管理は要らない**。保存はアトミックなので、最新の 1 個は常に壊れない。「最新 n 個を残す」は学習ループの方針（フェーズ5以降）で、呼び出し側が数行で書ける（§5）。
-- データパイプラインの状態は、**Lisp の整数ではなく配列で持つ**。`defmodule` の `:state` スロットに入れれば、モデル + オプティマイザ状態と同じ木で往復する（§3）。
+- データパイプラインの状態は、**Lisp の整数ではなく配列で持つ**。子に名前を付けた `defpytree` の型（`nabla/data` は nn に依存できないので `defmodule` は使えない）にすれば、モデル + オプティマイザ状態と同じ木で往復する（§3）。
 
 ## 1. 測定環境
 
@@ -64,21 +64,31 @@
 
 ## 3. データパイプラインの状態
 
-フェーズ5のデータパイプライン（Grain 相当）の状態は、**配列だけの `defmodule`** にして、モデルとオプティマイザの状態と同じ木に入れる。
+フェーズ5のデータパイプライン（Grain 相当）の状態は、**配列だけの、子に名前を付けた `defpytree` の型**にして、モデルとオプティマイザの状態と同じ木に入れる。`nabla/data` は core にしか依存できない（nn の `defmodule` を使えない）ので、`defpytree` の `flatten` が3つ目の値で子の名前を返す（#285 の前提として core に足した）。名前を返さない `defpytree` の型の子は添字のパス名（`"2.0"`）になり、フィールドの並びを変えるだけで既存のチェックポイントが読めなくなるため、名前を付ける。
 
 ```lisp
-(defmodule pipeline-state ((epoch :state)        ; rank 0 の :i32 配列
-                           (position :state)     ; バッチ内の位置。rank 0 の :i32 配列
-                           (shuffle-key :state)  ; (prng-key seed) か split の1行。:u32 の (2)
-                           (buffer :state)))     ; 小さな配列
+(defstruct pipeline-state epoch position shuffle-key buffer)   ; どれも配列
+(defpytree pipeline-state
+  :flatten (lambda (s)
+             (values (list (pipeline-state-epoch s)          ; rank 0 の :i32 配列
+                           (pipeline-state-position s)       ; バッチ内の位置。rank 0 の :i32 配列
+                           (pipeline-state-shuffle-key s)    ; (prng-key seed) か split の1行。:u32 の (2)
+                           (pipeline-state-buffer s))        ; 小さな配列
+                     nil
+                     '("epoch" "position" "shuffle-key" "buffer")))  ; 子の名前（パス名になる。treedef には入らない）
+  :unflatten (lambda (aux children)
+               (declare (ignore aux))
+               (destructuring-bind (epoch position shuffle-key buffer) children
+                 (make-pipeline-state :epoch epoch :position position :shuffle-key shuffle-key
+                                      :buffer buffer))))
 (save-checkpoint path (list model opt-state pipeline))   ; "2.epoch" "2.shuffle-key" ...
 ```
 
 - **Lisp の整数・実数を葉にすると `:bad-leaf`**（保存でもひな形でも）。これは意図した挙動で、変えない。理由: 葉は必ず dtype を持つ配列で、`tree-unflatten` で復元したときに型が決まるため。オプティマイザの `count`（rank 0 の `:i32` の配列。Lisp の整数にすると `jit` が毎ステップ再コンパイルする）と同じ方針で、**状態は配列で持つ**。
 - PRNG のキーは `prng-key` が作る `:u32` の `(2)` の配列で、そのまま葉になる（`split` の結果の 1 行も同じ形）。往復したキーを `split` した結果は、元のキーから `split` した結果とビット単位で同じ。
 - 文字列で足りる補助情報（データセットのパスや版など）は、`save-checkpoint` の `metadata` に入れてもよい。ただし配列の状態をメタデータに書き込むと形・dtype の照合が効かなくなるので、状態は葉にする。
-- テスト: `tests/nn/checkpoint-test.lisp` の `checkpoint/pipeline-state-in-the-train-state-tree-round-trips`（medium。モデル + オプティマイザ状態 + パイプラインの状態の木を PBT で往復し、整数の端（i32 の最小・最大）、符号付き・符号なしのシードから作ったキー、キーの `split` までビット単位で確かめる）と `checkpoint/lisp-integers-are-not-leaves`（Lisp の整数は `:bad-leaf`）。
-- この issue でコードは変えていない（上のテストは今の挙動を固定する）。パイプラインの状態をどういう構造にするかはフェーズ5の最初の Issue で決める。
+- テスト: `tests/nn/checkpoint-test.lisp` の `checkpoint/named-registered-node-round-trips-under-its-names`（medium。子の名前を返す `defpytree` の節が `"親.名前"` のエントリで往復する）、`checkpoint/pipeline-state-in-the-train-state-tree-round-trips`（medium。上の形の名前つきの `defpytree` の状態を含む、モデル + オプティマイザ状態 + パイプラインの状態の木を PBT で往復し、整数の端（i32 の最小・最大）、符号付き・符号なしのシードから作ったキー、キーの `split` までビット単位で確かめる）と `checkpoint/lisp-integers-are-not-leaves`（Lisp の整数は `:bad-leaf`）。
+- #244 ではコードは変えていない（上のテストは今の挙動を固定する）。#244 の時点では配列だけの `defmodule` にする案だったが、`nabla/data` が nn に依存できないので、#285 の前提として `defpytree` の子の名前を core に足し、それを使う形に改めた。
 
 ## 4. 葉ごとの遅延読み込みは要るか
 

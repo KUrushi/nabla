@@ -126,6 +126,7 @@ I/O とスレッドを使うので medium）。
 - 同じ構造の木に `tree-map` した結果は、元と同じ構造を持つ
 - 節の葉は、子の葉を先頭から順に連結したもの（葉の順を固定する。`nil` は葉を持たない）
 - `tree-map` の f は葉の数だけ flatten の順に呼ばれ、形の違う木を渡すと `pytree-structure-mismatch`
+- `defpytree` の flatten の3つ目の値（子の名前）は `tree-children` の4つ目の値にそのままなり、treedef には入らない（名前だけ違う木は `treedef=`）。不正な名前（個数違い・文字列でない・空・`.` を含む・重複）は `pytree-error`
 
 ### safetensors
 

@@ -7,8 +7,11 @@
 ;;;;   モジュールの子はスロット名（"w"。:static は葉でないので出ない）。スロット名は
 ;;;;   Lisp の既定で大文字になる名前（W）だけを小文字にし、|Dense_0| のように小文字を含む
 ;;;;   名前は保つ（Flax の flatten_dict が作る "params.Dense_0.kernel" と同じ名前にできる）。
-;;;;   defmodule 以外で defpytree した型の子には名前が無いので、FLATTEN が返す子の添字を使い、
-;;;;   入れ子はそのまま再帰する（"opt.0.0.w"、"opt.2"）。木のルートが葉そのものなら名前は ""。
+;;;;   defmodule 以外で defpytree した型の子は、FLATTEN が3つ目の値で子の名前を返せばその名前
+;;;;   （NABLA:TREE-CHILDREN の4つ目の値。そのまま使い、大文字小文字も変えない。"loader.key"）、
+;;;;   返さなければ子の添字を使い、入れ子はそのまま再帰する（"opt.0.0.w"、"opt.2"）。
+;;;;   名前は nn に依存できない nabla/data（#285）が、子の並びに依らないパス名を持つためのもの。
+;;;;   木のルートが葉そのものなら名前は ""。
 ;;;;   このパス名の決め方はファイル形式の一部（nabla.checkpoint_version "1"）。名前の付け方を
 ;;;;   変えるときは、版を上げて古い版の読み方を残す。
 ;;;; - 木全体が1つの名前空間なので、モデルとオプティマイザ状態は (defmodule train-state
@@ -26,9 +29,10 @@
 ;;;; - 厳密に照合する: ファイルとひな形の名前の集合が違えば、足りなくても余っていても
 ;;;;   エラー。メタデータの "nabla." で始まるキーは予約（版の記録）。ユーザーのメタデータは
 ;;;;   そのまま往復するので、データローダの再開状態などを文字列にして入れられる。
-;;;; - データローダの再開状態（エポック・位置・PRNG キー）は、配列だけの defmodule にして木に入れる
-;;;;   （rank 0 の :i32 と :u32 (2) のキー）。Lisp の整数は葉にできない（:bad-leaf）。issue #244。
-;;;; - ピークメモリは load がファイルの約 2 倍、save が約 3 倍（docs/checkpoint-memory.md）。
+;;;; - データローダの再開状態（エポック・位置・PRNG キー）は、配列だけの、子に名前を付けた defpytree の
+;;;;   型（nabla/data は nn に依存できないので defmodule は使わない）にして木に入れる（rank 0 の :i32 と
+;;;;   :u32 (2) のキー）。Lisp の整数は葉にできない（:bad-leaf）。issue #244・#285。
+;;;; - ピークメモリは load も save もファイルの約 1 倍（#262 から。docs/checkpoint-memory.md）。
 
 (in-package #:nabla.nn)
 
@@ -79,20 +83,21 @@ NAME は :shape-mismatch / :dtype-mismatch / :bad-leaf / :duplicate-path / :unkn
 
 (defun %named-leaves (tree prefix)
   "TREE の (パス名 . 葉) のリストを、NABLA:TREE-LEAVES と同じ順で返す。"
-  (flet ((indexed (children)
+  (flet ((named (children names)
+           ;; 名前の無い子（リスト・ベクタ、名前を返さない defpytree の型）は添字
            (loop for child in children
-                 for i from 0
-                 append (%named-leaves child (%join prefix (princ-to-string i))))))
+                 for name in (or names (loop for i below (length children) collect (princ-to-string i)))
+                 append (%named-leaves child (%join prefix name)))))
     (cond ((and (typep tree 'structure-object) (module-slots tree))
            (loop for (slot . kind) in (module-slots tree)
                  unless (eq kind :static)
                    append (%named-leaves (slot-value tree slot) (%join prefix (%segment slot)))))
-          (t (multiple-value-bind (children aux node-p) (nabla:tree-children tree)
+          (t (multiple-value-bind (children aux node-p names) (nabla:tree-children tree)
                (declare (ignore aux))
-               ;; リスト・ベクタと、defmodule 以外で登録した型: 子を添字で名前にして再帰する
+               ;; リスト・ベクタと、defmodule 以外で登録した型: 子を名前（無ければ添字）で再帰する
                ;; （順序の食い違いは %paths-and-leaves が検出する）
                (if node-p
-                   (indexed children)
+                   (named children names)
                    (list (cons (or prefix "") tree))))))))
 
 (defun %paths-and-leaves (tree)
@@ -108,7 +113,8 @@ NAME は :shape-mismatch / :dtype-mismatch / :bad-leaf / :duplicate-path / :unkn
   "TREE の葉のパス名の文字列を、NABLA:TREE-LEAVES と同じ順に並べたリストで返す。
 リストとベクタの子は添字、defmodule のモジュールの子はスロット名（:static は出ない。
 Lisp の既定で大文字になる名前は小文字に、|Dense_0| のように小文字を含む名前はそのまま）、
-defmodule 以外で defpytree した型の子は、FLATTEN が返す子の添字（入れ子は再帰する）。\".\" でつなぐ
+defmodule 以外で defpytree した型の子は、FLATTEN が3つ目の値で返す子の名前（そのまま）、返さなければ
+子の添字（入れ子は再帰する）。\".\" でつなぐ
 （\"enc.layers.0.w\"）。木のルートが葉なら \"\"。名前の重複は検査しない
 \(SAVE-CHECKPOINT / LOAD-CHECKPOINT が :duplicate-path にする)。"
   (values (%paths-and-leaves tree)))

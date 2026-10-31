@@ -2,7 +2,8 @@
 ;;;;
 ;;;; 守らせる性質:
 ;;;; - パス名（small）: 葉と同じ個数で、重複せず、構造だけで決まる（葉の値を変えても同じ）。
-;;;;   リスト・ベクタは添字、defmodule のモジュールはスロット名（:static は葉でないので出ない）。
+;;;;   リスト・ベクタは添字、defmodule のモジュールはスロット名（:static は葉でないので出ない）、
+;;;;   defpytree の FLATTEN が子の名前を返す型はその名前、返さない型は添字。
 ;;;; - 往復（medium）: save → load は、全 dtype（bf16 / f16 / i1 を含む）の葉をビット列まで保ち、
 ;;;;   treedef とメタデータも保つ。
 ;;;; - ひな形と合わないとき（medium）: 名前の過不足・形・dtype の違いを、理由つきの
@@ -31,6 +32,15 @@
   :unflatten (lambda (aux children) (declare (ignore aux))
                (make-ck-pair :a (first children) :b (second children))))
 
+;;; FLATTEN が3つ目の値で子の名前を返す節（nabla/data のローダの再開状態の形。#285）
+(defstruct ck-loader key epoch position)
+(nabla:defpytree ck-loader
+  :flatten (lambda (s) (values (list (ck-loader-key s) (ck-loader-epoch s) (ck-loader-position s))
+                               nil '("key" "epoch" "position")))
+  :unflatten (lambda (aux children) (declare (ignore aux))
+               (destructuring-bind (key epoch position) children
+                 (make-ck-loader :key key :epoch epoch :position position))))
+
 ;;; device-array の代わり（to-host と device-array-aval のメソッドだけを持つ）
 (defclass fake-device-array ()
   ((host :initarg :host) (dtype :initarg :dtype)))
@@ -52,11 +62,11 @@
                    state))
 
 (defun ck-random-tree (state depth)
-  "STATE から決まる、リスト・ベクタ・ck-layer・ck-model・ck-pair・nil・配列の入れ子の木。"
+  "STATE から決まる、リスト・ベクタ・ck-layer・ck-model・ck-pair・ck-loader・nil・配列の入れ子の木。"
   (flet ((sub () (ck-random-tree state (1- depth))))
     (if (<= depth 0)
         (ck-random-array state)
-        (ecase (random 8 state)
+        (ecase (random 9 state)
           ((0 7) (ck-random-array state))
           (1 (loop repeat (random 4 state) collect (sub)))
           (2 (coerce (loop repeat (random 4 state) collect (sub)) 'simple-vector))
@@ -64,7 +74,8 @@
           (4 (make-ck-model :enc (sub) :layers (loop repeat (random 3 state) collect (sub))
                             :aux (sub) :tag (list :n (random 3 state))))
           (5 (make-ck-pair :a (sub) :b (sub)))
-          (6 nil)))))
+          (6 nil)
+          (8 (make-ck-loader :key (sub) :epoch (sub) :position (sub)))))))
 
 (defun ck-dtype-map (tree seed)
   "TREE の (unsigned-byte 16) の葉ごとに bf16 / f16 を SEED から選んだ (パス . dtype) のリスト。"
@@ -157,6 +168,17 @@
       (is (equal '("params.w" "params.b" "opt.0.w" "opt.0.b" "opt.1.0.w" "opt.1.0.b" "opt.2")
                  (tree-paths state))))))
 
+(test (checkpoint/registered-node-with-child-names-uses-the-names :suite :nabla.small)
+  "defpytree の FLATTEN が子の名前を返す節の子は、添字でなくその名前で \"親.名前\" になり、
+入れ子もたどる。名前を返さない ck-pair の子は今までどおり添字のまま。"
+  (let ((leaf (ck-f32 0.0)))
+    (is (equal '("params.w" "params.b" "opt.0.key" "opt.0.epoch" "opt.0.position.0" "opt.0.position.1"
+                 "opt.1.0" "opt.1.1")
+               (tree-paths (make-ck-train-state
+                            :params (make-ck-layer :w leaf :b leaf :act :relu)
+                            :opt (list (make-ck-loader :key leaf :epoch leaf :position (list leaf leaf))
+                                       (make-ck-pair :a leaf :b leaf))))))))
+
 (defmodule ck-empty ((|| :param)))
 
 (test (checkpoint/empty-slot-names-are-rejected :suite :nabla.small)
@@ -182,7 +204,16 @@
 ;;; エポック数・バッチ内の位置は rank 0 の :i32 配列、シャッフルの PRNG キーは prng-key が作る
 ;;; :u32 (2) の配列、小さな配列（バッファの先頭など）。Lisp の整数は葉にできないので配列で持つ。
 
-(defmodule ck-pipeline ((epoch :state) (position :state) (shuffle-key :state) (buffer :state)))
+;;; nabla/data は nn に依存できないので、状態は defmodule でなく子に名前を付けた defpytree の型にする（#285）
+(defstruct ck-pipeline epoch position shuffle-key buffer)
+(nabla:defpytree ck-pipeline
+  :flatten (lambda (p) (values (list (ck-pipeline-epoch p) (ck-pipeline-position p)
+                                     (ck-pipeline-shuffle-key p) (ck-pipeline-buffer p))
+                               nil '("epoch" "position" "shuffle-key" "buffer")))
+  :unflatten (lambda (aux children) (declare (ignore aux))
+               (destructuring-bind (epoch position shuffle-key buffer) children
+                 (make-ck-pipeline :epoch epoch :position position :shuffle-key shuffle-key
+                                   :buffer buffer))))
 
 (defun ck-i32-scalar (value)
   (make-array nil :element-type '(signed-byte 32) :initial-element value))
@@ -225,6 +256,22 @@ save → load すると、全部がビット列まで戻り、復元したキー
 (test (checkpoint/pipeline-state-paths-are-slot-names :suite :nabla.small)
   (is (equal '("epoch" "position" "shuffle-key" "buffer")
              (tree-paths (ck-random-pipeline (sb-ext:seed-random-state 1))))))
+
+(test (checkpoint/named-registered-node-round-trips-under-its-names :suite :nabla.medium)
+  "子の名前を返す defpytree の節（ローダの再開状態の形）は、ファイルの中で \"親.名前\" のエントリに
+なり、save → load でビット列まで往復する。"
+  (let ((tree (make-ck-train-state
+               :params (make-ck-layer :w (ck-f32 1.0 2.0) :b (ck-f32 3.0) :act :relu)
+               :opt (make-ck-loader :key (nabla:prng-key 7) :epoch (ck-i32-scalar 3)
+                                    :position (ck-i32-scalar -5)))))
+    (with-checkpoint-file (path)
+      (save-checkpoint path tree)
+      (is (equal '("opt.epoch" "opt.key" "opt.position" "params.b" "params.w")
+                 (sort (mapcar #'first (read-safetensors path)) #'string<)))
+      (let ((back (load-checkpoint path tree)))
+        (is (typep (ck-train-state-opt back) 'ck-loader))
+        (is (nabla:treedef= (nabla:tree-structure tree) (nabla:tree-structure back)))
+        (is (ck-same-leaves-p tree back))))))
 
 (test (checkpoint/lisp-integers-are-not-leaves :suite :nabla.medium)
   "データパイプラインの状態は配列で持つ。Lisp の整数を葉にすると :bad-leaf（保存もひな形も）。"
