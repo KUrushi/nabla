@@ -23,6 +23,14 @@
    #:source-item
    ;; メモリ上の配列のデータソース
    #:array-source
-   #:make-array-source)
+   #:make-array-source
+   ;; インデックスのサンプラー（issue #280）
+   #:index-sampler
+   #:make-index-sampler
+   #:sampler-index
+   #:sampler-error
+   #:sampler-error-reason
+   #:sampler-error-detail)
   (:documentation
-   "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source。"))
+   "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source、
+index-sampler（位置からレコードのインデックスを決めるサンプラー）。"))
