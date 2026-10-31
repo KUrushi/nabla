@@ -8,4 +8,7 @@
 
 (in-package #:nabla.data.tests)
 
+;;; nabla/tests の tests/regressions.lisp はこのパッケージより先に読まれるので、自分の回帰ケースはここで読む
+(load-package-regressions '#:nabla.data.tests)
+
 (in-suite :nabla.small)

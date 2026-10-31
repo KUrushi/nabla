@@ -94,6 +94,7 @@
    #:with-temporary-directory
    ;; 回帰テスト
    #:regression-path
+   #:load-package-regressions
    ;; StableHLO emitter の medium PBT が使う、実プリミティブ上のレシピ生成器
    ;; （issue #33、wave 3 s1）
    #:primitive-graph-recipe
