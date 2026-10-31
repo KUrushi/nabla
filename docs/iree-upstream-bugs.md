@@ -598,6 +598,15 @@ plain は L によらずほぼ一定（長さに線形）、cond は L ととも
 3. 0 だったら nabla の emit に反映する前に、`scripts/bench-scan-ys.sh --variants plain,cond,scripts/scan-ys-candidates/joint-barrier.mlir.in` で性能（コピーが消えること）を確かめ、`scan/iree-nested-*-matches-eager`（PBT。回避策なしだと 100 回の中で 2% 前後で落ちる）を繰り返し走らせる。
 4. 新しい候補を足すには、`docs/iree-repros/` に race 用の形（`// INPUT: ...` の行つき）を置き、`scripts/check-iree-repros.sh` の `CANDIDATE_CASES` に `race-candidate <ファイル名>` を 1 行足す。性能の比較は `scripts/scan-ys-candidates/` に `@L@` / `@W@` のテンプレート（main の形は `bench-scan-ys.lisp` の冒頭）を置く。
 
+**GitHub Actions の x86 ネイティブのランナーで回す**（`.github/workflows/iree-race-check.yml`）: 手順 1 と 2 を、race の行（race-bug / race-control の 4 本と `CANDIDATE_CASES` の候補）ごとの ubuntu-24.04 のジョブに分けて並列に走らせる。最後の `report` ジョブが、ジョブのサマリにファイルごとの不一致の回数の表と、race-bug がその環境で再現したか（再現しなければ候補の 0 回は根拠にならない）を出す。各ジョブは `scripts/check-iree-repros.sh --case <ファイル名>`（名前を挙げた行だけを走らせるオプション）を呼ぶ。IREE は `ci.yml` と同じキーのキャッシュから復元し、外れたら `prepare` ジョブがビルドして保存する。ジョブには 6 時間の上限があるので、1 行の回数を `parts` 個のジョブに分けられる（不一致の回数は report が足す）。判定はしない（候補に不一致が出てもジョブは失敗しない）。起動のしかたは2つ:
+
+- 既定ブランチにこのワークフローがあれば `gh workflow run iree-race-check.yml -f race-runs=20000 -f reproduce-runs=4000 -f parts=1`（`-f cases="<ファイル名> ..."` で行を絞れる）
+- ブランチ名で回数を渡す push: `git push origin HEAD:ci/iree-race-check/runs-20000`（`runs-<N>-parts-<P>` で分割も。候補は N 回、race-bug / race-control は min(N, 4000) 回）。既定ブランチに入る前の変更を確かめるのにも使う
+
+結果は `gh api 'repos/KUrushi/nabla/actions/runs?branch=ci/iree-race-check/runs-20000'` で run を探し、run のページのサマリで見る。表にはランナーの CPU（コア数と型番）も出る。ジョブごとに別の機械に割り当たりうるので、race-bug の再現の頻度は候補と同じ機械で測ったものとは限らない（分割したときの CPU の欄は、そのうち 1 つのジョブのもの）。ランナー（4 コア）では 1 行 20000 回が約 5〜6 分、4000 回が約 1 分で終わる。
+
+**ランナーでの結果（2026-10-31、IREE 3.11）**: race-bug は再現した。ただし頻度は上の表の記録（0.4〜2%）より低い。`runs-20000` の run（https://github.com/KUrushi/nabla/actions/runs/41194314022）では while 版 1/4000・if 版 5/4000、`runs-200000-parts-4` の run（https://github.com/KUrushi/nabla/actions/runs/41194993213）では 3/4000・6/4000（0.025〜0.15%）。race-control は 2 回とも 0/4000。候補は (a)(b) の while 版・if 版の 4 本とも、20000 回でも 200000 回でも不一致 0 回だった。200000 回で 0 回なら、1 回の失敗確率は 95% の信頼で 0.0015% 未満。これは同じランナーでの race-bug の頻度（0.075〜0.15%）の 1/50 以下にあたる。CPU は AMD EPYC 7763 / 9V45 / 9V74 と Intel Xeon 8370C / 8573C が混ざっていた。上の結論の「x86 ネイティブで 0/20000」の条件はこれで満たした。(b) を emit に入れるのは別の PR で行う（手順 3 と、テンプレートが覆っていない形の検討が残る）。
+
 **opt-in で切り替える案（実装していない）**: (b) を、特殊変数（たとえば `*scan-ys-joint-barrier*`、既定は nil）で選べるようにする。x86 ネイティブでの確認が済むまでは既定を nil に保つ。確認が済んだら既定を t にし、`scan/scan-with-cond-in-body-has-no-ys-barrier` と `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body`（今は barrier が無いことを守っている）を新しい形に書き換える。上流が直ったら（`check-iree-repros.sh` の race-bug が再現しなくなったら）、回避策ごと消して plain の emit に戻す。
 
 ### 下書き（英語）

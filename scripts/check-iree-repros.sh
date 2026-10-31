@@ -8,6 +8,10 @@
 #   scripts/check-iree-repros.sh --runs 30   # 回数を変える
 #   scripts/check-iree-repros.sh --race-runs 5000   # race-* の実行回数（既定 4000。1 回あたり 0.4〜2% でしか起きない（負荷のもとでの実測。docs/iree-upstream-bugs.md の 7））
 #   scripts/check-iree-repros.sh --candidates --race-runs 20000   # 追加で race-candidate（下）も実行する
+#   scripts/check-iree-repros.sh --case nested-scan-ys-joint-barrier-race.mlir --race-runs 20000
+#       # 名前を挙げた行だけを実行する（繰り返して複数を選べる。表の順に実行する。race-candidate の
+#       # ファイルも --candidates なしで選べる）。ケースごとに別のジョブで走らせる CI 用
+#       # （.github/workflows/iree-race-check.yml、issue #233）
 #
 # 各行の判定:
 #   bug     ファイル: 1 回でもシグナル（終了コード 128 超）で落ちれば REPRODUCED
@@ -52,11 +56,13 @@ IREE_COMPILE="${NABLA_IREE_HOME}/bin/iree-compile"
 IREE_RUN="${NABLA_IREE_HOME}/bin/iree-run-module"
 WORK_DIR="$(mktemp -d)"
 STRESS_PIDS=()
-trap 'for pid in "${STRESS_PIDS[@]}"; do kill "${pid}" 2>/dev/null || true; done; rm -rf "${WORK_DIR}"' EXIT
+# ${a[@]+...} は空の配列を set -u のもとで展開するため（bash 4.3 以前は空の "${a[@]}" を unbound とみなす）
+trap 'for pid in ${STRESS_PIDS[@]+"${STRESS_PIDS[@]}"}; do kill "${pid}" 2>/dev/null || true; done; rm -rf "${WORK_DIR}"' EXIT
 REPRO_DIR="${REPO_ROOT}/docs/iree-repros"
 RUNS=10
 RACE_RUNS=4000
 CANDIDATES=0
+ONLY=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -67,6 +73,9 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "error: --race-runs needs a positive integer" >&2; exit 2; }
       RACE_RUNS="$2"; shift 2 ;;
     --candidates) CANDIDATES=1; shift ;;
+    --case)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "error: --case needs a file name" >&2; exit 2; }
+      ONLY+=("$2"); shift 2 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -109,6 +118,23 @@ CANDIDATE_CASES=(
   "race-candidate nested-scan-ys-if-joint-barrier-race.mlir"
 )
 if ((CANDIDATES)); then CASES+=("${CANDIDATE_CASES[@]}"); fi
+
+# --case を付けたときは、全部の行（CANDIDATE_CASES を含む）から名前を挙げた行だけを残す
+if ((${#ONLY[@]} > 0)); then
+  ALL_CASES=("${CASES[@]}")
+  if ((!CANDIDATES)); then ALL_CASES+=("${CANDIDATE_CASES[@]}"); fi
+  ALL_FILES=" "
+  for entry in "${ALL_CASES[@]}"; do read -r kind file <<<"${entry}"; ALL_FILES+="${file} "; done
+  for name in "${ONLY[@]}"; do
+    [[ "${ALL_FILES}" == *" ${name} "* ]] || { echo "error: --case: no such case: ${name}" >&2; exit 2; }
+  done
+  ONLY_FILES=" ${ONLY[*]} "
+  CASES=()
+  for entry in "${ALL_CASES[@]}"; do
+    read -r kind file <<<"${entry}"
+    if [[ "${ONLY_FILES}" == *" ${file} "* ]]; then CASES+=("${entry}"); fi
+  done
+fi
 
 # race-* は負荷のもとでしか起きないので、CPU の数だけ busy loop を起動する（trap で止める）
 start_stress() {
