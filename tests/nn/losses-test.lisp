@@ -70,7 +70,12 @@
 (def-layer-property losses/gradient-is-accurate-for-a-shifted-student
   "z_s = z_t + C + 差（C は 1〜50 の定数、差は各要素 [-1e-9, 1e-9)、f64）でも、勾配が double の参照
 q - p と一致する（softmax は定数のずらしに不変なので q ≈ p。成分ごとに相対 1e-3、床は最大の成分の
-1e-3）。f32 では z_t + C の丸め（50 で ulp 3.8e-6）が差を消すので f64 で見る。中心化
+1e-3）。f32 では z_t + C の丸め（50 で ulp 3.8e-6）が差を消すので f64 で見る。f64 でも、参照
+softmax(z_s) - softmax(z_t) の打ち消し（各 softmax が eps p 程度の誤差を持つ）と、実装の z_s - z_t の丸め
+（ulp(z_s)。各成分の勾配の z についての感度は 1/2 以下）で、勾配に eps max(1, max|z|) 程度の誤差が
+避けられない。差が偶然ほぼ等しく勾配が 1e-14 程度になる入力（seed 58772、n 2、C 1 で 7.6e-15）では、これが
+相対 1% になるので、4 eps max(1, max|z_s|)（最大で約 5e-14）の床を足す。典型的な大きさ（1e-10 程度）の勾配が
+0 に潰れたものはなお通さない（勾配全体が床より小さい入力では、参照の精度が足りず区別できない）。中心化
 d = delta - sum(p delta) を外す変異はこの性質では区別できない（中心化は s の値を変えず、精度への
 効果も差 z_s - z_t の丸めと同じ大きさ。生き残る変異体として記録している）。"
   (seed n c)
@@ -83,8 +88,9 @@ d = delta - sum(p delta) を外す変異はこの性質では区別できない�
             (aref zs i) (+ (aref zt i) c (- (random 2d-9 state) 1d-9))))
     (let* ((g (funcall (nabla:grad (%soft-ce)) zs zt))
            (expected (%reference-soft-ce-grad zs zt))
-           (scale (reduce #'max expected :key #'abs)))
-      (every (lambda (a x) (<= (abs (- a x)) (+ (* 1d-3 (abs x)) (* 1d-3 scale)))) g expected))))
+           (scale (reduce #'max expected :key #'abs))
+           (rounding (* 4 double-float-epsilon (max 1d0 (reduce #'max zs :key #'abs)))))
+      (every (lambda (a x) (<= (abs (- a x)) (+ (* 1d-3 (abs x)) (* 1d-3 scale) rounding))) g expected))))
 
 (def-layer-property losses/gradient-is-exactly-zero-for-a-shifted-teacher
   "z_s = z_t + C（C は整数、z_t は 1/64 の倍数なので和は厳密）なら softmax(z_s) = softmax(z_t) で、勾配は
