@@ -209,13 +209,13 @@ PR 番号は GitHub 上のもの。stacked PR で、下から順に積み、親�
 
 ## 7. フェーズ5（Grain 相当。データ供給）への引き継ぎ
 
-- **`nabla/data` システムはまだ無い**（`nabla.asd` にコメントがあるだけで、`src/data/` も無い）。フェーズ5の最初の作業で、`nabla/data` と `nabla/data/tests` を新設する（`nabla/nn` を作った #198 / PR #213 が手本。`scripts/run-tests.sh` への追加と CI も）。データ層は core にも nn にも依存しない形を保つ。
+- **`nabla/data` システムはまだ無い**（`nabla.asd` にコメントがあるだけで、`src/data/` も無い）。フェーズ5の最初の作業で、`nabla/data` と `nabla/data/tests` を新設する（`nabla/nn` を作った #198 / PR #213 が手本。`scripts/run-tests.sh` への追加と CI も）。データ層は core にも nn にも依存しない形を保つ。**→ #279 で新設した。結局 core（PyTree）には依存し、nn には依存しない**（[phase5-report.md](phase5-report.md) §3.1）。
 - **バッチは PyTree**: 学習ステップの引数は `(model opt-state batch)` で、バッチは配列のリスト・ベクタ・`defmodule` など何でもよい。`jit` はバッチの treedef と葉の aval をキャッシュのキーに入れるので、**バッチの形（最後の端数のバッチを含む）が変わると再コンパイルされる**。データローダは固定の形のバッチを返す（端数は捨てるか詰める）。
 - **学習ステップは `jit` した純粋関数**（チュートリアルと `examples/transformer.lisp`）。データの読み込みは Lisp 側のループで、`to-device` を挟んで渡す。1 回の呼び出しの内訳（to-device / invoke / to-host）は `scripts/profile-call-overhead.lisp` で測れる（#190）。先読み（prefetch）で入力の転送と計算を重ねたいときの比較対象になる。
 - **再開できる学習**: チェックポイントは「モデル + オプティマイザ状態」を 1 つの木に入れて往復できる（ビット単位で一致する再開をテスト済み）。データローダの位置（エポック、シャッフル用の PRNG キー、バッチ内の位置）も、整数と `:u32` のキーの葉を持つ `defmodule` にすれば同じ木に入れられるはず。往復は #244 でテスト済み（Lisp の整数は葉にできないので配列で持つ。[checkpoint-memory.md](checkpoint-memory.md) §3）。構造はフェーズ5の最初の Issue で決める。**シャッフルは PRNG のキーから決定的に作る**（`fold-in` でエポックを混ぜる）と、位置の保存が小さく済む。
 - **PRNG**: `split` / `fold-in` / `uniform` / `normal` / `truncated-normal`。バッチされた rng の emit は K 行ずつの while（フェーズ3）。データ拡張で `vmap` してキーをバッチするとコンパイル時間は行数に依らないが、実行時間は行数 / 16 に比例する。
 - **並列**: 処理系は SBCL で、並列は lparallel を使う（CLAUDE.md の構成）。finalizer は別スレッドで走るので、`device-array` を並列のワーカーから作るときの解放の順序（CLAUDE.md の device-array の節）に注意する。
 - **safetensors の読み書きは使い回せる**（データセットの配列の保存にも）。ただし今はファイル全体をメモリに読む（ピークは約 2 倍。#244、[checkpoint-memory.md](checkpoint-memory.md)）。
-- **README のチュートリアルの手書きのループ**は、データローダの最初の利用者になる。フェーズ5の例は、このチュートリアルの `make-batch` を置き換える形にするとよい。
+- **README のチュートリアルの手書きのループ**は、データローダの最初の利用者になる。フェーズ5の例は、このチュートリアルの `make-batch` を置き換える形にするとよい。**→ フェーズ5の #287 で、チュートリアルの `make-batch` を `nabla/data` のローダに置き換えた**（[phase5-report.md](phase5-report.md)）。
 - **残っている IREE の制限**（§4.3）は、データを入れても変わらない。特に学習ステップの入力が 161 個を超えない（#242）こと。
 - GPU の未測定は、フェーズ3までと同じ手順で Colab で測る。

@@ -4,7 +4,8 @@
 ;;;;
 ;;;; システムは nabla / nabla/test-support / nabla/tests / nabla/ffi-support /
 ;;;; nabla/ffi-support/tests / nabla/iree / nabla/iree/tests / nabla/pjrt /
-;;;; nabla/pjrt/tests / nabla/nn / nabla/nn/tests / nabla/data / nabla/data/tests。nabla/ffi-support は IREE と PJRT が
+;;;; nabla/pjrt/tests / nabla/nn / nabla/nn/tests / nabla/data / nabla/data/tests /
+;;;; nabla/data/image / nabla/data/image/tests。nabla/ffi-support は IREE と PJRT が
 ;;;; 共有する FFI 保護（issue #79）で、nabla/iree 無しでロードできる。
 ;;;;
 ;;;; 1つの defsystem に1つの :components エントリを1行、で揃えている。
@@ -578,7 +579,7 @@
 
 ;; nabla/nn: モデル記述の層（issue #194）。最初の部品は safetensors の読み書き（issue #198）。
 (defsystem "nabla/nn"
-  :description "モデル記述の層（safetensors の読み書きと defmodule。レイヤー・オプティマイザは後続）"
+  :description "モデル記述の層（safetensors の読み書き、defmodule、レイヤー、オプティマイザ、PyTree のチェックポイント）"
   :depends-on ("nabla")
   :components ((:file "src/nn/package")
                (:file "src/nn/json")
@@ -653,10 +654,10 @@
                ;; 画像分類の学習（フェーズ5の受け入れテスト、issue #287）
                (:file "tests/nn/image-classification-test")))
 
-;; nabla/data: データ供給の層（フェーズ5、issue #278）。最初の部品は data-source（issue #279）。
+;; nabla/data: データ供給の層（フェーズ5、issue #278。設計の判断は docs/phase5-report.md §3）。
 ;; nabla のシステムのうち core にだけ依存する（nabla/nn・nabla/iree・nabla/pjrt を知らない）。
 (defsystem "nabla/data"
-  :description "データ供給の層（data-source・index-sampler・変換・data-loader と再開状態）"
+  :description "データ供給の層（data-source・index-sampler・map / filter / random-map の変換・バッチ・逐次と並列の data-loader・再開状態・.npy の読み書き）"
   :depends-on ("nabla" "lparallel")
   :components ((:file "src/data/package")
                (:file "src/data/source")
