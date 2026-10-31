@@ -88,6 +88,9 @@ scripts/measure-checkpoint-memory.sh                              # NABLA_CKPT_S
 # embedding の引きを one-hot + dot と gather で比べる（issue #240。結果は docs/embedding-gather.md。IREE があれば jit も測る）
 scripts/bench-embedding.sh                                        # NABLA_EMBED_VOCABS="1000 10000" で語彙数を絞る
 
+# 並列ローダ（nabla/data）の 1 エポックの時間を、重い変換でワーカー数（0 = 逐次）と先読みを変えて測る（issue #286。結果は docs/data-loader-parallel.md。IREE は要らない）
+scripts/bench-data-loader.sh                                      # NABLA_LOADER_WORKERS="0 4" NABLA_LOADER_RECORDS=256 で絞る
+
 # 本体に cond* がある scan の呼び出し時間を、外側の長さ L と ys の大きさを変えて測る（issue #233。IREE が要る。
 # 改善の候補の emit は --variants でテンプレート scripts/scan-ys-candidates/*.mlir.in を渡して比べる）
 scripts/bench-scan-ys.sh --lengths 16,64 --widths 4096,65536

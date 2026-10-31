@@ -65,7 +65,7 @@
        (equal (array-element-type leaf) element-type)
        (equal (array-dimensions leaf) dimensions)))
 
-(defun restore-iterator (loader state &key (num-workers 0))
+(defun restore-iterator (loader state &key (num-workers 0) (prefetch 2))
   "LOADER のバッチの列を、STATE（ITERATOR-STATE。チェックポイントから復元したものでよい）の
 位置から続けるイテレータを返す。残りのバッチの列は、STATE を取ったイテレータの続きと同じ。
 STATE が ITERATOR-STATE でないか葉の型・形が違えば :bad-state、version がこの版のサンプラーの
@@ -74,7 +74,7 @@ STATE が ITERATOR-STATE でないか葉の型・形が違えば :bad-state、ve
 0 以上でないか、NUM-EPOCHS を超える（epoch = NUM-EPOCHS なら position は 0 だけ）なら
 :state-out-of-range の DATA-LOADER-ERROR。状態はデータソース・変換・SHUFFLE・BATCH-SIZE などを
 持たないので、LOADER は状態を取ったローダと同じ引数で作ること（違っても検査できない）。
-NUM-WORKERS は MAKE-DATA-ITERATOR と同じ（状態を取ったイテレータと違ってよい）。"
+NUM-WORKERS と PREFETCH は MAKE-DATA-ITERATOR と同じ（状態を取ったイテレータと違ってよい）。"
   (unless (and (iterator-state-p state)
                (%state-leaf-p (iterator-state-key state) '(unsigned-byte 32) '(2))
                (%state-leaf-p (iterator-state-epoch state) '(signed-byte 32) '())
@@ -99,4 +99,4 @@ NUM-WORKERS は MAKE-DATA-ITERATOR と同じ（状態を取ったイテレータ
       (%data-loader-error :state-out-of-range
                           "エポック ~D・位置 ~D が、レコード ~D 個・~:[終わらない~;~:*~D エポック~]の範囲の外"
                           epoch position n num-epochs))
-    (%make-data-iterator loader k (%open-worker-pool num-workers))))
+    (%make-data-iterator loader k (%open-worker-pool num-workers prefetch))))

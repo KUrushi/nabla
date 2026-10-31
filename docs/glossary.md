@@ -198,6 +198,9 @@ pretty form を出力する。
 **データソース（data source）**
 : インデックスでレコードを取れるデータの抽象。長さ（レコードの個数）と「i 番目のレコード」だけを持ち、同じ i には常に同じレコードを返す。Grain の `RandomAccessDataSource` に当たり、サンプラーが決めた添字の列をローダがここで引くので、添字の列さえ再現できればデータの供給を途中から再開できる。nabla では `nabla.data:data-source`（`source-length` / `source-item`）で、メモリ上の配列の木から作る `array-source` がある（issue #279）。
 
+**先読み（prefetch）/ future**
+: 先読みは、呼び出し側が今のバッチを使っている（デバイスへ送り、学習ステップを走らせる）間に、次のバッチを別のスレッドで用意しておくこと。読み込みと計算が重なるので、1 ステップの時間が「読み込み + 計算」から「長いほう」に近づく。future は「後で値が入る箱」で、作った時点で計算をワーカーのスレッドに投げ、`force` で結果を待って受け取る（lparallel の `future` / `force`）。nabla の並列ローダは位置の区間ごとに future を作り、作った順に `force` するので、ワーカーが終わった順に依らずバッチの順序が決まる（`make-data-iterator` の `:num-workers` / `:prefetch`、issue #286）。
+
 **pre-LN / decoder-only**
 : Transformer のブロックの書き方。pre-LN は layer-norm を attention や MLP の「前」に置き、`x = x + attn(ln(x))` のように残差の足し算の外側に出さない形（学習が安定しやすい）。decoder-only は因果マスクをかけた自己 attention だけを積んだ形で、位置 i が i より後を見ないので、次のトークンを当てる言語モデルに使う（`examples/transformer.lisp`）。
 
