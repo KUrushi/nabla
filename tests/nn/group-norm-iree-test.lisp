@@ -10,7 +10,8 @@
 ;; 群が 1 つ（one-group）と群の大きさ 1（instance）の grad の jit は、順伝播で rsqrt(var + epsilon) * scale の倍率を
 ;; 先に作る形（Flax の _normalize の順）だと IREE 3.11 のコンパイルが "large vector sizes"（vector.contract）で確率的に
 ;; 失敗していた（iree-compile 単体の znver4 で instance 35/200、one-group 3/200。CI でも one-group が 2 回落ちた）。
-;; 正規化してから scale をかける形（src/nn/normalization.lisp）で 0 回になったので、全ケースで grad も jit する。
+;; 正規化してから scale をかける形（src/nn/normalization.lisp）で 0 回になった（CI の 6 ジョブでこのテストを 180 回流して
+;; 失敗 0 回）ので、全ケースで grad も jit する。
 ;; 再発の見張りは scripts/check-iree-repros.sh（docs/iree-upstream-bugs.md の 9）。
 
 (test group-norm/jit-forward-and-grads-match-flax-on-iree-local
