@@ -122,6 +122,27 @@ kernel 側に合わせる) n=2 k=5 s=1 は (2 2)。"
 
 ;;; --- 計算 ---
 
+(defun %abs-array (array)
+  "ARRAY の各要素の絶対値の DOUBLE-FLOAT の配列。"
+  (let ((result (make-array (array-dimensions array) :element-type 'double-float)))
+    (dotimes (i (array-total-size array) result)
+      (setf (row-major-aref result i) (abs (row-major-aref array i))))))
+
+(defun %within-f32-sum-error-p (actual expected magnitude terms)
+  "f32 の ACTUAL が、double の EXPECTED と f32 の和の丸めの上限の内で一致するか。上限は要素ごとに
+(TERMS + 2) u MAGNITUDE（u = 2^-24、MAGNITUDE は足した項の絶対値の和）。項の打ち消しで EXPECTED が 0 に近い
+要素でも、相対誤差や固定の atol と違って、丸めとして説明できる誤差だけを通す。外れたら最大の比を表示する。"
+  (let ((worst 0d0) (worst-index nil))
+    (dotimes (i (array-total-size expected))
+      (let* ((bound (* (+ terms 2) (expt 2d0 -24) (row-major-aref magnitude i)))
+             (err (abs (- (coerce (row-major-aref actual i) 'double-float) (row-major-aref expected i)))))
+        (unless (<= err bound)
+          (let ((ratio (if (zerop bound) most-positive-double-float (/ err bound))))
+            (when (> ratio worst) (setf worst ratio worst-index i))))))
+    (or (null worst-index)
+        (progn (format t "~&f32 の和の丸めの上限を超えた: 添字 ~D で誤差 / 上限 = ~,3F~%" worst-index worst)
+               nil))))
+
 (defun %conv-property-case (seed n1 n2 k1 k2 s1 s2 d1 d2 mode pad groups batch)
   "PBT 用の入力を作る (values モジュール x 期待する padding)。MODE は 0 = SAME、1 = VALID、2 = 明示。
 VALID と明示のときは、実効 kernel が（padding を入れた）入力に収まるように入力の長さを選ぶ。"
@@ -150,7 +171,9 @@ VALID と明示のときは、実効 kernel が（padding を入れた）入力�
 
 (def-conv-property conv/matches-the-reference-convolution-plus-bias
   "任意の kernel・stride・dilation・padding（SAME / VALID / 明示）・グループ数・バッチで、conv の出力は
-別実装の畳み込み reference-conv（padding は SAME を JAX の式で別に計算したもの）に bias を足したもの。"
+別実装の畳み込み reference-conv（padding は SAME を JAX の式で別に計算したもの）に bias を足したもの。
+比較は f32 の和の丸めの上限（%within-f32-sum-error-p）で行う。固定の atol 1e-6 では、項が打ち消し合って出力が
+0 に近い要素で、正しい f32 の和でも誤差が上限を超えることがあった（CI で 1.9e-6）。"
   (seed n1 n2 k1 k2 s1 s2 d1 d2 mode pad group-exponent batch)
   (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 1 :hi 7) (uniform-integer :lo 1 :hi 7)
          (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 4) (uniform-integer :lo 1 :hi 3)
@@ -160,17 +183,23 @@ VALID と明示のときは、実効 kernel が（padding を入れた）入力�
   (multiple-value-bind (module x explicit)
       (%conv-property-case seed n1 n2 k1 k2 s1 s2 d1 d2 mode pad (expt 2 group-exponent) batch)
     (let* ((groups (conv-feature-group-count module))
-           (reference (reference-conv (decode-array x :f32) (decode-array (conv-kernel module) :f32)
-                                      (conv-strides module) explicit '(1 1)
+           (lhs (decode-array x :f32))
+           (rhs (decode-array (conv-kernel module) :f32))
+           (reference (reference-conv lhs rhs (conv-strides module) explicit '(1 1)
+                                      (conv-kernel-dilation module) groups))
+           ;; 各出力に足した項の絶対値の和（|x| と |kernel| の畳み込み + |bias|）
+           (magnitude (reference-conv (%abs-array lhs) (%abs-array rhs) (conv-strides module) explicit '(1 1)
                                       (conv-kernel-dilation module) groups))
            (bias (conv-bias module))
            (expected (make-array (array-dimensions reference) :element-type 'double-float))
            (out (call module x)))
       (dotimes (i (array-total-size reference))
-        (setf (row-major-aref expected i)
-              (+ (row-major-aref reference i) (aref bias (mod i (length bias))))))
+        (let ((b (aref bias (mod i (length bias)))))
+          (setf (row-major-aref expected i) (+ (row-major-aref reference i) b))
+          (incf (row-major-aref magnitude i) (abs b))))
       (and (equal (array-dimensions reference) (array-dimensions out))
-           (allclose out expected :dtype :f32)))))
+           (%within-f32-sum-error-p out expected magnitude
+                                    (* k1 k2 (floor (array-dimension lhs 3) groups)))))))
 
 (def-conv-property conv/same-output-length-is-ceil-of-input-over-stride
   "SAME の conv の出力の空間の長さは ceil(入力 / stride)（kernel と dilation によらない）。"
