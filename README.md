@@ -6,14 +6,14 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 
 ## 現状
 
-フェーズ0〜4は完了した。現在はフェーズ5（Grain 相当。データ供給）に着手する。モデルを書いて学習し、保存するところまでを、下の「チュートリアル」の節で通して試せる。
+ロードマップのフェーズ0〜5はすべて完了した。モデルを書き、データローダのバッチで学習し、保存して再開するところまでを、下の「チュートリアル」の節で通して試せる。
 
 - フェーズ0（IREE 疎通）: GPU（`cuda` ターゲット）での local/cuda 数値一致（issue #12）は、2026-10-10 に Colab の Tesla T4 で確かめた（`scripts/colab-gpu-check.sh`、結果は [docs/iree-build.md](docs/iree-build.md)）。知見は [docs/phase0-report.md](docs/phase0-report.md)
 - フェーズ1（トレースと jit。親 issue #35）: 知見は [docs/phase1-report.md](docs/phase1-report.md)
 - フェーズ2（grad。2層 MLP の学習、PJRT バックエンドと IREE の比較。親 issue #90）: 知見は [docs/phase2-report.md](docs/phase2-report.md)
 - フェーズ3（vmap・制御構造 `cond*` / `while-loop` / `scan`・PRNG。親 issue #124）: 知見は [docs/phase3-report.md](docs/phase3-report.md)
 - フェーズ4（Flax 相当。PyTree と `defmodule`・レイヤー・オプティマイザ・チェックポイント・小さな Transformer の学習。親 issue #194）: 知見は [docs/phase4-report.md](docs/phase4-report.md)
-- フェーズ5（Grain 相当。データ供給。親 issue #278）: 着手した。`nabla/data` の最初の部品として data-source と array-source がある（#279）
+- フェーズ5（Grain 相当。データソース・サンプラー・変換・並列ローダ・再開状態・`.npy` と画像のデコード・CNN の学習。親 issue #278）: 知見は [docs/phase5-report.md](docs/phase5-report.md)
 
 ロードマップ（計画タブより）:
 
@@ -24,7 +24,7 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 | 2. grad | 逆伝播 | 完了 |
 | 3. vmap と制御構造 | JAX 相当の変換を揃える | 完了 |
 | 4. Flax 相当 | モデル記述 | 完了 |
-| 5. Grain 相当 | データ供給 | 着手 |
+| 5. Grain 相当 | データ供給 | 完了 |
 
 ## 要件
 
@@ -708,7 +708,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 
 #### data-source（`nabla/data`、issue #279）
 
-`nabla/data`（パッケージ `nabla.data`）はデータ供給の層（フェーズ5、Grain 相当）で、`(asdf:load-system "nabla/data")` で使う。nabla のシステムのうち core（`nabla`）にだけ依存し、`nabla/nn`・`nabla/iree`・`nabla/pjrt` を知らない（FFI を呼ばない純 Lisp の層。レコードとバッチは jit に渡す PyTree そのものなので、木の扱いは core の `tree-flatten` / `defpytree` を使う）。最初の部品は data-source（Grain の `RandomAccessDataSource`。長さがあり、添字でレコードを取れるデータ）で、サンプラー（#280）・変換（#281）・ローダ（#285）が続く。
+`nabla/data`（パッケージ `nabla.data`）はデータ供給の層（フェーズ5、Grain 相当）で、`(asdf:load-system "nabla/data")` で使う。nabla のシステムのうち core（`nabla`）にだけ依存し、`nabla/nn`・`nabla/iree`・`nabla/pjrt` を知らない（FFI を呼ばない純 Lisp の層。レコードとバッチは jit に渡す PyTree そのものなので、木の扱いは core の `tree-flatten` / `defpytree` を使う）。部品は data-source（Grain の `RandomAccessDataSource`。長さがあり、添字でレコードを取れるデータ）・サンプラー（#280）・変換（#281、#284）・ローダとイテレータ（#285、並列は #286）・`.npy`（#282）で、設計の判断は [docs/phase5-report.md](docs/phase5-report.md) §3。
 
 | 関数・クラス | 役割 |
 | --- | --- |
@@ -930,7 +930,7 @@ sbcl --non-interactive --load examples/image-classification.lisp   # 64 ステ�
 src/                 core（nabla パッケージ）: package, dtype, aval, primitive, ir, backend, compile-cache
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
 src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、オプティマイザ、チェックポイント、レイヤー、multi-head attention
-src/data/            nabla.data パッケージ: データ供給の層（data-source、array-source、.npy）
+src/data/            nabla.data パッケージ: データ供給の層（data-source、index-sampler、変換、バッチ、data-loader と並列ローダ、iterator-state、.npy）
 src/data/image/      nabla.data.image パッケージ: PNG / JPEG のデコードと image-source
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
@@ -939,17 +939,18 @@ tests/nn/            nabla/nn/tests のテスト
 tests/data/          nabla/data/tests のテスト
 tests/data/image/    nabla/data/image/tests のテスト
 tests/fixtures/image/  Pillow で作った PNG / JPEG と、Pillow でデコードした画素値
+tests/fixtures/npy/    numpy が書いた .npy と期待値
 tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
 scripts/             setup-lisp-deps.sh, build-iree.sh, verify-iree.sh, run-tests.sh
-docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase4-report.md
+docs/                glossary.md, iree-build.md, stablehlo-ops.md, pjrt-setup.md, float-traps-experiments.md, phase0-report.md 〜 phase5-report.md, data-loader-parallel.md
 examples/            add.lisp, jit.lisp, mlp.lisp, rnn.lisp, transformer.lisp, tutorial.lisp, image-classification.lisp（この README の使用例）
 third_party/         iree.lock（固定した IREE のコミットとホイールの sha256）
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
 
-ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き #198、defmodule #202、PyTree のチェックポイント #206）、`nabla/nn/tests`、`nabla/data`（データ供給の層。data-source #279）、`nabla/data/tests`、`nabla/data/image`（PNG / JPEG のデコード。#283）、`nabla/data/image/tests` の15個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
+ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き #198、defmodule #202、PyTree のチェックポイント #206）、`nabla/nn/tests`、`nabla/data`（データ供給の層。data-source #279、index-sampler #280、変換とバッチ #281 / #284、data-loader と再開状態 #285、並列ローダ #286、.npy #282）、`nabla/data/tests`、`nabla/data/image`（PNG / JPEG のデコード。#283）、`nabla/data/image/tests` の15個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
 
 ## 開発の進め方
 
