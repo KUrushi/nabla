@@ -5,7 +5,8 @@
 ;;;;
 ;;;; 守らせる性質（README と例の突き合わせとサンプルごとの勾配は small、学習と例の実行は medium で IREE local で jit する）:
 ;;;; - README のブロックと例の該当部分が一字一句同じで、名前の集合も同じ（片方だけ直して食い違えない）。
-;;;; - 学習で損失が下がる。途中で保存・復元した続きが、止めずに続けた学習と（ビットまで）同じ。
+;;;; - データローダのバッチで学習して損失が下がる。途中で（ローダの状態も一緒に）保存・復元した続きが、
+;;;;   止めずに続けた学習と（ビットまで）同じ。
 ;;;; - サンプルごとの勾配の平均が、バッチ全体の損失の勾配と一致する（vmap の節）。
 ;;;; - 例のスクリプトが、そのまま load して最後まで動く。
 
@@ -93,45 +94,56 @@
 (defun %mean (numbers)
   (/ (reduce #'+ numbers) (length numbers)))
 
+(defun %tutorial-loader ()
+  (%tut "MAKE-LOADER" (%tut "MAKE-DATASET")))
+
 (test (tutorial/loss-decreases-and-checkpoint-resume-equals-uninterrupted-training :suite :nabla.medium)
-  "60 ステップの学習で損失が下がる（最後の 5 ステップの平均が最初の 5 ステップの平均の半分未満）。
-30 ステップで保存して復元した続きの 30 ステップは、止めずに回した 30 ステップと損失も最終のモデル・
-オプティマイザの状態もちょうど（ビットまで）同じ。同じコンパイル済みの関数を同じ入力で決定的に走らせる
-ので許容誤差は要らない。復元した木はひな形と同じパス名・形・dtype で、ステップ数 count も続きから数える。"
+  "ローダのバッチで 60 ステップ学習すると損失が下がる（最後の 5 ステップの平均が最初の 5 ステップの平均の
+半分未満）。30 ステップで「モデル + オプティマイザの状態 + ローダの状態」を保存し、初期値をひな形に復元した
+続きの 30 ステップは、同じイテレータで止めずに回した 30 ステップと損失も最終のモデル・オプティマイザの状態も
+ちょうど（ビットまで）同じ。同じコンパイル済みの関数を同じ入力で決定的に走らせるので許容誤差は要らない。
+復元した木は保存したものと同じで、ローダの状態から再開したバッチの列も続きから始まる。"
   (when (%layers-require-iree-or-skip)
     (let ((nabla:*compile-cache-directory* nil))
       (multiple-value-bind (optimizer train-step) (%tutorial-shared-step)
         (multiple-value-bind (model opt-state) (%tutorial-initial optimizer)
-          (multiple-value-bind (losses-first model-a state-a) (%tut "RUN-STEPS" train-step model opt-state 0 30)
-            (with-temporary-directory (dir)
-              (let ((file (merge-pathnames "tutorial.safetensors" dir)))
-                (%tut "SAVE-TRAINING" file model-a state-a)
-                (multiple-value-bind (model-b state-b) (%tut "LOAD-TRAINING" file model-a state-a)
-                  (is (every #'equalp (nabla:tree-leaves (list model-a state-a))
-                             (nabla:tree-leaves (list model-b state-b)))
-                      "復元した木の葉が保存したものと違う")
-                  (multiple-value-bind (losses-straight model-straight state-straight)
-                      (%tut "RUN-STEPS" train-step model-a state-a 30 60)
-                    (multiple-value-bind (losses-resumed model-resumed state-resumed)
-                        (%tut "RUN-STEPS" train-step model-b state-b 30 60)
-                      (let ((all (append losses-first losses-straight)))
-                        (is (< (%mean (last all 5)) (* 0.5 (%mean (subseq all 0 5))))
-                            "損失が下がらない: ~S → ~S" (subseq all 0 5) (last all 5)))
-                      (is (equalp losses-straight losses-resumed) "復元した続きの損失が違う")
-                      (is (every #'equalp (nabla:tree-leaves (list model-straight state-straight))
-                                 (nabla:tree-leaves (list model-resumed state-resumed)))
-                          "復元した続きの最終のモデル・状態が違う"))))))))))))
+          (let ((loader (%tutorial-loader)))
+            (nabla.data:with-data-iterator (iterator loader)
+              (multiple-value-bind (losses-first model-a state-a)
+                  (%tut "RUN-STEPS" train-step model opt-state iterator 30)
+                (with-temporary-directory (dir)
+                  (let ((file (merge-pathnames "tutorial.safetensors" dir)))
+                    (%tut "SAVE-TRAINING" file model-a state-a iterator)
+                    (multiple-value-bind (model-b state-b loader-state)
+                        (%tut "LOAD-TRAINING" file model opt-state loader)
+                      (is (every #'equalp
+                                 (nabla:tree-leaves (list model-a state-a (nabla.data:iterator-state iterator)))
+                                 (nabla:tree-leaves (list model-b state-b loader-state)))
+                          "復元した木の葉が保存したものと違う")
+                      (multiple-value-bind (losses-straight model-straight state-straight)
+                          (%tut "RUN-STEPS" train-step model-a state-a iterator 30)
+                        (multiple-value-bind (losses-resumed model-resumed state-resumed)
+                            (nabla.data:with-data-iterator (resumed loader :state loader-state)
+                              (%tut "RUN-STEPS" train-step model-b state-b resumed 30))
+                          (let ((all (append losses-first losses-straight)))
+                            (is (< (%mean (last all 5)) (* 0.5 (%mean (subseq all 0 5))))
+                                "損失が下がらない: ~S → ~S" (subseq all 0 5) (last all 5)))
+                          (is (equalp losses-straight losses-resumed) "復元した続きの損失が違う")
+                          (is (every #'equalp (nabla:tree-leaves (list model-straight state-straight))
+                                     (nabla:tree-leaves (list model-resumed state-resumed)))
+                              "復元した続きの最終のモデル・状態が違う"))))))))))))))
 
 (test (tutorial/per-example-grads-average-to-the-batch-gradient :suite :nabla.small)
   "サンプルごとの勾配（vmap (grad 1サンプルの損失)）を軸 0 で足して n で割ったものが、バッチ全体の損失
 \(サンプルごとの損失の平均) の勾配と一致する。各葉の形は (n ...パラメータの形)。f32 の総和の順序が
 違うぶん、許容誤差は rtol 1e-4 / atol 1e-6。"
-  (let* ((n 8)
+  (let* ((n 32)
          (model (%tut "INIT-MLP" (nabla:prng-key 1) 2 16 2))
          (batch-grad (nabla:grad (nabla:with-tracing (model x y)
                                    (- (/ (nabla:reduce-sum (* y (log-softmax (call model x))))
                                          (nabla:reduce-sum y)))))))
-    (multiple-value-bind (x y) (%tut "MAKE-BATCH" 3 :batch-size n)
+    (destructuring-bind (x y) (nabla.data:with-data-iterator (iterator (%tutorial-loader))
+                                (nabla.data:next-batch iterator))
       (let ((per-example (%tut "PER-EXAMPLE-GRADS" model x y))
             (whole (funcall batch-grad model x y)))
         (loop for p in (nabla:tree-leaves per-example)

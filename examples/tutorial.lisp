@@ -1,12 +1,14 @@
 (require :asdf)
 (asdf:load-system "nabla/nn")
+(asdf:load-system "nabla/data")
 (asdf:load-system "nabla/iree")
 (defpackage #:nabla-example-tutorial
   (:use #:cl #:nabla.nn))
 (in-package #:nabla-example-tutorial)
 
-;;;; README のチュートリアル（issue #210）。defmodule でモデルを書き、init、jit した学習ステップ、
-;;;; オプティマイザ、チェックポイントの保存と復元までを1本の流れで書く。
+;;;; README のチュートリアル（issue #210）。defmodule でモデルを書き、init、データローダ（nabla/data。
+;;;; issue #287）、jit した学習ステップ、オプティマイザ、チェックポイントの保存と復元（ローダの状態も
+;;;; 一緒に）までを1本の流れで書く。nabla.data のシンボルは nabla.data: を付けて呼ぶ。
 ;;;;
 ;;;; README のコードブロックは、下の「;;;; [[tutorial:名前]]」と「;;;; [[/tutorial]]」で挟んだ行と
 ;;;; 一字一句同じでなければならない（tests/nn/tutorial-test.lisp が検査する）。README を直すときは
@@ -25,14 +27,19 @@
 
 ;;;; [[tutorial:data]]
 ;; XOR 風の2クラス分類。x は [-1, 1) の2次元の点で、x0 * x1 > 0 ならクラス 1、そうでなければクラス 0。
-;; y はクラスの one-hot（f32 の (batch 2)）。ステップ番号 step から決まるので、何度呼んでも同じ。
-(defun make-batch (step &key (batch-size 32))
-  (let* ((key (nabla:fold-in (nabla:prng-key 100) step))
-         (x (nabla:uniform key (list batch-size 2) :minval -1 :maxval 1))
-         (y (make-array (list batch-size 2) :element-type 'single-float :initial-element 0.0)))
-    (dotimes (i batch-size)
+;; y はクラスの one-hot（f32 の (n 2)）。データセット全体をメモリに作り、array-source にする
+;; （i 番目のレコードは (x の i 行目 y の i 行目)）。
+(defun make-dataset (&key (n 1024))
+  (let ((x (nabla:uniform (nabla:prng-key 100) (list n 2) :minval -1 :maxval 1))
+        (y (make-array (list n 2) :element-type 'single-float :initial-element 0.0)))
+    (dotimes (i n)
       (setf (aref y i (if (> (* (aref x i 0) (aref x i 1)) 0) 1 0)) 1.0))
-    (values x y)))
+    (nabla.data:make-array-source (list x y))))
+
+;; ローダは毎エポックをシードで決まる順にシャッフルし、レコードを 32 個ずつ積んで (x y) のバッチにする
+;; （x は (32 2)、y は (32 2)）。バッチの列はシードと位置だけで決まるので、何度作っても同じ。
+(defun make-loader (source)
+  (nabla.data:data-loader source :batch-size 32 :shuffle t :seed (nabla:prng-key 7)))
 ;;;; [[/tutorial]]
 
 ;;;; [[tutorial:train-step]]
@@ -57,11 +64,12 @@
 ;;;; [[/tutorial]]
 
 ;;;; [[tutorial:loop]]
-;; 手書きのループ。FROM から TO の手前までのステップを回し、損失のリストと最後の model / opt-state を返す。
-(defun run-steps (train-step model opt-state from to)
+;; 手書きのループ。イテレータから STEPS 個のバッチを取って学習し、損失のリストと最後の model / opt-state を
+;; 返す（ローダはエポックの数を決めていないので、バッチは尽きない）。
+(defun run-steps (train-step model opt-state iterator steps)
   (let ((losses '()))
-    (loop for step from from below to
-          do (multiple-value-bind (x y) (make-batch step)
+    (loop repeat steps
+          do (destructuring-bind (x y) (nabla.data:next-batch iterator)
                (multiple-value-bind (loss new-model new-state) (funcall train-step model opt-state x y)
                  (push (aref loss) losses)
                  (setf model new-model opt-state new-state))))
@@ -69,14 +77,17 @@
 ;;;; [[/tutorial]]
 
 ;;;; [[tutorial:checkpoint]]
-;; model と opt-state を1つのリストにして1ファイル（safetensors）に保存する。
-;; 復元には同じ構造の「ひな形」が要る（葉の名前・形・dtype を照合する）。
-(defun save-training (path model opt-state)
-  (save-checkpoint path (list model opt-state)))
+;; model・opt-state・ローダの状態（iterator-state）を1つのリストにして1ファイル（safetensors）に保存する。
+;; 復元には同じ構造の「ひな形」が要る（葉の名前・形・dtype を照合する）。ローダの状態のひな形は先頭の状態。
+(defun save-training (path model opt-state iterator)
+  (save-checkpoint path (list model opt-state (nabla.data:iterator-state iterator))))
 
-(defun load-training (path template-model template-opt-state)
-  (destructuring-bind (model opt-state) (load-checkpoint path (list template-model template-opt-state))
-    (values model opt-state)))
+(defun load-training (path template-model template-opt-state loader)
+  (let ((template-state (nabla.data:with-data-iterator (iterator loader)
+                          (nabla.data:iterator-state iterator))))
+    (destructuring-bind (model opt-state state)
+        (load-checkpoint path (list template-model template-opt-state template-state))
+      (values model opt-state state))))
 ;;;; [[/tutorial]]
 
 ;;;; [[tutorial:per-example]]
@@ -93,15 +104,19 @@
   (let* ((optimizer (make-optimizer))
          (train-step (make-train-step optimizer))
          (model (init-mlp (nabla:prng-key 0) 2 16 2))
-         (opt-state (optimizer-init optimizer model)))
-    (multiple-value-bind (losses-1 model opt-state) (run-steps train-step model opt-state 0 30)
-      (format t "~&loss[0] = ~,4F~%loss[29] = ~,4F~%" (first losses-1) (car (last losses-1)))
-      (let ((path (merge-pathnames "nabla-tutorial.safetensors" (uiop:temporary-directory))))
-        (save-training path model opt-state)
-        (multiple-value-bind (model opt-state) (load-training path model opt-state)
-          (let ((losses-2 (run-steps train-step model opt-state 30 60)))
-            (format t "~&復元して続けた loss[59] = ~,4F~%" (car (last losses-2)))))
-        (uiop:delete-file-if-exists path)))))
+         (opt-state (optimizer-init optimizer model))
+         (loader (make-loader (make-dataset)))
+         (path (merge-pathnames "nabla-tutorial.safetensors" (uiop:temporary-directory))))
+    (nabla.data:with-data-iterator (iterator loader)
+      (multiple-value-bind (losses-1 model opt-state) (run-steps train-step model opt-state iterator 30)
+        (format t "~&loss[0] = ~,4F~%loss[29] = ~,4F~%" (first losses-1) (car (last losses-1)))
+        (save-training path model opt-state iterator)))
+    ;; 保存したファイルだけから続ける（モデル・状態のひな形は初期値でよい）
+    (multiple-value-bind (model opt-state state) (load-training path model opt-state loader)
+      (nabla.data:with-data-iterator (iterator loader :state state)
+        (let ((losses-2 (run-steps train-step model opt-state iterator 30)))
+          (format t "~&復元して続けた loss[59] = ~,4F~%" (car (last losses-2))))))
+    (uiop:delete-file-if-exists path)))
 
 ;; テストが関数だけを使うために、:nabla-no-demo を *features* に足して load すると学習は走らない。
 (unless (member :nabla-no-demo *features*)

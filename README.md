@@ -176,13 +176,14 @@ sbcl --non-interactive --load examples/jit.lisp
 
 ## チュートリアル（モデル定義から学習・保存まで）
 
-`defmodule` でモデルを書き、PRNG キーで初期化し、`jit` した学習ステップ（`value-and-grad` + オプティマイザ）を手書きのループで回し、モデルとオプティマイザの状態を1つのチェックポイントに保存して、復元して続きを学習するまでを、XOR 風の2クラス分類（2層 MLP）で説明する。コードは全部 [`examples/tutorial.lisp`](examples/tutorial.lisp) にあり、下のコードブロックはそのファイルの該当部分をそのまま貼ったもの。`tests/nn/tutorial-test.lisp` が (1) README のブロックと例のファイルが一字一句同じであること、(2) 例が動いて損失が下がること、(3) 保存・復元した続きが止めずに続けた学習とビットまで同じであること、を毎回確かめるので、コードが古くなると既定のテストスイートが落ちる。README を直すときは、先に `examples/tutorial.lisp` を直し、`[[tutorial:名前]]` で挟んだ部分を貼り直す。
+`defmodule` でモデルを書き、PRNG キーで初期化し、データローダ（`nabla/data`）のバッチで `jit` した学習ステップ（`value-and-grad` + オプティマイザ）を手書きのループで回し、モデルとオプティマイザとローダの状態を1つのチェックポイントに保存して、復元して続きを学習するまでを、XOR 風の2クラス分類（2層 MLP）で説明する。コードは全部 [`examples/tutorial.lisp`](examples/tutorial.lisp) にあり、下のコードブロックはそのファイルの該当部分をそのまま貼ったもの。`tests/nn/tutorial-test.lisp` が (1) README のブロックと例のファイルが一字一句同じであること、(2) 例が動いて損失が下がること、(3) 保存・復元した続きが止めずに続けた学習とビットまで同じであること、を毎回確かめるので、コードが古くなると既定のテストスイートが落ちる。README を直すときは、先に `examples/tutorial.lisp` を直し、`[[tutorial:名前]]` で挟んだ部分を貼り直す。
 
-以降のコードブロックは、次のパッケージ（`nabla/nn` と `nabla/iree` をロードした後）で書いている。`nabla.nn` のシンボル（`defmodule` `call` `chain` `adam` `save-checkpoint` など）はそのまま、コアの関数は `nabla:` を付けて呼ぶ（`nabla:jit` `nabla:value-and-grad` `nabla:with-tracing` など）。
+以降のコードブロックは、次のパッケージ（`nabla/nn`・`nabla/data`・`nabla/iree` をロードした後）で書いている。`nabla.nn` のシンボル（`defmodule` `call` `chain` `adam` `save-checkpoint` など）はそのまま、コアの関数は `nabla:` を付けて（`nabla:jit` `nabla:value-and-grad` `nabla:with-tracing` など）、データローダの関数は `nabla.data:` を付けて（`nabla.data:data-loader` `nabla.data:next-batch` など）呼ぶ。
 
 ```lisp
 (require :asdf)
 (asdf:load-system "nabla/nn")
+(asdf:load-system "nabla/data")
 (asdf:load-system "nabla/iree")
 (defpackage #:nabla-example-tutorial
   (:use #:cl #:nabla.nn))
@@ -222,19 +223,24 @@ loss[29] = 0.4449
 
 ### 2. データ
 
-乱数の配列は `nabla:uniform` / `nabla:normal` に PRNG キーを渡して作る。ステップ番号を `nabla:fold-in` でキーに混ぜると、ステップごとに別の、でも再現できるバッチになる。
+乱数の配列は `nabla:uniform` / `nabla:normal` に PRNG キーを渡して作る。データセットは添字でレコードを引ける data-source（ここではメモリ上の配列から作る `array-source`。ファイルなら `npy-source`）にし、`data-loader` でシャッフルとバッチ作りを任せる。ローダの順序はシード（PRNG キー）と位置だけで決まるので、何度作っても同じバッチの列になる。バッチはイテレータ（`make-data-iterator` か `with-data-iterator`）の `next-batch` で1つずつ取り出す。
 
 <!-- tutorial:data -->
 ```lisp
 ;; XOR 風の2クラス分類。x は [-1, 1) の2次元の点で、x0 * x1 > 0 ならクラス 1、そうでなければクラス 0。
-;; y はクラスの one-hot（f32 の (batch 2)）。ステップ番号 step から決まるので、何度呼んでも同じ。
-(defun make-batch (step &key (batch-size 32))
-  (let* ((key (nabla:fold-in (nabla:prng-key 100) step))
-         (x (nabla:uniform key (list batch-size 2) :minval -1 :maxval 1))
-         (y (make-array (list batch-size 2) :element-type 'single-float :initial-element 0.0)))
-    (dotimes (i batch-size)
+;; y はクラスの one-hot（f32 の (n 2)）。データセット全体をメモリに作り、array-source にする
+;; （i 番目のレコードは (x の i 行目 y の i 行目)）。
+(defun make-dataset (&key (n 1024))
+  (let ((x (nabla:uniform (nabla:prng-key 100) (list n 2) :minval -1 :maxval 1))
+        (y (make-array (list n 2) :element-type 'single-float :initial-element 0.0)))
+    (dotimes (i n)
       (setf (aref y i (if (> (* (aref x i 0) (aref x i 1)) 0) 1 0)) 1.0))
-    (values x y)))
+    (nabla.data:make-array-source (list x y))))
+
+;; ローダは毎エポックをシードで決まる順にシャッフルし、レコードを 32 個ずつ積んで (x y) のバッチにする
+;; （x は (32 2)、y は (32 2)）。バッチの列はシードと位置だけで決まるので、何度作っても同じ。
+(defun make-loader (source)
+  (nabla.data:data-loader source :batch-size 32 :shuffle t :seed (nabla:prng-key 7)))
 ```
 
 ### 3. `jit` した学習ステップ
@@ -267,15 +273,16 @@ loss[29] = 0.4449
 
 ### 4. 手書きのループ
 
-ループは普通の Lisp で書く。ステップが返す新しいモデルと状態を、次のステップに渡す。
+ループは普通の Lisp で書く。イテレータから取ったバッチをステップに渡し、ステップが返す新しいモデルと状態を、次のステップに渡す。イテレータは `(nabla.data:with-data-iterator (iterator loader) ...)` で作る（抜けるときに閉じる。`:num-workers` を渡すとワーカーのスレッドでレコードを読むが、バッチの列は変わらない）。
 
 <!-- tutorial:loop -->
 ```lisp
-;; 手書きのループ。FROM から TO の手前までのステップを回し、損失のリストと最後の model / opt-state を返す。
-(defun run-steps (train-step model opt-state from to)
+;; 手書きのループ。イテレータから STEPS 個のバッチを取って学習し、損失のリストと最後の model / opt-state を
+;; 返す（ローダはエポックの数を決めていないので、バッチは尽きない）。
+(defun run-steps (train-step model opt-state iterator steps)
   (let ((losses '()))
-    (loop for step from from below to
-          do (multiple-value-bind (x y) (make-batch step)
+    (loop repeat steps
+          do (destructuring-bind (x y) (nabla.data:next-batch iterator)
                (multiple-value-bind (loss new-model new-state) (funcall train-step model opt-state x y)
                  (push (aref loss) losses)
                  (setf model new-model opt-state new-state))))
@@ -284,21 +291,24 @@ loss[29] = 0.4449
 
 ### 5. チェックポイントの保存と復元
 
-モデルとオプティマイザの状態は、1つのリストにまとめれば1ファイル（safetensors）に入る。パス名は `0.hidden.kernel`（リストの添字とスロット名を `.` でつないだもの）のようになる。復元には同じ構造の「ひな形」を渡す。値は使わず、名前・形・dtype の照合と、`tree-unflatten` の型情報にだけ使う。名前の過不足や形・dtype の違いは `checkpoint-error` になる。
+モデルとオプティマイザの状態とローダの状態（`iterator-state`。シードの写しとエポック・エポック内の位置の配列）は、1つのリストにまとめれば1ファイル（safetensors）に入る。パス名は `0.hidden.kernel` や `2.position`（リストの添字とスロット名・子の名前を `.` でつないだもの）のようになる。復元には同じ構造の「ひな形」を渡す。値は使わず、名前・形・dtype の照合と、`tree-unflatten` の型情報にだけ使う。名前の過不足や形・dtype の違いは `checkpoint-error` になる。
 
 <!-- tutorial:checkpoint -->
 ```lisp
-;; model と opt-state を1つのリストにして1ファイル（safetensors）に保存する。
-;; 復元には同じ構造の「ひな形」が要る（葉の名前・形・dtype を照合する）。
-(defun save-training (path model opt-state)
-  (save-checkpoint path (list model opt-state)))
+;; model・opt-state・ローダの状態（iterator-state）を1つのリストにして1ファイル（safetensors）に保存する。
+;; 復元には同じ構造の「ひな形」が要る（葉の名前・形・dtype を照合する）。ローダの状態のひな形は先頭の状態。
+(defun save-training (path model opt-state iterator)
+  (save-checkpoint path (list model opt-state (nabla.data:iterator-state iterator))))
 
-(defun load-training (path template-model template-opt-state)
-  (destructuring-bind (model opt-state) (load-checkpoint path (list template-model template-opt-state))
-    (values model opt-state)))
+(defun load-training (path template-model template-opt-state loader)
+  (let ((template-state (nabla.data:with-data-iterator (iterator loader)
+                          (nabla.data:iterator-state iterator))))
+    (destructuring-bind (model opt-state state)
+        (load-checkpoint path (list template-model template-opt-state template-state))
+      (values model opt-state state))))
 ```
 
-復元したモデルと状態から `run-steps` を続けると、止めずに続けた学習と（ビットまで）同じ損失の列になる。
+復元したローダの状態から `(nabla.data:with-data-iterator (iterator loader :state state) ...)` でイテレータを作り、復元したモデルと状態で `run-steps` を続けると、止めずに続けた学習と（ビットまで）同じ損失の列になる（バッチの列も続きから始まる）。
 
 ### 6. （おまけ）サンプルごとの勾配
 
