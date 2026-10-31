@@ -122,6 +122,10 @@ mutation testing の詳しいオプションは [`tools/mutate/README.md`](tools
 
 GPU を使う large テストは CI では動かさない。
 
+`.github/workflows/iree-race-check.yml` は、IREE の local-task の競合（`docs/iree-upstream-bugs.md` の 7）と scan の ys の
+emit の候補（#233）を x86 ネイティブのランナーで `scripts/check-iree-repros.sh --case` にかける、手で起動する
+ワークフロー（`workflow_dispatch` か `ci/iree-race-check/runs-<N>` へのブランチの push。使い方は docs の 7）。
+
 `.github/workflows/pr-title.yml` が PR タイトルを Conventional Commits の
 形式かどうか確かめる（squash merge で PR タイトルがそのまま `main` の
 コミットメッセージになるため）。
