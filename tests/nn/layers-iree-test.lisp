@@ -19,7 +19,7 @@
 ;; 非最終軸で正規化する layer-norm（layer-norm-reduction-axes / layer-norm-reduction-middle-axis）の jit した grad は、
 ;; 順伝播で倍率 rsqrt(var + epsilon) * scale を先に作る形だと IREE 3.11 のコンパイルが "large vector sizes" で確率的に
 ;; 失敗していた（iree-compile 単体の znver4 で 17/100・16/100）。正規化してから scale をかける形（src/nn/layers.lisp の
-;; %layer-norm-output）で 0 回になったので、全ケースで grad も jit する（docs/iree-upstream-bugs.md の 9）。
+;; %layer-norm-output）で 0 回になり、CI の 6 ジョブで 120 回流しても失敗しなかったので、全ケースで grad も jit する（docs/iree-upstream-bugs.md の 9）。
 
 (test layers/jit-forward-and-grads-match-flax-on-iree-local
   "layers-test.lisp のフィクスチャの全ケース（issue #241 の追加分を含む）で、IREE の local で jit した順伝播と jit した grad が
