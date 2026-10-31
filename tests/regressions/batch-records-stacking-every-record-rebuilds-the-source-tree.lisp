@@ -1,0 +1,4 @@
+(in-package #:nabla.data.tests)
+(REGRESSION-CASE :NAME
+                 BATCH-RECORDS/STACKING-EVERY-RECORD-REBUILDS-THE-SOURCE-TREE
+                 :DATUM "(138873)" :TIMESTAMP 4002430995)

@@ -740,6 +740,14 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - 変換はワーカースレッドから同時に呼ばれるので、`function` と `predicate` は純粋（同じレコードには同じ結果を返し、レコードも大域の状態も書き換えない）にする
 - バッチにまとめるのは変換ではなくローダの `:batch-size` の仕事で、変換のリストには入れられない
 
+| 関数・コンディション | 役割 |
+| --- | --- |
+| `(batch-records records)` | 葉を持つレコードのリスト（1 個以上）を、各葉を新しい先頭の軸で順に積んだ同じ形の木にする。バッチの葉の `j` 番目の行は `j` 番目のレコードの葉（同じ element-type の新しい配列） |
+| `batch-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:no-records` `:no-leaves` `:bad-leaf` `:treedef-mismatch` `:shape-mismatch` `:element-type-mismatch` |
+
+- レコードはどれも最初のレコードと同じ treedef で、同じ位置の葉が同じ形・同じ element-type の配列でなければならない。`(unsigned-byte 16)` の葉（bf16 / f16）は element-type の一致だけを見る（dtype は data 層では決めない）
+- 端数のバッチを捨てるか（drop-remainder）はローダが決める。`batch-records` は任意の個数を積む。端数を詰める pad は持たない（`jit` はバッチの形ごとにコンパイルするので、形は揃える）
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
