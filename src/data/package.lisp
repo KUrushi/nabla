@@ -55,8 +55,14 @@
    #:iterator-state-epoch
    #:iterator-state-position
    #:iterator-state-version
-   #:restore-iterator)
+   #:restore-iterator
+   ;; レコードごとに決定的な乱数を使う変換（issue #284）
+   #:random-map-transform
+   #:transform-error
+   #:transform-error-reason
+   #:transform-error-detail)
   (:documentation
    "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source、
 index-sampler（位置からレコードのインデックスを決めるサンプラー）、map / filter の変換、
-data-loader（バッチを作るローダ）と data-iterator、その再開状態 iterator-state。"))
+data-loader（バッチを作るローダ）と data-iterator、その再開状態 iterator-state、
+位置ごとのキーで乱数を使う random-map-transform。"))
