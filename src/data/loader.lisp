@@ -26,13 +26,19 @@
   :bad-transform   TRANSFORMS に MAP-TRANSFORM / FILTER-TRANSFORM でないものがある
   :bad-epoch       EPOCH のエポックが 0 以上 NUM-EPOCHS 未満の整数でない
   :empty-epoch     1 エポックの全位置を調べてもバッチが1つも作れなかった（filter が全部
-                   落とした、端数を捨てて何も残らなかった、レコードが 0 個）"))
+                   落とした、端数を捨てて何も残らなかった、レコードが 0 個）
+  :bad-state       RESTORE-ITERATOR の状態が ITERATOR-STATE でないか、葉の型・形が違う
+  :version-mismatch  状態のシャッフルの算法の版がこのサンプラーの版と違う
+  :key-mismatch    状態のキーがローダのシード（無ければ 0）と違う
+  :state-out-of-range  状態のエポック・位置がローダの範囲の外か、ITERATOR-STATE で :i32 に
+                   収まらない"))
 
 (defun %data-loader-error (reason control &rest arguments)
   (error 'data-loader-error :reason reason :detail (apply #'format nil control arguments)))
 
 (defstruct (data-loader (:constructor %make-data-loader
-                            (source sampler length transforms batch-size drop-remainder num-epochs))
+                            (source sampler length transforms batch-size drop-remainder num-epochs
+                             key))
                         (:copier nil) (:predicate nil))
   "データソース・サンプラー・変換・バッチの大きさを束ねたもの。DATA-LOADER で作り、
 MAKE-DATA-ITERATOR か EPOCH でバッチを取り出す。作った後は変わらない。"
@@ -42,7 +48,9 @@ MAKE-DATA-ITERATOR か EPOCH でバッチを取り出す。作った後は変わ
   (transforms '() :type list :read-only t)
   (batch-size 1 :type (integer 1) :read-only t)
   (drop-remainder t :read-only t)
-  (num-epochs nil :type (or null (integer 0)) :read-only t))
+  (num-epochs nil :type (or null (integer 0)) :read-only t)
+  ;; シード（無ければ 0）の写し。:u32 の (2)。再開状態の key になる。
+  (key nil :type (simple-array (unsigned-byte 32) (2)) :read-only t))
 
 (defun data-loader (source &key batch-size shuffle seed num-epochs transforms (drop-remainder t))
   "データソース SOURCE からバッチを作るローダを作る（Grain の DataLoader）。
@@ -51,6 +59,8 @@ MAKE-DATA-ITERATOR か EPOCH でバッチを取り出す。作った後は変わ
 APPLY-TRANSFORMS でかけ、残ったレコードを BATCH-SIZE（正の整数。必須）個ずつ BATCH-RECORDS で
 積む。バッチはエポックをまたがない。エポック末の端数は DROP-REMAINDER（既定 t）なら捨て、nil なら
 短いバッチにする（pad はしない）。NUM-EPOCHS が nil（既定）ならバッチの列は終わらない。
+SEED（無ければ 0）の写しを持ち、ITERATOR-STATE の key にする（シャッフルしなくても、別の
+シードのローダには再開状態を渡せない）。
 不正な引数は DATA-LOADER-ERROR か SAMPLER-ERROR。SOURCE の長さは作るときに読む。"
   (unless (typep batch-size '(integer 1))
     (%data-loader-error :bad-batch-size "batch-size ~S が正の整数でない" batch-size))
@@ -59,9 +69,12 @@ APPLY-TRANSFORMS でかけ、残ったレコードを BATCH-SIZE（正の整数�
                       transforms))
     (%data-loader-error :bad-transform
                         "transforms ~S が map-transform / filter-transform のリストでない" transforms))
-  (let ((n (source-length source)))
-    (%make-data-loader source (make-index-sampler n :shuffle shuffle :seed seed :num-epochs num-epochs)
-                       n transforms batch-size (and drop-remainder t) num-epochs)))
+  (let* ((n (source-length source))
+         (sampler (make-index-sampler n :shuffle shuffle :seed seed :num-epochs num-epochs)))
+    ;; SEED の形は MAKE-INDEX-SAMPLER が検査済み。
+    (%make-data-loader source sampler n transforms batch-size (and drop-remainder t) num-epochs
+                       (make-array 2 :element-type '(unsigned-byte 32)
+                                     :initial-contents (if seed (list (aref seed 0) (aref seed 1)) '(0 0))))))
 
 ;;; --- 組み立て（#286 の並列ローダと共有する） ---
 

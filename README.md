@@ -690,7 +690,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - モデルとオプティマイザ状態は1つの木にまとめれば同じファイルに入る: `(defmodule train-state ((params) (opt)))` → `"params.w"`、`"opt.0"`。別々に保存してもよい（API に接頭辞は持たない）
 - `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元でも、ひな形の葉が `(unsigned-byte 16)` の配列なら `:dtypes` で言う必要がある（言わなければ `:dtype-mismatch`。bf16 のモデルを f16 のファイルから生のビットで復元する事故を防ぐ。`device-array` と `aval` のひな形は自分の dtype を持つ）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
 - 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
-- データローダの再開状態（エポック数・バッチ内の位置・シャッフルの PRNG キー・小さな配列）は、**配列だけの、子に名前を付けた `defpytree` の型にして**モデルとオプティマイザ状態と同じ木に入れる（`nabla/data` は `nabla/nn` に依存できないので `defmodule` は使わない。名前があるので、パス名は子の並びに依らない）。整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
+- データローダの再開状態は `nabla/data` の `iterator-state`（`(iterator-state iterator)` で取る）を、モデルとオプティマイザ状態と同じ木に入れる: `(save-checkpoint path (list model opt-state (iterator-state it)))` → `"2.key"` `"2.epoch"` `"2.position"` `"2.version"`。復元は同じ形のひな形（`(iterator-state (make-data-iterator loader))` でよい）に `load-checkpoint` し、`(restore-iterator loader state)` で続きのイテレータを作る。`iterator-state` は配列だけの、子に名前を付けた `defpytree` の型（`nabla/data` は `nabla/nn` に依存できないので `defmodule` は使わない。名前があるので、パス名は子の並びに依らない）。自前の状態を足すときも同じく、整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
 - メモリ: `load-checkpoint` も `save-checkpoint` もファイル全体のバイト列を作らず葉ごとに読み書きするので、ピークはファイルの約 1 倍（木の分を含む）になる。ヒープが 1 GiB のとき（測定環境の SBCL 2.6.9 / macOS arm64 の既定。`(sb-ext:dynamic-space-size)` で確かめる）、同じ大きさの葉 4 枚の木なら save も load も 896 MiB まで通り、小さな葉 4096 枚を含む木では save が 512 MiB、load が 768 MiB まで通った（上限は木そのものがヒープに入るかで決まる）。大きなモデルでは起動時に `--dynamic-space-size` を上げる。測定は [docs/checkpoint-memory.md](docs/checkpoint-memory.md)。世代管理（最新 n 個を残す）は持たないので、必要なら保存先の名前にステップ数を含めて呼び出し側で古いものを消す
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
@@ -758,11 +758,14 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 | `(make-data-iterator loader)` | 列の先頭（エポック 0 の最初）から始まるイテレータ（`data-iterator`） |
 | `(next-batch iterator)` | 次のバッチを `(values バッチ t)` で返して進める。列が終わっていれば `(values nil nil)`（何度呼んでも同じ） |
 | `(epoch loader e)` | エポック `e`（0 から数える）のバッチのリスト。エポックを順につなぐとイテレータの列になる。1 エポック分をメモリに持つ |
-| `data-loader-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-batch-size` `:bad-transform` `:bad-epoch` `:empty-epoch` |
+| `(iterator-state iterator)` | 今の再開状態（`iterator-state`）を新しい配列で返す。葉は `key`（ローダの `seed` の写し。`seed` が無ければ 0。`:u32` の `(2)`）、`epoch` と `position`（rank 0 の `(signed-byte 32)`。次に調べるサンプラーの位置のエポックとエポック内の位置）、`version`（rank 0 の `(signed-byte 32)`。サンプラーのシャッフルの算法の版）。子の名前は `"key"` `"epoch"` `"position"` `"version"`。アクセサは `iterator-state-key` / `-epoch` / `-position` / `-version` |
+| `(restore-iterator loader state)` | `state` の位置から続けるイテレータ。残りのバッチの列は、状態を取ったイテレータの続きとビット単位で同じ |
+| `data-loader-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-batch-size` `:bad-transform` `:bad-epoch` `:empty-epoch` `:bad-state` `:version-mismatch` `:key-mismatch` `:state-out-of-range` |
 
 - バッチはエポックをまたがない。エポック末の端数は `drop-remainder` が真（既定）なら捨て、nil なら短いバッチにする（pad はしない）。filter が無ければ、1 エポックで各レコードがちょうど 1 回ずつ出る（捨てた端数を除く）
 - `num-epochs` が nil（既定）なら列は終わらない。1 エポックの全位置を調べてもバッチが 1 つも作れない（filter が全部落とす、`batch-size` がレコードの個数より大きくて端数を捨てる、レコードが 0 個）ときは、戻らなくなる代わりに `:empty-epoch`
 - 位置ごとの処理（`source-item` と変換）は位置だけで決まり、イテレータは「次に調べるサンプラーの位置」だけを持つ（入力側の位置。filter をはさんでも決定的に再開できる）
+- 再開状態は、返したバッチに取り込んだ最後の位置 + 1 を、エポックとエポック内の位置に分けて持つ（Grain と同じく入力側の位置）。レコードの個数とエポックの数が 2^31 未満なら `:i32` に収まる（収まらなければ `iterator-state` が `:state-out-of-range`）。`restore-iterator` は、状態の葉の型・形（`:bad-state`）、`version` がこの版のシャッフルの算法の版と同じか（`:version-mismatch`。算法を変えた版の状態から黙って別の順序で再開しない）、`key` がローダのシードと同じか（`:key-mismatch`）、`0 ≤ position ≤ n` と `epoch` が `num-epochs` の範囲か（`:state-out-of-range`。`epoch = num-epochs` は `position` 0 だけ）を確かめる。復元するローダは同じデータソース・変換・引数で作る（それ以外は検査しない）
 
 #### with-tracing の do ループ（issue #137）
 
