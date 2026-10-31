@@ -596,6 +596,49 @@ scripts/run-tests.sh を落としてはいけない。"
   (is (equal (sizes-from-env "small,") '(:small)))
   (is (equal (sizes-from-env ",small,,medium,") '(:small :medium))))
 
+;;; --- shard-from-env / シャードの選び方（CI の並列実行） ---
+
+(test support/shard-from-env/unset-or-blank-means-no-sharding
+  "NABLA_TEST_SHARD が未設定か空文字列なら NIL（シャードせず全部を実行する）。"
+  (is (null (shard-from-env nil)))
+  (is (null (shard-from-env "")))
+  (is (null (shard-from-env "  "))))
+
+(test support/shard-from-env/parses-index-and-count
+  "\"I/N\" を 1 始まりの番号 I と個数 N のリストにする。前後の空白は許す。"
+  (is (equal (shard-from-env "1/1") '(1 1)))
+  (is (equal (shard-from-env "3/8") '(3 8)))
+  (is (equal (shard-from-env " 8/8 ") '(8 8))))
+
+(test support/shard-from-env/rejects-malformed-values
+  "番号が 1〜N の外、数でない、/ が無いものはエラーにする（黙って全部や
+0 件を実行すると、CI で一部のテストが抜けても気づけない）。"
+  (dolist (bad '("0/8" "9/8" "1/0" "-1/4" "a/b" "3" "3/8/1" "/8" "3/"))
+    (signals error (shard-from-env bad) "~S を受け付けた" bad)))
+
+(test support/select-shard/partitions-the-tests
+  "N 個のシャードは名前の集合を重なりなく覆い、個数の差は高々 1。
+どのシャードの中身も、名前の並び順に依らない。"
+  (is (check-it (generator (tuple (list (integer 0 200)) (integer 1 12)))
+                (lambda (args)
+                  (destructuring-bind (numbers count) args
+                    (let* ((names (remove-duplicates
+                                   (mapcar (lambda (k) (intern (format nil "T~D" k) :keyword))
+                                           numbers)))
+                           (shards (loop for i from 1 to count
+                                         collect (nabla.tests.support::%select-shard
+                                                  names (list i count))))
+                           (sizes (mapcar #'length shards)))
+                      (and (= (reduce #'+ sizes) (length names))
+                           (null (set-exclusive-or (reduce #'append shards) names))
+                           (<= (- (reduce #'max sizes) (reduce #'min sizes)) 1)
+                           (loop for i from 1 to count
+                                 for shard in shards
+                                 always (null (set-exclusive-or
+                                               shard
+                                               (nabla.tests.support::%select-shard
+                                                (reverse names) (list i count))))))))))))
+
 ;;; run-tests が :nabla.large を既定で触らないことを確かめる統合テスト。
 ;;; sizes-from-env の既定値が :nabla.large を選ばないことは、内部関数
 ;;; %size-suite を直接呼ぶのではなく、下の
