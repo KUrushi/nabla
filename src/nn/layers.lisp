@@ -14,7 +14,11 @@
 ;;;;   「bias のパラメータが無い」と一致する。call は bias が NIL なら足さない。use-bias と bias が食い違う
 ;;;;   （真なのに NIL、偽なのにある）モジュールは make-* で作れても call が error にする（%check-bias-slot）。
 ;;;; - layer-norm: 既定は最後の軸で正規化。Flax と同じ「速い分散」 var = max(mean(x^2) - mean(x)^2, 0)、
-;;;;   epsilon の既定 1e-6（f64 は 1d-6）、y = (x - mean) * rsqrt(var + epsilon) * scale + bias。
+;;;;   epsilon の既定 1e-6（f64 は 1d-6）、y = ((x - mean) * rsqrt(var + epsilon)) * scale + bias。Flax の
+;;;;   _normalize は先に倍率 rsqrt(var + epsilon) * scale を作るが、ここでは正規化してから scale をかける
+;;;;   （%layer-norm-output。積の順序が違うだけで丸めは 1 回ずつ）。倍率を先に作ると、最後の軸を含まない軸で
+;;;;   正規化するとき（と group-norm の群が 1 つ・群の大きさ 1 のとき）、jit した grad のコンパイルが
+;;;;   vector.contract の large vector sizes で確率的に失敗する（上流のバグ一覧の 9）。
 ;;;;   scale は 1、bias は 0。issue #241 で Flax の LayerNorm の use_scale / use_bias / reduction_axes /
 ;;;;   feature_axes を足した（既定は Flax と同じ: 真・真・-1・-1）。reduction_axes は統計（平均と分散）を取る軸、
 ;;;;   feature_axes は scale / bias を持つ軸（それぞれ整数かそのリスト。負の値は後ろから数える。Flax の
@@ -268,14 +272,24 @@ _canonicalize_axes）。範囲外は error。"
                       (nabla:broadcast-in-dim (nabla:rsqrt (+ variance epsilon)) shape kept-axes)))))
            x epsilon reduce-axes kept-axes count))
 
-(defun %layer-norm-multiplier (inverse-std scale feature-axes)
-  "INVERSE-STD に SCALE（NIL なら何もかけない）をかけた、正規化後にかける倍率。"
-  (if scale
-      (funcall (load-time-value
-                (nabla:with-tracing (inverse-std scale feature-axes)
-                  (* inverse-std (%broadcast-features scale (%shape inverse-std) feature-axes))))
-               inverse-std scale feature-axes)
-      inverse-std))
+(defun %layer-norm-output (x mean inverse-std scale bias feature-axes)
+  "((X - MEAN) * INVERSE-STD) * SCALE + BIAS（SCALE / BIAS が NIL ならかけない・足さない）。MEAN と INVERSE-STD は
+X の形、SCALE / BIAS は FEATURE-AXES の大きさ。倍率 INVERSE-STD * SCALE を先に作らない理由はファイル冒頭の layer-norm の項。"
+  (let* ((normalized (funcall (load-time-value
+                               (nabla:with-tracing (x mean inverse-std) (* (- x mean) inverse-std)))
+                              x mean inverse-std))
+         (scaled (if scale
+                     (funcall (load-time-value
+                               (nabla:with-tracing (normalized scale feature-axes)
+                                 (* normalized (%broadcast-features scale (%shape normalized) feature-axes))))
+                              normalized scale feature-axes)
+                     normalized)))
+    (if bias
+        (funcall (load-time-value
+                  (nabla:with-tracing (scaled bias feature-axes)
+                    (+ scaled (%broadcast-features bias (%shape scaled) feature-axes))))
+                 scaled bias feature-axes)
+        scaled)))
 
 (defun %layer-norm-apply (x scale bias epsilon use-scale use-bias reduction-axes feature-axes)
   (%check-optional-slot "layer-norm" "use-scale" use-scale "scale" scale)
@@ -296,15 +310,7 @@ _canonicalize_axes）。範囲外は error。"
     (destructuring-bind (mean inverse-std)
         (%layer-norm-statistics x epsilon reduce-axes kept-axes (reduce #'* (mapcar (lambda (axis) (nth axis shape))
                                                                                     reduce-axes)))
-      (let ((centered (funcall (load-time-value
-                                (nabla:with-tracing (x mean multiplier) (* (- x mean) multiplier)))
-                               x mean (%layer-norm-multiplier inverse-std scale feature-axes))))
-        (if bias
-            (funcall (load-time-value
-                      (nabla:with-tracing (centered bias feature-axes)
-                        (+ centered (%broadcast-features bias (%shape centered) feature-axes))))
-                     centered bias feature-axes)
-            centered)))))
+      (%layer-norm-output x mean inverse-std scale bias feature-axes))))
 
 (defmodule layer-norm (scale bias (epsilon :static) (use-scale :static :default t) (use-bias :static :default t)
                              (reduction-axes :static :default (list -1)) (feature-axes :static :default (list -1)))

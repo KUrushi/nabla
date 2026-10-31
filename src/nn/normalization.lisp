@@ -14,10 +14,9 @@
 ;;;;   rsqrt(var + epsilon)）を取り、逆の並べ替えで形を戻す（Flax の jnp.repeat と同じ）。最後の軸だけを縮約する
 ;;;;   のはバックエンドのコンパイラのバグの回避策（%group-norm-statistics）。
 ;;;;   vmap の中では内側の入力の先頭の軸がバッチになる（Flax と同じ）。Flax の reduction_axes と mask は持たない。
-;;;; - y = ((x - mean) * rsqrt(var + epsilon)) * scale + bias。Flax の _normalize（と layer-norm）は先に
-;;;;   rsqrt(var + epsilon) * scale の倍率を作るが、ここでは正規化してから scale をかける（積の順序が違うだけで、
-;;;;   丸めは 1 回ずつで同じ）。倍率を先に作ると、群が 1 つ・群の大きさが 1 のとき jit した grad のコンパイルが
-;;;;   vector.contract の large vector sizes で確率的に失敗する（上流のバグ一覧の 9）。scale / bias の形は
+;;;; - y = ((x - mean) * rsqrt(var + epsilon)) * scale + bias（layer-norm と共有の %layer-norm-output。Flax の
+;;;;   _normalize は倍率 rsqrt(var + epsilon) * scale を先に作るが、そうすると群が 1 つ・群の大きさが 1 のとき
+;;;;   jit した grad のコンパイルが確率的に失敗する。layers.lisp の layer-norm の項）。scale / bias の形は
 ;;;;   (チャンネル数)。use-scale / use-bias は layer-norm と同じ規則（偽なら対応するスロットは NIL）。
 ;;;; - epsilon の既定は Flax と同じ 1e-6（f64 は 1d-6）。状態は持たない。
 
@@ -101,23 +100,7 @@ vector.contract の large vector sizes で失敗することがある（CLAUDE.m
           (error "group-norm: ~A の形は入力のチャンネル数 (~D) でなければならない（~A の形 ~S、入力の形 ~S）"
                  (car parameter) channels (car parameter) (%shape (cdr parameter)) shape)))
       (destructuring-bind (mean inverse-std) (%group-norm-statistics x groups epsilon)
-        ;; layer-norm の %layer-norm-multiplier（rsqrt * scale を先に作る）は使わない（ファイル冒頭の y の式）
-        (let* ((feature-axes (list (1- rank)))
-               (normalized (funcall (load-time-value
-                                     (nabla:with-tracing (x mean inverse-std) (* (- x mean) inverse-std)))
-                                    x mean inverse-std))
-               (scaled (if scale
-                           (funcall (load-time-value
-                                     (nabla:with-tracing (normalized scale feature-axes)
-                                       (* normalized (%broadcast-features scale (%shape normalized) feature-axes))))
-                                    normalized scale feature-axes)
-                           normalized)))
-          (if bias
-              (funcall (load-time-value
-                        (nabla:with-tracing (scaled bias feature-axes)
-                          (+ scaled (%broadcast-features bias (%shape scaled) feature-axes))))
-                       scaled bias feature-axes)
-              scaled))))))
+        (%layer-norm-output x mean inverse-std scale bias (list (1- rank)))))))
 
 (defun %check-group-norm-epsilon (epsilon)
   (unless (and (realp epsilon) (plusp epsilon))
