@@ -64,7 +64,7 @@
 
 ## 3. データパイプラインの状態
 
-フェーズ5のデータパイプライン（Grain 相当）の状態は、**配列だけの、子に名前を付けた `defpytree` の型**にして、モデルとオプティマイザの状態と同じ木に入れる。`nabla/data` は core にしか依存できない（nn の `defmodule` を使えない）ので、`defpytree` の `flatten` が3つ目の値で子の名前を返す（#285 の前提として core に足した）。名前を返さない `defpytree` の型の子は添字のパス名（`"2.0"`）になり、フィールドの並びを変えるだけで既存のチェックポイントが読めなくなるため、名前を付ける。
+フェーズ5のデータパイプライン（Grain 相当）の状態は、`nabla/data` のローダなら `iterator-state`（#285。子の名前は `key` / `epoch` / `position` / `version`。`(save-checkpoint path (list model opt-state (iterator-state it)))` → `"2.key"` …）を使う。自前の状態も同じく、**配列だけの、子に名前を付けた `defpytree` の型**にして、モデルとオプティマイザの状態と同じ木に入れる。`nabla/data` は core にしか依存できない（nn の `defmodule` を使えない）ので、`defpytree` の `flatten` が3つ目の値で子の名前を返す（#285 の前提として core に足した）。名前を返さない `defpytree` の型の子は添字のパス名（`"2.0"`）になり、フィールドの並びを変えるだけで既存のチェックポイントが読めなくなるため、名前を付ける。
 
 ```lisp
 (defstruct pipeline-state epoch position shuffle-key buffer)   ; どれも配列

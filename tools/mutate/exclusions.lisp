@@ -769,4 +769,8 @@ u = exp(x)、u = 1 なら x、u - 1 = -1 なら -1、u = +inf なら u、それ�
   "f64 の expm1 の補助 SSA 名の接頭辞 em1_ を空文字列にする変異。理由は l1p_ と同じ（docs/numerics.md、Softmax の数値の修正）")
  (:file "src/data/batch.lisp" :mutation "(DEFUN NABLA.DATA::%SAME-ELEMENT-TYPE-P (NABLA.DATA::A NABLA.DATA::B) (EQUAL (ARRAY-ELEMENT-TYPE NABLA.DATA::A) (ARRAY-ELEMENT-TYPE NABLA.DATA::B))) -> (DEFUN NABLA.DATA::%SAME-ELEMENT-TYPE-P (NABLA.DATA::A NABLA.DATA::B) (EQ (ARRAY-ELEMENT-TYPE NABLA.DATA::A) (ARRAY-ELEMENT-TYPE NABLA.DATA::B)))"
   :reason
-  "葉の element-type の比較の EQUAL を EQ にする変異。ARRAY-ELEMENT-TYPE は配列の特化した型の指定子を返し、SBCL では同じ特化（(unsigned-byte 16) のようなリストの指定子も）に対して常に同じ（EQ な）オブジェクトを返すので、EQUAL と EQ は同じ結果になる等価変異体（issue #281。規格は EQ を保証しないので、コードは EQUAL のままにする）"))
+  "葉の element-type の比較の EQUAL を EQ にする変異。ARRAY-ELEMENT-TYPE は配列の特化した型の指定子を返し、SBCL では同じ特化（(unsigned-byte 16) のようなリストの指定子も）に対して常に同じ（EQ な）オブジェクトを返すので、EQUAL と EQ は同じ結果になる等価変異体（issue #281。規格は EQ を保証しないので、コードは EQUAL のままにする）")
+ (:file "src/data/iterator-state.lisp" :mutation
+  "(DEFUN NABLA.DATA::%I32-SCALAR (NABLA.DATA::VALUE) (MAKE-ARRAY (QUOTE NIL) :ELEMENT-TYPE (QUOTE (SIGNED-BYTE 32)) :INITIAL-ELEMENT NABLA.DATA::VALUE)) -> (DEFUN NABLA.DATA::%I32-SCALAR (NABLA.DATA::VALUE) (MAKE-ARRAY (QUOTE NIL) :ELEMENT-TYPE (QUOTE (SIGNED-BYTE 31)) :INITIAL-ELEMENT NABLA.DATA::VALUE))"
+  :reason
+  "再開状態の rank 0 の配列の element-type を (signed-byte 31) にする変異。SBCL は (signed-byte 31) の配列を (signed-byte 32) に特化する（UPGRADED-ARRAY-ELEMENT-TYPE が (SIGNED-BYTE 32)）ので、作られる配列の型も、入る値（ITERATOR-STATE が :i32 の範囲を検査済み）も変わらない等価変異体（issue #285）"))

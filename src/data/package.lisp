@@ -48,8 +48,15 @@
    #:data-iterator
    #:make-data-iterator
    #:next-batch
-   #:epoch)
+   #:epoch
+   ;; 再開状態（issue #285）
+   #:iterator-state
+   #:iterator-state-key
+   #:iterator-state-epoch
+   #:iterator-state-position
+   #:iterator-state-version
+   #:restore-iterator)
   (:documentation
    "nabla/data: データ供給の層。data-source（インデックスで引けるデータ）と array-source、
 index-sampler（位置からレコードのインデックスを決めるサンプラー）、map / filter の変換、
-data-loader（バッチを作るローダ）と data-iterator。"))
+data-loader（バッチを作るローダ）と data-iterator、その再開状態 iterator-state。"))

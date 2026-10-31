@@ -607,7 +607,9 @@
 ;; nabla/nn/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/nn/tests"
   :description "nabla/nn のテスト"
-  :depends-on ("nabla/nn" "nabla/iree" "nabla/test-support")
+  :depends-on ("nabla/nn" "nabla/iree" "nabla/test-support"
+               ;; ローダの再開状態をチェックポイントに入れるテスト（issue #285）
+               "nabla/data")
   :components ((:file "tests/nn/package")
                (:file "tests/nn/safetensors-test")
                (:file "tests/nn/module-test")
@@ -652,14 +654,15 @@
 ;; nabla/data: データ供給の層（フェーズ5、issue #278）。最初の部品は data-source（issue #279）。
 ;; nabla のシステムのうち core にだけ依存する（nabla/nn・nabla/iree・nabla/pjrt を知らない）。
 (defsystem "nabla/data"
-  :description "データ供給の層（data-source・index-sampler・変換・data-loader）"
+  :description "データ供給の層（data-source・index-sampler・変換・data-loader と再開状態）"
   :depends-on ("nabla")
   :components ((:file "src/data/package")
                (:file "src/data/source")
                (:file "src/data/sampler")
                (:file "src/data/transform")
                (:file "src/data/batch")
-               (:file "src/data/loader")))
+               (:file "src/data/loader")
+               (:file "src/data/iterator-state")))
 
 ;; nabla/data/tests も nabla/tests から独立している（scripts/run-tests.sh が load-system する）。
 (defsystem "nabla/data/tests"

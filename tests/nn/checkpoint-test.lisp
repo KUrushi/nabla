@@ -10,6 +10,8 @@
 ;;;;   CHECKPOINT-ERROR で報告する。
 ;;;; - 相互運用（medium）: Flax の flatten_dict と同じパス名で Python の safetensors が書いた
 ;;;;   ファイルを復元し、numpy と同じ順伝播の結果になる。
+;;;; - ローダの再開状態（medium、issue #285）: nabla/data の iterator-state をモデル・オプティマイザ
+;;;;   状態と同じ木で往復させ、再開した残りのバッチが中断しなかった場合と一致する。
 
 (in-package #:nabla.nn.tests)
 
@@ -284,6 +286,52 @@ save → load すると、全部がビット列まで戻り、復元したキー
     (is (eq :bad-leaf (ck-error-reason
                        (lambda () (load-checkpoint path (make-ck-pipeline :epoch 3 :position 0
                                                                           :shuffle-key 0 :buffer 0))))))))
+
+;;; --- nabla/data のローダの再開状態（issue #285） ---
+
+(defun ck-loader-source ()
+  "INDEX 番目のレコードが (添字の :i32 の rank 0 配列, f32 の (2) 配列) の 7 個のデータソース。"
+  (nabla.data:make-array-source
+   (list (make-array 7 :element-type '(signed-byte 32) :initial-contents '(0 1 2 3 4 5 6))
+         (make-array '(7 2) :element-type 'single-float
+                            :initial-contents (loop for i below 7 collect (list (* 0.5 i) (float (- i))))))))
+
+(defun ck-data-loader ()
+  "シャッフルし、添字 3 を filter で落とし、3 個ずつ（端数は捨てる）3 エポック回すローダ。"
+  (nabla.data:data-loader (ck-loader-source)
+                          :batch-size 3 :shuffle t :seed (nabla:prng-key 2026) :num-epochs 3
+                          :transforms (list (nabla.data:filter-transform
+                                             (lambda (record) (/= 3 (aref (first record))))))))
+
+(defun ck-remaining-batches (iterator)
+  (loop for (batch more) = (multiple-value-list (nabla.data:next-batch iterator))
+        while more collect batch))
+
+(test (checkpoint/data-loader-state-resumes-after-a-round-trip :suite :nabla.medium)
+  "モデル + オプティマイザ状態 + ローダの再開状態を1つの木で save → load すると、ローダの状態は
+\"2.key\" / \"2.epoch\" / \"2.position\" / \"2.version\" のエントリになり、復元した状態から再開した残りのバッチの列は
+中断しなかった場合とビット単位で一致する（全 6 バッチの前後のどこで中断しても。エポックの境界を含む）。"
+  (let* ((all (ck-remaining-batches (nabla.data:make-data-iterator (ck-data-loader))))
+         (model (make-ck-layer :w (ck-f32 1.0 2.0) :b (ck-f32 3.0) :act :relu))
+         (opt (list (make-array '() :element-type '(signed-byte 32) :initial-element 4)
+                    (list (ck-f32 0.25 0.5))))
+         (template (list model opt (nabla.data:iterator-state (nabla.data:make-data-iterator
+                                                                (ck-data-loader))))))
+    ;; 1 エポックは 6 個が残って 3 個ずつ 2 バッチ、3 エポックで 6 バッチ
+    (is (= 6 (length all)))
+    (dotimes (m 7)
+      (let ((it (nabla.data:make-data-iterator (ck-data-loader))))
+        (dotimes (i m) (nabla.data:next-batch it))
+        (with-checkpoint-file (path)
+          (save-checkpoint path (list model opt (nabla.data:iterator-state it)))
+          (is (equal '("0.b" "0.w" "1.0" "1.1.0" "2.epoch" "2.key" "2.position" "2.version")
+                     (sort (mapcar #'first (read-safetensors path)) #'string<)))
+          (let* ((back (load-checkpoint path template))
+                 (rest (ck-remaining-batches (nabla.data:restore-iterator (ck-data-loader) (third back)))))
+            (is (ck-same-leaves-p (list model opt) (list (first back) (second back))))
+            (is (= (- 6 m) (length rest)))
+            (is (every (lambda (a b) (every #'same-array-p (nabla:tree-leaves a) (nabla:tree-leaves b)))
+                       rest (nthcdr m all)))))))))
 
 (defun ck-perturb-leaf (tree index kind)
   "TREE の INDEX 番目の葉を、KIND（:shape か :dtype）でひな形として食い違うものにする。"

@@ -1,4 +1,4 @@
-;;;; data-loader と data-iterator（issue #285）。
+;;;; data-loader と data-iterator、再開状態（issue #285）。
 ;;;;
 ;;;; 守らせる性質（small）:
 ;;;; - オラクル: バッチの列は、エポックごとに「サンプラーの順にレコードを引いて変換し、残ったものを
@@ -11,6 +11,12 @@
 ;;;; - 1 エポックからバッチが1つも作れない（filter が全部落とす・batch-size > n で端数を捨てる・
 ;;;;   レコードが 0 個）は :empty-epoch（num-epochs nil で戻らなくなるのを防ぐ）。
 ;;;; - 不正な引数は理由つきの data-loader-error。
+;;;; - 再開: 任意の個数のバッチを取った後の状態から別に作ったローダで再開すると、残りのバッチの列は
+;;;;   中断しなかった場合とビット単位で一致する（エポックの境界をまたぐ・filter あり・
+;;;;   num-epochs nil を含む）。状態は取った時点の写しで、元のイテレータを進めても変わらない。
+;;;; - 状態の木: 子の名前は key / epoch / position / version で、葉は :u32 の (2)（ローダのシードの
+;;;;   写し、シードが無ければ 0）と rank 0 の (signed-byte 32) の配列。version はシャッフルの算法の版。
+;;;; - 範囲外・形の違う状態・別のシードや別の版の状態は、理由つきの data-loader-error。
 
 (in-package #:nabla.data.tests)
 
@@ -223,3 +229,180 @@ BATCH-SIZE 個ずつに切る。1 エポックからバッチが作れなけれ�
         (is (eq :bad-epoch (loader-failure-reason (lambda () (epoch loader e))))))
       (is (= 4 (length (epoch loader 1)))))
     (is (typep (handler-case (data-loader source :batch-size 0) (error (c) c)) 'data-error))))
+
+;;; --- 再開状態（iterator-state / restore-iterator） ---
+
+(defun loader-copy-state (state)
+  "STATE の葉を写した新しい状態（チェックポイントを往復した状態の代わり）。"
+  (multiple-value-bind (leaves treedef) (nabla:tree-flatten state)
+    (nabla:tree-unflatten treedef (mapcar (lambda (leaf)
+                                            (let ((copy (make-array (array-dimensions leaf)
+                                                                    :element-type (array-element-type leaf))))
+                                              (replace (make-array (array-total-size copy)
+                                                                   :element-type (array-element-type leaf)
+                                                                   :displaced-to copy)
+                                                       (make-array (array-total-size leaf)
+                                                                   :element-type (array-element-type leaf)
+                                                                   :displaced-to leaf))
+                                              copy))
+                                          leaves))))
+
+(defun loader-take (iterator count)
+  "ITERATOR から高々 COUNT 個のバッチを取ったリスト。"
+  (loop repeat count
+        for (batch more) = (multiple-value-list (next-batch iterator))
+        while more collect batch))
+
+(def-source-property iterator-state/restoring-continues-the-uninterrupted-sequence
+  "m 個のバッチを取った後の状態から再開した残りの列は、中断しなかった列の m 番目以降と一致する。"
+  (seed m)
+  (generator (tuple (uniform-integer :lo 0 :hi 1000000) (uniform-integer :lo 0 :hi 30)))
+  (multiple-value-bind (arguments n) (loader-random-case seed)
+    (let ((all (loader-batches-or-reason (apply #'data-loader (loader-index-source n) arguments))))
+      ;; 中断しない列が :empty-epoch なら、性質の対象外（その場合はオラクルの性質が見る）。
+      (or (eq all :empty-epoch)
+          (let* ((it (make-data-iterator (apply #'data-loader (loader-index-source n) arguments)))
+                 (taken (loader-take it m))
+                 (state (iterator-state it))
+                 (rest-of-original (loader-all-batches it))
+                 (restored (restore-iterator (apply #'data-loader (loader-index-source n) arguments)
+                                             (loader-copy-state state)))
+                 (rest-of-restored (loader-all-batches restored)))
+            (and (every #'same-tree-of-arrays-p taken all)
+                 (= (length all) (+ (length taken) (length rest-of-original)))
+                 (every #'same-tree-of-arrays-p rest-of-original (nthcdr (length taken) all))
+                 (= (length rest-of-restored) (length rest-of-original))
+                 (every #'same-tree-of-arrays-p rest-of-restored rest-of-original)))))))
+
+(def-source-property iterator-state/restoring-an-unbounded-loader-continues-the-sequence
+  "num-epochs nil でも、m 個取った後の状態から再開した次の 6 個は中断しなかった列と同じ。"
+  (n batch-size m hi drop-remainder)
+  (generator (tuple (uniform-integer :lo 1 :hi 9) (uniform-integer :lo 1 :hi 4)
+                    (uniform-integer :lo 0 :hi 12) (uniform-integer :lo 0 :hi 4294967295)
+                    (uniform-integer :lo 0 :hi 1)))
+  (flet ((make-loader ()
+           (data-loader (loader-index-source n) :batch-size batch-size :shuffle t
+                                                :seed (sampler-test-seed hi 3)
+                                                :transforms (list (filter-transform
+                                                                   (lambda (r) (/= 1 (loader-record-index r)))))
+                                                :drop-remainder (= 1 drop-remainder))))
+    ;; 1 エポックに残るレコードは n - 1 個（n = 1 なら添字 1 が無いので 1 個）。端数を捨てて
+    ;; バッチが作れなければ :empty-epoch。
+    (if (and (= 1 drop-remainder) (< (if (= n 1) 1 (1- n)) batch-size))
+        (eq :empty-epoch (loader-failure-reason (lambda () (next-batch (make-data-iterator (make-loader))))))
+        (let* ((all (loader-take (make-data-iterator (make-loader)) (+ m 6)))
+               (it (make-data-iterator (make-loader))))
+          (loader-take it m)
+          (let ((rest (loader-take (restore-iterator (make-loader) (loader-copy-state (iterator-state it)))
+                                   6)))
+            (and (= (+ m 6) (length all))
+                 (= 6 (length rest))
+                 (every #'same-tree-of-arrays-p rest (nthcdr m all))))))))
+
+(test (iterator-state/is-a-tree-of-named-arrays :suite :nabla.small)
+  "状態の子の名前は key / epoch / position / version で、葉はシードの写しと rank 0 の :i32 の配列。"
+  (let* ((seed (sampler-test-seed 11 22))
+         (it (make-data-iterator (data-loader (loader-index-source 5) :batch-size 2 :shuffle t
+                                                                      :seed seed)))
+         (fresh (iterator-state it)))
+    (multiple-value-bind (children aux node-p names) (nabla:tree-children fresh)
+      (declare (ignore aux))
+      (is-true node-p)
+      (is (equal '("key" "epoch" "position" "version") names))
+      (is (equal '((unsigned-byte 32) (signed-byte 32) (signed-byte 32) (signed-byte 32))
+                 (mapcar #'array-element-type children)))
+      (is (equal '((2) () () ()) (mapcar #'array-dimensions children))))
+    (is (= nabla.data::+index-sampler-algorithm-version+ (aref (iterator-state-version fresh))))
+    (is (equalp seed (iterator-state-key fresh)))
+    (is (not (eq seed (iterator-state-key fresh))))
+    (is (equal '(0 0) (list (aref (iterator-state-epoch fresh)) (aref (iterator-state-position fresh)))))
+    ;; 5 個から 2 個ずつ（端数を捨てる）: 2 個目のバッチの後はエポック 0 の位置 4
+    (loader-take it 2)
+    (let ((state (iterator-state it)))
+      (is (equal '(0 4) (list (aref (iterator-state-epoch state)) (aref (iterator-state-position state)))))
+      (loader-take it 1)
+      (is (equal '(0 4) (list (aref (iterator-state-epoch state)) (aref (iterator-state-position state)))))
+      (is (equal '(1 2) (let ((s (iterator-state it)))
+                          (list (aref (iterator-state-epoch s)) (aref (iterator-state-position s))))))))
+  (is (equalp (make-array 2 :element-type '(unsigned-byte 32) :initial-element 0)
+              (iterator-state-key
+               (iterator-state (make-data-iterator (data-loader (loader-index-source 3) :batch-size 1)))))))
+
+(defun loader-state-with (state &key (key (iterator-state-key state)) epoch position version)
+  "STATE の葉を KEY・EPOCH・POSITION・VERSION（整数なら rank 0 の :i32、配列ならそのまま）に
+替えた状態。"
+  (flet ((leaf (value default)
+           (cond ((null value) default)
+                 ((integerp value) (make-array '() :element-type '(signed-byte 32) :initial-element value))
+                 (t value))))
+    (nabla:tree-unflatten (nabla:tree-structure state)
+                          (list key
+                                (leaf epoch (iterator-state-epoch state))
+                                (leaf position (iterator-state-position state))
+                                (leaf version (iterator-state-version state))))))
+
+(test (iterator-state/restore-rejects-states-that-do-not-fit-the-loader :suite :nabla.small)
+  "別のシード・別の版・範囲外のエポックや位置・形や型の違う葉は、理由つきの data-loader-error。"
+  (let* ((loader (data-loader (loader-index-source 5) :batch-size 2 :shuffle t
+                                                      :seed (sampler-test-seed 1 2) :num-epochs 2))
+         (state (iterator-state (make-data-iterator loader))))
+    (flet ((reason (state) (loader-failure-reason (lambda () (restore-iterator loader state)))))
+      (is (eq :no-error (reason state)))
+      (is (eq :no-error (reason (loader-state-with state :epoch 1 :position 5))))
+      (is (eq :no-error (reason (loader-state-with state :epoch 2 :position 0))))
+      (is (eq :key-mismatch (reason (loader-state-with state :key (sampler-test-seed 1 3)))))
+      ;; 別の版のシャッフルの算法の状態は、黙って順序を変える代わりに :version-mismatch
+      (dolist (version (list (1+ nabla.data::+index-sampler-algorithm-version+)
+                             (1- nabla.data::+index-sampler-algorithm-version+)))
+        (is (eq :version-mismatch (reason (loader-state-with state :version version)))))
+      (is (eq :bad-state (reason (loader-state-with state :version (make-array '() :initial-element 1)))))
+      (dolist (bad '((-1 0) (0 -1) (0 6) (2 1) (3 0)))
+        (is (eq :state-out-of-range (reason (loader-state-with state :epoch (first bad)
+                                                                     :position (second bad))))))
+      (is (eq :bad-state (reason (loader-state-with state :key (make-array 2 :initial-element 0)))))
+      (is (eq :bad-state (reason (loader-state-with state :epoch (make-array '() :initial-element 0)))))
+      (is (eq :bad-state (reason (loader-state-with state :position (make-array 1 :element-type '(signed-byte 32))))))
+      (is (eq :bad-state (reason (list 0 0 0)))))
+    ;; num-epochs nil ならエポックの上限は無い
+    (is (eq :no-error
+            (loader-failure-reason
+             (lambda ()
+               (restore-iterator (data-loader (loader-index-source 5) :batch-size 2)
+                                 (loader-state-with (iterator-state (make-data-iterator
+                                                                     (data-loader (loader-index-source 5)
+                                                                                  :batch-size 2)))
+                                                    :epoch 1000 :position 3))))))))
+
+(defclass loader-counting-source (data-source)
+  ((length :initarg :length :reader source-length))
+  (:documentation "INDEX 番目のレコードが (INDEX の f64 の rank 0 配列) の、配列を持たない長いデータソース。"))
+
+(defmethod source-item ((source loader-counting-source) index)
+  (list (make-array '() :element-type 'double-float :initial-element (float index 1d0))))
+
+(defun loader-state-values (state)
+  (list (aref (iterator-state-epoch state)) (aref (iterator-state-position state))))
+
+(test (iterator-state/epoch-and-position-must-fit-in-i32 :suite :nabla.small)
+  "状態のエポックと位置は :i32 の上限 2^31 - 1 まで取れ、超えたら :state-out-of-range。"
+  (let ((max (1- (expt 2 31))))
+    (flet ((state-after-one-batch (n epoch position)
+             (let* ((loader (data-loader (make-instance 'loader-counting-source :length n) :batch-size 1))
+                    (it (restore-iterator loader (loader-state-with
+                                                  (iterator-state (make-data-iterator loader))
+                                                  :epoch epoch :position position))))
+               (loader-state-values (iterator-state it))
+               (next-batch it)
+               (iterator-state it))))
+      ;; 位置: 長さ 3 × 2^30 のエポックで、位置 2^31 - 2 の次は上限、その次は収まらない
+      (is (equal (list 0 max) (loader-state-values (state-after-one-batch (* 3 (expt 2 30)) 0 (1- max)))))
+      (is (eq :state-out-of-range
+              (loader-failure-reason (lambda () (state-after-one-batch (* 3 (expt 2 30)) 0 max)))))
+      ;; エポック: 長さ 1 で、エポック 2^31 - 2 の次は上限、その次は収まらない
+      (is (equal (list max 0) (loader-state-values (state-after-one-batch 1 (1- max) 0))))
+      (is (eq :state-out-of-range
+              (loader-failure-reason (lambda () (state-after-one-batch 1 max 0)))))))
+  ;; レコードが 0 個のローダの状態はエポック 0・位置 0
+  (is (equal '(0 0) (loader-state-values
+                     (iterator-state (make-data-iterator (data-loader (loader-index-source 0)
+                                                                      :batch-size 1 :num-epochs 0)))))))
