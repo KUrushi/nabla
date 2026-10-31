@@ -475,9 +475,9 @@ eager でも `jit` / `grad` / `vmap` の中でも使える。`vmap` でキーを
 | `(tree-flatten tree)` | 葉を左から順に並べたリストと treedef の2値 |
 | `(tree-unflatten treedef leaves)` | treedef の形の木を葉のリストから作る（葉の個数が違えば `pytree-error`） |
 | `(tree-leaves tree)` / `(tree-structure tree)` | `tree-flatten` の1つ目 / 2つ目の値 |
-| `(tree-children object)` | 節なら `(values 子のリスト 補助データ t)`、葉なら `(values nil nil nil)`。節の判定は `tree-flatten` と同じ（`nil` は子の無いリストの節）。子0個の節と葉は3つ目の値で区別でき、子を再帰でたどった葉の列は `tree-leaves` と一致する。リスト・ベクタの補助データは `nil` |
+| `(tree-children object)` | 節なら `(values 子のリスト 補助データ t 子の名前)`、葉なら `(values nil nil nil nil)`。節の判定は `tree-flatten` と同じ（`nil` は子の無いリストの節）。子0個の節と葉は3つ目の値で区別でき、子を再帰でたどった葉の列は `tree-leaves` と一致する。リスト・ベクタの補助データは `nil`。子の名前は `defpytree` の `flatten` が3つ目の値で返した文字列のリストで、返さない型とリスト・ベクタは `nil`（#285） |
 | `(tree-map function tree &rest more-trees)` | 葉ごとに `function` を呼んだ同じ形の木。複数の木は同じ位置の葉を引数にし、形が違えば `pytree-structure-mismatch` |
-| `(defpytree type :flatten f :unflatten g)` | クラス名 `type` を節として登録する。`f` は `(object) → (values 子のリスト 補助データ)`、`g` は `(aux children) → object` |
+| `(defpytree type :flatten f :unflatten g)` | クラス名 `type` を節として登録する。`f` は `(object) → (values 子のリスト 補助データ [子の名前])`、`g` は `(aux children) → object`。子の名前（省略可）は子と同じ個数の、空でなく `.` を含まない、互いに異なる文字列のリストで、チェックポイントのパス名になる（treedef には入らない。不正なら `pytree-error`） |
 | `treedef` / `treedef-num-leaves` / `treedef=` | 木の形（不透明な構造体）、その葉の個数、形の比較 |
 | `pytree-error` / `pytree-structure-mismatch` | 不正な木・引数のコンディション / その子で、形の不一致 |
 
@@ -686,11 +686,11 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 | `(tree-paths tree)` | 葉のパス名のリスト（`tree-leaves` と同じ順） |
 | `checkpoint-error` / `-reason` / `-name` / `-detail` | `reason` は `:empty-segment` `:inconsistent-tree` `:bad-leaf` `:duplicate-path` `:unknown-path` `:reserved-metadata` `:unsupported-version` `:missing-entries` `:unexpected-entries` `:shape-mismatch` `:dtype-mismatch`（意味は docstring。`name` は原因の葉） |
 
-- パス名は `"."` でつなぐ（`"enc.layers.0.w"`）。リストとベクタの子は添字、`defmodule` の子はスロット名（`:static` は出ない）。Lisp の既定で大文字になるスロット名は小文字にし、`|Dense_0|` のように小文字を含む名前はそのままなので、Flax の `flatten_dict(..., sep=".")` の `"params.Dense_0.kernel"` と同じ名前にできる。`defmodule` 以外で `defpytree` した型の子には名前が無いので、`flatten` が返す子の添字を使い、入れ子は再帰する（`"opt.0.0.w"`、`"opt.2"`）。スロット名が空のシンボル（`||`）は `:empty-segment`。根が葉なら `""`。名前が衝突する木（スロット名に `.` を含むなど）は `:duplicate-path`
+- パス名は `"."` でつなぐ（`"enc.layers.0.w"`）。リストとベクタの子は添字、`defmodule` の子はスロット名（`:static` は出ない）。Lisp の既定で大文字になるスロット名は小文字にし、`|Dense_0|` のように小文字を含む名前はそのままなので、Flax の `flatten_dict(..., sep=".")` の `"params.Dense_0.kernel"` と同じ名前にできる。`defmodule` 以外で `defpytree` した型の子は、`flatten` が3つ目の値で子の名前を返せばその名前（そのまま。`"loader.key"`）、返さなければ子の添字を使い、入れ子は再帰する（`"opt.0.0.w"`、`"opt.2"`）。スロット名が空のシンボル（`||`）は `:empty-segment`。根が葉なら `""`。名前が衝突する木（スロット名に `.` を含むなど）は `:duplicate-path`
 - モデルとオプティマイザ状態は1つの木にまとめれば同じファイルに入る: `(defmodule train-state ((params) (opt)))` → `"params.w"`、`"opt.0"`。別々に保存してもよい（API に接頭辞は持たない）
 - `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元でも、ひな形の葉が `(unsigned-byte 16)` の配列なら `:dtypes` で言う必要がある（言わなければ `:dtype-mismatch`。bf16 のモデルを f16 のファイルから生のビットで復元する事故を防ぐ。`device-array` と `aval` のひな形は自分の dtype を持つ）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
 - 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
-- データローダの再開状態（エポック数・バッチ内の位置・シャッフルの PRNG キー・小さな配列）は、**配列だけの `defmodule` にして**モデルとオプティマイザ状態と同じ木に入れる。整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
+- データローダの再開状態（エポック数・バッチ内の位置・シャッフルの PRNG キー・小さな配列）は、**配列だけの、子に名前を付けた `defpytree` の型にして**モデルとオプティマイザ状態と同じ木に入れる（`nabla/data` は `nabla/nn` に依存できないので `defmodule` は使わない。名前があるので、パス名は子の並びに依らない）。整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
 - メモリ: `load-checkpoint` も `save-checkpoint` もファイル全体のバイト列を作らず葉ごとに読み書きするので、ピークはファイルの約 1 倍（木の分を含む）になる。ヒープが 1 GiB のとき（測定環境の SBCL 2.6.9 / macOS arm64 の既定。`(sb-ext:dynamic-space-size)` で確かめる）、同じ大きさの葉 4 枚の木なら save も load も 896 MiB まで通り、小さな葉 4096 枚を含む木では save が 512 MiB、load が 768 MiB まで通った（上限は木そのものがヒープに入るかで決まる）。大きなモデルでは起動時に `--dynamic-space-size` を上げる。測定は [docs/checkpoint-memory.md](docs/checkpoint-memory.md)。世代管理（最新 n 個を残す）は持たないので、必要なら保存先の名前にステップ数を含めて呼び出し側で古いものを消す
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
