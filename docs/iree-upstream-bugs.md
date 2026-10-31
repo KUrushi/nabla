@@ -564,7 +564,7 @@ Runtime
 
 ### nabla 側の回避策の代償と改善の検討（#233）
 
-**結論（2026-10-20 時点）: 既定の emit は変えない。上流の修正を待つ。** 下の候補 (b) はコピーを消せるが、競合を起こさないことをまだ確かめられていない（Rosetta の VM では競合がほとんど再現しない。while 版 0/200、if 版 1/200）。(b) を opt-in の特殊変数で入れることも今回は見送る（安全性が未検証の形は、静かに 0 の行が混ざる正しさの事故になりうる）。x86 ネイティブで 0/20000 が出たあとの PR で入れる。x86 ネイティブで確かめる手順を下に残す。
+**結論（2026-10-31 時点）: 既定の emit は変えない。上流の修正を待つ。** 下の候補 (b) はコピーを消せるが、x86 のランナーで (b) を一般化した形（下の「一般化した形の結果」）を回したところ、y_t が制御構造の結果でない while 版で ys の行が 0 のまま返る競合が 0.40%（806/200000。同じ run の race-bug の 0.025〜0.1% より多い）で起き、(b) そのもの（while 版・if 版）でも 200000 回に 1 回ずつ不一致が出た。(b) は競合を消すのではなく、形によって頻度を変えるだけと見るべきで、opt-in でも入れない（静かに 0 の行が混ざる正しさの事故になる）。2026-10-20 の時点では「x86 ネイティブで 0/20000 が出たあとの PR で入れる」としていたが、その条件は単独の形でしか確かめていなかった。x86 ネイティブで確かめる手順を下に残す。
 
 **代償の実測**（`scripts/bench-scan-ys.sh`。Linux x86_64 の VM（OrbStack、Rosetta、7 コア。性能の数値は参考値で、実行ごとに ±20% 揺れる）。IREE 3.11、local-task。本体は `h` を `tanh` で更新して各ステップの `h`（f32 [65536]）を ys に積む scan で、cond 列は本体を `cond*`（`reduce-sum` が 0.5 未満かで `tanh` か `tanh(tanh)`）にしたもの。ys は更新のたびにコピーされるため、1 ステップの時間が長さ L に比例して伸びる）:
 
@@ -587,14 +587,14 @@ plain は L によらずほぼ一定（長さに線形）、cond は L ととも
 
 (b) は、barrier を制御構造の「後」に置き、その結果に data dependence を持たせて順序を決める形。以前の試し（barrier を内側の while の後ろ、`dynamic_update_slice` の直前に移す）は ys だけを barrier に通していたので直らなかったが（1500 回で 11 回）、(b) は制御構造の結果と一緒に通すところが違う。ただし競合の原因は未調査（上の「原因の見立て」）なので、これで直る理由も、直らない理由も分からない。
 
-**(b) の一般形と未評価の形**: 束ねる値は、本体の全制御構造の全結果と、全 ys バッファ（`y_t` ではなく、書き込み先のバッファ）。テンプレートが覆っているのは「`y_t` が 1 つの制御構造の結果そのもので、制御構造が 1 つ、ys が 1 つ、入れ子なし」の形だけ。次の形は覆っておらず、コピーが消えるかも競合が起きないかも未評価: `y_t` が制御構造の結果でない形（たとえば dropout の rng の while が carry にだけ効く）、制御構造が複数ある本体、ys が複数ある scan、入れ子の scan。**この環境（Rosetta の VM）では競合がほとんど再現しない。`check-iree-repros.sh --candidates --race-runs 200`（7 コアに `yes` の負荷）で、race-bug は while 版 0/200、if 版 1/200（本来 0.4〜2%）、候補 (a)(b) の while 版・if 版 4 組はすべて 0/200 だった。0/200 は、1% の競合でも 13% の確率で起こる結果で、(b) が競合を起こさないことの根拠にならない。** race 用の形は `docs/iree-repros/nested-scan-ys-{,if-}joint-barrier-race.mlir`、(a) は `nested-scan-ys-{,if-}index-barrier-race.mlir`。
+**(b) の一般形**: 束ねる値は、本体の全制御構造の全結果と、全 ys バッファ（`y_t` ではなく、書き込み先のバッファ）。テンプレート `joint-barrier.mlir.in` が覆っているのは「`y_t` が 1 つの制御構造の結果そのもので、制御構造が 1 つ、ys が 1 つ、入れ子なし」の形だけ。それ以外の形は、制御構造の eqn ごとにその直後で、eqn の全出力と「その時点の」ys のバッファを 1 つの barrier に通し、以後は barrier の出力を使う「連鎖の形」に一般化する（ys のバッファは `%by → %by1 → %by2` と barrier ごとに差し替わり、`dynamic_update_slice` は最後の barrier の ys の出力に書く。制御構造が 1 つなら `joint-barrier.mlir.in` と同じ形）。この連鎖の形で、`y_t` が制御構造の結果でない形（たとえば dropout の rng の while が carry にだけ効く）、制御構造が 2 つある本体、ys が 2 つある scan、入れ子の scan の 4 つを評価した（下の「一般化した形の結果」）。**この環境（Rosetta の VM）では競合がほとんど再現しない。`check-iree-repros.sh --candidates --race-runs 200`（7 コアに `yes` の負荷）で、race-bug は while 版 0/200、if 版 1/200（本来 0.4〜2%）、候補 (a)(b) の while 版・if 版 4 組はすべて 0/200 だった。0/200 は、1% の競合でも 13% の確率で起こる結果で、(b) が競合を起こさないことの根拠にならない。** race 用の形は `docs/iree-repros/nested-scan-ys-{,if-}joint-barrier-race.mlir`、(a) は `nested-scan-ys-{,if-}index-barrier-race.mlir`。
 
 **(b') 「ys を carry でなく別の形で書き出す」は、StableHLO では表せないと判断した。** `stablehlo.while` が各回の値を外へ出す手段は carry だけで、ys を while の外で組み立てるには、各ステップの `y_t` をどこかに溜める必要がある。溜める先は結局 carry のバッファで、`dynamic_update_slice`（今と同じ）か、毎回 `concatenate` / `pad` で作り直すこと（さらに悪い、毎ステップ丸ごとのコピー）になる。ys を `K` 行ずつの小さなバッファに分けて外側の while で書き出す形（#178 の rng の emit と同じ考え）は、外側の本体に barrier と制御構造が同居するので、報告している競合と同じ構造になる。試していない。
 
 **x86 ネイティブで確かめる手順**（別の環境、たとえば CI や手元の x86 Linux。Rosetta ではなく実機で）:
 
 1. 先に race-bug が再現することを確かめる（再現しない環境では何も言えない）: `scripts/check-iree-repros.sh --runs 2 --race-runs 4000` が race-bug を `REPRODUCED`（負荷のもとで 0.4〜2%）にすること。
-2. 候補を同じ負荷で走らせる: `scripts/check-iree-repros.sh --candidates --race-runs 20000`。`race-candidate` の行（a: index-barrier、b: joint-barrier、それぞれ while 版と if 版）の `mismatches` が 0 であること。時間は数時間かかりうる（race の行 8 本 × 20000 回、負荷つき。Rosetta の VM の 200 回で 20 分だった）。1 回の失敗確率が 0.4% なら 20000 回で 0 回になる確率は e^-80 より小さい。20000 回で 0 回なら、失敗確率は（95% の信頼で）約 0.015% 未満と言える。それより低い確率は言えない。
+2. 候補を同じ負荷で走らせる: `scripts/check-iree-repros.sh --candidates --race-runs 200000`。`race-candidate` の行の `mismatches` が 0 であること。時間は数時間かかりうる（負荷つき。Rosetta の VM の 200 回で 20 分だった。ランナーでは下の CI で分割する）。回数は race-bug の頻度から決める: ランナーで測った race-bug の頻度は 0.025〜0.15%（下の 3 つの run の合計で while 版 5/12000、if 版 15/12000、合わせて 20/24000 ≈ 0.08%）で、上の表の記録（0.4〜2%）よりずっと低い。0.08% の現象が 20000 回で 1 回も起きない確率は e^-16.7（約 6 × 10^-8）なので、race-bug と同じ程度の競合なら 20000 回で見つかる。ただし 20000 回で 0 回から言えるのは「失敗確率は（95% の信頼で）0.015% 未満」までで、これは race-bug の頻度の 1/5 にしかならない。race-bug より 1 桁以上まれな競合を否定するには 200000 回（95% 上限 0.0015%、race-bug の 1/50）が要る。それより低い確率は言えない。
 3. 0 だったら nabla の emit に反映する前に、`scripts/bench-scan-ys.sh --variants plain,cond,scripts/scan-ys-candidates/joint-barrier.mlir.in` で性能（コピーが消えること）を確かめ、`scan/iree-nested-*-matches-eager`（PBT。回避策なしだと 100 回の中で 2% 前後で落ちる）を繰り返し走らせる。
 4. 新しい候補を足すには、`docs/iree-repros/` に race 用の形（`// INPUT: ...` の行つき）を置き、`scripts/check-iree-repros.sh` の `CANDIDATE_CASES` に `race-candidate <ファイル名>` を 1 行足す。性能の比較は `scripts/scan-ys-candidates/` に `@L@` / `@W@` のテンプレート（main の形は `bench-scan-ys.lisp` の冒頭）を置く。
 
@@ -605,9 +605,26 @@ plain は L によらずほぼ一定（長さに線形）、cond は L ととも
 
 結果は `gh api 'repos/KUrushi/nabla/actions/runs?branch=ci/iree-race-check/runs-20000'` で run を探し、run のページのサマリで見る。表にはランナーの CPU（コア数と型番）も出る。ジョブごとに別の機械に割り当たりうるので、race-bug の再現の頻度は候補と同じ機械で測ったものとは限らない（分割したときの CPU の欄は、そのうち 1 つのジョブのもの）。ランナー（4 コア）では 1 行 20000 回が約 5〜6 分、4000 回が約 1 分で終わる。
 
-**ランナーでの結果（2026-10-31、IREE 3.11）**: race-bug は再現した。ただし頻度は上の表の記録（0.4〜2%）より低い。`runs-20000` の run（https://github.com/KUrushi/nabla/actions/runs/41194314022）では while 版 1/4000・if 版 5/4000、`runs-200000-parts-4` の run（https://github.com/KUrushi/nabla/actions/runs/41194993213）では 3/4000・6/4000（0.025〜0.15%）。race-control は 2 回とも 0/4000。候補は (a)(b) の while 版・if 版の 4 本とも、20000 回でも 200000 回でも不一致 0 回だった。200000 回で 0 回なら、1 回の失敗確率は 95% の信頼で 0.0015% 未満。これは同じランナーでの race-bug の頻度（0.075〜0.15%）の 1/50 以下にあたる。CPU は AMD EPYC 7763 / 9V45 / 9V74 と Intel Xeon 8370C / 8573C が混ざっていた。上の結論の「x86 ネイティブで 0/20000」の条件はこれで満たした。(b) を emit に入れるのは別の PR で行う（手順 3 と、テンプレートが覆っていない形の検討が残る）。
+**ランナーでの結果（2026-10-31、IREE 3.11）**: race-bug は再現した。ただし頻度は上の表の記録（0.4〜2%）より低い。`runs-20000` の run（https://github.com/KUrushi/nabla/actions/runs/41194314022）では while 版 1/4000・if 版 5/4000、`runs-200000-parts-4` の run（https://github.com/KUrushi/nabla/actions/runs/41194993213）では 3/4000・6/4000（0.025〜0.15%）。race-control は 2 回とも 0/4000。候補は (a)(b) の while 版・if 版の 4 本とも、20000 回でも 200000 回でも不一致 0 回だった。200000 回で 0 回なら、1 回の失敗確率は 95% の信頼で 0.0015% 未満。これは同じランナーでの race-bug の頻度（0.075〜0.15%）の 1/50 以下にあたる。CPU は AMD EPYC 7763 / 9V45 / 9V74 と Intel Xeon 8370C / 8573C が混ざっていた。2026-10-20 の結論の「x86 ネイティブで 0/20000」の条件はこれで満たしたが、テンプレートが覆っていない形を次に確かめたところ競合が出た（次の段落）。
 
-**opt-in で切り替える案（実装していない）**: (b) を、特殊変数（たとえば `*scan-ys-joint-barrier*`、既定は nil）で選べるようにする。x86 ネイティブでの確認が済むまでは既定を nil に保つ。確認が済んだら既定を t にし、`scan/scan-with-cond-in-body-has-no-ys-barrier` と `scan/nested-scan-keeps-the-ys-barrier-only-in-the-innermost-body`（今は barrier が無いことを守っている）を新しい形に書き換える。上流が直ったら（`check-iree-repros.sh` の race-bug が再現しなくなったら）、回避策ごと消して plain の emit に戻す。
+**一般化した形の結果（2026-10-31、IREE 3.11）**: (b) の連鎖の形で 4 つの形の race 用の形を while 版・if 版で書いた（`docs/iree-repros/nested-scan-ys-{,if-}joint-barrier-{derived-y,two-controls,two-ys,nested}-race.mlir`。`check-iree-repros.sh` の `CANDIDATE_CASES`）。形は (a) derived-y: 制御構造の結果 `%ic` は新しい carry にだけ効き、`y_t` は本体の入力の派生値 `%bc * %bc`、(b) two-controls: 制御構造が 2 つで 2 つ目は 1 つ目の barrier の出力を入力にする（while 版は while 2 つ、if 版は if 2 つ）、(c) two-ys: ys が 2 つで 1 つの barrier に両方のバッファを通す、(d) nested: 外側の本体に ys を持つ内側の scan があり、外側の barrier に内側の while の carry と ys を通す（if 版は内側の本体に if があり、内側の本体でも連鎖の barrier を通す）。`runs-200000-parts-8` の run（https://github.com/KUrushi/nabla/actions/runs/41197227559。行ごとに 25000 回 × 8 ジョブ）の結果:
+
+| 形 | while 版 | if 版 |
+| --- | --- | --- |
+| race-bug（記録、4000 回） | 1/4000 | 4/4000 |
+| race-control（ys の barrier なし、4000 回） | 0/4000 | 0/4000 |
+| (a) index-barrier（200000 回） | 0 | 0 |
+| (b) joint-barrier（200000 回。前の run では 20000 回・200000 回とも 0） | **1** | **1** |
+| (b) を一般化した derived-y | **806**（0.40%。8 ジョブすべてで 23〜129/25000） | 0 |
+| two-controls | 0 | 0 |
+| two-ys | **2** | **1** |
+| nested | 0 | **1** |
+
+（表の回数は 200000 回あたりの不一致。不一致の出たジョブの CPU は AMD EPYC 7763 / 9V74 / 9V45 と Intel Xeon 8370C で、特定の CPU に偏らない。）derived-y の while 版は Rosetta の VM（7 コアに `yes` の負荷）でも 2/1500 で再現し、症状は bug 7 と同じ（ys の 1 行（最初のステップで書いた行）が全要素 0 のまま返り、carry は正しい）。ほかの行の 1〜2 回は出力を残していないので症状は確かめていないが、local-sync と違う出力が返ったことに変わりはない。**(b) は競合を消さない。** 制御構造の結果を barrier に一緒に通しても、ys の書き込みと制御構造の実行の順序は保証されないと見るべきで、`y_t` が制御構造の結果に依存しない形（dropout の rng の while が carry にだけ効く scan はこの形）では race-bug より多く起きる。nabla の emit は今のまま（本体に制御構造がある scan には ys の barrier を付けない）にし、ys の丸ごとのコピーの代償は上流の修正まで受け入れる。
+
+**一般化した形のコピーの個数**（Linux x86_64 の VM、`iree-compile --compile-to=stream`、L=64・W=65536（ys 16 MiB）の `stream.cmd.copy`。テンプレートは `scripts/scan-ys-candidates/joint-barrier-{derived-y,two-controls,two-ys,nested}.mlir.in`。どれも if 版）: 今の既定（`default`）は 5 個で、そのうち 1 つが ys 全体の 16 MiB。(b) は 4 個、derived-y は 3 個、two-controls は 5 個、two-ys は 4 個、nested は 6 個で、どれも ys 全体のコピーは無く、残るのは 1 行ぶん（256 KiB、nested は内側の ys の 512 KiB）と数バイトのコピーだけだった。`scripts/bench-scan-ys.sh --lengths 16,64,128 --widths 65536 --reps 5` の 1 ステップ（Rosetta の VM の参考値）は、(b) 1.4 / 1.6 / 1.5 ms、derived-y 1.6 / 1.4 / 1.5 ms、two-controls 1.9 / 2.7 / 2.0 ms、two-ys 1.4 / 1.5 / 1.5 ms、nested 5.4 / 3.3 / 3.3 ms（L=16 / 64 / 128）で、どれも L とともに伸びない。性能の上では一般化できるが、上の競合のために採らない。
+
+**opt-in で切り替える案（実装しない）**: (b) を、特殊変数（たとえば `*scan-ys-joint-barrier*`、既定は nil）で選べるようにする案。上の「一般化した形の結果」で (b) とその一般化が競合を起こしたので、opt-in でも入れない。上流が直ったら（`check-iree-repros.sh` の race-bug が再現しなくなったら）、回避策ごと消して plain の emit（本体の先頭の ys の barrier）に戻す。そのときは race-candidate の行（(b) とその一般化）も 0 になることを同じ手順で確かめる。
 
 ### 下書き（英語）
 
