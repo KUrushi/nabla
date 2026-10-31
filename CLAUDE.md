@@ -41,6 +41,8 @@ NABLA_IREE_HOME=~/.local/share/nabla/iree-3.11.0 NABLA_REQUIRE_IREE=1 scripts/ru
 scripts/colab-gpu-check.sh --gpu T4
 scripts/colab-gpu-check.sh --bench-only   # CUDA のベンチ（bench-backends.sh --cuda）だけを Colab で測る。--bench でテストの後に測る
 scripts/colab-gpu-check.sh --profile      # jit した関数の呼び出し1回の内訳（to-device / invoke / to-host）を測る（issue #190、scripts/profile-call-overhead.lisp）。--with-tests でテストも
+# large の MLP の演算（dot・転置を含む dot_general など）を1つずつ invoke で測る（profile-ops、#265。結果は docs/dot-general-transpose.md。コンパイラのフラグは NABLA_PROFILE_IREE_COMPILE_FLAGS）
+NABLA_PROFILE_SECTIONS=ops NABLA_BENCH_BACKEND=iree-local sbcl --non-interactive --eval '(require :asdf)' --load scripts/bench-backends.lisp --load scripts/profile-call-overhead.lisp --eval '(nabla-bench::profile-main)' > ops.sexp
 
 # PJRT プラグイン（CPU。--cuda で CUDA も）を third_party/pjrt.lock の wheel から
 # 取得・sha256 検査・展開する。インストール先は NABLA_PJRT_HOME（既定
