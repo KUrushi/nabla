@@ -727,6 +727,19 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - 同じシード・エポック・位置からの順序は版をまたいで変えない（変えるときは破壊的変更として算法の版 `+index-sampler-algorithm-version+` を上げ、ローダの再開状態の版の検査で検出する）
 - 複数プロセスでの分割（シャード）は持たない。位置 → インデックスの関数なので、後から「プロセス i は位置 i, i + P, ... を引く」形で足せる
 
+#### 変換（`nabla/data`、issue #281）
+
+レコード（PyTree）1 つにかける純粋な変換（Grain の `MapTransform` / `FilterTransform`）。変換のリストはローダの `:transforms` に渡す。変換はホストの Lisp 配列の上で行い、`device-array` は扱わない。
+
+| 関数 | 役割 |
+| --- | --- |
+| `(map-transform function)` | レコードを受けて新しいレコードを返す変換。`function` はレコードの木をまるごと受ける |
+| `(filter-transform predicate)` | `predicate` が真のレコードだけを残す変換 |
+| `(apply-transforms transforms record)` | 変換のリストを先頭から順にかけ、`(values 変換後のレコード t)` か、filter が落としたら `(values nil nil)`。変換でないものがあれば `type-error` |
+
+- 変換はワーカースレッドから同時に呼ばれるので、`function` と `predicate` は純粋（同じレコードには同じ結果を返し、レコードも大域の状態も書き換えない）にする
+- バッチにまとめるのは変換ではなくローダの `:batch-size` の仕事で、変換のリストには入れられない
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
