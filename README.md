@@ -31,6 +31,7 @@ Common Lisp で書く、[JAX](https://github.com/jax-ml/jax) に相当する深�
 - Linux x86_64（IREE コンパイラを PyPI ホイールから使う既定モードの制約。他の OS / アーキでは `--compiler=source` を使う）
 - SBCL（動作確認は 2.2.9、apt パッケージ）
 - apt パッケージ: `sbcl cl-fiveam cl-cffi cl-alexandria cl-trivial-garbage cl-lparallel cl-closer-mop cl-bordeaux-threads cl-ironclad libffi-dev`
+- `nabla/data/image`（画像のデコード）が使う依存: apt の `cl-chipz cl-iterate cl-babel` と、固定コミットで git clone する `png-read`・`cl-jpeg`（apt に無い）。どちらも `scripts/setup-lisp-deps.sh` が入れる
 - IREE のビルドに使う道具: `clang lld cmake ninja-build python3-pip git`（Python は PyPI ホイールの取得・展開にだけ使い、nabla の実行時依存にはしない）
 - Quicklisp は使わない（ネットワーク方針。依存は apt と固定コミットの git clone で揃える）
 - ディスク容量: 約 400 MB（`NABLA_IREE_HOME` 配下が約 345 MB）
@@ -53,7 +54,7 @@ scripts/verify-iree.sh
 主な環境変数（詳細は [docs/iree-build.md](docs/iree-build.md)）:
 
 - `NABLA_IREE_HOME`: IREE のインストール先。既定 `~/.local/share/nabla/iree-3.11.0`
-- `NABLA_LISP_DEPS`: apt に無い Lisp 依存（check-it / optima）の置き場。既定 `~/.local/share/nabla/lisp-deps`
+- `NABLA_LISP_DEPS`: apt に無い Lisp 依存（check-it / optima / png-read / cl-jpeg）の置き場。既定 `~/.local/share/nabla/lisp-deps`
 - `NABLA_CACHE_DIR`: vmfb ディスクキャッシュの場所（キャッシュはその下の `vmfb/` に置く）。既定 `${XDG_CACHE_HOME:-~/.cache}/nabla/`。相対パスはプロセスの作業ディレクトリを基準に絶対パスへ解決する（`*compile-cache-directory*` に束縛した相対パスも同じ）
 
 ## テスト
@@ -851,6 +852,23 @@ sbcl --non-interactive --load examples/image-classification.lisp   # 64 ステ�
 - jit する学習ステップの入力は パラメータ 6 + `mu` 6 + `nu` 6 + `count` 1 + バッチ 2 = 21 個
 - テスト: `tests/nn/image-classification-test.lisp`（small: データセットの決定性とクラスの形、拡張の後もクラスの形が残ること、入力の葉の数。medium: eager の学習でワーカー数 0 と 2・保存と復元をはさんだ学習がビット単位で同じ。IREE local で例の `main` が動き、損失が下がり、正解率が 50% を超え、中断しない学習とビット単位で同じ）
 
+#### 画像のデコード（`nabla/data/image`、issue #283）
+
+`nabla/data/image`（パッケージ `nabla.data.image`）は PNG / JPEG のファイルを読むデータソースで、`(asdf:load-system "nabla/data/image")` で使う。デコードは外部のライブラリに任せる（PNG は [png-read](https://github.com/Ramarren/png-read)、JPEG は [cl-jpeg](https://github.com/sharplispers/cl-jpeg)。どちらも純 Lisp で、opticl のような依存の重いライブラリは採らない）。`nabla/data` 本体に依存を増やさないため別システムにしてあり、nabla のシステムのうち `nabla/data` にだけ依存する。
+
+| 関数・クラス | 役割 |
+| --- | --- |
+| `(read-image pathname)` | ファイルをデコードして `(H W C)` の `(unsigned-byte 8)` の配列を返す。形式は拡張子ではなく先頭のバイトで見分ける |
+| `(make-image-source pathnames &key labels)` | 画像ファイルの列（パスネームか、OS の書き方のパスの文字列）から `image-source` を作る。`index` 番目のレコードは、`labels` が無ければ画像だけ、あれば `(画像 ラベル)` のリスト。`labels` は `make-array-source` と同じ木で、ラベルはその `index` 番目の行。デコードはレコードを取るとき（`source-item`）に行う |
+| `image-decode-error` / `-reason` / `-pathname` / `-detail` | 読めないファイル（`data-error` の子）。`reason` は `:unreadable`（開けない）`:unknown-format`（PNG でも JPEG でもない）`:corrupt`（途中で切れている・CRC の不一致など）`:unsupported`（下の読まない形式） |
+
+- **チャンネル数はファイルのまま**: グレースケール 1、グレースケール + アルファ 2、RGB 3、RGBA 4。パレットの PNG は RGB（tRNS の透過は読まない）、1・2・4 ビットのグレースケールは 0..255 に直す（Pillow の `convert("RGB")` / `convert("L")` と同じ値）。チャンネル数を揃える `:channels` のような変換は持たない。チャンネル数の混ざったデータセットは、ローダの変換（map）で揃えてからバッチにする
+- **読まない形式**（`:unsupported`）: 16 ビットの PNG、成分が 1 でも 3 でもない JPEG（CMYK など）、Adobe の APP14 が YCbCr でないと言う3成分の JPEG（cl-jpeg は3成分を常に YCbCr とみなすので、色を取り違えないよう読まない）、ベースラインでもプログレッシブでもない JPEG（可逆など）。インタレースの PNG とプログレッシブの JPEG は読める
+- **u8 は nabla の dtype に無い**ので、jit に渡す前にローダの変換で `single-float` などに直す（例: 255 で割った f32 の配列）
+- 画素は Pillow でデコードした値と比べてある（`tests/fixtures/image/`、`generate.py` で再生成。PNG はちょうど一致、JPEG は逆 DCT の丸めと色差の補間の違いで成分ごとに最大 1 の差）
+- cl-jpeg は全体を `(safety 0)` でコンパイルするライブラリで、そのままだと壊れた JPEG で範囲外のメモリに触れて Memory fault でプロセスごと落ちる。**`scripts/setup-lisp-deps.sh` が clone 時に cl-jpeg の `jpeg.lisp` の `*optimize*` を safety 2 に書き換える**（1 では cl-jpeg の `(speed 3)` より低いので型の検査が弱められ、SBCL 2.2.9 の x86-64 でなお落ちた）ので、壊れた JPEG も `image-decode-error` になる。ほかの手段で入れた cl-jpeg（Quicklisp など、safety 0 のまま）を使うと、JPEG をデコードする前に（デコードせずに）、`setup-lisp-deps.sh` の cl-jpeg を使うよう促す error（`image-decode-error` ではない）になる（ロードと PNG のデコードは止めない）。書き換えの前にコンパイルした cl-jpeg の fasl（`~/.cache/common-lisp/` 以下）が書き換えた後のソースより新しいままだと、ASDF はそれを使い続けて同じ error になるので、その fasl を消してコンパイルし直す。224×224 の画像のデコードは手元（Apple M 系、SBCL 2.6.9）で JPEG 約 5 ms、PNG 約 8 ms
+- 巨大な幅・高さを正しい CRC つきで書いた PNG や、巨大な寸法の JPEG は、その大きさの配列を確保しようとする（大きさの上限は設けない）。信頼できないファイルを読むときは注意する
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。
@@ -913,11 +931,14 @@ src/                 core（nabla パッケージ）: package, dtype, aval, prim
 src/iree/            nabla.iree パッケージ: IREE の埋め込み C API バインディングと backend 実装
 src/nn/              nabla.nn パッケージ: safetensors の読み書き、defmodule、オプティマイザ、チェックポイント、レイヤー、multi-head attention
 src/data/            nabla.data パッケージ: データ供給の層（data-source、array-source、.npy）
+src/data/image/      nabla.data.image パッケージ: PNG / JPEG のデコードと image-source
 tests/               nabla/tests のテスト（support-test, dtype-test, aval-test, backend-test, ...）
 tests/support/       nabla/test-support: FiveAM のスイート、check-it の生成器、比較関数、フェイク backend
 tests/iree/          nabla/iree/tests のテスト
 tests/nn/            nabla/nn/tests のテスト
 tests/data/          nabla/data/tests のテスト
+tests/data/image/    nabla/data/image/tests のテスト
+tests/fixtures/image/  Pillow で作った PNG / JPEG と、Pillow でデコードした画素値
 tests/fixtures/stablehlo/  手書きの StableHLO フィクスチャ
 tests/regressions/   check-it が見つけた失敗例の回帰テスト
 tools/mutate/         自前の mutation testing runner（nabla-mutate）
@@ -928,7 +949,7 @@ third_party/         iree.lock（固定した IREE のコミットとホイー�
 .claude/skills/nabla-testing/  テスト戦略の詳しい手順
 ```
 
-ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き #198、defmodule #202、PyTree のチェックポイント #206）、`nabla/nn/tests`、`nabla/data`（データ供給の層。data-source #279）、`nabla/data/tests` の13個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
+ASDF システムは `nabla`（コア、nickname `nb`）、`nabla/test-support`、`nabla/tests`、`nabla/ffi-support`、`nabla/ffi-support/tests`、`nabla/iree`、`nabla/iree/tests`、`nabla/pjrt`、`nabla/pjrt/tests`（PJRT プラグインのロード、クライアント・デバイス・device-array、StableHLO のコンパイル・ロード・実行。`(find-backend :pjrt)` と `to-device` / `to-host` / `backend-compile` / `backend-invoke`、`(jit f :backend :pjrt)`。`to-device` / `to-host` と jit の入出力は IREE と同じ全 dtype に対応し、`:i1` は PJRT の `PRED`（ホストでは1要素1バイト）に写す（issue #166）。docs/pjrt-setup.md）、`nabla/nn`（safetensors の読み書き #198、defmodule #202、PyTree のチェックポイント #206）、`nabla/nn/tests`、`nabla/data`（データ供給の層。data-source #279）、`nabla/data/tests`、`nabla/data/image`（PNG / JPEG のデコード。#283）、`nabla/data/image/tests` の15個に加え、mutation testing 用の `nabla-mutate`（`tools/mutate/`）がある。
 
 ## 開発の進め方
 

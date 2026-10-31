@@ -683,3 +683,19 @@
                (:file "tests/data/random-transform-test")
                (:file "tests/data/parallel-test")
                (:file "tests/data/npy-test")))
+
+;; nabla/data/image: 画像ファイル（PNG / JPEG）のデータソース（issue #283）。画像のライブラリ
+;; （png-read と cl-jpeg）への依存を nabla/data 本体に入れないため、別システムにする。
+;; nabla のシステムのうち nabla/data にだけ依存する。cl-jpeg は scripts/setup-lisp-deps.sh が
+;; clone 時に safety 2 に書き換えたものを使う（src/data/image/image.lisp の %check-cl-jpeg-safety）。
+(defsystem "nabla/data/image"
+  :description "画像ファイル（PNG / JPEG）のデコードとデータソース"
+  :depends-on ("nabla/data" "png-read" "cl-jpeg")
+  :components ((:file "src/data/image/package")
+               (:file "src/data/image/image")))
+
+(defsystem "nabla/data/image/tests"
+  :description "nabla/data/image のテスト"
+  :depends-on ("nabla/data/image" "nabla/test-support")
+  :components ((:file "tests/data/image/package")
+               (:file "tests/data/image/image-test")))
