@@ -767,6 +767,34 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - 位置ごとの処理（`source-item` と変換）は位置だけで決まり、イテレータは「次に調べるサンプラーの位置」だけを持つ（入力側の位置。filter をはさんでも決定的に再開できる）
 - 再開状態は、返したバッチに取り込んだ最後の位置 + 1 を、エポックとエポック内の位置に分けて持つ（Grain と同じく入力側の位置）。レコードの個数とエポックの数が 2^31 未満なら `:i32` に収まる（収まらなければ `iterator-state` が `:state-out-of-range`）。`restore-iterator` は、状態の葉の型・形（`:bad-state`）、`version` がこの版のシャッフルの算法の版と同じか（`:version-mismatch`。算法を変えた版の状態から黙って別の順序で再開しない）、`key` がローダのシードと同じか（`:key-mismatch`）、`0 ≤ position ≤ n` と `epoch` が `num-epochs` の範囲か（`:state-out-of-range`。`epoch = num-epochs` は `position` 0 だけ）を確かめる。復元するローダは同じデータソース・変換・引数で作る（それ以外は検査しない）
 
+#### random-map-transform（`nabla/data`、issue #284）
+
+レコードごとに決定的な乱数を使う変換（Grain の `RandomMapTransform`）。データ拡張（ランダムな反転・切り抜きなど）を、再開しても同じ結果になる形で書く。
+
+| 関数・コンディション | 役割 |
+| --- | --- |
+| `(random-map-transform function)` | `(function レコード キー)` で新しいレコードを返す変換。キーは `prng-key` と同じ形の `:u32` の `(2)` の新しい配列で、`nb:uniform` / `nb:split` などにそのまま渡せる（eager） |
+| `(apply-transforms transforms record &key seed position)` | `random-map-transform` には `seed`（`:u32` の `(2)`。nil なら 0）・通し位置 `position`・その変換がリストの何番目の `random-map-transform` かから作るキーを渡す。map / filter だけなら `seed` と `position` は要らない |
+| `transform-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-seed`（`seed` が nil でも `:u32` の `(2)` でもない）、`:bad-position`（`random-map-transform` をかけるのに `position` が 0 以上 2^64 未満の整数でない） |
+
+- キーは「シード」「サンプラーの通し位置 k（エポック × n + エポック内の位置）」「リストの中で何番目の `random-map-transform` か（j）」だけで決まる（状態 mix64(mix64(シード) xor mix64(j)) の SplitMix64 の列の k 番目の 64 ビットを上位 / 下位 32 ビットに割る。シードを先に攪拌するので、シードの差と位置の差が打ち消し合わない。2 つ以上の `random-map-transform` は別々のキーを受ける）。ローダは自分の `seed`（無ければ 0。`shuffle` しなくても `seed` を渡せばキーが変わる）と k を渡すので、並列度や処理の順序に依らず、`restore-iterator` で再開した後も中断しなかった場合と同じ拡張になる。同じレコードでもエポックが違えば k が違うので、別の拡張になる。`nb:fold-in` は使わない（eager は呼ぶたびに graph を組むので、位置ごとに呼ぶには遅い）。導出を変えたらシャッフルの算法の版（`iterator-state` の `version`）を上げる
+- `function` は（レコード, キー）について純粋にする。eager の PRNG は 1 回に数十 µs かかるので、1 つのキーから `nb:uniform` で必要な個数をまとめて引くとよい。ワーカーが動いている間はコードをロード（`defprimitive` / `defpytree`）しない
+- 画像の拡張（左右反転と、パディング付きのランダムな切り抜き）の例。画像は `(H W C)` の Lisp 配列（`tests/data/random-transform-test.lisp` の `example-augment`。公開の関数にはしていない）:
+
+```lisp
+(nabla.data:random-map-transform
+ (lambda (record key)
+   (destructuring-bind (image label) record          ; image は (H W C)
+     (let* ((u (nb:uniform key '(3) :dtype :f64))   ; [反転, dy, dx] を 1 回で引く
+            (span (1+ (* 2 padding)))
+            (dy (min (* 2 padding) (floor (* (aref u 1) span))))   ; uniform は 1 ちょうどを返しうる
+            (dx (min (* 2 padding) (floor (* (aref u 2) span)))))
+       (list (crop-padded (if (< (aref u 0) 0.5d0) (flip-left-right image) image) padding dy dx)
+             label)))))
+;; flip-left-right: W の軸を反転した新しい配列。crop-padded: 周りに 0 を padding 個ずつ足した画像の
+;; (dy, dx) を左上とする (H W C) の窓
+```
+
 #### with-tracing の do ループ（issue #137）
 
 `with-tracing` の本体にある定型の `do` は、反復回数の分だけ展開されるのではなく、1つの `scan` になる（反復回数を大きくしても eqn は増えない）。`setq` が使えないので、carry は `do` 変数の step 式で更新する。

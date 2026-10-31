@@ -673,4 +673,5 @@
                (:file "tests/data/sampler-test")
                (:file "tests/data/transform-test")
                (:file "tests/data/batch-test")
-               (:file "tests/data/loader-test")))
+               (:file "tests/data/loader-test")
+               (:file "tests/data/random-transform-test")))

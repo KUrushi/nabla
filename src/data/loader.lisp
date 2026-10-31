@@ -23,7 +23,7 @@
   (:documentation
    "ローダを作れない、またはバッチを取り出せないときに signal する。REASON は次のどれか。
   :bad-batch-size  BATCH-SIZE が正の整数でない
-  :bad-transform   TRANSFORMS に MAP-TRANSFORM / FILTER-TRANSFORM でないものがある
+  :bad-transform   TRANSFORMS に MAP-TRANSFORM / FILTER-TRANSFORM / RANDOM-MAP-TRANSFORM でないものがある
   :bad-epoch       EPOCH のエポックが 0 以上 NUM-EPOCHS 未満の整数でない
   :empty-epoch     1 エポックの全位置を調べてもバッチが1つも作れなかった（filter が全部
                    落とした、端数を捨てて何も残らなかった、レコードが 0 個）
@@ -55,8 +55,9 @@ MAKE-DATA-ITERATOR か EPOCH でバッチを取り出す。作った後は変わ
 (defun data-loader (source &key batch-size shuffle seed num-epochs transforms (drop-remainder t))
   "データソース SOURCE からバッチを作るローダを作る（Grain の DataLoader）。
 サンプラー（MAKE-INDEX-SAMPLER に SHUFFLE・SEED・NUM-EPOCHS を渡したもの）の位置の順に
-レコードを SOURCE-ITEM で引き、TRANSFORMS（MAP-TRANSFORM / FILTER-TRANSFORM のリスト）を
-APPLY-TRANSFORMS でかけ、残ったレコードを BATCH-SIZE（正の整数。必須）個ずつ BATCH-RECORDS で
+レコードを SOURCE-ITEM で引き、TRANSFORMS（MAP-TRANSFORM / FILTER-TRANSFORM / RANDOM-MAP-TRANSFORM
+のリスト）を APPLY-TRANSFORMS でかけ（RANDOM-MAP-TRANSFORM のキーは SEED（無ければ 0）と通し位置で
+決まる）、残ったレコードを BATCH-SIZE（正の整数。必須）個ずつ BATCH-RECORDS で
 積む。バッチはエポックをまたがない。エポック末の端数は DROP-REMAINDER（既定 t）なら捨て、nil なら
 短いバッチにする（pad はしない）。NUM-EPOCHS が nil（既定）ならバッチの列は終わらない。
 SEED（無ければ 0）の写しを持ち、ITERATOR-STATE の key にする（シャッフルしなくても、別の
@@ -65,10 +66,11 @@ SEED（無ければ 0）の写しを持ち、ITERATOR-STATE の key にする（
   (unless (typep batch-size '(integer 1))
     (%data-loader-error :bad-batch-size "batch-size ~S が正の整数でない" batch-size))
   (unless (and (listp transforms)
-               (every (lambda (transform) (typep transform '(or map-transform filter-transform)))
+               (every (lambda (transform)
+                    (typep transform '(or map-transform filter-transform random-map-transform)))
                       transforms))
     (%data-loader-error :bad-transform
-                        "transforms ~S が map-transform / filter-transform のリストでない" transforms))
+                        "transforms ~S が変換（map / filter / random-map）のリストでない" transforms))
   (let* ((n (source-length source))
          (sampler (make-index-sampler n :shuffle shuffle :seed seed :num-epochs num-epochs)))
     ;; SEED の形は MAKE-INDEX-SAMPLER が検査済み。
@@ -88,7 +90,8 @@ SEED（無ければ 0）の写しを持ち、ITERATOR-STATE の key にする（
                                                (source-item (data-loader-source loader)
                                                             (nth-value 1 (sampler-index
                                                                           (data-loader-sampler loader)
-                                                                          k)))))
+                                                                          k)))
+                                               :seed (data-loader-key loader) :position k))
         when keep collect (cons k record)))
 
 (defun %assemble-batch (loader k fetch)

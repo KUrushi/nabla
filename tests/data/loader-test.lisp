@@ -81,7 +81,8 @@ BATCH-SIZE 個ずつに切る。1 エポックからバッチが作れなけれ�
                                               (apply-transforms
                                                transforms
                                                (source-item source
-                                                            (nth-value 1 (sampler-index sampler (+ (* epoch n) i))))))
+                                                            (nth-value 1 (sampler-index sampler (+ (* epoch n) i))))
+                                               :seed seed :position (+ (* epoch n) i)))
                          when keep collect record))
              (epoch-batches (loop while (or (>= (length kept) batch-size)
                                             (and kept (not drop-remainder)))
