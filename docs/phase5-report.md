@@ -113,7 +113,7 @@
 
 - **`nabla/data/image` を別システムにした**。`nabla/data` を依存の軽い純 Lisp の層のまま保ち、画像のライブラリの調達で詰まってもスタックの残りを止めないため。受け入れテスト（#287）は画像ファイルを使わず npy で回す。
 - ライブラリは png-read（依存は chipz・iterate・babel）と cl-jpeg（依存なし）。どちらも純 Lisp。opticl と pngload は依存が多いので採らなかった。自前の PNG のデコーダは inflate だけで 300 行ほどになるので選ばなかった。chipz・iterate・babel は apt にある。png-read と cl-jpeg は Ubuntu noble に無いので、固定コミットの git clone にした。
-- **cl-jpeg の safety**: cl-jpeg は全体を `(safety 0)` でコンパイルするので、壊れた JPEG で範囲外のメモリに触れてプロセスごと落ちる。fork で直すまでの暫定として、`setup-lisp-deps.sh` が clone の直後に `*optimize*` を `(safety 2)` に書き換える。safety 1 は cl-jpeg の `(speed 3)` より低く、SBCL が型の検査を弱めるため、SBCL 2.2.9 の x86-64 ではなお落ちた。書き換えはスクリプトのインラインの置換なので、CI のキャッシュのキーに入る。置換はべき等で、上流の行が変われば error で止まる。`read-image` は JPEG をデコードする前に毎回 `jpeg::*optimize*` の safety を確かめ、2 未満なら `setup-lisp-deps.sh` を挙げる error にする。ASDF のメソッドで safety を制限する案は、大域のメソッドを足すので採らなかった。
+- **cl-jpeg の safety**: cl-jpeg は全体を `(safety 0)` でコンパイルするので、壊れた JPEG で範囲外のメモリに触れてプロセスごと落ちる。上流で直すまで（#315）の暫定として、`setup-lisp-deps.sh` が clone の直後に `*optimize*` を `(safety 2)` に書き換える。safety 1 は cl-jpeg の `(speed 3)` より低く、SBCL が型の検査を弱めるため、SBCL 2.2.9 の x86-64 ではなお落ちた。書き換えはスクリプトのインラインの置換なので、CI のキャッシュのキーに入る。置換はべき等で、上流の行が変われば error で止まる。`read-image` は JPEG をデコードする前に毎回 `jpeg::*optimize*` の safety を確かめ、2 未満なら `setup-lisp-deps.sh` を挙げる error にする。ASDF のメソッドで safety を制限する案は、大域のメソッドを足すので採らなかった。
 - JPEG の画素は Pillow と成分ごとに最大 1 違う（逆 DCT の丸めと色差の補間）。PNG はちょうど一致する。
 
 ### 3.10 受け入れテストのデータセット（#287、D7）
@@ -172,22 +172,22 @@
 
 ## 5. 既知の制限と積み残し
 
-issue はまだ起こしていない（スタックのマージ後に起こす）。
+スタックのマージ後に issue を起こした（#315〜#327。#265 と #233 は既存の issue で続ける）。
 
-- **cl-jpeg の fork**: safety の書き換え（§3.9）は暫定。fork して `*optimize*` を直し、`setup-lisp-deps.sh` の置換と `%check-cl-jpeg-safety` を外す。fork はリポジトリのオーナーの作業。
+- **cl-jpeg の safety を上流で直す**（#315）: safety の書き換え（§3.9）は暫定。上流（sharplispers/cl-jpeg。2026-02 にも PR をマージしていて保守されている）に `*optimize*` を safety 0 にしない変更を提案し、入ったら固定コミットを上げて `setup-lisp-deps.sh` の置換と `%check-cl-jpeg-safety` を外す。fork は保守の費用が増え、別の経路で cl-jpeg を入れた利用者も救わないので、上流が受け入れないときだけにする。上流への提案はリポジトリのオーナーの作業。
 - **#265 の IREE だけの候補**: 縮約軸が先頭の `dot_general` を IREE の backend だけで transpose + barrier に書き換える案（iree-local の large の MLP で 26% 速いが、small の MLP では 40% 遅い）。大きさで切り替える条件を決めてから。core は IREE の名前を知らない約束に注意する。
 - **#233 は上流の修正待ち**（§3.11）。上流への報告は #243 と一緒にリポジトリのオーナーが起票する。
-- **`iterator-state` のひな形を、イテレータを開かずに作る関数が無い**。今は `(iterator-state (make-data-iterator loader))` で作る（ワーカー数 0 ならスレッドは作らない）。`(loader-state-template loader)` のような関数があると、復元の手順が読みやすくなる。
-- **閉じないイテレータのスレッドは残る**。ワーカーのスレッドは GC では止まらない（イテレータに finalizer を付けていない）。`with-data-iterator` か `close-iterator` で必ず閉じる、と README に書いてある。
-- **シャード（複数プロセスでの分割）が無い**。サンプラーは位置 → インデックスの関数なので、「プロセス i は位置 i, i + P, ... を引く」形で後から足せる。複数のホストで学習する段階で。
-- **npy の遅延読み込み（mmap）が無い**。データセットがヒープに入らない段階で。チェックポイントの遅延読み込み（#262）と同じく、測ってから決める。
-- **u8・i8・i64・bool の dtype が nabla に無い**。npy や画像の u8 は、jit に渡す前にローダの map で f32 / i32 に直す。画素を u8 のまま device に送れれば転送量が 4 分の 1 になる。core に dtype を足すのは、転送が律速になったと測ってから。
-- **ローダの速さを Linux の x86 と CI で測っていない**（§4.2）。`scripts/bench-data-loader.sh` は CI のランナーでも流せる。
-- **再開のときに、データソースと変換が同じかは検査しない**（§3.4）。利用者が同じ引数でローダを作る約束。
-- **画像**: 16 ビットの PNG・CMYK の JPEG・可逆 JPEG は読まない。巨大な寸法を書いたファイルは、その大きさの配列を確保しようとする（上限を設けていない）。
-- **pad が無い**。端数のバッチは捨てるか短いバッチにする。短いバッチは jit を再コンパイルさせる。
-- **GPU**: CNN の学習とローダは CUDA で測っていない。手順はフェーズ2〜4と同じ（`scripts/colab-gpu-check.sh`）。
-- **VM の失敗**: Rosetta の VM で `main` から落ちる 9 テスト（§4.5）は、CI の ubuntu では通るので、調べていない。
+- **`iterator-state` のひな形を、イテレータを開かずに作る関数が無い**（#316）。今は `(iterator-state (make-data-iterator loader))` で作る（ワーカー数 0 ならスレッドは作らない）。`(loader-state-template loader)` のような関数があると、復元の手順が読みやすくなる。
+- **閉じないイテレータのスレッドは残る**（#317）。ワーカーのスレッドは GC では止まらない（イテレータに finalizer を付けていない）。`with-data-iterator` か `close-iterator` で必ず閉じる、と README に書いてある。
+- **シャード（複数プロセスでの分割）が無い**（#318）。サンプラーは位置 → インデックスの関数なので、「プロセス i は位置 i, i + P, ... を引く」形で後から足せる。複数のホストで学習する段階で。
+- **npy の遅延読み込み（mmap）が無い**（#319）。データセットがヒープに入らない段階で。チェックポイントの遅延読み込み（#262）と同じく、測ってから決める。
+- **u8・i8・i64・bool の dtype が nabla に無い**（#320）。npy や画像の u8 は、jit に渡す前にローダの map で f32 / i32 に直す。画素を u8 のまま device に送れれば転送量が 4 分の 1 になる。core に dtype を足すのは、転送が律速になったと測ってから。
+- **ローダの速さを Linux の x86 と CI で測っていない**（§4.2、#321）。`scripts/bench-data-loader.sh` は CI のランナーでも流せる。
+- **再開のときに、データソースと変換が同じかは検査しない**（§3.4、#322）。利用者が同じ引数でローダを作る約束。
+- **画像**: 16 ビットの PNG・CMYK の JPEG・可逆 JPEG は読まない（#323）。巨大な寸法を書いたファイルは、その大きさの配列を確保しようとする（上限を設けていない。#324）。
+- **pad が無い**（#325）。端数のバッチは捨てるか短いバッチにする。短いバッチは jit を再コンパイルさせる。
+- **GPU**: CNN の学習とローダは CUDA で測っていない（#326）。手順はフェーズ2〜4と同じ（`scripts/colab-gpu-check.sh`）。
+- **VM の失敗**: Rosetta の VM で `main` から落ちる 9 テスト（§4.5）は、CI の ubuntu では通るので、調べていない（#327）。
 
 ## 6. 進め方の知見（プロセス）
 
