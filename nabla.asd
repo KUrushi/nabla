@@ -687,8 +687,8 @@
 
 ;; nabla/data/image: 画像ファイル（PNG / JPEG）のデータソース（issue #283）。画像のライブラリ
 ;; （png-read と cl-jpeg）への依存を nabla/data 本体に入れないため、別システムにする。
-;; nabla のシステムのうち nabla/data にだけ依存する。cl-jpeg は scripts/setup-lisp-deps.sh が
-;; clone 時に safety 2 に書き換えたものを使う（src/data/image/image.lisp の %check-cl-jpeg-safety）。
+;; nabla のシステムのうち nabla/data にだけ依存する。cl-jpeg は scripts/setup-lisp-deps.sh が入れる、
+;; safety 2 に直した fork を使う（issue #315、src/data/image/image.lisp の %check-cl-jpeg-safety）。
 (defsystem "nabla/data/image"
   :description "画像ファイル（PNG / JPEG）のデコードとデータソース"
   :depends-on ("nabla/data" "png-read" "cl-jpeg")

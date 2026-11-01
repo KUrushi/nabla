@@ -113,7 +113,7 @@
 
 - **`nabla/data/image` を別システムにした**。`nabla/data` を依存の軽い純 Lisp の層のまま保ち、画像のライブラリの調達で詰まってもスタックの残りを止めないため。受け入れテスト（#287）は画像ファイルを使わず npy で回す。
 - ライブラリは png-read（依存は chipz・iterate・babel）と cl-jpeg（依存なし）。どちらも純 Lisp。opticl と pngload は依存が多いので採らなかった。自前の PNG のデコーダは inflate だけで 300 行ほどになるので選ばなかった。chipz・iterate・babel は apt にある。png-read と cl-jpeg は Ubuntu noble に無いので、固定コミットの git clone にした。
-- **cl-jpeg の safety**: cl-jpeg は全体を `(safety 0)` でコンパイルするので、壊れた JPEG で範囲外のメモリに触れてプロセスごと落ちる。上流で直すまで（#315）の暫定として、`setup-lisp-deps.sh` が clone の直後に `*optimize*` を `(safety 2)` に書き換える。safety 1 は cl-jpeg の `(speed 3)` より低く、SBCL が型の検査を弱めるため、SBCL 2.2.9 の x86-64 ではなお落ちた。書き換えはスクリプトのインラインの置換なので、CI のキャッシュのキーに入る。置換はべき等で、上流の行が変われば error で止まる。`read-image` は JPEG をデコードする前に毎回 `jpeg::*optimize*` の safety を確かめ、2 未満なら `setup-lisp-deps.sh` を挙げる error にする。ASDF のメソッドで safety を制限する案は、大域のメソッドを足すので採らなかった。
+- **cl-jpeg の safety**: cl-jpeg は全体を `(safety 0)` でコンパイルするので、壊れた JPEG で範囲外のメモリに触れてプロセスごと落ちる。`setup-lisp-deps.sh` が clone の直後に `*optimize*` を `(safety 2)` に書き換えることにした（その後 #315 で、safety 2 に直した fork KUrushi/cl-jpeg を使う形に改めた）。safety 1 は cl-jpeg の `(speed 3)` より低く、SBCL が型の検査を弱めるため、SBCL 2.2.9 の x86-64 ではなお落ちた。書き換えはスクリプトのインラインの置換なので、CI のキャッシュのキーに入る。置換はべき等で、上流の行が変われば error で止まる。`read-image` は JPEG をデコードする前に毎回 `jpeg::*optimize*` の safety を確かめ、2 未満なら `setup-lisp-deps.sh` を挙げる error にする。ASDF のメソッドで safety を制限する案は、大域のメソッドを足すので採らなかった。
 - JPEG の画素は Pillow と成分ごとに最大 1 違う（逆 DCT の丸めと色差の補間）。PNG はちょうど一致する。
 
 ### 3.10 受け入れテストのデータセット（#287、D7）
@@ -174,7 +174,7 @@
 
 スタックのマージ後に issue を起こした（#315〜#327。#265 と #233 は既存の issue で続ける）。
 
-- **cl-jpeg の safety を上流で直す**（#315）: safety の書き換え（§3.9）は暫定。上流（sharplispers/cl-jpeg。2026-02 にも PR をマージしていて保守されている）に `*optimize*` を safety 0 にしない変更を提案し、入ったら固定コミットを上げて `setup-lisp-deps.sh` の置換と `%check-cl-jpeg-safety` を外す。fork は保守の費用が増え、別の経路で cl-jpeg を入れた利用者も救わないので、上流が受け入れないときだけにする。上流への提案はリポジトリのオーナーの作業。
+- **cl-jpeg の safety**（#315）: safety の書き換え（§3.9）は暫定だった。調べると、上流の safety 0 では 1 バイト壊した JPEG の約 2.75% が Memory fault かヒープの破壊になり、圧縮データの本体の 1 バイトでも起きるので、nabla でデコードの前に検査しても防げない（#315 のコメント）。safety 2 にした fork（KUrushi/cl-jpeg の `bounds-checked`）を固定して使う形に改めた。上流への提案（入力の検証を足す変更）はリポジトリのオーナーの作業。
 - **#265 の IREE だけの候補**: 縮約軸が先頭の `dot_general` を IREE の backend だけで transpose + barrier に書き換える案（iree-local の large の MLP で 26% 速いが、small の MLP では 40% 遅い）。大きさで切り替える条件を決めてから。core は IREE の名前を知らない約束に注意する。
 - **#233 は上流の修正待ち**（§3.11）。上流への報告は #243 と一緒にリポジトリのオーナーが起票する。
 - **`iterator-state` のひな形を、イテレータを開かずに作る関数が無い**（#316）。今は `(iterator-state (make-data-iterator loader))` で作る（ワーカー数 0 ならスレッドは作らない）。`(loader-state-template loader)` のような関数があると、復元の手順が読みやすくなる。

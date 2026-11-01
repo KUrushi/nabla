@@ -6,7 +6,7 @@
 # - check-it・optima・png-read・cl-jpeg は apt に無いので、固定コミットで
 #   git clone する。$NABLA_LISP_DEPS の下に置き、既にあれば
 #   fetch + checkout するだけにする（べき等）。
-# - cl-jpeg は checkout した後で safety を 2 に書き換える（patch_cl_jpeg_safety）。
+# - cl-jpeg は safety 2 でコンパイルするよう直した fork（KUrushi/cl-jpeg の bounds-checked）を使う。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,11 +36,18 @@ APT_PACKAGES=(
 # name url pin の3つ組。
 # png-read と cl-jpeg は nabla/data/image（issue #283）の PNG / JPEG のデコーダ。
 # どちらも apt に無い（ubuntu noble で確かめた）。
+# cl-jpeg は上流（sharplispers/cl-jpeg）の cd92e94 に1コミット足した fork（issue #315）。
+# 上流は jpeg.lisp の *optimize*（全関数の declare に #.*optimize* で配られる）で全体を
+# (safety 0) でコンパイルし、入力を検証しない箇所（ハフマン表・成分の番号、符号の長さ、
+# AC 係数の位置）があるので、壊れた JPEG で範囲外のメモリを読み書きし、Memory fault や
+# ヒープの破壊でプロセスごと落ちる。fork は safety を 2 にする（1 は cl-jpeg の (speed 3) より
+# 低いので SBCL が型の検査を弱め、SBCL 2.2.9 の x86-64 ではなお落ちた）。fork の master は
+# 上流のまま保ち、直したコミットは bounds-checked ブランチに置く。
 GIT_DEPS=(
   "optima https://github.com/m2ym/optima 373b245b928c1a5cce91a6cb5bfe5dd77eb36195"
   "check-it https://github.com/DalekBaldwin/check-it b79c9103665be3976915b56b570038f03486e62f"
   "png-read https://github.com/Ramarren/png-read ec29f38a689972b9f1373f13bbbcd6b05deada88"
-  "cl-jpeg https://github.com/sharplispers/cl-jpeg cd92e94ff45218c3833143aaebe7522f19079cef"
+  "cl-jpeg https://github.com/KUrushi/cl-jpeg 8617e260b5cf91dee1e17582c38af7d0958551e9"
 )
 
 install_apt_packages() {
@@ -68,11 +75,13 @@ clone_git_dep() {
   local dir="$DEPS_DIR/$name"
   if [ -d "$dir/.git" ]; then
     echo "$name: 既存のクローンを $pin に合わせます。"
+    # 取得元を変えたとき（cl-jpeg を上流から fork に移したときなど）に、新しい取得元から取る。
+    git -C "$dir" remote set-url origin "$url"
     git -C "$dir" fetch --quiet origin "$pin" || git -C "$dir" fetch --quiet
-    # cl-jpeg の固定コミットが変わったときは、patch_cl_jpeg_safety が書き換えた jpeg.lisp を
-    # 戻してから移る（書き換えが残っていると checkout が拒む）。ほかの変更は捨てない。
-    # 同じコミットのままなら触らない（書き換えたファイルの mtime を変えず、ASDF に毎回
-    # コンパイルし直させない）。
+    # cl-jpeg を fork に移す前のクローンには、以前のこのスクリプト（patch_cl_jpeg_safety）が
+    # safety を書き換えた jpeg.lisp が残っているので、戻してから移る（残っていると checkout が
+    # 拒む）。ほかの変更は捨てない。同じコミットのままなら触らない（ファイルの mtime を
+    # 変えず、ASDF に毎回コンパイルし直させない）。
     if [ "$name" = cl-jpeg ] &&
        [ "$(git -C "$dir" rev-parse HEAD)" != "$(git -C "$dir" rev-parse "$pin^{commit}")" ]; then
       git -C "$dir" checkout --quiet -- jpeg.lisp
@@ -86,52 +95,12 @@ clone_git_dep() {
   fi
 }
 
-# cl-jpeg は jpeg.lisp の *optimize*（全関数の declare に #.*optimize* で配られる）で
-# 全体を (safety 0) でコンパイルするので、壊れた JPEG で範囲外のメモリを読み書きし、
-# コンディションではなく Memory fault でプロセスごと落ちる（issue #283）。checkout の
-# 直後に safety を 2 に書き換える。1 では足りない: cl-jpeg の (speed 3) より低いので
-# SBCL は型の検査を弱め、SBCL 2.2.9 の x86-64 では safety 1 でもなお落ちた。
-# 書き換えたことは nabla/data/image が JPEG をデコードする前に確かめる
-# （src/data/image/image.lisp の %check-cl-jpeg-safety）。本来は上流で直すもので、
-# これは上流に入るまでの暫定（#315。受け入れられなければ fork）。外部の patch ファイルにしないのは、CI のキャッシュの
-# キー（このスクリプトのハッシュ）に書き換えの中身を入れるため。
-# 2 回目以降は書き換え済みの行を見て何もしない（べき等）。上流の行が変わって
-# 書き換える行が見つからなければ、エラーで止める。
-patch_cl_jpeg_safety() {
-  local file="$DEPS_DIR/cl-jpeg/jpeg.lisp"
-  local original="(defparameter *optimize* '(optimize (safety 0) (space 0) (debug 0) (speed 3))))"
-  local patched="(defparameter *optimize* '(optimize (safety 2) (space 0) (debug 0) (speed 3))))"
-  if [ "$(grep -cF -- "$patched" "$file")" -eq 1 ] && ! grep -qF -- "$original" "$file"; then
-    echo "cl-jpeg: *optimize* は既に safety 2 です。"
-    return
-  fi
-  if [ "$(grep -cF -- "$original" "$file")" -ne 1 ]; then
-    echo "cl-jpeg: $file に次の行がちょうど1つ見つからないので、safety を書き換えられません:" >&2
-    echo "  $original" >&2
-    echo "上流の行が変わったときは、patch_cl_jpeg_safety の original / patched を直してください。" >&2
-    exit 1
-  fi
-  # sed -i は GNU と BSD で書き方が違うので、awk の固定文字列の置換で一時ファイルに書く。
-  awk -v from="$original" -v to="$patched" '{
-    i = index($0, from)
-    if (i > 0) $0 = substr($0, 1, i - 1) to substr($0, i + length(from))
-    print
-  }' "$file" > "$file.tmp"
-  mv "$file.tmp" "$file"
-  if [ "$(grep -cF -- "$patched" "$file")" -ne 1 ] || grep -qF -- "$original" "$file"; then
-    echo "cl-jpeg: $file の safety の書き換えに失敗しました。" >&2
-    exit 1
-  fi
-  echo "cl-jpeg: *optimize* の safety を 0 から 2 に書き換えました。"
-}
-
 install_apt_packages
 
 for entry in "${GIT_DEPS[@]}"; do
   # shellcheck disable=SC2086
   clone_git_dep $entry
 done
-patch_cl_jpeg_safety
 
 echo
 echo "準備ができました。テストを実行するときは、次の CL_SOURCE_REGISTRY を使います:"
