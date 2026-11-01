@@ -26,6 +26,22 @@ PACKAGE (文字列またはシンボル) が in-package 先になり、既定は
         (format stream "~&(in-package #:~(~A~))~%" (string package))))
     path))
 
+(defun load-package-regressions (package)
+  "tests/regressions/ のうち、1 行目が (in-package #:PACKAGE) のファイルをすべて load する。
+
+nabla/tests の tests/regressions.lisp は全ファイルを load するが、nabla/tests は他のテスト
+システムに依存しないので、その時点で無いパッケージのファイルは読み飛ばす。そのため、各テスト
+システムは自分のパッケージを作った直後にこれを呼び、自分の回帰ケースを登録する（呼ばないと、
+check-it が保存した失敗例が再生されない）。PACKAGE は文字列かシンボル。"
+  (let ((header (format nil "(in-package #:~(~A~))" (string package))))
+    (dolist (path (sort (uiop:directory-files
+                         (asdf:system-relative-pathname "nabla" "tests/regressions/")
+                         "*.lisp")
+                        #'string<
+                        :key #'namestring))
+      (when (string= header (with-open-file (stream path) (read-line stream nil "")))
+        (load path)))))
+
 ;;; check-it のバグへの対処（issue #220）。check-it.lisp の SAVE-REGRESSION は、失敗例を
 ;;; ファイルに追記するのと同時に (push string (get regression-id 'regression-cases)) で
 ;;; 生の文字列をそのまま積む。ところが再生側（check-it%）は積まれたものを REGRESSION-CASE

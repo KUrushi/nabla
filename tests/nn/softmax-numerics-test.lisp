@@ -157,9 +157,29 @@ log1p するので、余裕が大きくても桁を失わない（素朴な log(
          ;; 床にする（最大値の位置が 0 に丸まる不具合は、その位置が最大の成分と同じ桁なので見逃さない）
          (every (lambda (a e) (<= (abs (- a e)) (+ (* 1d-3 (abs e)) (* 1d-6 scale)))) sm-vjp expected-sm))))
 
+(defun %hvp-rounding-bounds (row v)
+  "H v の成分 i = p_i sum_j p_j (v_i - v_j) について、f32 の実装で避けられない誤差の上界を double で
+返す。実装は指数の引数 x_j - max を f32 で丸めるので、p_j に相対 eps |x_j - max| 程度の誤差が乗る。
+項 p_i p_j (v_i - v_j) は打ち消し合いうる（最大値の位置で、和が項の 1/1000 以下になる入力がある）ので、
+誤差は和ではなく項の絶対値の和に比例する: 4 eps (1 + max_j |x_j - max|) p_i sum_j p_j |v_i - v_j|。"
+  (let* ((x (map 'vector (lambda (e) (coerce e 'double-float)) row))
+         (v (map 'vector (lambda (e) (coerce e 'double-float)) v))
+         (p (%reference-softmax row))
+         (m (reduce #'max x))
+         (spread (reduce #'max x :key (lambda (e) (abs (- e m)))))
+         (eps (coerce single-float-epsilon 'double-float)))
+    (map 'vector (lambda (pi-value vi)
+                   (* 4 eps (+ 1 spread) pi-value
+                      (loop for j below (length p) sum (* (aref p j) (abs (- vi (aref v j)))))))
+         p v)))
+
 (def-layer-property softmax-numerics/hessian-vector-product-is-collapse-free
   "交差エントロピーのヘッセ行列 H = diag(p) - p p^T とベクトル v の積（grad の grad）が、余裕が大きい
-行でも参照（最大値の位置は p_k sum_{j/=k} p_j (v_k - v_j) を直接）と相対誤差 1e-3 で一致する。"
+行でも参照（最大値の位置は p_k sum_{j/=k} p_j (v_k - v_j) を直接）と相対誤差 1e-3 で一致する。
+最大値の位置の成分は項が打ち消し合いうるので、f32 の丸めの上界（%hvp-rounding-bounds）を床に足す
+（seed 18231、n 4、k 1、余裕 36 では項 1e-17 の和が 3.2e-20 になり、実装の誤差 5.1e-23 が相対 1.6e-3 になる。
+上界は 2.9e-22 で、0 に丸まった成分（誤差 3.2e-20）はなお通さない。30000 件の入力で、上界を足しても
+最大値の位置で 0 に丸まった成分を見逃す入力は増えなかった）。"
   (seed n k-raw margin)
   (tuple (uniform-integer :lo 0 :hi 100000) (uniform-integer :lo 2 :hi 6)
          (uniform-integer :lo 0 :hi 5) (uniform-integer :lo 0 :hi 40))
@@ -170,8 +190,8 @@ log1p するので、余裕が大きくても桁を失わない（素朴な log(
          (hv (funcall (nabla:grad (nabla:with-tracing (x) (nabla:reduce-sum (* (funcall grad-ce x) v) :axes '(0)))) x))
          (scale (reduce #'max (%reference-softmax-vjp x v) :key #'abs)))
     ;; H v = p ⊙ (v - <p, v>) は softmax の VJP（余接線 v）と同じ式
-    (every (lambda (a e) (<= (abs (- a e)) (+ (* 1d-3 (abs e)) (* 1d-6 scale))))
-           hv (%reference-softmax-vjp x v))))
+    (every (lambda (a e bound) (<= (abs (- a e)) (+ (* 1d-3 (abs e)) (* 1d-6 scale) bound)))
+           hv (%reference-softmax-vjp x v) (%hvp-rounding-bounds x v))))
 
 (def-layer-property softmax-numerics/equivariant-under-permutation
   "log-softmax(x の置換) = log-softmax(x) の同じ置換（相対誤差 1e-6。同点の最大値を含む）。"
