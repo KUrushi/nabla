@@ -92,8 +92,8 @@ clone_git_dep() {
 # 直後に safety を 2 に書き換える。1 では足りない: cl-jpeg の (speed 3) より低いので
 # SBCL は型の検査を弱め、SBCL 2.2.9 の x86-64 では safety 1 でもなお落ちた。
 # 書き換えたことは nabla/data/image が JPEG をデコードする前に確かめる
-# （src/data/image/image.lisp の %check-cl-jpeg-safety）。本来は fork で直すもので、
-# これは fork ができるまでの暫定。外部の patch ファイルにしないのは、CI のキャッシュの
+# （src/data/image/image.lisp の %check-cl-jpeg-safety）。本来は上流で直すもので、
+# これは上流に入るまでの暫定（#315。受け入れられなければ fork）。外部の patch ファイルにしないのは、CI のキャッシュの
 # キー（このスクリプトのハッシュ）に書き換えの中身を入れるため。
 # 2 回目以降は書き換え済みの行を見て何もしない（べき等）。上流の行が変わって
 # 書き換える行が見つからなければ、エラーで止める。
