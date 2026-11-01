@@ -8,8 +8,8 @@
 ;;;; - PNG の IEND の後ろのバイトは読まない（足しても同じ画素）。
 ;;;; - 壊れたファイル: 途中で切れたファイル（シグネチャより後ろで切ったもの）と、シグネチャより
 ;;;;   後ろの1バイトを変えた PNG は :corrupt。1バイトを変えた JPEG は画像になるか
-;;;;   image-decode-error になり、範囲外のメモリに触れない（scripts/setup-lisp-deps.sh が clone 時に
-;;;;   cl-jpeg の safety を 2 に書き換える約束。safety 0 のままだと Memory fault でプロセスが落ちる）。
+;;;;   image-decode-error になり、範囲外のメモリに触れない（scripts/setup-lisp-deps.sh が safety 2 に
+;;;;   直した cl-jpeg の fork を入れる約束。上流の safety 0 だと Memory fault でプロセスが落ちる）。
 ;;;; - cl-jpeg の safety: ロードした cl-jpeg の jpeg::*optimize* は safety 2 以上。safety が 2 未満か
 ;;;;   書かれていなければ、JPEG はデコードせずに setup-lisp-deps.sh を挙げる error（PNG は読める）。
 ;;;; - 読まない形式は :unsupported、PNG でも JPEG でもないファイルは :unknown-format、

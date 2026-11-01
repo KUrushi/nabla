@@ -94,9 +94,10 @@ IEND より後ろのバイトは png-read と同じく見ない。STREAM の位�
 
 ;;; cl-jpeg は jpeg.lisp の jpeg::*optimize* を全関数の declare に #.*optimize* で配るので、上流の
 ;;; (safety 0) のままだと壊れた JPEG で範囲外のメモリを読み書きし、コンディションではなく Memory
-;;; fault でプロセスごと落ちる。scripts/setup-lisp-deps.sh が clone 時に safety 2 に書き換える
-;;; （1 では cl-jpeg の (speed 3) より低く、SBCL が型の検査を弱めるので足りない）。ほかの手段で
-;;; 入れた cl-jpeg（Quicklisp など）を使っていれば、JPEG をデコードする前にここで止める。
+;;; fault でプロセスごと落ちる。scripts/setup-lisp-deps.sh は safety 2 でコンパイルするよう直した
+;;; fork（KUrushi/cl-jpeg の bounds-checked、issue #315）を入れる（1 では cl-jpeg の (speed 3) より
+;;; 低く、SBCL が型の検査を弱めるので足りない）。ほかの手段で入れた上流の cl-jpeg（Quicklisp など）を
+;;; 使っていれば、JPEG をデコードする前にここで止める。
 
 (defun %cl-jpeg-safety (optimize)
   "OPTIMIZE（(optimize (safety 0) (speed 3)) の形の宣言）の safety の値。safety だけを書いた
@@ -108,7 +109,7 @@ IEND より後ろのバイトは png-read と同じく見ない。STREAM の位�
 (defun %check-cl-jpeg-safety ()
   "ロードされている cl-jpeg の jpeg::*optimize* の safety が 2 以上であることを確かめ、そうでなければ
 error を signal する。見るのは jpeg::*optimize* の値で、関数のコンパイルに使われたものと同じ
-（どちらも jpeg.lisp の中にあり、同じ fasl から来るので、書き換えの前にコンパイルした古い fasl も
+（どちらも jpeg.lisp の中にあり、同じ fasl から来るので、上流の cl-jpeg からコンパイルした古い fasl も
 safety 0 として見つかる）。ただし safety 0 でコンパイルした後で *optimize* だけを書き換えた・
 束縛した場合は見分けられない。"
   (let* ((symbol (find-symbol "*OPTIMIZE*" "JPEG"))
@@ -117,9 +118,9 @@ safety 0 として見つかる）。ただし safety 0 でコンパイルした�
     (unless (and (integerp safety) (<= 2 safety))
       (error "cl-jpeg が safety ~:[不明~;~:*~D~] でコンパイルされている（jpeg::*optimize* = ~A）。~
 壊れた JPEG で範囲外のメモリに触れてプロセスが落ちるので、nabla/data/image は safety 2 以上の ~
-cl-jpeg だけを使う。scripts/setup-lisp-deps.sh で入れた cl-jpeg（clone 時に safety を 2 に~
-書き換える）を CL_SOURCE_REGISTRY に置き、書き換えの前にコンパイルした fasl（~~/.cache/common-lisp/ ~
-以下の cl-jpeg のもの）を消して、コンパイルし直すこと。"
+cl-jpeg だけを使う。scripts/setup-lisp-deps.sh で入れた cl-jpeg（safety 2 に直した fork）を ~
+CL_SOURCE_REGISTRY に置き、上流の cl-jpeg からコンパイルした fasl（~~/.cache/common-lisp/ 以下の ~
+cl-jpeg のもの）が残っていれば消して、コンパイルし直すこと。"
              safety (let ((*print-pretty* nil)) (prin1-to-string optimize))))))
 
 (defun %read-jpeg (stream pathname)
