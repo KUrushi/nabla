@@ -309,7 +309,7 @@ save → load すると、全部がビット列まで戻り、復元したキー
 
 (test (checkpoint/data-loader-state-resumes-after-a-round-trip :suite :nabla.medium)
   "モデル + オプティマイザ状態 + ローダの再開状態を1つの木で save → load すると、ローダの状態は
-\"2.key\" / \"2.epoch\" / \"2.position\" / \"2.version\" のエントリになり、復元した状態から再開した残りのバッチの列は
+\"2.key\" / \"2.epoch\" / \"2.position\" / \"2.version\" / \"2.fingerprint\" のエントリになり、復元した状態から再開した残りのバッチの列は
 中断しなかった場合とビット単位で一致する（全 6 バッチの前後のどこで中断しても。エポックの境界を含む）。"
   (let* ((all (ck-remaining-batches (nabla.data:make-data-iterator (ck-data-loader))))
          (model (make-ck-layer :w (ck-f32 1.0 2.0) :b (ck-f32 3.0) :act :relu))
@@ -324,7 +324,7 @@ save → load すると、全部がビット列まで戻り、復元したキー
         (dotimes (i m) (nabla.data:next-batch it))
         (with-checkpoint-file (path)
           (save-checkpoint path (list model opt (nabla.data:iterator-state it)))
-          (is (equal '("0.b" "0.w" "1.0" "1.1.0" "2.epoch" "2.key" "2.position" "2.version")
+          (is (equal '("0.b" "0.w" "1.0" "1.1.0" "2.epoch" "2.fingerprint" "2.key" "2.position" "2.version")
                      (sort (mapcar #'first (read-safetensors path)) #'string<)))
           (let* ((back (load-checkpoint path template))
                  (rest (ck-remaining-batches (nabla.data:restore-iterator (ck-data-loader) (third back)))))

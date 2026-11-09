@@ -29,6 +29,10 @@
 ;;;; - 状態の木: 子の名前は key / epoch / position / version で、葉は :u32 の (2)（ローダのシードの
 ;;;;   写し、シードが無ければ 0）と rank 0 の (signed-byte 32) の配列。version はシャッフルの算法の版。
 ;;;; - 範囲外・形の違う状態・別のシードや別の版の状態は、理由つきの data-loader-error。
+;;;; - ローダの指紋（#322）: 状態の fingerprint は :u32 の (9)。レコードの個数・シャードが引く位置の数・
+;;;;   batch-size・シャードの番号と数・shuffle・drop-remainder・pad-remainder・変換の数と種類のどれか
+;;;;   1 つだけが違うローダで再開すると :loader-mismatch。num-epochs だけが違うローダでは再開できる
+;;;;   （学習を延ばす）。
 ;;;; - 先頭の状態（initial-iterator-state、#316）: イテレータを開かずに作った状態は、開いたばかりの
 ;;;;   イテレータの iterator-state と treedef も葉も同じで、レコードを読まない。そこから再開した列は
 ;;;;   先頭からの列と同じ。
@@ -358,7 +362,8 @@ BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋�
                  (every #'same-tree-of-arrays-p rest (nthcdr m all))))))))
 
 (test (iterator-state/is-a-tree-of-named-arrays :suite :nabla.small)
-  "状態の子の名前は key / epoch / position / version で、葉はシードの写しと rank 0 の :i32 の配列。"
+  "状態の子の名前は key / epoch / position / version / fingerprint で、葉はシードの写しと rank 0 の
+:i32 の配列と、ローダの指紋の :u32 の (9)。"
   (let* ((seed (sampler-test-seed 11 22))
          (it (make-data-iterator (data-loader (loader-index-source 5) :batch-size 2 :shuffle t
                                                                       :seed seed)))
@@ -366,10 +371,10 @@ BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋�
     (multiple-value-bind (children aux node-p names) (nabla:tree-children fresh)
       (declare (ignore aux))
       (is-true node-p)
-      (is (equal '("key" "epoch" "position" "version") names))
-      (is (equal '((unsigned-byte 32) (signed-byte 32) (signed-byte 32) (signed-byte 32))
+      (is (equal '("key" "epoch" "position" "version" "fingerprint") names))
+      (is (equal '((unsigned-byte 32) (signed-byte 32) (signed-byte 32) (signed-byte 32) (unsigned-byte 32))
                  (mapcar #'array-element-type children)))
-      (is (equal '((2) () () ()) (mapcar #'array-dimensions children))))
+      (is (equal '((2) () () () (9)) (mapcar #'array-dimensions children))))
     (is (= nabla.data::+index-sampler-algorithm-version+ (aref (iterator-state-version fresh))))
     (is (equalp seed (iterator-state-key fresh)))
     (is (not (eq seed (iterator-state-key fresh))))
@@ -386,9 +391,10 @@ BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋�
               (iterator-state-key
                (iterator-state (make-data-iterator (data-loader (loader-index-source 3) :batch-size 1)))))))
 
-(defun loader-state-with (state &key (key (iterator-state-key state)) epoch position version)
-  "STATE の葉を KEY・EPOCH・POSITION・VERSION（整数なら rank 0 の :i32、配列ならそのまま）に
-替えた状態。"
+(defun loader-state-with (state &key (key (iterator-state-key state)) epoch position version
+                                (fingerprint (iterator-state-fingerprint state)))
+  "STATE の葉を KEY・EPOCH・POSITION・VERSION（整数なら rank 0 の :i32、配列ならそのまま）・
+FINGERPRINT に替えた状態。"
   (flet ((leaf (value default)
            (cond ((null value) default)
                  ((integerp value) (make-array '() :element-type '(signed-byte 32) :initial-element value))
@@ -397,7 +403,8 @@ BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋�
                           (list key
                                 (leaf epoch (iterator-state-epoch state))
                                 (leaf position (iterator-state-position state))
-                                (leaf version (iterator-state-version state))))))
+                                (leaf version (iterator-state-version state))
+                                fingerprint))))
 
 (test (iterator-state/restore-rejects-states-that-do-not-fit-the-loader :suite :nabla.small)
   "別のシード・別の版・範囲外のエポックや位置・形や型の違う葉は、理由つきの data-loader-error。"
@@ -420,7 +427,10 @@ BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋�
       (is (eq :bad-state (reason (loader-state-with state :key (make-array 2 :initial-element 0)))))
       (is (eq :bad-state (reason (loader-state-with state :epoch (make-array '() :initial-element 0)))))
       (is (eq :bad-state (reason (loader-state-with state :position (make-array 1 :element-type '(signed-byte 32))))))
-      (is (eq :bad-state (reason (list 0 0 0)))))
+      (is (eq :bad-state (reason (list 0 0 0))))
+      (is (eq :bad-state (reason (loader-state-with state :fingerprint (make-array 9 :initial-element 0)))))
+      (is (eq :bad-state (reason (loader-state-with state :fingerprint (make-array 8 :element-type '(unsigned-byte 32)
+                                                                                     :initial-element 0))))))
     ;; num-epochs nil ならエポックの上限は無い
     (is (eq :no-error
             (loader-failure-reason
@@ -591,3 +601,93 @@ floor(n/P)·P 個（重ならない）。"
   (is (eq :no-error (loader-failure-reason
                      (lambda () (data-loader (loader-index-source 4) :batch-size 1 :shard-index 2
                                                                      :shard-count 3))))))
+
+;;; --- ローダの指紋（#322） ---
+
+(defun loader-variant (arguments n kind)
+  "ARGUMENTS（loader-random-case の plist）と N から、KIND の 1 か所だけを変えた (values plist n)。"
+  (flet ((with (key value) (list* key value arguments)))
+    (ecase kind
+      (:length (values arguments (1+ n)))
+      (:batch-size (values (with :batch-size (1+ (getf arguments :batch-size))) n))
+      (:shard (values (list* :shard-count (1+ (getf arguments :shard-count)) arguments) n))
+      (:shuffle (values (if (getf arguments :shuffle)
+                            (with :shuffle nil)
+                            (list* :shuffle t :seed (or (getf arguments :seed) (sampler-test-seed 0 0))
+                                   arguments))
+                        n))
+      (:drop-remainder (values (if (getf arguments :pad-remainder)
+                                   (list* :pad-remainder nil :drop-remainder t arguments)
+                                   (with :drop-remainder (not (getf arguments :drop-remainder))))
+                               n))
+      (:pad-remainder (values (list* :pad-remainder (not (getf arguments :pad-remainder))
+                                     :drop-remainder nil arguments)
+                              n))
+      (:transforms (values (with :transforms (append (getf arguments :transforms)
+                                                     (list (map-transform #'identity))))
+                           n))
+      (:transform-kind (values (with :transforms (cons (filter-transform (constantly t))
+                                                       (rest (getf arguments :transforms))))
+                               n)))))
+
+(def-source-property iterator-state/restoring-into-a-different-loader-is-a-mismatch
+  "状態を取ったローダと、レコードの個数・batch-size・シャード・shuffle・drop-remainder・pad-remainder・
+変換の数・変換の種類のどれか 1 つだけが違うローダで再開すると :loader-mismatch。同じ引数なら再開できる。"
+  (seed choice)
+  (generator (tuple (uniform-integer :lo 0 :hi 1000000) (uniform-integer :lo 0 :hi 7)))
+  (multiple-value-bind (arguments n) (loader-random-case seed)
+    (let ((kind (nth choice '(:length :batch-size :shard :shuffle :drop-remainder :pad-remainder
+                              :transforms :transform-kind)))
+          (state (initial-iterator-state (apply #'data-loader (loader-index-source n) arguments))))
+      (multiple-value-bind (variant variant-n) (loader-variant arguments n kind)
+        (cond ((and (eq kind :transform-kind) (null (getf arguments :transforms)))
+               ;; 変換が無ければ種類を変えられないので、同じ引数で再開できることだけを見る
+               (eq :no-error (loader-failure-reason
+                              (lambda () (restore-iterator (apply #'data-loader (loader-index-source n)
+                                                                  arguments)
+                                                           state)))))
+              ((and (eq kind :transform-kind)
+                    (typep (first (getf arguments :transforms)) 'filter-transform))
+               ;; 先頭が filter なら filter に替えても種類は同じ（変換の関数は比べない）
+               t)
+              (t
+               (eq :loader-mismatch
+                   (loader-failure-reason
+                    (lambda () (restore-iterator (apply #'data-loader (loader-index-source variant-n)
+                                                        variant)
+                                                 state))))))))))
+
+(test (iterator-state/restoring-with-more-epochs-is-allowed :suite :nabla.small)
+  "num-epochs だけが違うローダには再開できる（学習を延ばす）。続きは、最初から長いローダの列と同じ。"
+  (flet ((make-loader (num-epochs)
+           (data-loader (loader-index-source 7) :batch-size 2 :shuffle t :seed (sampler-test-seed 3 4)
+                                                :num-epochs num-epochs)))
+    (let* ((it (make-data-iterator (make-loader 1)))
+           (all (loader-all-batches (make-data-iterator (make-loader 3)))))
+      (loader-all-batches it)
+      (is (every #'same-tree-of-arrays-p
+                 (loader-all-batches (restore-iterator (make-loader 3) (iterator-state it)))
+                 (nthcdr 3 all))))))
+
+(test (iterator-state/fingerprint-is-fixed-for-known-loaders :suite :nabla.small)
+  "指紋の値は固定（保存したチェックポイントの状態を、後の版の nabla のローダと比べるため）。詰め方を
+変えると古い状態はどれも :loader-mismatch になるので、この固定値を書き換えるのは詰め方を意図して変えた
+ときだけ。レコード 2^33 + 2^32 + 2^31 + 5 個（上位と下位の語。下位の語は 2^31 以上）・シャード 2 個の
+1 番（引く位置 2^32 + 3221225474 個）・batch-size 7・
+shuffle と pad（ビット 1 と 4）・map / filter / random-map の変換と、既定の引数のローダ（drop-remainder の
+ビット 2）。"
+  (is (equalp #(3 2147483653 1 3221225474 7 1 2 5 1503877439)
+              (iterator-state-fingerprint
+               (initial-iterator-state
+                (data-loader (make-instance 'loader-counting-source
+                                            :length (+ (expt 2 33) (expt 2 32) (expt 2 31) 5))
+                             :batch-size 7 :shuffle t :seed (sampler-test-seed 1 2) :pad-remainder t
+                             :shard-index 1 :shard-count 2
+                             :transforms (list (map-transform #'identity)
+                                               (filter-transform (constantly t))
+                                               (random-map-transform (lambda (record key)
+                                                                       (declare (ignore key))
+                                                                       record))))))))
+  (is (equalp #(0 5 0 5 2 0 1 2 0)
+              (iterator-state-fingerprint
+               (initial-iterator-state (data-loader (loader-index-source 5) :batch-size 2))))))
