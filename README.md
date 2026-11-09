@@ -735,7 +735,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - 範囲外の位置（負、整数でない、`n × num-epochs` 以上。`n` が 0 なら全部）は `:position-out-of-range`
 - シード（`seed`）は作るときに読み、配列は持たない（後で書き換えても順序は変わらない）。`shuffle` が nil でも渡せば形を検査するが、順序には効かない。ホストの配列だけを受け、`device-array` のキーは `to-host` してから渡す
 - 同じシード・エポック・位置からの順序は版をまたいで変えない（変えるときは破壊的変更として算法の版 `+index-sampler-algorithm-version+` を上げ、ローダの再開状態の版の検査で検出する）
-- 複数プロセスでの分割（シャード）は持たない。位置 → インデックスの関数なので、後から「プロセス i は位置 i, i + P, ... を引く」形で足せる
+- 複数プロセスでの分割（シャード）はサンプラーではなくローダが持つ（`data-loader` の `:shard-index` / `:shard-count`、#318）。位置 → インデックスの関数なので、ローダがエポック内の位置を間引くだけで済む
 
 #### 変換（`nabla/data`、issue #281）
 
@@ -764,16 +764,17 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 
 | 関数・コンディション | 役割 |
 | --- | --- |
-| `(data-loader source &key batch-size shuffle seed num-epochs transforms (drop-remainder t) pad-remainder)` | ローダを作る。サンプラー（`make-index-sampler` に `shuffle` `seed` `num-epochs` を渡したもの）の位置の順にレコードを `source-item` で引き、`transforms`（map / filter の変換のリスト）をかけ、残ったレコードを `batch-size`（正の整数。必須）個ずつ `batch-records` で積む |
+| `(data-loader source &key batch-size shuffle seed num-epochs transforms (drop-remainder t) pad-remainder (shard-index 0) (shard-count 1) shard-drop-remainder)` | ローダを作る。サンプラー（`make-index-sampler` に `shuffle` `seed` `num-epochs` を渡したもの）の位置の順にレコードを `source-item` で引き、`transforms`（map / filter の変換のリスト）をかけ、残ったレコードを `batch-size`（正の整数。必須）個ずつ `batch-records` で積む |
 | `(make-data-iterator loader)` | 列の先頭（エポック 0 の最初）から始まるイテレータ（`data-iterator`） |
 | `(next-batch iterator)` | 次のバッチを `(values バッチ t)` で返して進める。列が終わっていれば `(values nil nil)`（何度呼んでも同じ） |
 | `(epoch loader e)` | エポック `e`（0 から数える）のバッチのリスト。エポックを順につなぐとイテレータの列になる。1 エポック分をメモリに持つ |
 | `(iterator-state iterator)` | 今の再開状態（`iterator-state`）を新しい配列で返す。葉は `key`（ローダの `seed` の写し。`seed` が無ければ 0。`:u32` の `(2)`）、`epoch` と `position`（rank 0 の `(signed-byte 32)`。次に調べるサンプラーの位置のエポックとエポック内の位置）、`version`（rank 0 の `(signed-byte 32)`。サンプラーのシャッフルの算法の版）。子の名前は `"key"` `"epoch"` `"position"` `"version"`。アクセサは `iterator-state-key` / `-epoch` / `-position` / `-version` |
 | `(initial-iterator-state loader)` | 列の先頭（エポック 0・位置 0）の再開状態を新しい配列で返す。開いたばかりのイテレータの `iterator-state` と同じ木で、イテレータを開かない（スレッドを作らず、レコードも読まない）。チェックポイントの復元のひな形に使う |
 | `(restore-iterator loader state)` | `state` の位置から続けるイテレータ。残りのバッチの列は、状態を取ったイテレータの続きとビット単位で同じ |
-| `data-loader-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-batch-size` `:bad-transform` `:bad-remainder` `:bad-epoch` `:empty-epoch` `:bad-state` `:version-mismatch` `:key-mismatch` `:state-out-of-range` |
+| `data-loader-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-batch-size` `:bad-transform` `:bad-remainder` `:bad-shard` `:bad-epoch` `:empty-epoch` `:bad-state` `:version-mismatch` `:key-mismatch` `:state-out-of-range` |
 
 - バッチはエポックをまたがない。エポック末の端数は `drop-remainder` が真（既定）なら捨て、nil なら短いバッチにする。
+- **シャード**（#318、Grain の `ShardOptions`）: `shard-count` P と `shard-index` s（0 ≤ s < P）を渡すと、各エポックのサンプラーの順のうちエポック内の位置 j が j ≡ s (mod P) のレコードだけを引く。複数のプロセス・ホストで、同じデータソース・同じシード・同じ引数のローダを `shard-index` だけ変えて作ると、各エポックのレコードを重ならずに分け合い、和集合は 1 エポックの全レコードになる（シャッフルの順を交互に配るので、シャードの間で偏りが無い）。`shard-drop-remainder` が真なら各エポックの最後の n mod P 個の位置を捨て、どのシャードも floor(n/P) 個ずつにする（同期して学習するプロセスの間でバッチの数を揃える。filter があると揃わない）。`random-map-transform` のキーはシャードなしと同じ通し位置で決まるので、拡張はシャードの分け方に依らない。再開状態はシャードの中の位置で、シャードごとに同じ設定のローダで再開する
 - **pad**（#325）: `pad-remainder` が真なら端数を捨てずに 0 の行で `batch-size` 行に埋め、**各バッチ（端数でないものも）を `(バッチ マスク)` のリストにする**。マスクは長さ `batch-size` の `(simple-array bit (*))`（nabla の `:i1`。jit にそのまま渡せる）で、本物の行（先頭から詰める）が 1、埋めた行が 0。埋めた行の葉は、そのバッチの最初のレコードの同じ位置の葉と同じ形・element-type の 0。形がいつも同じなので、評価のように全レコードを使うループでも jit を再コンパイルしない（損失や正解数はマスクで重み付けする）。`drop-remainder` を明示的に真にして一緒に渡すと `:bad-remainder`。再開状態・決定性は pad しないときと同じfilter が無ければ、1 エポックで各レコードがちょうど 1 回ずつ出る（捨てた端数を除く）
 - `num-epochs` が nil（既定）なら列は終わらない。1 エポックの全位置を調べてもバッチが 1 つも作れない（filter が全部落とす、`batch-size` がレコードの個数より大きくて端数を捨てる、レコードが 0 個）ときは、戻らなくなる代わりに `:empty-epoch`
 - 位置ごとの処理（`source-item` と変換）は位置だけで決まり、イテレータは「次に調べるサンプラーの位置」だけを持つ（入力側の位置。filter をはさんでも決定的に再開できる）
