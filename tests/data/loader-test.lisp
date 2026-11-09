@@ -10,6 +10,12 @@
 ;;;;   和集合は 1 エポックの全レコード。再開・並列・エポック単位の取り出しも pad なしと同じ性質を持つ
 ;;;;   （生成器が pad-remainder も選ぶので、オラクル・再開・並列の性質がそのまま pad も見る）。
 ;;;;   drop-remainder を明示的に真にして pad-remainder も真なら :bad-remainder。
+;;;; - シャード（#318）: shard-index s・shard-count P のローダは、各エポックのサンプラーの順のうち
+;;;;   エポック内の位置 j ≡ s (mod P) だけを引く（shard-drop-remainder なら j < floor(n/P)·P だけ）。
+;;;;   random-map のキーはシャードなしと同じ通し位置で決まる。生成器がシャードも選ぶので、オラクル・
+;;;;   再開・並列の性質がそのままシャードも見る。P 個のシャードのマスクで残した行の和集合は 1 エポックの
+;;;;   全レコードで、重ならない。shard-drop-remainder なら各シャードのレコードの数は floor(n/P) で揃う。
+;;;;   不正なシャードの番号・数は :bad-shard。
 ;;;; - 1 エポックで全レコードがちょうど1回ずつ出る（前提: filter なし。drop-remainder なら
 ;;;;   n mod batch-size 個が欠け、nil なら欠けない）。
 ;;;; - エポック単位の取り出し: (epoch loader e) を e = 0.. の順につなぐと、イテレータの列と同じ。
@@ -77,11 +83,21 @@ drop-remainder を nil にする（両方を真にすると :bad-remainder）。
                           :transforms (mapcar #'loader-spec-transform
                                               (loop repeat (random 3 state) collect (loader-random-spec state)))
                           :drop-remainder (zerop (random 2 state))))
-         (pad (zerop (random 3 state))))
-    (values (if pad
-                (list* :pad-remainder t :drop-remainder nil arguments)
-                arguments)
+         (pad (zerop (random 3 state)))
+         (shard-count (1+ (random 3 state)))
+         (shard (list :shard-count shard-count :shard-index (random shard-count state)
+                      :shard-drop-remainder (zerop (random 2 state)))))
+    (values (append shard
+                    (if pad
+                        (list* :pad-remainder t :drop-remainder nil arguments)
+                        arguments))
             n)))
+
+(defun loader-shard-positions (n &key (shard-index 0) (shard-count 1) shard-drop-remainder
+                               &allow-other-keys)
+  "シャードが 1 エポックに引くエポック内の位置（サンプラーの順の何番目か）の昇順のリスト。"
+  (loop for j below (if shard-drop-remainder (* shard-count (floor n shard-count)) n)
+        when (= shard-index (mod j shard-count)) collect j))
 
 (defun loader-zero-record (record)
   "RECORD と同じ木で、葉を同じ形・element-type の 0 の配列にしたもの（pad で埋める行）。"
@@ -104,7 +120,9 @@ drop-remainder を nil にする（両方を真にすると :bad-remainder）。
               (fill mask 1 :end (length records))))
       (batch-records records)))
 
-(defun loader-oracle (n &key batch-size shuffle seed num-epochs transforms drop-remainder pad-remainder)
+(defun loader-oracle (n &rest arguments
+                      &key batch-size shuffle seed num-epochs transforms drop-remainder pad-remainder
+                      &allow-other-keys)
   "バッチ（レコードのリスト）の列を素朴に作る。エポックごとに全レコードを引いて変換し、
 BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋めるのは LOADER-ORACLE-BATCH）。
 1 エポックからバッチが作れなければ :empty-epoch を返す。"
@@ -114,7 +132,7 @@ BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋�
         (source (loader-index-source n))
         (batches '()))
     (dotimes (epoch num-epochs (nreverse batches))
-      (let* ((kept (loop for i below n
+      (let* ((kept (loop for i in (apply #'loader-shard-positions n arguments)
                          for (record keep) = (multiple-value-list
                                               (apply-transforms
                                                transforms
@@ -525,3 +543,51 @@ batch-size の bit のベクタで 1 が先頭から詰まる。前提: filter �
     (is (equalp #(3 4 0) (first batch)))
     (is (equal '(signed-byte 32) (array-element-type (first batch))))
     (is (equalp #2A((6d0 -6d0) (8d0 -8d0) (0d0 0d0)) (second batch)))))
+
+;;; --- シャード（#318） ---
+
+(def-source-property data-loader/shards-partition-each-epoch
+  "前提: filter なし。P 個のシャードの 1 エポックのバッチ（pad してマスクで残した行）の添字の和集合は、
+全レコードで重ならない。shard-drop-remainder なら各シャードは floor(n/P) 個ずつで、和集合は
+floor(n/P)·P 個（重ならない）。"
+  (n batch-size shard-count shuffle hi drop)
+  (generator (tuple (uniform-integer :lo 0 :hi 40) (uniform-integer :lo 1 :hi 7)
+                    (uniform-integer :lo 1 :hi 6) (uniform-integer :lo 0 :hi 1)
+                    (uniform-integer :lo 0 :hi 4294967295) (uniform-integer :lo 0 :hi 1)))
+  (let ((per-shard
+          (loop for s below shard-count
+                collect (let ((loader (data-loader (loader-index-source n)
+                                                   :batch-size batch-size :shuffle (= 1 shuffle)
+                                                   :seed (sampler-test-seed hi 9) :num-epochs 1
+                                                   :pad-remainder t :shard-index s :shard-count shard-count
+                                                   :shard-drop-remainder (= 1 drop))))
+                          (handler-case
+                              (loop for (batch mask) in (loader-all-batches (make-data-iterator loader))
+                                    append (loop for i below batch-size
+                                                 when (= 1 (aref mask i)) collect (aref (first batch) i)))
+                            (data-loader-error (c)
+                              ;; 引くレコードが無いシャードだけが :empty-epoch
+                              (assert (eq :empty-epoch (data-loader-error-reason c)))
+                              '()))))))
+    (let ((all (apply #'append per-shard)))
+      (and (= (length all) (length (remove-duplicates all)))
+           (every (lambda (i) (< -1 i n)) all)
+           (if (= 1 drop)
+               (and (every (lambda (indices) (= (floor n shard-count) (length indices))) per-shard)
+                    (= (length all) (* shard-count (floor n shard-count))))
+               (= (length all) n))))))
+
+(defparameter *bad-shards* '((0 0) (1 0) (-1 2) (2 2) (0 1.0) (nil 1) (0 nil))
+  "(shard-index shard-count) のうち不正なもの。")
+
+(test (data-loader/rejects-bad-shards :suite :nabla.small)
+  "shard-count が正の整数でないか、shard-index が 0 以上 shard-count 未満の整数でなければ :bad-shard。"
+  (dolist (bad *bad-shards*)
+    (is (eq :bad-shard (loader-failure-reason
+                        (lambda () (data-loader (loader-index-source 4) :batch-size 1
+                                                                        :shard-index (first bad)
+                                                                        :shard-count (second bad)))))
+        "~S" bad))
+  (is (eq :no-error (loader-failure-reason
+                     (lambda () (data-loader (loader-index-source 4) :batch-size 1 :shard-index 2
+                                                                     :shard-count 3))))))

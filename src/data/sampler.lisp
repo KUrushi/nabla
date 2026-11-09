@@ -118,7 +118,7 @@ SHUFFLE が nil なら各エポックは 0, 1, ..., N-1 の順。真なら SEED�
 (2) の配列。必須）とエポック番号で決まる置換の順で、同じ SEED・エポックからは常に同じ順になる
 （SEED は作るときに読み、配列は持たない。SHUFFLE が nil でも渡せば形を検査するが、順序には
 効かない）。NUM-EPOCHS が nil（既定）なら列は終わらず、整数なら N × NUM-EPOCHS 個の位置で終わる。N は 0 以上 2^64 未満の整数（0 なら引ける位置は無い）。
-不正な引数は SAMPLER-ERROR。複数プロセスでの分割（シャード）は持たない。"
+不正な引数は SAMPLER-ERROR。複数プロセスでの分割（シャード）はローダが位置を間引いて行う（DATA-LOADER の SHARD-INDEX、#318）。"
   (unless (typep n '(unsigned-byte 64))
     (%sampler-error :bad-length "レコードの個数 ~S が 0 以上 2^64 未満の整数でない" n))
   (unless (typep num-epochs '(or null (integer 0)))
