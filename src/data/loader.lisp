@@ -24,6 +24,7 @@
    "ローダを作れない、またはバッチを取り出せないときに signal する。REASON は次のどれか。
   :bad-batch-size  BATCH-SIZE が正の整数でない
   :bad-transform   TRANSFORMS に MAP-TRANSFORM / FILTER-TRANSFORM / RANDOM-MAP-TRANSFORM でないものがある
+  :bad-remainder   PAD-REMAINDER と、明示的に真にした DROP-REMAINDER を一緒に渡した
   :bad-epoch       EPOCH のエポックが 0 以上 NUM-EPOCHS 未満の整数でない
   :empty-epoch     1 エポックの全位置を調べてもバッチが1つも作れなかった（filter が全部
                    落とした、端数を捨てて何も残らなかった、レコードが 0 個）
@@ -41,7 +42,7 @@
 
 (defstruct (data-loader (:constructor %make-data-loader
                             (source sampler length transforms batch-size drop-remainder num-epochs
-                             key))
+                             key pad-remainder))
                         (:copier nil) (:predicate nil))
   "データソース・サンプラー・変換・バッチの大きさを束ねたもの。DATA-LOADER で作り、
 MAKE-DATA-ITERATOR か EPOCH でバッチを取り出す。作った後は変わらない。"
@@ -53,16 +54,23 @@ MAKE-DATA-ITERATOR か EPOCH でバッチを取り出す。作った後は変わ
   (drop-remainder t :read-only t)
   (num-epochs nil :type (or null (integer 0)) :read-only t)
   ;; シード（無ければ 0）の写し。:u32 の (2)。再開状態の key になる。
-  (key nil :type (simple-array (unsigned-byte 32) (2)) :read-only t))
+  (key nil :type (simple-array (unsigned-byte 32) (2)) :read-only t)
+  ;; 端数を 0 の行で埋め、各バッチを (バッチ マスク) にするか（#325）。真なら DROP-REMAINDER は nil。
+  (pad-remainder nil :read-only t))
 
-(defun data-loader (source &key batch-size shuffle seed num-epochs transforms (drop-remainder t))
+(defun data-loader (source &key batch-size shuffle seed num-epochs transforms
+                                 (drop-remainder t drop-remainder-p) pad-remainder)
   "データソース SOURCE からバッチを作るローダを作る（Grain の DataLoader）。
 サンプラー（MAKE-INDEX-SAMPLER に SHUFFLE・SEED・NUM-EPOCHS を渡したもの）の位置の順に
 レコードを SOURCE-ITEM で引き、TRANSFORMS（MAP-TRANSFORM / FILTER-TRANSFORM / RANDOM-MAP-TRANSFORM
 のリスト）を APPLY-TRANSFORMS でかけ（RANDOM-MAP-TRANSFORM のキーは SEED（無ければ 0）と通し位置で
 決まる）、残ったレコードを BATCH-SIZE（正の整数。必須）個ずつ BATCH-RECORDS で
 積む。バッチはエポックをまたがない。エポック末の端数は DROP-REMAINDER（既定 t）なら捨て、nil なら
-短いバッチにする（pad はしない）。NUM-EPOCHS が nil（既定）ならバッチの列は終わらない。
+短いバッチにする。PAD-REMAINDER が真なら端数を捨てずに 0 の行で BATCH-SIZE 行に埋め、各バッチ
+（端数でないものも）を (バッチ マスク) のリストにする。マスクは長さ BATCH-SIZE の (simple-array bit (*))
+（nabla の :i1）で、本物の行（先頭から詰める）が 1、埋めた行が 0。埋めた行の葉は、そのバッチの最初の
+レコードの同じ位置の葉と同じ形・element-type の 0。PAD-REMAINDER と明示的に真にした DROP-REMAINDER を
+一緒に渡すと :bad-remainder。NUM-EPOCHS が nil（既定）ならバッチの列は終わらない。
 SEED（無ければ 0）の写しを持ち、ITERATOR-STATE の key にする（シャッフルしなくても、別の
 シードのローダには再開状態を渡せない）。
 不正な引数は DATA-LOADER-ERROR か SAMPLER-ERROR。SOURCE の長さは作るときに読む。"
@@ -74,12 +82,42 @@ SEED（無ければ 0）の写しを持ち、ITERATOR-STATE の key にする（
                       transforms))
     (%data-loader-error :bad-transform
                         "transforms ~S が変換（map / filter / random-map）のリストでない" transforms))
+  (when (and pad-remainder drop-remainder drop-remainder-p)
+    (%data-loader-error :bad-remainder
+                        "pad-remainder と drop-remainder t は一緒に使えない（pad は端数を捨てずに埋める）"))
   (let* ((n (source-length source))
          (sampler (make-index-sampler n :shuffle shuffle :seed seed :num-epochs num-epochs)))
     ;; SEED の形は MAKE-INDEX-SAMPLER が検査済み。
-    (%make-data-loader source sampler n transforms batch-size (and drop-remainder t) num-epochs
+    (%make-data-loader source sampler n transforms batch-size
+                       (and drop-remainder (not pad-remainder) t) num-epochs
                        (make-array 2 :element-type '(unsigned-byte 32)
-                                     :initial-contents (if seed (list (aref seed 0) (aref seed 1)) '(0 0))))))
+                                     :initial-contents (if seed (list (aref seed 0) (aref seed 1)) '(0 0)))
+                       (and pad-remainder t))))
+
+(defun %zero-leaf (leaf)
+  "LEAF と同じ形・element-type の、要素が 0 の新しい配列（数でない element-type は処理系の既定の値）。
+配列でない葉はそのまま返す（BATCH-RECORDS が :bad-leaf にする）。"
+  (if (arrayp leaf)
+      (let ((element-type (array-element-type leaf)))
+        (if (subtypep element-type 'number)
+            (make-array (array-dimensions leaf) :element-type element-type
+                                                :initial-element (coerce 0 element-type))
+            (make-array (array-dimensions leaf) :element-type element-type)))
+      leaf))
+
+(defun %loader-batch (loader records)
+  "%ASSEMBLE-BATCH が集めたレコード RECORDS から、ローダが返すバッチ。PAD-REMAINDER のローダなら、
+最初のレコードの葉を 0 にした行で BATCH-SIZE 行に埋め、(バッチ マスク) にする。"
+  (if (data-loader-pad-remainder loader)
+      (let* ((batch-size (data-loader-batch-size loader))
+             (count (length records))
+             (mask (make-array batch-size :element-type 'bit :initial-element 0))
+             (filler (multiple-value-bind (leaves treedef) (nabla:tree-flatten (first records))
+                       (nabla:tree-unflatten treedef (mapcar #'%zero-leaf leaves)))))
+        (fill mask 1 :end count)
+        (list (batch-records (append records (make-list (- batch-size count) :initial-element filler)))
+              mask))
+      (batch-records records)))
 
 ;;; --- 組み立て（#286 の並列ローダと共有する） ---
 
@@ -158,7 +196,7 @@ FETCH は (FETCH start end) → %RANGE-RECORDS と同じ結果を返す関数で
 
 (defun next-batch (iterator)
   "ITERATOR の次のバッチを (values バッチ t) で返して進める。バッチはレコードの木の各葉を
-新しい先頭の軸で積んだ木（BATCH-RECORDS）。列が終わっていれば (values nil nil) を返し、
+新しい先頭の軸で積んだ木（BATCH-RECORDS。PAD-REMAINDER のローダなら (バッチ マスク)。DATA-LOADER）。列が終わっていれば (values nil nil) を返し、
 何度呼んでも同じ。エポックからバッチが作れなければ :empty-epoch、閉じたイテレータなら :closed の
 DATA-LOADER-ERROR。ワーカーの中の error（SOURCE-ITEM や変換の中）は元のコンディションのまま
 届き、位置は進まない（もう一度呼ぶと同じ位置から読み直す）。"
@@ -167,7 +205,7 @@ DATA-LOADER-ERROR。ワーカーの中の error（SOURCE-ITEM や変換の中）
         (%assemble-batch loader (data-iterator-position iterator) (%iterator-fetcher iterator))
       (cond (records
              (setf (data-iterator-position iterator) next)
-             (values (batch-records records) t))
+             (values (%loader-batch loader records) t))
             (t (values nil nil))))))
 
 (defun epoch (loader epoch)
@@ -186,6 +224,6 @@ MAKE-DATA-ITERATOR を使う。"
     (loop with k = (* epoch (data-loader-length loader))
           for (records next batch-epoch) = (multiple-value-list (%assemble-batch loader k fetch))
           while (eql batch-epoch epoch)
-          collect (batch-records records)
+          collect (%loader-batch loader records)
           do (setf k next)
           until (>= k end))))
