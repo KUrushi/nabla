@@ -40,6 +40,7 @@
   :bad-state       RESTORE-ITERATOR の状態が ITERATOR-STATE でないか、葉の型・形が違う
   :version-mismatch  状態のシャッフルの算法の版がこのサンプラーの版と違う
   :key-mismatch    状態のキーがローダのシード（無ければ 0）と違う
+  :loader-mismatch 状態の fingerprint（ローダの設定の指紋）がローダと違う（#322）
   :state-out-of-range  状態のエポック・位置がローダの範囲の外か、ITERATOR-STATE で :i32 に
                    収まらない
   :bad-num-workers NUM-WORKERS が 0 以上の整数でない
