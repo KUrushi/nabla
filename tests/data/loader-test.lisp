@@ -17,6 +17,9 @@
 ;;;; - 状態の木: 子の名前は key / epoch / position / version で、葉は :u32 の (2)（ローダのシードの
 ;;;;   写し、シードが無ければ 0）と rank 0 の (signed-byte 32) の配列。version はシャッフルの算法の版。
 ;;;; - 範囲外・形の違う状態・別のシードや別の版の状態は、理由つきの data-loader-error。
+;;;; - 先頭の状態（initial-iterator-state、#316）: イテレータを開かずに作った状態は、開いたばかりの
+;;;;   イテレータの iterator-state と treedef も葉も同じで、レコードを読まない。そこから再開した列は
+;;;;   先頭からの列と同じ。
 
 (in-package #:nabla.data.tests)
 
@@ -407,3 +410,35 @@ BATCH-SIZE 個ずつに切る。1 エポックからバッチが作れなけれ�
   (is (equal '(0 0) (loader-state-values
                      (iterator-state (make-data-iterator (data-loader (loader-index-source 0)
                                                                       :batch-size 1 :num-epochs 0)))))))
+
+;;; --- 先頭の状態（initial-iterator-state、#316） ---
+
+(def-source-property initial-iterator-state/equals-the-state-of-a-fresh-iterator
+  "イテレータを開かずに作った先頭の状態は、開いたばかりのイテレータの状態と treedef も葉も同じ。"
+  (seed)
+  (generator (tuple (uniform-integer :lo 0 :hi 1000000)))
+  (multiple-value-bind (arguments n) (loader-random-case seed)
+    (let* ((loader (apply #'data-loader (loader-index-source n) arguments))
+           (expected (iterator-state (make-data-iterator loader)))
+           (actual (initial-iterator-state loader)))
+      (and (typep actual 'iterator-state)
+           (nabla:treedef= (nabla:tree-structure expected) (nabla:tree-structure actual))
+           (same-tree-of-arrays-p expected actual)))))
+
+(test (initial-iterator-state/reads-no-records-and-restores-from-the-start :suite :nabla.small)
+  "先頭の状態はレコードを読まずに作れ、そこから再開した列は先頭からの列と同じ。配列はローダと共有しない。"
+  (let* ((calls 0)
+         (loader (data-loader (loader-index-source 7) :batch-size 2 :shuffle t :num-epochs 2
+                                                      :seed (sampler-test-seed 5 6)
+                                                      :transforms (list (map-transform
+                                                                         (lambda (record)
+                                                                           (incf calls)
+                                                                           record)))))
+         (state (initial-iterator-state loader)))
+    (is (= 0 calls))
+    ;; 返した配列を書き換えても、ローダ（の次の状態）は変わらない
+    (setf (aref (iterator-state-key (initial-iterator-state loader)) 0) 99)
+    (is (equalp (sampler-test-seed 5 6) (iterator-state-key (initial-iterator-state loader))))
+    (is (every #'same-tree-of-arrays-p
+               (loader-all-batches (make-data-iterator loader))
+               (loader-all-batches (restore-iterator loader (loader-copy-state state)))))))

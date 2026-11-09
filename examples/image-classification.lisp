@@ -199,8 +199,7 @@ nabla:jit したもの（ループの外で1回だけ作る）、nil なら同�
 (defun load-training (path model opt-state loader)
   "SAVE-TRAINING のファイルを読み、(values model opt-state ローダの状態) を返す。MODEL と OPT-STATE は
 ひな形（形と dtype の照合に使う）、ローダの状態のひな形は LOADER の先頭の状態。"
-  (let ((template-state (nabla.data:with-data-iterator (iterator loader)
-                          (nabla.data:iterator-state iterator))))
+  (let ((template-state (nabla.data:initial-iterator-state loader)))
     (destructuring-bind (model opt-state loader-state)
         (load-checkpoint path (list model opt-state template-state))
       (values model opt-state loader-state))))

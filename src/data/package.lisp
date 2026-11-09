@@ -55,6 +55,7 @@
    #:iterator-state-epoch
    #:iterator-state-position
    #:iterator-state-version
+   #:initial-iterator-state
    #:restore-iterator
    ;; レコードごとに決定的な乱数を使う変換（issue #284）
    #:random-map-transform
