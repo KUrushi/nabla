@@ -83,8 +83,7 @@
   (save-checkpoint path (list model opt-state (nabla.data:iterator-state iterator))))
 
 (defun load-training (path template-model template-opt-state loader)
-  (let ((template-state (nabla.data:with-data-iterator (iterator loader)
-                          (nabla.data:iterator-state iterator))))
+  (let ((template-state (nabla.data:initial-iterator-state loader)))
     (destructuring-bind (model opt-state state)
         (load-checkpoint path (list template-model template-opt-state template-state))
       (values model opt-state state))))

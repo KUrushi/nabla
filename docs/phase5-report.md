@@ -177,7 +177,7 @@
 - **cl-jpeg の safety**（#315）: safety の書き換え（§3.9）は暫定だった。調べると、上流の safety 0 では 1 バイト壊した JPEG の約 2.75% が Memory fault かヒープの破壊になり、圧縮データの本体の 1 バイトでも起きるので、nabla でデコードの前に検査しても防げない（#315 のコメント）。safety 2 にした fork（KUrushi/cl-jpeg の `bounds-checked`）を固定して使う形に改めた。上流への提案（入力の検証を足す変更）は nabla では追わない（#315 は閉じた）。
 - **#265 の IREE だけの候補**: 縮約軸が先頭の `dot_general` を IREE の backend だけで transpose + barrier に書き換える案（iree-local の large の MLP で 26% 速いが、small の MLP では 40% 遅い）。大きさで切り替える条件を決めてから。core は IREE の名前を知らない約束に注意する。
 - **#233 は上流の修正待ち**（§3.11）。上流への報告は nabla では追わない（#243 と同じ。2026-11-09）。
-- **`iterator-state` のひな形を、イテレータを開かずに作る関数が無い**（#316）。今は `(iterator-state (make-data-iterator loader))` で作る（ワーカー数 0 ならスレッドは作らない）。`(loader-state-template loader)` のような関数があると、復元の手順が読みやすくなる。
+- ~~**`iterator-state` のひな形を、イテレータを開かずに作る関数が無い**（#316）~~ 済み: `(initial-iterator-state loader)` が先頭の状態を返す（イテレータを開かず、レコードも読まない）。README のチュートリアルと `examples/image-classification.lisp` の復元はこれを使う。
 - **閉じないイテレータのスレッドは残る**（#317）。ワーカーのスレッドは GC では止まらない（イテレータに finalizer を付けていない）。`with-data-iterator` か `close-iterator` で必ず閉じる、と README に書いてある。
 - **シャード（複数プロセスでの分割）が無い**（#318）。サンプラーは位置 → インデックスの関数なので、「プロセス i は位置 i, i + P, ... を引く」形で後から足せる。複数のホストで学習する段階で。
 - **npy の遅延読み込み（mmap）が無い**（#319）。データセットがヒープに入らない段階で。チェックポイントの遅延読み込み（#262）と同じく、測ってから決める。

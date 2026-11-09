@@ -302,8 +302,7 @@ loss[29] = 0.4449
   (save-checkpoint path (list model opt-state (nabla.data:iterator-state iterator))))
 
 (defun load-training (path template-model template-opt-state loader)
-  (let ((template-state (nabla.data:with-data-iterator (iterator loader)
-                          (nabla.data:iterator-state iterator))))
+  (let ((template-state (nabla.data:initial-iterator-state loader)))
     (destructuring-bind (model opt-state state)
         (load-checkpoint path (list template-model template-opt-state template-state))
       (values model opt-state state))))
@@ -701,7 +700,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - モデルとオプティマイザ状態は1つの木にまとめれば同じファイルに入る: `(defmodule train-state ((params) (opt)))` → `"params.w"`、`"opt.0"`。別々に保存してもよい（API に接頭辞は持たない）
 - `(unsigned-byte 16)` の葉は bf16 か f16 か決められない。保存では `:dtypes`（`(パス名 . :bf16)` の連想リスト）で言うか、`device-array` なら aval から決まる（言わなければ `dtype-mismatch`）。復元でも、ひな形の葉が `(unsigned-byte 16)` の配列なら `:dtypes` で言う必要がある（言わなければ `:dtype-mismatch`。bf16 のモデルを f16 のファイルから生のビットで復元する事故を防ぐ。`device-array` と `aval` のひな形は自分の dtype を持つ）。それ以外の葉は dtype が一致しなければ `:dtype-mismatch`
 - 照合は厳密: ファイルとひな形の名前の集合が違えば（足りなくても余っても）エラー。形の違いも `:shape-mismatch`。壊れたファイルは `safetensors-error`
-- データローダの再開状態は `nabla/data` の `iterator-state`（`(iterator-state iterator)` で取る）を、モデルとオプティマイザ状態と同じ木に入れる: `(save-checkpoint path (list model opt-state (iterator-state it)))` → `"2.key"` `"2.epoch"` `"2.position"` `"2.version"`。復元は同じ形のひな形（`(iterator-state (make-data-iterator loader))` でよい）に `load-checkpoint` し、`(restore-iterator loader state)` で続きのイテレータを作る。`iterator-state` は配列だけの、子に名前を付けた `defpytree` の型（`nabla/data` は `nabla/nn` に依存できないので `defmodule` は使わない。名前があるので、パス名は子の並びに依らない）。自前の状態を足すときも同じく、整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
+- データローダの再開状態は `nabla/data` の `iterator-state`（`(iterator-state iterator)` で取る）を、モデルとオプティマイザ状態と同じ木に入れる: `(save-checkpoint path (list model opt-state (iterator-state it)))` → `"2.key"` `"2.epoch"` `"2.position"` `"2.version"`。復元は同じ形のひな形（`(initial-iterator-state loader)`。イテレータを開かずに先頭の状態を作る）に `load-checkpoint` し、`(restore-iterator loader state)` で続きのイテレータを作る。`iterator-state` は配列だけの、子に名前を付けた `defpytree` の型（`nabla/data` は `nabla/nn` に依存できないので `defmodule` は使わない。名前があるので、パス名は子の並びに依らない）。自前の状態を足すときも同じく、整数は rank 0 の `:i32` の配列、キーは `prng-key` が作る `:u32` の `(2)` の配列で持つ。**Lisp の整数・実数は葉にできない**（`:bad-leaf`。状態は配列で持つ）
 - メモリ: `load-checkpoint` も `save-checkpoint` もファイル全体のバイト列を作らず葉ごとに読み書きするので、ピークはファイルの約 1 倍（木の分を含む）になる。ヒープが 1 GiB のとき（測定環境の SBCL 2.6.9 / macOS arm64 の既定。`(sb-ext:dynamic-space-size)` で確かめる）、同じ大きさの葉 4 枚の木なら save も load も 896 MiB まで通り、小さな葉 4096 枚を含む木では save が 512 MiB、load が 768 MiB まで通った（上限は木そのものがヒープに入るかで決まる）。大きなモデルでは起動時に `--dynamic-space-size` を上げる。測定は [docs/checkpoint-memory.md](docs/checkpoint-memory.md)。世代管理（最新 n 個を残す）は持たないので、必要なら保存先の名前にステップ数を含めて呼び出し側で古いものを消す
 - メタデータはそのまま往復する（データローダの再開状態を文字列にして入れられる）。`"nabla."` で始まるキーは予約で、版（`nabla.checkpoint_version` = `"1"`）を書く。版の無い（Python が書いた）ファイルも読め、知らない版は `:unsupported-version`
 - Python との相互運用は `tests/fixtures/checkpoint/`（`generate.py` が Flax の2層 MLP を `flatten_dict` と同じ規則で書き、nabla が復元して numpy と同じ順伝播の結果になることを確かめる）
@@ -770,6 +769,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 | `(next-batch iterator)` | 次のバッチを `(values バッチ t)` で返して進める。列が終わっていれば `(values nil nil)`（何度呼んでも同じ） |
 | `(epoch loader e)` | エポック `e`（0 から数える）のバッチのリスト。エポックを順につなぐとイテレータの列になる。1 エポック分をメモリに持つ |
 | `(iterator-state iterator)` | 今の再開状態（`iterator-state`）を新しい配列で返す。葉は `key`（ローダの `seed` の写し。`seed` が無ければ 0。`:u32` の `(2)`）、`epoch` と `position`（rank 0 の `(signed-byte 32)`。次に調べるサンプラーの位置のエポックとエポック内の位置）、`version`（rank 0 の `(signed-byte 32)`。サンプラーのシャッフルの算法の版）。子の名前は `"key"` `"epoch"` `"position"` `"version"`。アクセサは `iterator-state-key` / `-epoch` / `-position` / `-version` |
+| `(initial-iterator-state loader)` | 列の先頭（エポック 0・位置 0）の再開状態を新しい配列で返す。開いたばかりのイテレータの `iterator-state` と同じ木で、イテレータを開かない（スレッドを作らず、レコードも読まない）。チェックポイントの復元のひな形に使う |
 | `(restore-iterator loader state)` | `state` の位置から続けるイテレータ。残りのバッチの列は、状態を取ったイテレータの続きとビット単位で同じ |
 | `data-loader-error` / `-reason` / `-detail` | `data-error` の子。`reason` は `:bad-batch-size` `:bad-transform` `:bad-epoch` `:empty-epoch` `:bad-state` `:version-mismatch` `:key-mismatch` `:state-out-of-range` |
 

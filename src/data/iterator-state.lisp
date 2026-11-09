@@ -45,20 +45,30 @@
 (defun %i32-scalar (value)
   (make-array '() :element-type '(signed-byte 32) :initial-element value))
 
-(defun iterator-state (iterator)
-  "ITERATOR の今の再開状態を、新しい配列の ITERATOR-STATE で返す（後で ITERATOR を進めても
-変わらない）。key はローダのシード（無ければ 0）の写し、epoch と position は次に調べる
-サンプラーの位置のエポックとエポック内の位置、version はシャッフルの算法の版。エポックか位置が
-:i32 に収まらなければ :state-out-of-range の DATA-LOADER-ERROR。"
-  (let* ((loader (data-iterator-loader iterator))
-         (n (data-loader-length loader)))
-    (multiple-value-bind (epoch position)
-        (if (zerop n) (values 0 0) (floor (data-iterator-position iterator) n))
+(defun %loader-state (loader k)
+  "LOADER の通しの位置 K を指す、新しい配列の ITERATOR-STATE。"
+  (let ((n (data-loader-length loader)))
+    (multiple-value-bind (epoch position) (if (zerop n) (values 0 0) (floor k n))
       (unless (and (typep epoch '(signed-byte 32)) (typep position '(signed-byte 32)))
         (%data-loader-error :state-out-of-range
                             "エポック ~D・位置 ~D が :i32 に収まらない" epoch position))
       (%make-iterator-state (copy-seq (data-loader-key loader)) (%i32-scalar epoch)
                             (%i32-scalar position) (%i32-scalar +index-sampler-algorithm-version+)))))
+
+(defun iterator-state (iterator)
+  "ITERATOR の今の再開状態を、新しい配列の ITERATOR-STATE で返す（後で ITERATOR を進めても
+変わらない）。key はローダのシード（無ければ 0）の写し、epoch と position は次に調べる
+サンプラーの位置のエポックとエポック内の位置、version はシャッフルの算法の版。エポックか位置が
+:i32 に収まらなければ :state-out-of-range の DATA-LOADER-ERROR。"
+  (%loader-state (data-iterator-loader iterator) (data-iterator-position iterator)))
+
+(defun initial-iterator-state (loader)
+  "LOADER の列の先頭（エポック 0・位置 0）の再開状態を、新しい配列の ITERATOR-STATE で返す。
+開いたばかりのイテレータの ITERATOR-STATE と同じ木だが、イテレータを開かない（ワーカーの
+スレッドを作らず、レコードも読まない）。チェックポイントから再開するとき LOAD-CHECKPOINT に
+渡すひな形に使う（ひな形の値は使われず、葉の名前・形・dtype だけが照合される）。
+RESTORE-ITERATOR に渡せば先頭から始まる。"
+  (%loader-state loader 0))
 
 (defun %state-leaf-p (leaf element-type dimensions)
   (and (arrayp leaf)
