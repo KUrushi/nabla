@@ -1,6 +1,6 @@
 # check-it 上流に報告するバグ（issue #245、#220）
 
-nabla が固定している check-it（`scripts/setup-lisp-deps.sh` の `b79c9103665be3976915b56b570038f03486e62f`）で見つけたバグ1件の、nabla を使わない最小の再現と、DalekBaldwin/check-it にそのまま貼れる issue の下書き。**上流への報告はユーザーが行う**（このリポジトリの作業では check-it の GitHub に何も投稿しない）。報告したら、「上流 issue」の行にリンクを書き、nabla の issue #245 にも記録し、`tests/support/regression.lisp` の `datum` メソッドの近くのコメントも更新する。
+nabla が固定している check-it（`scripts/setup-lisp-deps.sh` の `b79c9103665be3976915b56b570038f03486e62f`）で見つけたバグ1件の、nabla を使わない最小の再現と、DalekBaldwin/check-it にそのまま貼れる issue の下書き。**上流への報告は nabla の作業として追わない**（このリポジトリの作業では check-it の GitHub に何も投稿しない）。報告したら、「上流 issue」の行にリンクを書き、`tests/support/regression.lisp` の `datum` メソッドの近くのコメントも更新する。
 
 固定コミットを上げる・防御を外す条件は `.claude/skills/nabla-testing/SKILL.md` の「check-it の固定コミットを上げる条件」にある。
 
@@ -14,7 +14,7 @@ nabla が固定している check-it（`scripts/setup-lisp-deps.sh` の `b79c910
 
 ## 1. 保存した失敗例が、同じプロセスの次の実行では文字列のまま再生され NO-APPLICABLE-METHOD で落ちる
 
-- **状態**: 未報告（ユーザーの確認待ち）。上流 issue: `<link>`
+- **状態**: 未報告（上流への報告は nabla では追わない）。上流 issue: `<link>`
 - **再現ファイル**: [`docs/check-it-repros/string-datum.lisp`](check-it-repros/string-datum.lisp)（`sbcl --non-interactive --load docs/check-it-repros/string-datum.lisp`。防御を入れた対照は末尾に `with-defense`）
 - **期待**: 失敗例を保存したあと、同じプロセスで同じ `regression-id` の `check-it` を走らせると、保存した値で再生される（別プロセスでファイルを load し直したときと同じ）
 - **実際**: `NO-APPLICABLE-METHOD`（総称関数 `CHECK-IT::DATUM` に文字列のメソッドが無い）で落ち、本当の失敗が隠れる

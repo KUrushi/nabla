@@ -61,7 +61,7 @@ check-it が保存した失敗例が再生されない）。PACKAGE は文字列
 ;;; NO-APPLICABLE-METHOD になることを確かめた。
 ;;; tools/mutate の runner は変異体ごとに regression-cases の plist を元に戻すので、
 ;;; runner 自体は (b) を踏まない（tools/mutate/src/runner.lisp の %isolate-mutant-side-effects）。
-;;; 上流（check-it の固定コミットは master の HEAD で、dev などの他ブランチにも修正は無い）の issue は未報告（ユーザーの確認待ち）。
+;;; 上流（check-it の固定コミットは master の HEAD で、dev などの他ブランチにも修正は無い）の issue は未報告（上流への報告は nabla では追わない）。
 ;;; 下書きは docs/check-it-upstream-bugs.md。報告したらここにリンクを書く。
 ;;; check-it::datum は check-it の内部シンボルなので、上流が直ったら外す
 ;;; （条件は .claude/skills/nabla-testing/SKILL.md の「check-it の固定コミットを上げる条件」）。
