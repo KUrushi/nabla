@@ -658,7 +658,7 @@
 ;; nabla のシステムのうち core にだけ依存する（nabla/nn・nabla/iree・nabla/pjrt を知らない）。
 (defsystem "nabla/data"
   :description "データ供給の層（data-source・index-sampler・map / filter / random-map の変換・バッチ・逐次と並列の data-loader・再開状態・.npy の読み書き）"
-  :depends-on ("nabla" "lparallel")
+  :depends-on ("nabla" "lparallel" "trivial-garbage")
   :components ((:file "src/data/package")
                (:file "src/data/source")
                (:file "src/data/sampler")

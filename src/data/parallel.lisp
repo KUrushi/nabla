@@ -21,6 +21,14 @@
 ;;;; おき、投げた区間を待ち行列（位置の順）に持つ。NEXT-BATCH が返った後、呼び出し側がバッチを
 ;;;; デバイスへ送り学習ステップを走らせる間に、ワーカーが次のバッチを読む。再開状態は返したバッチの
 ;;;; 位置なので、先読みは状態に影響しない（RESTORE-ITERATOR は先読みを持たない新しいイテレータ）。
+;;;;
+;;;; 閉じ忘れ（issue #317）: ワーカーのスレッドは GC では止まらないので、ワーカーを持つイテレータには
+;;;; trivial-garbage の finalizer を付け、閉じずに捨てられたイテレータのカーネルを止める。finalizer が
+;;;; 捕まえるのはワーカーの組（%WORKER-POOL）だけで、イテレータ本体は捕まえない（捕まえると回収されない）。
+;;;; 組はイテレータを指さない（投げた区間の future が捕まえるのはローダと位置だけ）。finalizer は SBCL の
+;;;; finalizer のスレッドで走り、%CLOSE-POOL がワーカーの終わりを待つ（読みかけの区間が終わるまで
+;;;; finalizer のスレッドを止める）。ワーカーは finalizer を待たないので、待ち合わせは一方向で
+;;;; デッドロックしない。CLOSE-ITERATOR は finalizer を先に取り消してから自分で閉じる。
 
 (in-package #:nabla.data)
 
@@ -124,12 +132,10 @@ START が待ち行列の先頭でなければ（error で位置が進まなか�
         (lambda (start end) (%pool-fetch pool loader start end))
         (%range-fetcher loader))))
 
-(defun close-iterator (iterator)
-  "ITERATOR のワーカーを止めて片付ける（先読みを含め、投げてある区間が終わるのを待つ）。閉じた後の
-NEXT-BATCH は :closed の DATA-LOADER-ERROR。ITERATOR-STATE は閉じた後も取れる。何度呼んでも
-よい。ワーカー数 0 のイテレータも閉じられる。nil を返す。"
-  (let* ((pool (data-iterator-pool iterator))
-         (kernel (%worker-pool-kernel pool)))
+(defun %close-pool (pool)
+  "ワーカーの組 POOL を閉じ、カーネルがあればワーカーのスレッドが消えるまで待って片付ける。
+何度呼んでもよい。CLOSE-ITERATOR と、閉じ忘れたイテレータの finalizer が呼ぶ。"
+  (let ((kernel (%worker-pool-kernel pool)))
     (setf (%worker-pool-closed pool) t)
     (when kernel
       ;; END-KERNEL は各ワーカーの終わりの知らせを待つだけなので、スレッドが消えるまで join する。
@@ -137,8 +143,24 @@ NEXT-BATCH は :closed の DATA-LOADER-ERROR。ITERATOR-STATE は閉じた後も
       (let ((lparallel:*kernel* kernel))
         (dolist (thread (lparallel:end-kernel :wait t))
           (sb-thread:join-thread thread :default nil)))
-      (setf (%worker-pool-kernel pool) nil))
-    nil))
+      (setf (%worker-pool-kernel pool) nil))))
+
+(defun %watch-iterator (iterator)
+  "ワーカーを持つ ITERATOR に、閉じずに捨てられたときワーカーの組を閉じる finalizer を付けて返す。"
+  (let ((pool (data-iterator-pool iterator)))
+    (when (%worker-pool-kernel pool)
+      ;; 捕まえるのは POOL だけ（ITERATOR を捕まえると回収されなくなる）。
+      (tg:finalize iterator (lambda () (%close-pool pool))))
+    iterator))
+
+(defun close-iterator (iterator)
+  "ITERATOR のワーカーを止めて片付ける（先読みを含め、投げてある区間が終わるのを待つ）。閉じた後の
+NEXT-BATCH は :closed の DATA-LOADER-ERROR。ITERATOR-STATE は閉じた後も取れる。何度呼んでも
+よい。ワーカー数 0 のイテレータも閉じられる。nil を返す。閉じずに捨てたイテレータのワーカーも
+GC の後に finalizer が止めるが、いつ走るかは GC 次第なので、使い終わったら閉じること。"
+  (tg:cancel-finalization iterator)
+  (%close-pool (data-iterator-pool iterator))
+  nil)
 
 (defun %open-iterator (loader &rest options &key state &allow-other-keys)
   (let ((options (loop for (key value) on options by #'cddr

@@ -822,6 +822,7 @@ PyTree の葉をパス名で平坦化して safetensors に保存し、「同じ
 - ワーカーが作るのはホストの Lisp 配列のレコードだけで、`device-array` は作らない。ローダはデバイスへの転送を持たない（`next-batch` はホストの配列の木を返し、`jit` した関数にそのまま渡すか、呼び出し側のスレッドで `nabla:to-device` する。backend の転送は呼び出し側で同期して走るので、ローダの中で転送しても重ならない。重なるのはワーカーの読み込みと、呼び出し側の転送・学習ステップ）
 - `source-item` と変換はワーカーから同時に呼ばれるので、純粋（スレッド安全）にする。どのワーカーもまだ始めていない区間は呼び出し側のスレッドが自分で読む（lparallel の future）ので、区間を読むスレッドは実行のたびに変わる。ワーカーのスレッドは呼び出し側の動的束縛（`let` した special 変数）を引き継がないので、変換が special 変数を読むと結果が読むスレッドで変わる（読まない）
 - イテレータそのものはスレッド安全でない。`next-batch` と `close-iterator` は 1 つのスレッドから呼ぶ
+- 閉じずに捨てたイテレータ（#317）のワーカーは、GC の後にイテレータの finalizer（trivial-garbage）が止める（読みかけの区間が終わるのを finalizer のスレッドで待つ）。いつ走るかは GC 次第で、それまでスレッドは残るので、`with-data-iterator` か `close-iterator` で閉じるのが基本
 - ワーカーの中の error（`source-item` や変換の中。error でない `serious-condition` も）は、元のコンディションのまま `next-batch` の呼び出し側に届く（読んだスレッドのスタックは巻き戻した後なので、`source-item` の中の restart は使えない）。位置は進まず、もう一度 `next-batch` すると同じ位置から読み直す。ワーカーのスレッドは閉じるまで残る（イテレータを捨てても GC では止まらない）ので、`with-data-iterator` か `close-iterator` で必ず閉じる
 - 再開状態は返したバッチの位置なので、ワーカー数にも先読みにも依らない（`restore-iterator` は先読みを持たない新しいイテレータを作る）
 - `data-loader-error` の `reason` に `:bad-num-workers` / `:bad-prefetch`（0 以上の整数でない）と `:closed` が加わる

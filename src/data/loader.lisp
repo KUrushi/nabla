@@ -191,8 +191,9 @@ FETCH は (FETCH start end) → %RANGE-RECORDS と同じ結果を返す関数で
 既定 0 = 逐次）が正なら、そのイテレータだけのワーカーのスレッドでレコードを並列に読む
 （バッチの列はワーカー数に依らない）。ワーカーは、返したバッチの先 PREFETCH（0 以上の整数、
 既定 2）個ぶんのバッチの位置も先に読んでおく（呼び出し側がバッチを使う間に読む。ワーカー数 0 では
-効かない）。使い終わったら CLOSE-ITERATOR で閉じる（WITH-DATA-ITERATOR なら自動で閉じる）。"
-  (%make-data-iterator loader 0 (%open-worker-pool num-workers prefetch)))
+効かない）。使い終わったら CLOSE-ITERATOR で閉じる（WITH-DATA-ITERATOR なら自動で閉じる。閉じずに捨てた
+イテレータのワーカーは、GC の後に finalizer が止める）。"
+  (%watch-iterator (%make-data-iterator loader 0 (%open-worker-pool num-workers prefetch))))
 
 (defun next-batch (iterator)
   "ITERATOR の次のバッチを (values バッチ t) で返して進める。バッチはレコードの木の各葉を
