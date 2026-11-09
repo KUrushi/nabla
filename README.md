@@ -858,16 +858,17 @@ sbcl --non-interactive --load examples/image-classification.lisp   # 64 ステ�
 
 | 関数・クラス | 役割 |
 | --- | --- |
-| `(read-image pathname)` | ファイルをデコードして `(H W C)` の `(unsigned-byte 8)` の配列を返す。形式は拡張子ではなく先頭のバイトで見分ける |
-| `(make-image-source pathnames &key labels)` | 画像ファイルの列（パスネームか、OS の書き方のパスの文字列）から `image-source` を作る。`index` 番目のレコードは、`labels` が無ければ画像だけ、あれば `(画像 ラベル)` のリスト。`labels` は `make-array-source` と同じ木で、ラベルはその `index` 番目の行。デコードはレコードを取るとき（`source-item`）に行う |
-| `image-decode-error` / `-reason` / `-pathname` / `-detail` | 読めないファイル（`data-error` の子）。`reason` は `:unreadable`（開けない）`:unknown-format`（PNG でも JPEG でもない）`:corrupt`（途中で切れている・CRC の不一致など）`:unsupported`（下の読まない形式） |
+| `(read-image pathname &key (max-pixels *max-image-pixels*))` | ファイルをデコードして `(H W C)` の `(unsigned-byte 8)` の配列を返す。形式は拡張子ではなく先頭のバイトで見分ける。ヘッダの幅 × 高さが `max-pixels`（nil なら上限なし）を超えれば、配列を確保する前に `:too-large` |
+| `*max-image-pixels*` | `max-pixels` の既定値。Pillow の `Image.MAX_IMAGE_PIXELS` と同じ 89478485 画素（RGB の u8 で約 256 MiB） |
+| `(make-image-source pathnames &key labels (max-pixels *max-image-pixels*))` | 画像ファイルの列（パスネームか、OS の書き方のパスの文字列）から `image-source` を作る。`index` 番目のレコードは、`labels` が無ければ画像だけ、あれば `(画像 ラベル)` のリスト。`labels` は `make-array-source` と同じ木で、ラベルはその `index` 番目の行。デコードはレコードを取るとき（`source-item`）に行い、作ったときの `max-pixels` を `read-image` に渡す（ワーカーのスレッドは呼び出し側の動的束縛を見ないので、上限は作るときに決める） |
+| `image-decode-error` / `-reason` / `-pathname` / `-detail` | 読めないファイル（`data-error` の子）。`reason` は `:unreadable`（開けない）`:unknown-format`（PNG でも JPEG でもない）`:corrupt`（途中で切れている・CRC の不一致など）`:too-large`（寸法が上限を超える）`:unsupported`（下の読まない形式） |
 
 - **チャンネル数はファイルのまま**: グレースケール 1、グレースケール + アルファ 2、RGB 3、RGBA 4。パレットの PNG は RGB（tRNS の透過は読まない）、1・2・4 ビットのグレースケールは 0..255 に直す（Pillow の `convert("RGB")` / `convert("L")` と同じ値）。チャンネル数を揃える `:channels` のような変換は持たない。チャンネル数の混ざったデータセットは、ローダの変換（map）で揃えてからバッチにする
 - **読まない形式**（`:unsupported`）: 16 ビットの PNG、成分が 1 でも 3 でもない JPEG（CMYK など）、Adobe の APP14 が YCbCr でないと言う3成分の JPEG（cl-jpeg は3成分を常に YCbCr とみなすので、色を取り違えないよう読まない）、ベースラインでもプログレッシブでもない JPEG（可逆など）。インタレースの PNG とプログレッシブの JPEG は読める
 - **u8 は nabla の dtype に無い**ので、jit に渡す前にローダの変換で `single-float` などに直す（例: 255 で割った f32 の配列）
 - 画素は Pillow でデコードした値と比べてある（`tests/fixtures/image/`、`generate.py` で再生成。PNG はちょうど一致、JPEG は逆 DCT の丸めと色差の補間の違いで成分ごとに最大 1 の差）
 - cl-jpeg は全体を `(safety 0)` でコンパイルするライブラリで、そのままだと壊れた JPEG で範囲外のメモリに触れて Memory fault でプロセスごと落ちる。**`scripts/setup-lisp-deps.sh` は `jpeg.lisp` の `*optimize*` を safety 2 に直した fork（[KUrushi/cl-jpeg](https://github.com/KUrushi/cl-jpeg) の `bounds-checked`）を入れる**（1 では cl-jpeg の `(speed 3)` より低いので型の検査が弱められ、SBCL 2.2.9 の x86-64 でなお落ちた）ので、壊れた JPEG も `image-decode-error` になる。デコードは上流の safety 0 より約 2 割遅い（1024×1024 で 23 ms → 28 ms）。ほかの手段で入れた上流の cl-jpeg（Quicklisp など、safety 0 のまま）を使うと、JPEG をデコードする前に（デコードせずに）、`setup-lisp-deps.sh` の cl-jpeg を使うよう促す error（`image-decode-error` ではない）になる（ロードと PNG のデコードは止めない）。上流の cl-jpeg からコンパイルした fasl（`~/.cache/common-lisp/` 以下）が fork のソースより新しいままだと、ASDF はそれを使い続けて同じ error になるので、その fasl を消してコンパイルし直す。224×224 の画像のデコードは手元（Apple M 系、SBCL 2.6.9）で JPEG 約 5 ms、PNG 約 8 ms
-- 巨大な幅・高さを正しい CRC つきで書いた PNG や、巨大な寸法の JPEG は、その大きさの配列を確保しようとする（大きさの上限は設けない）。信頼できないファイルを読むときは注意する
+- **寸法の上限**（#324）: デコードの前に PNG の IHDR と JPEG のフレームの見出し（SOF）の幅・高さを読み、幅 × 高さが `max-pixels` を超えれば `:too-large` にする（ライブラリは寸法のとおりに配列を確保するので、巨大な寸法を書いたファイル 1 つでヒープを使い切らない）。PNG は IHDR の CRC を先に確かめ、合わなければ `:corrupt`（壊れた寸法を `:too-large` と取り違えない）。上限は画素数だけで、チャンネル数は見ない（4 チャンネルでも 4 倍まで）
 
 #### with-tracing の do ループ（issue #137）
 
