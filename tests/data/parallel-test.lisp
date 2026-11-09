@@ -16,6 +16,9 @@
 ;;;; - 先読み: バッチを 1 個返して閉じると、読んだ位置はちょうどバッチ 1 + prefetch 個ぶん（列の終わりで
 ;;;;   止まる）。呼び出し側が next-batch を呼ばない間にも、ワーカーが次のバッチを読む。filter で
 ;;;;   頼まれる区間が先読みの区間の切れ目とずれても、各位置は 1 回だけ読む。
+;;;; - 閉じ忘れ（#317）: close-iterator も with-data-iterator も使わずに捨てたイテレータ（make-data-iterator
+;;;;   でも restore-iterator でも）のワーカーのスレッドは、GC と保留中の finalizer の実行の後に残らない。
+;;;;   閉じたイテレータを捨てて GC しても error にならない。
 
 (in-package #:nabla.data.tests)
 
@@ -295,3 +298,51 @@ future を待つか、自分で読んで待っている）。"))
                             :num-workers 2 :prefetch 1)
       (is (= 2 (length (loader-all-batches it)))))
     (is (equal (loop for i below 24 collect i) (read-indices source)))))
+
+;;; --- 閉じ忘れたイテレータ（#317） ---
+
+(defun parallel-collect-garbage-until (predicate &key (rounds 50))
+  "PREDICATE が真になるまで、full GC と保留中の finalizer の実行を ROUNDS 回まで繰り返す。
+最後の PREDICATE の値を返す（固まる代わりに偽で返る）。"
+  (loop repeat rounds
+        until (funcall predicate)
+        do (sb-ext:gc :full t)
+           (sb-kernel:run-pending-finalizers)
+           (sb-thread:thread-yield))
+  (funcall predicate))
+
+(defun parallel-abandon-iterators (loader num-workers)
+  "別のスレッドで、LOADER のイテレータ（先頭からのものと、状態から再開したもの）を NUM-WORKERS の
+ワーカーで開いて 1 バッチずつ取り、閉じずに捨てる。スレッドが終わるので、イテレータはそのスタックからも
+指されない（保守的なスタックのルートで生き残らない）。開いている間のワーカーのスレッドの数を返す。"
+  (let ((count nil))
+    (sb-thread:join-thread
+     (sb-thread:make-thread
+      (lambda ()
+        (let ((fresh (make-data-iterator loader :num-workers num-workers))
+              (restored (restore-iterator loader (initial-iterator-state loader)
+                                          :num-workers num-workers)))
+          (next-batch fresh)
+          (next-batch restored)
+          (setf count (live-worker-count)))
+        nil)
+      :name "nabla.data test: abandon iterators"))
+    count))
+
+(test (parallel-loader/abandoned-iterators-release-their-workers :suite :nabla.medium)
+  "閉じずに捨てたイテレータのワーカーのスレッドは、GC と保留中の finalizer の実行の後に残らない。
+閉じてから捨てたイテレータの GC も error にならない（finalizer は閉じたときに取り消す）。"
+  (let ((before (live-worker-count))
+        (loader (data-loader (loader-index-source 12) :batch-size 3 :num-epochs 2)))
+    (is (= (+ before 4) (parallel-abandon-iterators loader 2)))
+    (is-true (parallel-collect-garbage-until (lambda () (= before (live-worker-count))))
+             "GC の後も、捨てたイテレータのワーカーが ~D 本残っている" (- (live-worker-count) before))
+    (sb-thread:join-thread
+     (sb-thread:make-thread (lambda ()
+                              (let ((it (make-data-iterator loader :num-workers 2)))
+                                (next-batch it)
+                                (close-iterator it))
+                              nil)))
+    (is (= before (live-worker-count)))
+    (finishes (parallel-collect-garbage-until (constantly nil) :rounds 3))
+    (is (= before (live-worker-count)))))

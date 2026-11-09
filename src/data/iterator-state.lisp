@@ -109,4 +109,4 @@ NUM-WORKERS と PREFETCH は MAKE-DATA-ITERATOR と同じ（状態を取った�
       (%data-loader-error :state-out-of-range
                           "エポック ~D・位置 ~D が、レコード ~D 個・~:[終わらない~;~:*~D エポック~]の範囲の外"
                           epoch position n num-epochs))
-    (%make-data-iterator loader k (%open-worker-pool num-workers prefetch))))
+    (%watch-iterator (%make-data-iterator loader k (%open-worker-pool num-workers prefetch)))))
