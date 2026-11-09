@@ -13,6 +13,7 @@
    #:image-decode-error-pathname
    #:image-decode-error-detail
    #:read-image
+   #:*max-image-pixels*
    #:image-source
    #:make-image-source)
   (:documentation

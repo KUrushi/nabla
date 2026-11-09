@@ -24,6 +24,7 @@
   :unreadable      ファイルを開けない・読めない（無い・権限が無い・ディレクトリなど）
   :unknown-format  先頭のバイトが PNG でも JPEG でもない
   :corrupt         デコードに失敗した（途中で切れている・CRC の不一致・壊れたデータなど）
+  :too-large       ヘッダの幅 × 高さが上限（READ-IMAGE の MAX-PIXELS）を超える（配列を確保する前に止める）
   :unsupported     正しいファイルだが読まない形式（16 ビットの PNG、成分が 1 でも 3 でもない
                    CMYK などの JPEG、Adobe の APP14 が YCbCr でないと言う3成分の JPEG、
                    ベースラインでもプログレッシブでもない JPEG）"))
@@ -39,7 +40,52 @@ png-read の CRC の不一致は WARNING の子なので、別に捕まえる。
      (jpeg:unsupported-jpeg-format (e) (%image-error :unsupported ,pathname "~A" e))
      ((or error png-read:crc-failure) (e) (%image-error :corrupt ,pathname "~A" e))))
 
+;;; --- 寸法の上限（issue #324） ---
+
+(defparameter *max-image-pixels* (floor (* 1024 1024 1024) (* 4 3))
+  "READ-IMAGE と MAKE-IMAGE-SOURCE の MAX-PIXELS の既定値（幅 × 高さの上限。nil なら上限なし）。
+既定は Pillow の Image.MAX_IMAGE_PIXELS と同じ 89478485 画素（RGB の u8 で約 256 MiB）。
+ヘッダに巨大な寸法を書いた壊れたファイル・悪意のあるファイル 1 つで、ヒープを使い切らないための上限。
+ローダのワーカーのスレッドは呼び出し側の動的束縛を見ないので、IMAGE-SOURCE には作るときに渡す
+（MAKE-IMAGE-SOURCE は作ったときの値を持つ）。")
+
+(defun %check-pixel-limit (width height max-pixels pathname)
+  (let ((pixels (* width height)))
+    (when (and max-pixels (> pixels max-pixels))
+      (%image-error :too-large pathname "幅 ~D × 高さ ~D = ~D 画素が上限 ~D を超える"
+                    width height pixels max-pixels))))
+
+(defun %big-endian (octets start count)
+  (let ((value 0))
+    (dotimes (i count value)
+      (setf value (+ (* value 256) (aref octets (+ start i)))))))
+
+(defun %crc32 (octets start end)
+  "OCTETS の [START, END) の CRC-32（PNG のチャンクの CRC。多項式 #xEDB88320 の反転形）。"
+  (let ((crc #xffffffff))
+    (declare (type (unsigned-byte 32) crc))
+    (loop for i from start below end
+          do (setf crc (logxor crc (aref octets i)))
+             (dotimes (bit 8)
+               (setf crc (if (logbitp 0 crc) (logxor #xedb88320 (ash crc -1)) (ash crc -1)))))
+    (logxor crc #xffffffff)))
+
 ;;; --- PNG ---
+
+(defun %check-png-dimensions (stream pathname max-pixels)
+  "先頭の IHDR の幅と高さが MAX-PIXELS の上限に収まることを、png-read が配列を確保する前に確かめる。
+IHDR の CRC が合わないとき（寸法のバイトが壊れている）は :corrupt にする（壊れた寸法を :too-large と
+取り違えない）。先頭が長さ 13 の IHDR でなければ、ここでは何もしない（png-read が :corrupt にする）。
+STREAM の位置は先頭に戻す。"
+  (let ((header (make-array 33 :element-type '(unsigned-byte 8))))
+    (file-position stream 0)
+    (when (and (= 33 (read-sequence header stream))
+               (= 13 (%big-endian header 8 4))
+               (equalp (subseq header 12 16) #(73 72 68 82))) ; "IHDR"
+      (unless (= (%crc32 header 12 29) (%big-endian header 29 4))
+        (%image-error :corrupt pathname "IHDR の CRC が合わない"))
+      (%check-pixel-limit (%big-endian header 16 4) (%big-endian header 20 4) max-pixels pathname))
+    (file-position stream 0)))
 
 (defun %check-png-chunk-lengths (stream pathname)
   "PNG のチャンクの見出し（長さと種類）を IEND までたどり、どの長さもファイルの中に収まることを
@@ -73,8 +119,9 @@ IEND より後ろのバイトは png-read と同じく見ない。STREAM の位�
           (setf (aref image y x k)
                 (* scale (if (= 3 (array-rank data)) (aref data x y k) (aref data x y)))))))))
 
-(defun %read-png (stream pathname)
+(defun %read-png (stream pathname max-pixels)
   (%check-png-chunk-lengths stream pathname)
+  (%check-png-dimensions stream pathname max-pixels)
   (let* ((state (%with-library-errors (pathname)
                   (let ((png-read:*crc-fail-behaviour* :error))
                     (png-read:read-png-datastream stream))))
@@ -123,10 +170,42 @@ CL_SOURCE_REGISTRY に置き、上流の cl-jpeg からコンパイルした fas
 cl-jpeg のもの）が残っていれば消して、コンパイルし直すこと。"
              safety (let ((*print-pretty* nil)) (prin1-to-string optimize))))))
 
-(defun %read-jpeg (stream pathname)
+(defun %jpeg-frame-dimensions (stream)
+  "JPEG の最初のフレームの見出し（SOF0〜SOF15 のうち DHT・JPG・DAC 以外）の (values 幅 高さ)。
+SOS か EOI までに見つからない、または途中でファイルが切れていれば nil（cl-jpeg が :corrupt にする）。
+STREAM の位置は先頭に戻す。"
+  (let ((size (file-length stream))
+        (buffer (make-array 7 :element-type '(unsigned-byte 8))))
+    (flet ((octets-at (position count)
+             (when (<= (+ position count) size)
+               (file-position stream position)
+               (read-sequence buffer stream :end count)
+               buffer)))
+      (unwind-protect
+           (loop with position = 2
+                 for head = (octets-at position 2)
+                 while (and head (= #xff (aref head 0)))
+                 do (let ((marker (aref head 1)))
+                      (cond ((= marker #xff) (incf position)) ; 詰め物の #xFF
+                            ((or (<= #xd0 marker #xd7) (= marker #x01)) (incf position 2))
+                            ((member marker '(#xd9 #xda)) (return nil)) ; EOI・SOS
+                            (t
+                             (let ((segment (octets-at (+ position 2) 7)))
+                               (unless segment (return nil))
+                               (when (and (<= #xc0 marker #xcf) (not (member marker '(#xc4 #xc8 #xcc))))
+                                 ;; 長さ 2・精度 1・高さ 2・幅 2
+                                 (return (values (%big-endian segment 5 2) (%big-endian segment 3 2))))
+                               (incf position (+ 2 (%big-endian segment 0 2))))))))
+        (file-position stream 0)))))
+
+(defun %read-jpeg (stream pathname max-pixels)
   ;; ロード時には検査しない（PNG だけを読む利用者まで止めない）。JPEG を読む前に毎回見る
   ;; （*optimize* の短いリストを1つたどるだけで、デコードに比べて無視できる）。
   (%check-cl-jpeg-safety)
+  ;; cl-jpeg はフレームの見出しの寸法のとおりに配列を確保するので、その前に上限を見る。
+  (multiple-value-bind (width height) (%jpeg-frame-dimensions stream)
+    (when width
+      (%check-pixel-limit width height max-pixels pathname)))
   (multiple-value-bind (buffer height width components transform)
       (%with-library-errors (pathname) (jpeg:decode-stream stream))
     ;; 読むのはグレースケール（1 成分）と YCbCr の3成分だけ。cl-jpeg は3成分を常に YCbCr と
@@ -145,19 +224,22 @@ cl-jpeg のもの）が残っていれば消して、コンパイルし直すこ
 
 ;;; --- 読み込み ---
 
-(defun read-image (pathname)
+(defun read-image (pathname &key (max-pixels *max-image-pixels*))
   "PNG か JPEG のファイル PATHNAME をデコードして、(H W C) の (unsigned-byte 8) の配列を返す。
 C はファイルのまま（グレースケール 1、グレースケール + アルファ 2、RGB 3、RGBA 4）。パレットの
 PNG は RGB（C = 3。tRNS の透過は読まない）、1・2・4 ビットのグレースケールは 0..255 に直す。
 形式は先頭のバイトで見分ける。読めなければ IMAGE-DECODE-ERROR を signal する。
+ヘッダの幅 × 高さが MAX-PIXELS（0 以上の整数か nil。既定 *MAX-IMAGE-PIXELS*、nil なら上限なし）を
+超えれば、配列を確保する前に :too-large の IMAGE-DECODE-ERROR にする。
 u8 は nabla の dtype に無いので、jit に渡す前に f32 などに直すこと。"
+  (check-type max-pixels (or null (integer 0)))
   (handler-case
       (with-open-file (stream pathname :element-type '(unsigned-byte 8))
         (let ((head (make-array 8 :element-type '(unsigned-byte 8) :initial-element 0)))
           (read-sequence head stream)
           (file-position stream 0)
-          (cond ((equalp head #(137 80 78 71 13 10 26 10)) (%read-png stream pathname))
-                ((and (= #xff (aref head 0)) (= #xd8 (aref head 1))) (%read-jpeg stream pathname))
+          (cond ((equalp head #(137 80 78 71 13 10 26 10)) (%read-png stream pathname max-pixels))
+                ((and (= #xff (aref head 0)) (= #xd8 (aref head 1))) (%read-jpeg stream pathname max-pixels))
                 (t (%image-error :unknown-format pathname "PNG でも JPEG でもない")))))
     ;; ディレクトリなどは開けても読めず、STREAM-ERROR になる。ライブラリのエラーは
     ;; %WITH-LIBRARY-ERRORS が先に :corrupt にするので、ここに来るのはファイル自体の問題。
@@ -167,7 +249,8 @@ u8 は nabla の dtype に無いので、jit に渡す前に f32 などに直す
 
 (defclass image-source (nabla.data:data-source)
   ((pathnames :initarg :pathnames :reader %image-source-pathnames)
-   (labels :initarg :labels :reader %image-source-labels))
+   (labels :initarg :labels :reader %image-source-labels)
+   (max-pixels :initarg :max-pixels :reader %image-source-max-pixels))
   (:documentation
    "画像ファイルのリスト（とラベル）から作るデータソース。MAKE-IMAGE-SOURCE で作る。
 画像はレコードを取るとき（SOURCE-ITEM）にデコードする。"))
@@ -175,12 +258,14 @@ u8 は nabla の dtype に無いので、jit に渡す前に f32 などに直す
 (defmethod nabla.data:source-length ((source image-source))
   (length (%image-source-pathnames source)))
 
-(defun make-image-source (pathnames &key labels)
+(defun make-image-source (pathnames &key labels (max-pixels *max-image-pixels*))
   "画像ファイルの列 PATHNAMES（パスネームか、OS の書き方のパスの文字列）から IMAGE-SOURCE を作る。
 INDEX 番目のレコードは、LABELS が nil なら (READ-IMAGE 番目のファイル) の画像だけ、そうでなければ
 (画像 ラベル) のリスト。LABELS は NABLA.DATA:MAKE-ARRAY-SOURCE と同じ木（葉の先頭の軸がレコードの
 軸）で、ラベルはその INDEX 番目の行（例: (signed-byte 32) のベクタなら rank 0 の配列）。
 LABELS のレコードの個数がファイルの数と違えば :length-mismatch の NABLA.DATA:DATA-SOURCE-ERROR。
+画像は READ-IMAGE に MAX-PIXELS（既定は作るときの *MAX-IMAGE-PIXELS*）を渡して読む（ワーカーの
+スレッドは呼び出し側の動的束縛を見ないので、上限は作るときに決める）。
 ファイルは作るときには開かない。画像の (unsigned-byte 8) は nabla の dtype に無いので、jit に
 渡す前にローダの変換（map）で f32 などに直すこと。"
   (let ((pathnames (map 'simple-vector
@@ -192,7 +277,8 @@ LABELS のレコードの個数がファイルの数と違えば :length-mismatc
              :reason :length-mismatch
              :detail (format nil "ファイルが ~D 個でラベルが ~D 個" (length pathnames)
                              (nabla.data:source-length labels))))
-    (make-instance 'image-source :pathnames pathnames :labels labels)))
+    (check-type max-pixels (or null (integer 0)))
+    (make-instance 'image-source :pathnames pathnames :labels labels :max-pixels max-pixels)))
 
 (defmethod nabla.data:source-item ((source image-source) index)
   (unless (and (integerp index) (< -1 index (nabla.data:source-length source)))
@@ -200,7 +286,8 @@ LABELS のレコードの個数がファイルの数と違えば :length-mismatc
            :reason :index-out-of-range
            :detail (format nil "添字 ~S は 0 以上 ~D 未満の整数でない"
                            index (nabla.data:source-length source))))
-  (let ((image (read-image (svref (%image-source-pathnames source) index)))
+  (let ((image (read-image (svref (%image-source-pathnames source) index)
+                           :max-pixels (%image-source-max-pixels source)))
         (labels (%image-source-labels source)))
     (if labels
         (list image (nabla.data:source-item labels index))
