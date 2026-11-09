@@ -138,7 +138,8 @@ filter が落としたレコードには random-map-transform を呼ばない。
           (eq actual :empty-epoch)
           (and (listp actual)
                (= (length expected) (length actual))
-               (every (lambda (records batch) (same-tree-of-arrays-p (batch-records records) batch))
+               (every (lambda (records batch)
+                        (same-tree-of-arrays-p (apply #'loader-oracle-batch records arguments) batch))
                       expected actual))))))
 
 (def-source-property random-map-transform/restoring-continues-the-uninterrupted-sequence

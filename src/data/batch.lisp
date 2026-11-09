@@ -3,7 +3,7 @@
 ;;;; バッチはレコードの PyTree の葉を新しい先頭の軸で積んだ同じ形の木（Grain の Batch）。
 ;;;; 積むのはローダの :batch-size の仕事で、変換（transform.lisp）のリストには入れられない。
 ;;;; 端数のバッチを捨てる（drop-remainder）のもローダの仕事で、ここでは 1 個以上の任意の
-;;;; 個数を積む。端数を詰める pad は v1 では持たない。
+;;;; 個数を積む。端数を 0 の行で埋める pad もローダの仕事（loader.lisp の %LOADER-BATCH、#325）。
 
 (in-package #:nabla.data)
 

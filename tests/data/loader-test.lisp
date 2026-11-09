@@ -4,6 +4,12 @@
 ;;;; - オラクル: バッチの列は、エポックごとに「サンプラーの順にレコードを引いて変換し、残ったものを
 ;;;;   batch-size 個ずつに切る（端数は drop-remainder なら捨て、nil なら短いバッチ）」を素朴に
 ;;;;   書いたものと、エポックの順に並べて一致する（バッチはエポックをまたがない。filter あり）。
+;;;; - pad（#325）: pad-remainder が真なら、各バッチは (バッチ マスク) で、バッチの葉の先頭の軸は
+;;;;   いつも batch-size、マスクは長さ batch-size の bit のベクタで本物の行（先頭から詰める）だけが 1、
+;;;;   埋めた行は 0 の値（オラクルが端数を 0 のレコードで埋めたものと一致する）。マスクで残した行の
+;;;;   和集合は 1 エポックの全レコード。再開・並列・エポック単位の取り出しも pad なしと同じ性質を持つ
+;;;;   （生成器が pad-remainder も選ぶので、オラクル・再開・並列の性質がそのまま pad も見る）。
+;;;;   drop-remainder を明示的に真にして pad-remainder も真なら :bad-remainder。
 ;;;; - 1 エポックで全レコードがちょうど1回ずつ出る（前提: filter なし。drop-remainder なら
 ;;;;   n mod batch-size 個が欠け、nil なら欠けない）。
 ;;;; - エポック単位の取り出し: (epoch loader e) を e = 0.. の順につなぐと、イテレータの列と同じ。
@@ -56,25 +62,54 @@ array-source。"
       (:keep-mod (filter-transform (lambda (record) (= b (mod (loader-record-index record) a))))))))
 
 (defun loader-random-case (seed)
-  "SEED から決まる data-loader の引数の plist と、レコードの個数。"
+  "SEED から決まる data-loader の引数の plist と、レコードの個数。pad-remainder を選んだときは
+drop-remainder を nil にする（両方を真にすると :bad-remainder）。"
   (let* ((state (sb-ext:seed-random-state seed))
          (n (random 12 state))
-         (shuffle (zerop (random 2 state))))
-    (values (list :batch-size (1+ (random 5 state))
-                  :shuffle shuffle
-                  :seed (and (or shuffle (zerop (random 2 state)))
-                             (make-array 2 :element-type '(unsigned-byte 32)
-                                           :initial-contents (list (random (ash 1 32) state)
-                                                                   (random (ash 1 32) state))))
-                  :num-epochs (1+ (random 3 state))
-                  :transforms (mapcar #'loader-spec-transform
-                                      (loop repeat (random 3 state) collect (loader-random-spec state)))
-                  :drop-remainder (zerop (random 2 state)))
+         (shuffle (zerop (random 2 state)))
+         (arguments (list :batch-size (1+ (random 5 state))
+                          :shuffle shuffle
+                          :seed (and (or shuffle (zerop (random 2 state)))
+                                     (make-array 2 :element-type '(unsigned-byte 32)
+                                                   :initial-contents (list (random (ash 1 32) state)
+                                                                           (random (ash 1 32) state))))
+                          :num-epochs (1+ (random 3 state))
+                          :transforms (mapcar #'loader-spec-transform
+                                              (loop repeat (random 3 state) collect (loader-random-spec state)))
+                          :drop-remainder (zerop (random 2 state))))
+         (pad (zerop (random 3 state))))
+    (values (if pad
+                (list* :pad-remainder t :drop-remainder nil arguments)
+                arguments)
             n)))
 
-(defun loader-oracle (n &key batch-size shuffle seed num-epochs transforms drop-remainder)
+(defun loader-zero-record (record)
+  "RECORD と同じ木で、葉を同じ形・element-type の 0 の配列にしたもの（pad で埋める行）。"
+  (multiple-value-bind (leaves treedef) (nabla:tree-flatten record)
+    (nabla:tree-unflatten treedef
+                          (mapcar (lambda (leaf)
+                                    (make-array (array-dimensions leaf)
+                                                :element-type (array-element-type leaf)
+                                                :initial-element (coerce 0 (array-element-type leaf))))
+                                  leaves))))
+
+(defun loader-oracle-batch (records &key batch-size pad-remainder &allow-other-keys)
+  "オラクルのバッチ（レコードのリスト RECORDS）から、ローダが返すはずの木。PAD-REMAINDER なら
+端数を 0 のレコードで BATCH-SIZE 行に埋め、本物の行だけ 1 のマスクと組にする。"
+  (if pad-remainder
+      (list (batch-records (append records
+                                   (make-list (- batch-size (length records))
+                                              :initial-element (loader-zero-record (first records)))))
+            (let ((mask (make-array batch-size :element-type 'bit :initial-element 0)))
+              (fill mask 1 :end (length records))))
+      (batch-records records)))
+
+(defun loader-oracle (n &key batch-size shuffle seed num-epochs transforms drop-remainder pad-remainder)
   "バッチ（レコードのリスト）の列を素朴に作る。エポックごとに全レコードを引いて変換し、
-BATCH-SIZE 個ずつに切る。1 エポックからバッチが作れなければ :empty-epoch を返す。"
+BATCH-SIZE 個ずつに切る（PAD-REMAINDER なら端数は捨てない。埋めるのは LOADER-ORACLE-BATCH）。
+1 エポックからバッチが作れなければ :empty-epoch を返す。"
+  (when pad-remainder
+    (setf drop-remainder nil))
   (let ((sampler (make-index-sampler n :shuffle shuffle :seed seed :num-epochs num-epochs))
         (source (loader-index-source n))
         (batches '()))
@@ -129,7 +164,8 @@ BATCH-SIZE 個ずつに切る。1 エポックからバッチが作れなけれ�
           (eq actual :empty-epoch)
           (and (listp actual)
                (= (length expected) (length actual))
-               (every (lambda (records batch) (same-tree-of-arrays-p (batch-records records) batch))
+               (every (lambda (records batch)
+                        (same-tree-of-arrays-p (apply #'loader-oracle-batch records arguments) batch))
                       expected actual))))))
 
 (def-source-property data-loader/each-record-appears-once-per-epoch
@@ -442,3 +478,50 @@ BATCH-SIZE 個ずつに切る。1 エポックからバッチが作れなけれ�
     (is (every #'same-tree-of-arrays-p
                (loader-all-batches (make-data-iterator loader))
                (loader-all-batches (restore-iterator loader (loader-copy-state state)))))))
+
+;;; --- 端数の pad（#325） ---
+
+(def-source-property data-loader/padded-batches-always-have-batch-size-rows
+  "pad-remainder なら、各バッチは (バッチ マスク) で、葉の先頭の軸は batch-size、マスクは長さ
+batch-size の bit のベクタで 1 が先頭から詰まる。前提: filter なし。マスクで残した行の添字の和集合は
+1 エポックの全レコードで、重ならない。"
+  (n batch-size shuffle hi)
+  (generator (tuple (uniform-integer :lo 1 :hi 40) (uniform-integer :lo 1 :hi 7)
+                    (uniform-integer :lo 0 :hi 1) (uniform-integer :lo 0 :hi 4294967295)))
+  (let* ((loader (data-loader (loader-index-source n)
+                              :batch-size batch-size :shuffle (= 1 shuffle) :num-epochs 1
+                              :seed (sampler-test-seed hi 7) :pad-remainder t))
+         (batches (loader-all-batches (make-data-iterator loader)))
+         (kept (loop for (batch mask) in batches
+                     append (loop for i below batch-size
+                                  when (= 1 (aref mask i)) collect (aref (first batch) i)))))
+    (and (= (length batches) (ceiling n batch-size))
+         (every (lambda (batch-and-mask)
+                  (destructuring-bind (batch mask) batch-and-mask
+                    (and (typep mask '(simple-array bit (*)))
+                         (= batch-size (length mask))
+                         ;; 本物の行が先頭から詰まる
+                         (not (search #*01 mask))
+                         (every (lambda (leaf) (= batch-size (array-dimension leaf 0)))
+                                (nabla:tree-leaves batch)))))
+                batches)
+         (equal (loop for i below n collect i) (sort (copy-list kept) #'<)))))
+
+(test (data-loader/pad-remainder-rejects-an-explicit-drop-remainder :suite :nabla.small)
+  "pad-remainder と明示的に真の drop-remainder を一緒に渡すと :bad-remainder。drop-remainder nil や
+省略ならよい。"
+  (let ((source (loader-index-source 5)))
+    (is (eq :bad-remainder (loader-failure-reason
+                            (lambda () (data-loader source :batch-size 2 :pad-remainder t :drop-remainder t)))))
+    (is (eq :no-error (loader-failure-reason
+                       (lambda () (data-loader source :batch-size 2 :pad-remainder t :drop-remainder nil)))))
+    (is (eq :no-error (loader-failure-reason (lambda () (data-loader source :batch-size 2 :pad-remainder t)))))))
+
+(test (data-loader/pad-fills-rows-with-zeros-of-the-leaf-type :suite :nabla.small)
+  "埋めた行は葉の element-type の 0（double-float は 0d0、(signed-byte 32) は 0）。"
+  (destructuring-bind (batch mask)
+      (car (last (epoch (data-loader (loader-index-source 5) :batch-size 3 :num-epochs 1 :pad-remainder t) 0)))
+    (is (equalp #*110 mask))
+    (is (equalp #(3 4 0) (first batch)))
+    (is (equal '(signed-byte 32) (array-element-type (first batch))))
+    (is (equalp #2A((6d0 -6d0) (8d0 -8d0) (0d0 0d0)) (second batch)))))
